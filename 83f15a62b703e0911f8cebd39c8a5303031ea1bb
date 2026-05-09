@@ -1,0 +1,64 @@
+design/icon-concepts/rabbit-camera-glasses-icons.svg
+  10af0ac4dc4f2399 1-201
+design/icon-concepts/rabbit-camera-explicit-icons.svg
+  10af0ac4dc4f2399 1-188
+design/icon-concepts/premium-cute-rabbit-camera-marks.svg
+  10af0ac4dc4f2399 1-165
+design/icon-concepts/minimal-rabbit-camera-premium-final.svg
+  10af0ac4dc4f2399 1-60
+docs/water-project-launch-demo.html
+  f2ca644372430c66 1-713
+design/icon-concepts/rabbit-camera-monocle-marks.svg
+  10af0ac4dc4f2399 1-186
+design/icon-concepts/minimal-rabbit-camera-apple-icons.svg
+  10af0ac4dc4f2399 1-154
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "83f15a62b703e0911f8cebd39c8a5303031ea1bb",
+  "prompts": {
+    "10af0ac4dc4f2399": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019df6da-2564-7cd0-806c-94fe982b94c7",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 954,
+      "total_deletions": 0,
+      "accepted_lines": 954,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/daf9e9fd3bb86da5d7aba05c5fb07dd9b3e01e04f3e725e0cf6148a3f3b89483"
+    },
+    "603430453d8b3689": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019dfc83-c5c2-71c0-a68d-3d7338a5688b",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 601,
+      "total_deletions": 0,
+      "accepted_lines": 483,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/613131d604c0f2300db0adbb9f80bf4c008aa27eea3adb9d0379b58f81cd86f1"
+    },
+    "f2ca644372430c66": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e006c-2fac-73f2-ba5a-7a909f8643f3",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 1479,
+      "total_deletions": 766,
+      "accepted_lines": 713,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/032bae4a26ac95876a043680ce5118ee36225b587a91c65ecc0d4bb9f86b7c1c"
+    }
+  }
+}
