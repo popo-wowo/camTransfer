@@ -1,0 +1,180 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="980" viewBox="0 0 1600 980">
+  <defs>
+    <linearGradient id="warmBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffe28a"/>
+      <stop offset=".54" stop-color="#ffb35f"/>
+      <stop offset="1" stop-color="#ff806f"/>
+    </linearGradient>
+    <linearGradient id="charcoalBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#39423a"/>
+      <stop offset=".55" stop-color="#202720"/>
+      <stop offset="1" stop-color="#111610"/>
+    </linearGradient>
+    <linearGradient id="matchaBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d8f6a2"/>
+      <stop offset=".52" stop-color="#95d86b"/>
+      <stop offset="1" stop-color="#4f9c5d"/>
+    </linearGradient>
+    <filter id="shadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="20" stdDeviation="16" flood-color="#000" flood-opacity=".22"/>
+    </filter>
+    <style>
+      .page { fill: #f7f7f4; }
+      .title { font: 700 42px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #14191f; }
+      .subtitle { font: 400 22px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #606a62; }
+      .label { font: 700 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #171d19; }
+      .note { font: 400 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #667064; }
+      .tiny { font: 500 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #667064; }
+      .line { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+      .ink { stroke: #171d19; }
+      .rabbit { fill: #fff8e9; }
+      .rabbit2 { fill: #fff2d2; }
+      .blush { fill: #ff8c91; }
+      .camera { fill: #1c211f; }
+      .lensWarm { fill: #ffe36d; }
+      .lensMint { fill: #a7f0a4; }
+      .miniBg { fill: #fff; stroke: #d9ded7; stroke-width: 1; }
+    </style>
+  </defs>
+
+  <rect class="page" width="1600" height="980"/>
+  <text class="title" x="80" y="84">Rabbit + Camera Icon Refinements</text>
+  <text class="subtitle" x="80" y="122">No blue palette. Simplified B/C directions with more cuteness and stronger launcher-icon readability.</text>
+
+  <!-- Refined B warm -->
+  <g transform="translate(120 190)">
+    <text class="label" x="0" y="0">B1. Warm Fast Courier</text>
+    <text class="note" x="0" y="32">Cute, warm, energetic. Speed is shown with cream trails and forward lean.</text>
+    <g transform="translate(20 78)" filter="url(#shadow)">
+      <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#warmBg)"/>
+      <path d="M50 252c48-20 105-26 171-18" class="line" stroke="#fff6dd" stroke-width="22" opacity=".86"/>
+      <path d="M42 304c74-21 151-27 232-17" class="line" stroke="#fff6dd" stroke-width="16" opacity=".62"/>
+      <ellipse cx="236" cy="251" rx="97" ry="66" class="rabbit"/>
+      <ellipse cx="299" cy="190" rx="59" ry="53" class="rabbit"/>
+      <path d="M283 145c-23-66-17-106 15-119 26 3 38 40 29 107" class="rabbit"/>
+      <path d="M325 156c27-61 59-84 88-72 10 26-11 57-68 94" class="rabbit"/>
+      <path d="M296 44c-8 34-6 64 7 90" class="line ink" stroke-width="9" opacity=".18"/>
+      <path d="M385 96c-27 19-44 42-51 69" class="line ink" stroke-width="9" opacity=".18"/>
+      <circle cx="321" cy="186" r="8.5" fill="#171d19"/>
+      <circle cx="325" cy="183" r="3" fill="#fff"/>
+      <path d="M342 206c17 1 31-6 41-19" class="line ink" stroke-width="8"/>
+      <circle cx="363" cy="183" r="10" class="blush"/>
+      <path d="M223 293c-27 42-67 62-119 60" class="line ink" stroke-width="20"/>
+      <path d="M268 300c42 35 82 46 121 34" class="line ink" stroke-width="20"/>
+      <rect x="159" y="192" width="107" height="76" rx="21" class="camera"/>
+      <path d="M179 192l16-21h43l16 21" class="camera"/>
+      <circle cx="213" cy="231" r="26" class="lensWarm"/>
+      <circle cx="213" cy="231" r="11" fill="#fff9d8"/>
+      <path d="M155 181c22-25 55-28 86-8" class="line ink" stroke-width="11"/>
+      <path d="M139 180c-32-12-55-31-68-58" class="line ink" stroke-width="17" opacity=".5"/>
+    </g>
+    <g transform="translate(20 548)">
+      <rect class="miniBg" x="0" y="0" width="78" height="78" rx="18"/>
+      <g transform="scale(.1857)">
+        <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#warmBg)"/>
+        <path d="M50 252c48-20 105-26 171-18" class="line" stroke="#fff6dd" stroke-width="22" opacity=".86"/>
+        <ellipse cx="236" cy="251" rx="97" ry="66" class="rabbit"/>
+        <ellipse cx="299" cy="190" rx="59" ry="53" class="rabbit"/>
+        <path d="M283 145c-23-66-17-106 15-119 26 3 38 40 29 107" class="rabbit"/>
+        <path d="M325 156c27-61 59-84 88-72 10 26-11 57-68 94" class="rabbit"/>
+        <circle cx="321" cy="186" r="8.5" fill="#171d19"/>
+        <rect x="159" y="192" width="107" height="76" rx="21" class="camera"/>
+        <circle cx="213" cy="231" r="26" class="lensWarm"/>
+      </g>
+      <text class="tiny" x="94" y="30">Most cute and approachable.</text>
+      <text class="tiny" x="94" y="54">Good for consumer camera transfer.</text>
+    </g>
+  </g>
+
+  <!-- Refined C dark -->
+  <g transform="translate(610 190)">
+    <text class="label" x="0" y="0">C1. Charcoal Sprint</text>
+    <text class="note" x="0" y="32">Keeps the dark contrast, but replaces blue tech glow with warm mint-green accents.</text>
+    <g transform="translate(20 78)" filter="url(#shadow)">
+      <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#charcoalBg)"/>
+      <path d="M45 246c66-24 134-31 205-20" class="line" stroke="#b7f79b" stroke-width="20" opacity=".82"/>
+      <path d="M52 300c80-21 163-26 248-14" class="line" stroke="#fff0b6" stroke-width="14" opacity=".55"/>
+      <ellipse cx="234" cy="253" rx="98" ry="67" class="rabbit2"/>
+      <ellipse cx="299" cy="190" rx="60" ry="54" class="rabbit2"/>
+      <path d="M282 146c-19-68-9-108 23-119 25 7 33 45 19 111" class="rabbit2"/>
+      <path d="M323 157c22-63 52-89 83-80 14 23-3 57-57 102" class="rabbit2"/>
+      <circle cx="320" cy="185" r="8.5" fill="#171d19"/>
+      <circle cx="324" cy="182" r="3" fill="#fff"/>
+      <path d="M341 205c16 1 30-5 40-18" class="line ink" stroke-width="8"/>
+      <circle cx="362" cy="184" r="10" class="blush"/>
+      <path d="M222 294c-29 39-69 56-120 52" class="line ink" stroke-width="20"/>
+      <path d="M269 301c39 35 80 47 124 36" class="line ink" stroke-width="20"/>
+      <rect x="159" y="192" width="108" height="77" rx="21" class="camera"/>
+      <path d="M179 192l16-22h44l16 22" class="camera"/>
+      <circle cx="213" cy="231" r="26" class="lensMint"/>
+      <circle cx="213" cy="231" r="11" fill="#ecffe9"/>
+      <path d="M154 181c22-25 55-28 87-8" class="line" stroke="#080b09" stroke-width="11"/>
+      <path d="M115 151c-20-15-34-33-41-54" class="line" stroke="#b7f79b" stroke-width="15" opacity=".52"/>
+      <circle cx="96" cy="88" r="6" fill="#fff0b6" opacity=".85"/>
+    </g>
+    <g transform="translate(20 548)">
+      <rect class="miniBg" x="0" y="0" width="78" height="78" rx="18"/>
+      <g transform="scale(.1857)">
+        <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#charcoalBg)"/>
+        <path d="M45 246c66-24 134-31 205-20" class="line" stroke="#b7f79b" stroke-width="20" opacity=".82"/>
+        <ellipse cx="234" cy="253" rx="98" ry="67" class="rabbit2"/>
+        <ellipse cx="299" cy="190" rx="60" ry="54" class="rabbit2"/>
+        <path d="M282 146c-19-68-9-108 23-119 25 7 33 45 19 111" class="rabbit2"/>
+        <path d="M323 157c22-63 52-89 83-80 14 23-3 57-57 102" class="rabbit2"/>
+        <circle cx="320" cy="185" r="8.5" fill="#171d19"/>
+        <rect x="159" y="192" width="108" height="77" rx="21" class="camera"/>
+        <circle cx="213" cy="231" r="26" class="lensMint"/>
+      </g>
+      <text class="tiny" x="94" y="30">More distinctive on home screens.</text>
+      <text class="tiny" x="94" y="54">Slightly less soft than B1.</text>
+    </g>
+  </g>
+
+  <!-- Extra green option -->
+  <g transform="translate(1100 190)">
+    <text class="label" x="0" y="0">B2. Matcha Runner</text>
+    <text class="note" x="0" y="32">A softer non-blue option. Friendly, natural, still clear at small size.</text>
+    <g transform="translate(20 78)" filter="url(#shadow)">
+      <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#matchaBg)"/>
+      <path d="M48 251c51-20 111-26 181-18" class="line" stroke="#f9ffe8" stroke-width="22" opacity=".84"/>
+      <path d="M45 303c76-21 154-26 234-15" class="line" stroke="#f9ffe8" stroke-width="15" opacity=".6"/>
+      <ellipse cx="235" cy="252" rx="98" ry="67" class="rabbit"/>
+      <ellipse cx="299" cy="190" rx="60" ry="54" class="rabbit"/>
+      <path d="M283 145c-22-66-16-106 16-119 26 4 37 41 27 108" class="rabbit"/>
+      <path d="M325 157c26-61 58-84 88-72 10 26-11 58-68 95" class="rabbit"/>
+      <circle cx="321" cy="186" r="8.5" fill="#171d19"/>
+      <circle cx="325" cy="183" r="3" fill="#fff"/>
+      <path d="M342 206c17 1 31-6 41-19" class="line ink" stroke-width="8"/>
+      <circle cx="363" cy="183" r="10" class="blush"/>
+      <path d="M223 293c-27 42-67 62-119 60" class="line ink" stroke-width="20"/>
+      <path d="M268 300c42 35 82 46 121 34" class="line ink" stroke-width="20"/>
+      <rect x="159" y="192" width="107" height="76" rx="21" class="camera"/>
+      <path d="M179 192l16-21h43l16 21" class="camera"/>
+      <circle cx="213" cy="231" r="26" class="lensMint"/>
+      <circle cx="213" cy="231" r="11" fill="#efffe8"/>
+      <path d="M155 181c22-25 55-28 86-8" class="line ink" stroke-width="11"/>
+      <path d="M139 180c-32-12-55-31-68-58" class="line ink" stroke-width="17" opacity=".43"/>
+    </g>
+    <g transform="translate(20 548)">
+      <rect class="miniBg" x="0" y="0" width="78" height="78" rx="18"/>
+      <g transform="scale(.1857)">
+        <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#matchaBg)"/>
+        <path d="M48 251c51-20 111-26 181-18" class="line" stroke="#f9ffe8" stroke-width="22" opacity=".84"/>
+        <ellipse cx="235" cy="252" rx="98" ry="67" class="rabbit"/>
+        <ellipse cx="299" cy="190" rx="60" ry="54" class="rabbit"/>
+        <path d="M283 145c-22-66-16-106 16-119 26 4 37 41 27 108" class="rabbit"/>
+        <path d="M325 157c26-61 58-84 88-72 10 26-11 58-68 95" class="rabbit"/>
+        <circle cx="321" cy="186" r="8.5" fill="#171d19"/>
+        <rect x="159" y="192" width="107" height="76" rx="21" class="camera"/>
+        <circle cx="213" cy="231" r="26" class="lensMint"/>
+      </g>
+      <text class="tiny" x="94" y="30">Friendly non-blue palette.</text>
+      <text class="tiny" x="94" y="54">Less energetic than B1.</text>
+    </g>
+  </g>
+
+  <g transform="translate(120 850)">
+    <text class="label" x="0" y="0">Current Pick</text>
+    <text class="note" x="0" y="40">B1 is the strongest cute direction: it feels fast, warm, and easy to recognize. C1 is better if you want a more premium dark app identity.</text>
+  </g>
+</svg>

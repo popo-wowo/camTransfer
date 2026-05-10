@@ -1,0 +1,186 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1040" viewBox="0 0 1600 1040">
+  <defs>
+    <radialGradient id="taupeBg" cx=".32" cy=".24" r=".9">
+      <stop offset="0" stop-color="#efe3cf"/>
+      <stop offset=".58" stop-color="#c5aa85"/>
+      <stop offset="1" stop-color="#7b634f"/>
+    </radialGradient>
+    <radialGradient id="oliveBg" cx=".3" cy=".24" r=".9">
+      <stop offset="0" stop-color="#ece6c9"/>
+      <stop offset=".58" stop-color="#a8a179"/>
+      <stop offset="1" stop-color="#556152"/>
+    </radialGradient>
+    <radialGradient id="inkBg" cx=".3" cy=".22" r=".92">
+      <stop offset="0" stop-color="#5a5450"/>
+      <stop offset=".56" stop-color="#2c2927"/>
+      <stop offset="1" stop-color="#151413"/>
+    </radialGradient>
+    <linearGradient id="fur" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fffaf3"/>
+      <stop offset=".65" stop-color="#f0e0c4"/>
+      <stop offset="1" stop-color="#d6bb95"/>
+    </linearGradient>
+    <linearGradient id="lensGold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7efc3"/>
+      <stop offset=".45" stop-color="#d9b06f"/>
+      <stop offset="1" stop-color="#7a5843"/>
+    </linearGradient>
+    <linearGradient id="lensOlive" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f0efca"/>
+      <stop offset=".45" stop-color="#c5c08f"/>
+      <stop offset="1" stop-color="#61715c"/>
+    </linearGradient>
+    <linearGradient id="lensRose" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f5dec4"/>
+      <stop offset=".45" stop-color="#c89679"/>
+      <stop offset="1" stop-color="#665355"/>
+    </linearGradient>
+    <filter id="softShadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="22" stdDeviation="18" flood-color="#000" flood-opacity=".24"/>
+    </filter>
+    <style>
+      .page { fill: #f6f2ea; }
+      .title { font: 700 42px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #171410; }
+      .subtitle { font: 400 22px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #6d6459; }
+      .label { font: 700 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #171410; }
+      .note { font: 400 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #756b60; }
+      .tiny { font: 500 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #756b60; }
+      .miniBg { fill: #fff; stroke: #ded7cc; stroke-width: 1; }
+      .outline { stroke: #231d19; stroke-width: 10; stroke-linecap: round; stroke-linejoin: round; }
+      .line { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+      .dark { fill: #231d19; }
+      .softDark { fill: #3b3029; }
+      .blush { fill: #dca59a; opacity: .55; }
+    </style>
+
+    <g id="rabbit-base">
+      <path d="M157 148C118 74 123 19 170-5c37 26 46 80 23 149-5 15-26 21-36 10z" fill="url(#fur)" class="outline"/>
+      <path d="M267 148c39-74 34-129-13-153-37 26-46 80-23 149 5 15 26 21 36 10z" fill="url(#fur)" class="outline"/>
+      <ellipse cx="212" cy="219" rx="111" ry="97" fill="url(#fur)" class="outline"/>
+      <ellipse cx="132" cy="235" rx="29" ry="24" fill="url(#fur)" class="outline"/>
+      <ellipse cx="292" cy="235" rx="29" ry="24" fill="url(#fur)" class="outline"/>
+      <path d="M180 92c-4 29 0 54 11 76" class="line" stroke="#6c5949" stroke-width="7" opacity=".14"/>
+      <path d="M244 92c4 29 0 54-11 76" class="line" stroke="#6c5949" stroke-width="7" opacity=".14"/>
+      <ellipse cx="259" cy="207" rx="9" ry="11" class="dark"/>
+      <circle cx="262" cy="204" r="2.8" fill="#fff"/>
+      <circle cx="160" cy="258" r="12" class="blush"/>
+      <circle cx="264" cy="258" r="12" class="blush"/>
+      <path d="M204 275c6 7 10 7 16 0" class="line" stroke="#231d19" stroke-width="8"/>
+      <path d="M177 307c22 12 47 12 69 0" class="line" stroke="#231d19" stroke-width="10"/>
+    </g>
+
+    <g id="camera-monocle-gold">
+      <rect x="118" y="162" width="104" height="74" rx="26" class="dark"/>
+      <rect x="137" y="148" width="34" height="18" rx="7" class="softDark"/>
+      <circle cx="170" cy="199" r="34" fill="url(#lensGold)"/>
+      <circle cx="170" cy="199" r="21" class="dark"/>
+      <circle cx="160" cy="188" r="6" fill="#fff3d0" opacity=".92"/>
+      <path d="M222 194h18" class="line" stroke="#231d19" stroke-width="12"/>
+      <path d="M233 193c18 0 33-8 45-22" class="line" stroke="#231d19" stroke-width="8"/>
+    </g>
+
+    <g id="camera-monocle-olive">
+      <rect x="118" y="162" width="104" height="74" rx="26" class="dark"/>
+      <rect x="137" y="148" width="34" height="18" rx="7" class="softDark"/>
+      <circle cx="170" cy="199" r="34" fill="url(#lensOlive)"/>
+      <circle cx="170" cy="199" r="21" class="dark"/>
+      <circle cx="160" cy="188" r="6" fill="#f8fae2" opacity=".92"/>
+      <path d="M222 194h18" class="line" stroke="#231d19" stroke-width="12"/>
+      <path d="M233 193c18 0 33-8 45-22" class="line" stroke="#231d19" stroke-width="8"/>
+    </g>
+
+    <g id="camera-monocle-rose">
+      <rect x="118" y="162" width="104" height="74" rx="26" class="dark"/>
+      <rect x="137" y="148" width="34" height="18" rx="7" class="softDark"/>
+      <circle cx="170" cy="199" r="34" fill="url(#lensRose)"/>
+      <circle cx="170" cy="199" r="21" class="dark"/>
+      <circle cx="160" cy="188" r="6" fill="#fff0e5" opacity=".92"/>
+      <path d="M222 194h18" class="line" stroke="#231d19" stroke-width="12"/>
+      <path d="M233 193c18 0 33-8 45-22" class="line" stroke="#231d19" stroke-width="8"/>
+    </g>
+  </defs>
+
+  <rect class="page" width="1600" height="1040"/>
+  <text class="title" x="80" y="84">Rabbit Camera Monocle Marks</text>
+  <text class="subtitle" x="80" y="122">Muted palette, dumpling-like rabbit face, and a camera monocle that reads as an actual camera lens rather than ordinary glasses.</text>
+
+  <g transform="translate(110 190)">
+    <text class="label" x="0" y="0">M1. Taupe Monocle Bunny</text>
+    <text class="note" x="0" y="32">Warmer and softer, but no candy colors. The monocle reads most clearly here.</text>
+    <g transform="translate(20 78)" filter="url(#softShadow)">
+      <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#taupeBg)"/>
+      <path d="M52 286c74-22 149-29 226-20" class="line" stroke="#fff4df" stroke-width="18" opacity=".55"/>
+      <g transform="translate(0 48)">
+        <use href="#rabbit-base"/>
+        <use href="#camera-monocle-gold"/>
+      </g>
+    </g>
+    <g transform="translate(20 548)">
+      <rect class="miniBg" x="0" y="0" width="78" height="78" rx="18"/>
+      <g transform="scale(.1857)">
+        <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#taupeBg)"/>
+        <g transform="translate(0 48)">
+          <use href="#rabbit-base"/>
+          <use href="#camera-monocle-gold"/>
+        </g>
+      </g>
+      <text class="tiny" x="94" y="30">Best balance of cute and readable.</text>
+      <text class="tiny" x="94" y="54">Safest refined direction.</text>
+    </g>
+  </g>
+
+  <g transform="translate(600 190)">
+    <text class="label" x="0" y="0">M2. Olive Monocle Bunny</text>
+    <text class="note" x="0" y="32">More restrained and editorial. Cute is still there, but less sugary.</text>
+    <g transform="translate(20 78)" filter="url(#softShadow)">
+      <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#oliveBg)"/>
+      <path d="M52 286c74-22 149-29 226-20" class="line" stroke="#f6f3dd" stroke-width="18" opacity=".5"/>
+      <g transform="translate(0 48)">
+        <use href="#rabbit-base"/>
+        <use href="#camera-monocle-olive"/>
+      </g>
+    </g>
+    <g transform="translate(20 548)">
+      <rect class="miniBg" x="0" y="0" width="78" height="78" rx="18"/>
+      <g transform="scale(.1857)">
+        <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#oliveBg)"/>
+        <g transform="translate(0 48)">
+          <use href="#rabbit-base"/>
+          <use href="#camera-monocle-olive"/>
+        </g>
+      </g>
+      <text class="tiny" x="94" y="30">Most mature palette.</text>
+      <text class="tiny" x="94" y="54">Slightly cooler emotionally.</text>
+    </g>
+  </g>
+
+  <g transform="translate(1090 190)">
+    <text class="label" x="0" y="0">M3. Ink Monocle Bunny</text>
+    <text class="note" x="0" y="32">Strongest premium feel. The face stays simple and the camera lens pops hardest.</text>
+    <g transform="translate(20 78)" filter="url(#softShadow)">
+      <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#inkBg)"/>
+      <path d="M52 286c74-22 149-29 226-20" class="line" stroke="#e9d7bc" stroke-width="18" opacity=".38"/>
+      <g transform="translate(0 48)">
+        <use href="#rabbit-base"/>
+        <use href="#camera-monocle-rose"/>
+      </g>
+    </g>
+    <g transform="translate(20 548)">
+      <rect class="miniBg" x="0" y="0" width="78" height="78" rx="18"/>
+      <g transform="scale(.1857)">
+        <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#inkBg)"/>
+        <g transform="translate(0 48)">
+          <use href="#rabbit-base"/>
+          <use href="#camera-monocle-rose"/>
+        </g>
+      </g>
+      <text class="tiny" x="94" y="30">Best premium look.</text>
+      <text class="tiny" x="94" y="54">More character than the old dark versions.</text>
+    </g>
+  </g>
+
+  <g transform="translate(110 850)">
+    <text class="label" x="0" y="0">Recommendation</text>
+    <text class="note" x="0" y="42">M3 is the strongest correction to your feedback: the palette is more grown-up, the rabbit is rounder and more blank-faced, and the eye accessory now reads like an actual camera body plus lens.</text>
+  </g>
+</svg>

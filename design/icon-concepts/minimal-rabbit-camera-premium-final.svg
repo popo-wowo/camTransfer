@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1200" viewBox="0 0 1200 1200">
+  <defs>
+    <radialGradient id="bg" cx=".32" cy=".22" r=".92">
+      <stop offset="0" stop-color="#4f4a47"/>
+      <stop offset=".55" stop-color="#2b2928"/>
+      <stop offset="1" stop-color="#181716"/>
+    </radialGradient>
+    <linearGradient id="fur" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fbf7f1"/>
+      <stop offset=".64" stop-color="#eee4d5"/>
+      <stop offset="1" stop-color="#d8c5ae"/>
+    </linearGradient>
+    <linearGradient id="ear" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d8b6a9"/>
+      <stop offset="1" stop-color="#b8887e"/>
+    </linearGradient>
+    <linearGradient id="lens" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f1e2ba"/>
+      <stop offset=".45" stop-color="#cfab72"/>
+      <stop offset="1" stop-color="#786253"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="30" stdDeviation="26" flood-color="#000" flood-opacity=".24"/>
+    </filter>
+    <style>
+      .dark { fill: #211d1b; }
+      .line { fill: none; stroke: #211d1b; stroke-linecap: round; stroke-linejoin: round; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="1200" rx="290" fill="url(#bg)"/>
+
+  <g filter="url(#shadow)" transform="translate(150 120)">
+    <path d="M258 176C223 96 232 35 284 8c38 31 45 91 14 168-8 19-33 24-40 8z" fill="url(#fur)"/>
+    <path d="M533 176C568 96 559 35 507 8c-38 31-45 91-14 168 8 19 33 24 40 8z" fill="url(#fur)"/>
+    <path d="M292 68c-11 36-9 71 6 105" class="line" stroke="url(#ear)" stroke-width="28" opacity=".95"/>
+    <path d="M499 68c11 36 9 71-6 105" class="line" stroke="url(#ear)" stroke-width="28" opacity=".95"/>
+
+    <circle cx="396" cy="418" r="236" fill="url(#fur)"/>
+    <circle cx="225" cy="437" r="52" fill="url(#fur)"/>
+    <circle cx="567" cy="437" r="52" fill="url(#fur)"/>
+
+    <rect x="178" y="307" width="220" height="164" rx="56" class="dark"/>
+    <rect x="205" y="282" width="64" height="28" rx="12" fill="#38312d"/>
+    <circle cx="287" cy="389" r="70" fill="url(#lens)"/>
+    <circle cx="287" cy="389" r="41" class="dark"/>
+    <circle cx="266" cy="367" r="11" fill="#fff5de" opacity=".95"/>
+    <circle cx="392" cy="333" r="15" fill="#efe0bf"/>
+
+    <ellipse cx="496" cy="392" rx="18" ry="22" class="dark"/>
+    <circle cx="501" cy="386" r="5" fill="#fff"/>
+
+    <circle cx="269" cy="511" r="18" fill="#c39290" opacity=".45"/>
+    <circle cx="499" cy="511" r="18" fill="#c39290" opacity=".45"/>
+
+    <path d="M389 464c19 0 34-6 45-18" class="line" stroke-width="10"/>
+    <path d="M372 544c28 21 66 18 93-8" class="line" stroke-width="14"/>
+    <path d="M386 512c8 10 15 11 23 1" class="line" stroke-width="10"/>
+  </g>
+</svg>

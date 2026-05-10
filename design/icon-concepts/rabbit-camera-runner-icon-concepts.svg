@@ -1,0 +1,186 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1120" viewBox="0 0 1600 1120">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8cecff"/>
+      <stop offset=".55" stop-color="#42bfff"/>
+      <stop offset="1" stop-color="#1880ff"/>
+    </linearGradient>
+    <linearGradient id="mint" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#b6ffe3"/>
+      <stop offset="1" stop-color="#1fd89c"/>
+    </linearGradient>
+    <linearGradient id="sunset" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffef9c"/>
+      <stop offset=".55" stop-color="#ff9f63"/>
+      <stop offset="1" stop-color="#ff6f9d"/>
+    </linearGradient>
+    <linearGradient id="night" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#243142"/>
+      <stop offset="1" stop-color="#071018"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="15" flood-color="#000" flood-opacity=".22"/>
+    </filter>
+    <style>
+      .page { fill: #f6f7f8; }
+      .title { font: 700 42px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #111820; }
+      .subtitle { font: 400 22px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #5b6670; }
+      .label { font: 700 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #17202a; }
+      .note { font: 400 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #66727c; }
+      .tiny { font: 500 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #66727c; }
+      .line { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+      .ink { stroke: #17202a; }
+      .white { fill: #fffaf4; }
+      .cream { fill: #fff0d8; }
+      .pink { fill: #ff9ab8; }
+      .camera { fill: #1a2530; }
+      .lens { fill: #61dcff; }
+      .miniBg { fill: #fff; stroke: #d8e0e6; stroke-width: 1; }
+    </style>
+  </defs>
+
+  <rect class="page" width="1600" height="1120"/>
+  <text class="title" x="80" y="84">Cute Mascot App Icon: Running Rabbit + Camera</text>
+  <text class="subtitle" x="80" y="122">Less corporate, more memorable. The rabbit carries speed; the camera anchors the product.</text>
+
+  <!-- A -->
+  <g transform="translate(80 180)">
+    <text class="label" x="0" y="0">A. Round Cute Runner</text>
+    <text class="note" x="0" y="32">Best app-icon read: big face, short limbs, clear camera bag, simple speed trail.</text>
+    <g transform="translate(0 72)" filter="url(#shadow)">
+      <rect x="0" y="0" width="360" height="360" rx="82" fill="url(#sky)"/>
+      <path d="M49 244c42-15 83-20 124-15" class="line" stroke="#eaffff" stroke-width="18" opacity=".8"/>
+      <path d="M40 285c62-18 127-24 196-18" class="line" stroke="#eaffff" stroke-width="14" opacity=".58"/>
+      <path d="M67 196c34-11 67-14 99-8" class="line" stroke="#eaffff" stroke-width="12" opacity=".55"/>
+      <ellipse cx="197" cy="208" rx="79" ry="65" class="white"/>
+      <ellipse cx="246" cy="173" rx="55" ry="50" class="white"/>
+      <path d="M230 130c-7-60 1-92 24-96 20 6 26 39 18 97" class="white"/>
+      <path d="M266 134c8-60 25-89 48-87 17 12 15 46-14 97" class="white"/>
+      <path d="M239 50c-7 27-5 52 2 75" class="line ink" stroke-width="8" opacity=".22"/>
+      <path d="M306 65c-20 22-30 45-35 69" class="line ink" stroke-width="8" opacity=".22"/>
+      <circle cx="265" cy="166" r="7" fill="#17202a"/>
+      <circle cx="270" cy="164" r="2.5" fill="#fff"/>
+      <path d="M286 181c12 2 22-1 30-8" class="line ink" stroke-width="7"/>
+      <circle cx="303" cy="166" r="8" class="pink"/>
+      <path d="M194 242c-28 28-55 41-82 39" class="line ink" stroke-width="18"/>
+      <path d="M221 254c29 26 58 39 88 39" class="line ink" stroke-width="18"/>
+      <rect x="156" y="184" width="90" height="64" rx="18" class="camera"/>
+      <path d="M177 184l14-18h34l14 18" class="camera"/>
+      <circle cx="203" cy="216" r="22" class="lens"/>
+      <circle cx="203" cy="216" r="10" fill="#eaffff"/>
+      <path d="M175 171c17-21 42-22 62-1" class="line ink" stroke-width="10"/>
+      <path d="M111 151c31 26 62 39 93 39" class="line ink" stroke-width="11" opacity=".62"/>
+      <path d="M91 150c18 11 32 14 43 9" class="line ink" stroke-width="11" opacity=".62"/>
+    </g>
+    <g transform="translate(0 472)">
+      <rect class="miniBg" x="0" y="0" width="78" height="78" rx="18"/>
+      <g transform="scale(.2167)">
+        <rect x="0" y="0" width="360" height="360" rx="82" fill="url(#sky)"/>
+        <path d="M49 244c42-15 83-20 124-15" class="line" stroke="#eaffff" stroke-width="18" opacity=".8"/>
+        <ellipse cx="197" cy="208" rx="79" ry="65" class="white"/>
+        <ellipse cx="246" cy="173" rx="55" ry="50" class="white"/>
+        <path d="M230 130c-7-60 1-92 24-96 20 6 26 39 18 97" class="white"/>
+        <path d="M266 134c8-60 25-89 48-87 17 12 15 46-14 97" class="white"/>
+        <circle cx="265" cy="166" r="7" fill="#17202a"/>
+        <path d="M286 181c12 2 22-1 30-8" class="line ink" stroke-width="7"/>
+        <rect x="156" y="184" width="90" height="64" rx="18" class="camera"/>
+        <circle cx="203" cy="216" r="22" class="lens"/>
+      </g>
+      <text class="tiny" x="92" y="30">Small-size read: cute rabbit + camera.</text>
+      <text class="tiny" x="92" y="54">Recommended base.</text>
+    </g>
+  </g>
+
+  <!-- B -->
+  <g transform="translate(560 180)">
+    <text class="label" x="0" y="0">B. Fast Courier Rabbit</text>
+    <text class="note" x="0" y="32">More motion and character. Stronger “fast transfer”, slightly busier at small size.</text>
+    <g transform="translate(0 72)" filter="url(#shadow)">
+      <rect x="0" y="0" width="360" height="360" rx="82" fill="url(#mint)"/>
+      <path d="M36 204h119" class="line" stroke="#edfff7" stroke-width="17" opacity=".8"/>
+      <path d="M60 248h155" class="line" stroke="#edfff7" stroke-width="14" opacity=".65"/>
+      <path d="M38 286h108" class="line" stroke="#edfff7" stroke-width="11" opacity=".55"/>
+      <ellipse cx="208" cy="221" rx="87" ry="55" class="white"/>
+      <ellipse cx="268" cy="170" rx="48" ry="44" class="white"/>
+      <path d="M255 132c-20-54-18-88 5-101 23 0 35 31 34 91" class="white"/>
+      <path d="M292 142c18-50 41-72 65-65 12 18-2 45-44 81" class="white"/>
+      <circle cx="286" cy="163" r="7" fill="#17202a"/>
+      <path d="M303 181c13 0 24-5 31-14" class="line ink" stroke-width="7"/>
+      <circle cx="319" cy="160" r="8" fill="#ff8fac"/>
+      <path d="M187 255c-24 39-56 58-96 58" class="line ink" stroke-width="17"/>
+      <path d="M242 260c33 31 65 43 96 36" class="line ink" stroke-width="17"/>
+      <rect x="137" y="167" width="88" height="61" rx="17" class="camera"/>
+      <path d="M153 167l13-17h34l13 17" class="camera"/>
+      <circle cx="181" cy="198" r="21" fill="#1ec1ff"/>
+      <path d="M133 158c18-20 45-23 70-8" class="line ink" stroke-width="9"/>
+      <path d="M121 156c-21-6-39-18-54-35" class="line ink" stroke-width="13" opacity=".55"/>
+      <path d="M61 118c-8 20-10 37-6 50" class="line ink" stroke-width="13" opacity=".55"/>
+    </g>
+    <g transform="translate(0 472)">
+      <rect class="miniBg" x="0" y="0" width="78" height="78" rx="18"/>
+      <g transform="scale(.2167)">
+        <rect x="0" y="0" width="360" height="360" rx="82" fill="url(#mint)"/>
+        <path d="M36 204h119" class="line" stroke="#edfff7" stroke-width="17" opacity=".8"/>
+        <ellipse cx="208" cy="221" rx="87" ry="55" class="white"/>
+        <ellipse cx="268" cy="170" rx="48" ry="44" class="white"/>
+        <path d="M255 132c-20-54-18-88 5-101 23 0 35 31 34 91" class="white"/>
+        <circle cx="286" cy="163" r="7" fill="#17202a"/>
+        <rect x="137" y="167" width="88" height="61" rx="17" class="camera"/>
+        <circle cx="181" cy="198" r="21" fill="#1ec1ff"/>
+      </g>
+      <text class="tiny" x="92" y="30">More dynamic. Needs simplification</text>
+      <text class="tiny" x="92" y="54">before becoming launcher art.</text>
+    </g>
+  </g>
+
+  <!-- C -->
+  <g transform="translate(1040 180)">
+    <text class="label" x="0" y="0">C. Night Sprint + Wireless Trail</text>
+    <text class="note" x="0" y="32">Higher contrast, techier mood, still cute. Better for dark UI / pro-photo feel.</text>
+    <g transform="translate(0 72)" filter="url(#shadow)">
+      <rect x="0" y="0" width="360" height="360" rx="82" fill="url(#night)"/>
+      <path d="M42 226c59-21 116-26 172-15" class="line" stroke="#69e9ff" stroke-width="16" opacity=".9"/>
+      <path d="M35 267c71-20 142-26 214-16" class="line" stroke="#69e9ff" stroke-width="12" opacity=".58"/>
+      <path d="M87 190c39-13 77-16 115-9" class="line" stroke="#69e9ff" stroke-width="10" opacity=".5"/>
+      <ellipse cx="201" cy="217" rx="82" ry="60" class="cream"/>
+      <ellipse cx="255" cy="168" rx="51" ry="47" class="cream"/>
+      <path d="M240 128c-13-58-8-91 15-99 21 4 30 35 25 94" class="cream"/>
+      <path d="M277 136c13-57 33-83 57-78 15 15 7 45-29 91" class="cream"/>
+      <circle cx="273" cy="162" r="7" fill="#14191f"/>
+      <path d="M291 178c13 2 24-2 32-11" class="line" stroke="#14191f" stroke-width="7"/>
+      <circle cx="309" cy="160" r="8" fill="#ff99b7"/>
+      <path d="M188 252c-24 33-55 49-91 48" class="line" stroke="#14191f" stroke-width="17"/>
+      <path d="M229 259c28 29 61 43 97 41" class="line" stroke="#14191f" stroke-width="17"/>
+      <rect x="151" y="180" width="91" height="65" rx="18" fill="#10161d"/>
+      <path d="M168 180l14-18h35l14 18" fill="#10161d"/>
+      <circle cx="197" cy="213" r="22" fill="#69e9ff"/>
+      <circle cx="197" cy="213" r="9" fill="#e8fdff"/>
+      <path d="M151 169c18-20 45-22 72-7" class="line" stroke="#14191f" stroke-width="10"/>
+      <circle cx="103" cy="92" r="7" fill="#69e9ff" opacity=".75"/>
+      <circle cx="73" cy="133" r="5" fill="#69e9ff" opacity=".55"/>
+    </g>
+    <g transform="translate(0 472)">
+      <rect class="miniBg" x="0" y="0" width="78" height="78" rx="18"/>
+      <g transform="scale(.2167)">
+        <rect x="0" y="0" width="360" height="360" rx="82" fill="url(#night)"/>
+        <path d="M42 226c59-21 116-26 172-15" class="line" stroke="#69e9ff" stroke-width="16" opacity=".9"/>
+        <ellipse cx="201" cy="217" rx="82" ry="60" class="cream"/>
+        <ellipse cx="255" cy="168" rx="51" ry="47" class="cream"/>
+        <path d="M240 128c-13-58-8-91 15-99 21 4 30 35 25 94" class="cream"/>
+        <path d="M277 136c13-57 33-83 57-78 15 15 7 45-29 91" class="cream"/>
+        <circle cx="273" cy="162" r="7" fill="#14191f"/>
+        <rect x="151" y="180" width="91" height="65" rx="18" fill="#10161d"/>
+        <circle cx="197" cy="213" r="22" fill="#69e9ff"/>
+      </g>
+      <text class="tiny" x="92" y="30">More contrast and tech feel.</text>
+      <text class="tiny" x="92" y="54">Good if app UI stays dark/pro.</text>
+    </g>
+  </g>
+
+  <g transform="translate(80 820)">
+    <text class="label" x="0" y="0">Recommendation</text>
+    <text class="note" x="0" y="42">Use A as the base mascot: it is cute without becoming too childish, and the camera remains readable.</text>
+    <text class="note" x="0" y="78">For the production icon, simplify the rabbit to one face/body shape, one ear pair, one camera, and two speed trails.</text>
+    <text class="note" x="0" y="114">The final version should avoid text, brand colors, and realistic camera details so it can support many camera brands.</text>
+  </g>
+</svg>

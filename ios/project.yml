@@ -1,0 +1,60 @@
+name: Runner
+options:
+  deploymentTarget:
+    iOS: "15.0"
+settings:
+  base:
+    SWIFT_VERSION: 5.0
+    PRODUCT_BUNDLE_IDENTIFIER: com.camtransfer.app
+    DEVELOPMENT_TEAM: 27C9C4H26H
+    CODE_SIGN_STYLE: Automatic
+    TARGETED_DEVICE_FAMILY: 1
+targets:
+  Runner:
+    type: application
+    platform: iOS
+    sources:
+      - path: Runner
+    info:
+      path: Runner/Info.plist
+      properties:
+        CFBundleDisplayName: CamTransfer
+        LSRequiresIPhoneOS: true
+        NSBluetoothAlwaysUsageDescription: CamTransfer 需要使用蓝牙来发现并连接相机
+        NSBluetoothPeripheralUsageDescription: CamTransfer 需要使用蓝牙来发现并连接相机
+        NSLocalNetworkUsageDescription: CamTransfer 需要访问本地网络以连接相机
+        NSLocationWhenInUseUsageDescription: CamTransfer 需要定位权限来确认当前连接的 Wi-Fi 网络名称，以便自动切换到相机热点
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+    settings:
+      base:
+        INFOPLIST_FILE: Runner/Info.plist
+        PRODUCT_NAME: Runner
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: 1.0.0
+        GENERATE_INFOPLIST_FILE: NO
+  RunnerTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: RunnerTests
+    info:
+      path: RunnerTests/Info.plist
+    dependencies:
+      - target: Runner
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.camtransfer.app.RunnerTests
+        GENERATE_INFOPLIST_FILE: NO
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Runner.app/Runner"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+schemes:
+  Runner:
+    build:
+      targets:
+        Runner: all
+        RunnerTests: [test]
+    test:
+      targets:
+        - RunnerTests

@@ -1,0 +1,188 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1040" viewBox="0 0 1600 1040">
+  <defs>
+    <radialGradient id="sandBg" cx=".32" cy=".24" r=".92">
+      <stop offset="0" stop-color="#f1e6d7"/>
+      <stop offset=".6" stop-color="#ccb59a"/>
+      <stop offset="1" stop-color="#856c59"/>
+    </radialGradient>
+    <radialGradient id="sageBg2" cx=".3" cy=".24" r=".92">
+      <stop offset="0" stop-color="#ebe6d7"/>
+      <stop offset=".6" stop-color="#b8b09b"/>
+      <stop offset="1" stop-color="#687164"/>
+    </radialGradient>
+    <radialGradient id="charBg2" cx=".3" cy=".22" r=".92">
+      <stop offset="0" stop-color="#5d5855"/>
+      <stop offset=".58" stop-color="#312d2b"/>
+      <stop offset="1" stop-color="#171615"/>
+    </radialGradient>
+    <linearGradient id="fur2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fffaf3"/>
+      <stop offset=".64" stop-color="#f0e2ca"/>
+      <stop offset="1" stop-color="#d4ba98"/>
+    </linearGradient>
+    <linearGradient id="innerEar" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#efc1b0"/>
+      <stop offset="1" stop-color="#d59286"/>
+    </linearGradient>
+    <linearGradient id="camLensGold2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8f0c9"/>
+      <stop offset=".5" stop-color="#d4b072"/>
+      <stop offset="1" stop-color="#7f5d46"/>
+    </linearGradient>
+    <linearGradient id="camLensSage2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#eeecd2"/>
+      <stop offset=".5" stop-color="#b8b28c"/>
+      <stop offset="1" stop-color="#61705f"/>
+    </linearGradient>
+    <linearGradient id="camLensRose2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f1decd"/>
+      <stop offset=".5" stop-color="#c99d83"/>
+      <stop offset="1" stop-color="#6c5656"/>
+    </linearGradient>
+    <filter id="shadow2" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="22" stdDeviation="18" flood-color="#000" flood-opacity=".24"/>
+    </filter>
+    <style>
+      .page { fill: #f6f2ea; }
+      .title { font: 700 42px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #171410; }
+      .subtitle { font: 400 22px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #6d6459; }
+      .label { font: 700 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #171410; }
+      .note { font: 400 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #756b60; }
+      .tiny { font: 500 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #756b60; }
+      .miniBg { fill: #fff; stroke: #ded7cc; stroke-width: 1; }
+      .outline { stroke: #231d19; stroke-width: 10; stroke-linecap: round; stroke-linejoin: round; }
+      .line { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+      .dark { fill: #231d19; }
+      .softDark { fill: #3c3129; }
+      .blush2 { fill: #d9a69d; opacity: .58; }
+    </style>
+
+    <g id="rabbit-explicit">
+      <path d="M150 166C115 84 122 23 170-4c39 28 48 87 22 160-5 16-27 22-37 10z" fill="url(#fur2)" class="outline"/>
+      <path d="M270 166c35-82 28-143-20-170-39 28-48 87-22 160 5 16 27 22 37 10z" fill="url(#fur2)" class="outline"/>
+      <path d="M171 29c-9 35-8 71 2 107" class="line" stroke="url(#innerEar)" stroke-width="18" opacity=".9"/>
+      <path d="M249 29c9 35 8 71-2 107" class="line" stroke="url(#innerEar)" stroke-width="18" opacity=".9"/>
+      <circle cx="210" cy="231" r="115" fill="url(#fur2)" class="outline"/>
+      <circle cx="127" cy="243" r="29" fill="url(#fur2)" class="outline"/>
+      <circle cx="293" cy="243" r="29" fill="url(#fur2)" class="outline"/>
+      <ellipse cx="266" cy="222" rx="10" ry="12" class="dark"/>
+      <circle cx="269" cy="218" r="3" fill="#fff"/>
+      <circle cx="158" cy="274" r="13" class="blush2"/>
+      <circle cx="262" cy="274" r="13" class="blush2"/>
+      <path d="M205 282c4 6 6 6 10 0" class="line" stroke="#231d19" stroke-width="8"/>
+      <path d="M186 298c15 13 33 13 48 0" class="line" stroke="#231d19" stroke-width="8"/>
+      <ellipse cx="210" cy="310" rx="55" ry="28" fill="#f8eddb" opacity=".7"/>
+    </g>
+
+    <g id="camera-eye-gold">
+      <rect x="116" y="176" width="116" height="86" rx="26" class="dark"/>
+      <rect x="130" y="163" width="36" height="16" rx="7" class="softDark"/>
+      <circle cx="174" cy="219" r="37" fill="url(#camLensGold2)"/>
+      <circle cx="174" cy="219" r="24" class="dark"/>
+      <circle cx="162" cy="207" r="6" fill="#fff5d7" opacity=".95"/>
+      <circle cx="219" cy="186" r="6" fill="#fff2cc"/>
+      <path d="M232 213c17 0 31-6 42-17" class="line" stroke="#231d19" stroke-width="8"/>
+    </g>
+
+    <g id="camera-eye-sage">
+      <rect x="116" y="176" width="116" height="86" rx="26" class="dark"/>
+      <rect x="130" y="163" width="36" height="16" rx="7" class="softDark"/>
+      <circle cx="174" cy="219" r="37" fill="url(#camLensSage2)"/>
+      <circle cx="174" cy="219" r="24" class="dark"/>
+      <circle cx="162" cy="207" r="6" fill="#f8fae2" opacity=".95"/>
+      <circle cx="219" cy="186" r="6" fill="#eef0d6"/>
+      <path d="M232 213c17 0 31-6 42-17" class="line" stroke="#231d19" stroke-width="8"/>
+    </g>
+
+    <g id="camera-eye-rose">
+      <rect x="116" y="176" width="116" height="86" rx="26" class="dark"/>
+      <rect x="130" y="163" width="36" height="16" rx="7" class="softDark"/>
+      <circle cx="174" cy="219" r="37" fill="url(#camLensRose2)"/>
+      <circle cx="174" cy="219" r="24" class="dark"/>
+      <circle cx="162" cy="207" r="6" fill="#fff1e6" opacity=".95"/>
+      <circle cx="219" cy="186" r="6" fill="#f3d7cb"/>
+      <path d="M232 213c17 0 31-6 42-17" class="line" stroke="#231d19" stroke-width="8"/>
+    </g>
+  </defs>
+
+  <rect class="page" width="1600" height="1040"/>
+  <text class="title" x="80" y="84">Explicit Rabbit + Camera Eye</text>
+  <text class="subtitle" x="80" y="122">Literal read first: obvious rabbit ears and face, obvious camera body and lens over one eye.</text>
+
+  <g transform="translate(110 190)">
+    <text class="label" x="0" y="0">E1. Sand Rabbit Camera Eye</text>
+    <text class="note" x="0" y="32">Warm neutral palette. Most immediately readable as rabbit + camera.</text>
+    <g transform="translate(20 78)" filter="url(#shadow2)">
+      <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#sandBg)"/>
+      <g transform="translate(0 42)">
+        <use href="#rabbit-explicit"/>
+        <use href="#camera-eye-gold"/>
+      </g>
+    </g>
+    <g transform="translate(20 548)">
+      <rect class="miniBg" x="0" y="0" width="78" height="78" rx="18"/>
+      <g transform="scale(.1857)">
+        <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#sandBg)"/>
+        <g transform="translate(0 42)">
+          <use href="#rabbit-explicit"/>
+          <use href="#camera-eye-gold"/>
+        </g>
+      </g>
+      <text class="tiny" x="94" y="30">Strongest recognition.</text>
+      <text class="tiny" x="94" y="54">Least ambiguous.</text>
+    </g>
+  </g>
+
+  <g transform="translate(600 190)">
+    <text class="label" x="0" y="0">E2. Sage Rabbit Camera Eye</text>
+    <text class="note" x="0" y="32">Softer and calmer without losing the literal camera shape.</text>
+    <g transform="translate(20 78)" filter="url(#shadow2)">
+      <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#sageBg2)"/>
+      <g transform="translate(0 42)">
+        <use href="#rabbit-explicit"/>
+        <use href="#camera-eye-sage"/>
+      </g>
+    </g>
+    <g transform="translate(20 548)">
+      <rect class="miniBg" x="0" y="0" width="78" height="78" rx="18"/>
+      <g transform="scale(.1857)">
+        <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#sageBg2)"/>
+        <g transform="translate(0 42)">
+          <use href="#rabbit-explicit"/>
+          <use href="#camera-eye-sage"/>
+        </g>
+      </g>
+      <text class="tiny" x="94" y="30">More restrained.</text>
+      <text class="tiny" x="94" y="54">Still clear enough.</text>
+    </g>
+  </g>
+
+  <g transform="translate(1090 190)">
+    <text class="label" x="0" y="0">E3. Charcoal Rabbit Camera Eye</text>
+    <text class="note" x="0" y="32">Dark premium version with clearer contrast than previous dark concepts.</text>
+    <g transform="translate(20 78)" filter="url(#shadow2)">
+      <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#charBg2)"/>
+      <g transform="translate(0 42)">
+        <use href="#rabbit-explicit"/>
+        <use href="#camera-eye-rose"/>
+      </g>
+    </g>
+    <g transform="translate(20 548)">
+      <rect class="miniBg" x="0" y="0" width="78" height="78" rx="18"/>
+      <g transform="scale(.1857)">
+        <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#charBg2)"/>
+        <g transform="translate(0 42)">
+          <use href="#rabbit-explicit"/>
+          <use href="#camera-eye-rose"/>
+        </g>
+      </g>
+      <text class="tiny" x="94" y="30">Best dark variant.</text>
+      <text class="tiny" x="94" y="54">Keeps the read cleaner.</text>
+    </g>
+  </g>
+
+  <g transform="translate(110 850)">
+    <text class="label" x="0" y="0">Recommendation</text>
+    <text class="note" x="0" y="42">E1 is the best correction path. It gives up some abstraction, but it finally makes the two required ideas legible: rabbit and camera.</text>
+  </g>
+</svg>

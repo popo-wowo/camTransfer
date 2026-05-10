@@ -1,0 +1,154 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1040" viewBox="0 0 1600 1040">
+  <defs>
+    <linearGradient id="stone" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f3eee5"/>
+      <stop offset=".55" stop-color="#d6c8b5"/>
+      <stop offset="1" stop-color="#8e7b69"/>
+    </linearGradient>
+    <linearGradient id="moss2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ebe7d8"/>
+      <stop offset=".55" stop-color="#b1ae98"/>
+      <stop offset="1" stop-color="#657061"/>
+    </linearGradient>
+    <linearGradient id="ink2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5d5957"/>
+      <stop offset=".55" stop-color="#322f2d"/>
+      <stop offset="1" stop-color="#171615"/>
+    </linearGradient>
+    <linearGradient id="markIvory" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fffaf2"/>
+      <stop offset=".65" stop-color="#f0e2ca"/>
+      <stop offset="1" stop-color="#dcc29e"/>
+    </linearGradient>
+    <linearGradient id="markOlive" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f2efdf"/>
+      <stop offset=".65" stop-color="#d4cfb4"/>
+      <stop offset="1" stop-color="#95a184"/>
+    </linearGradient>
+    <linearGradient id="markRose" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f2e6da"/>
+      <stop offset=".65" stop-color="#dfc0a6"/>
+      <stop offset="1" stop-color="#c08f8e"/>
+    </linearGradient>
+    <filter id="shadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="22" stdDeviation="18" flood-color="#000" flood-opacity=".22"/>
+    </filter>
+    <style>
+      .page { fill: #f6f2ea; }
+      .title { font: 700 42px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #171410; }
+      .subtitle { font: 400 22px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #6d6459; }
+      .label { font: 700 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #171410; }
+      .note { font: 400 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #756b60; }
+      .tiny { font: 500 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #756b60; }
+      .miniBg { fill: #fff; stroke: #ded7cc; stroke-width: 1; }
+      .strokeDark { fill: none; stroke: #231d19; stroke-linecap: round; stroke-linejoin: round; }
+      .fillDark { fill: #231d19; }
+    </style>
+
+    <g id="mark-a">
+      <path d="M168 110C142 56 148 21 181 4c26 18 31 58 14 112" fill="none" stroke="url(#markIvory)" stroke-width="34" stroke-linecap="round"/>
+      <path d="M252 110c26-54 20-89-13-106-26 18-31 58-14 112" fill="none" stroke="url(#markIvory)" stroke-width="34" stroke-linecap="round"/>
+      <rect x="118" y="146" width="184" height="132" rx="58" fill="url(#markIvory)"/>
+      <rect x="120" y="154" width="98" height="78" rx="28" class="fillDark"/>
+      <circle cx="169" cy="193" r="29" fill="url(#markRose)"/>
+      <circle cx="169" cy="193" r="17" class="fillDark"/>
+      <circle cx="160" cy="184" r="5" fill="#fff3ea"/>
+      <circle cx="251" cy="186" r="9" class="fillDark"/>
+      <path d="M206 235c10 10 22 10 32 0" class="strokeDark" stroke-width="10"/>
+      <path d="M220 164h22" class="strokeDark" stroke-width="10"/>
+      <circle cx="205" cy="252" r="10" fill="#d6a59d" opacity=".58"/>
+      <circle cx="256" cy="252" r="10" fill="#d6a59d" opacity=".58"/>
+    </g>
+
+    <g id="mark-b">
+      <path d="M170 106C148 55 154 23 184 6c24 18 28 54 13 106" fill="none" stroke="url(#markOlive)" stroke-width="30" stroke-linecap="round"/>
+      <path d="M248 106c22-51 16-88-14-100-24 18-28 54-13 106" fill="none" stroke="url(#markOlive)" stroke-width="30" stroke-linecap="round"/>
+      <circle cx="210" cy="208" r="92" fill="url(#markOlive)"/>
+      <rect x="117" y="162" width="102" height="76" rx="28" class="fillDark"/>
+      <rect x="130" y="149" width="28" height="14" rx="6" class="fillDark" opacity=".8"/>
+      <circle cx="168" cy="200" r="30" fill="#dfe0c2"/>
+      <circle cx="168" cy="200" r="17" class="fillDark"/>
+      <circle cx="160" cy="191" r="5" fill="#fbfae9"/>
+      <circle cx="248" cy="192" r="9" class="fillDark"/>
+      <path d="M198 230c9 9 20 9 29 0" class="strokeDark" stroke-width="9"/>
+      <path d="M207 170h21" class="strokeDark" stroke-width="9"/>
+    </g>
+
+    <g id="mark-c">
+      <path d="M165 110C145 58 150 23 181 5c25 18 29 55 14 109" fill="none" stroke="url(#markIvory)" stroke-width="30" stroke-linecap="round"/>
+      <path d="M255 110c20-52 15-87-16-105-25 18-29 55-14 109" fill="none" stroke="url(#markIvory)" stroke-width="30" stroke-linecap="round"/>
+      <rect x="124" y="144" width="172" height="136" rx="62" fill="url(#markIvory)"/>
+      <path d="M136 210c56 0 98-44 98-44" class="strokeDark" stroke-width="12"/>
+      <rect x="150" y="170" width="92" height="70" rx="26" class="fillDark"/>
+      <circle cx="196" cy="205" r="26" fill="url(#markRose)"/>
+      <circle cx="196" cy="205" r="15" class="fillDark"/>
+      <circle cx="188" cy="197" r="4.5" fill="#fff4eb"/>
+      <circle cx="253" cy="189" r="8" class="fillDark"/>
+      <path d="M228 236c8 8 19 8 27 0" class="strokeDark" stroke-width="9"/>
+      <circle cx="248" cy="252" r="10" fill="#d6a59d" opacity=".55"/>
+    </g>
+  </defs>
+
+  <rect class="page" width="1600" height="1040"/>
+  <text class="title" x="80" y="84">Minimal Rabbit Camera Apple Icons</text>
+  <text class="subtitle" x="80" y="122">Minimal logo-first direction: fewer shapes, stronger silhouette, softer Apple-style icon surface.</text>
+
+  <g transform="translate(110 190)">
+    <text class="label" x="0" y="0">A1. Rounded Face + Camera Eye</text>
+    <text class="note" x="0" y="32">Most literal. Soft face block, clear camera eye, tiny cheeky mouth.</text>
+    <g transform="translate(20 78)" filter="url(#shadow)">
+      <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#stone)"/>
+      <g transform="translate(0 54)"><use href="#mark-a"/></g>
+    </g>
+    <g transform="translate(20 548)">
+      <rect class="miniBg" x="0" y="0" width="78" height="78" rx="18"/>
+      <g transform="scale(.1857)">
+        <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#stone)"/>
+        <g transform="translate(0 54)"><use href="#mark-a"/></g>
+      </g>
+      <text class="tiny" x="94" y="30">Best first pass for clarity.</text>
+      <text class="tiny" x="94" y="54">Closest to an actual app mark.</text>
+    </g>
+  </g>
+
+  <g transform="translate(600 190)">
+    <text class="label" x="0" y="0">A2. Circular Head Mark</text>
+    <text class="note" x="0" y="32">Cleaner and more logo-like. Loses some personality, keeps the read compact.</text>
+    <g transform="translate(20 78)" filter="url(#shadow)">
+      <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#moss2)"/>
+      <g transform="translate(0 54)"><use href="#mark-b"/></g>
+    </g>
+    <g transform="translate(20 548)">
+      <rect class="miniBg" x="0" y="0" width="78" height="78" rx="18"/>
+      <g transform="scale(.1857)">
+        <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#moss2)"/>
+        <g transform="translate(0 54)"><use href="#mark-b"/></g>
+      </g>
+      <text class="tiny" x="94" y="30">Most minimal.</text>
+      <text class="tiny" x="94" y="54">Softer but more generic.</text>
+    </g>
+  </g>
+
+  <g transform="translate(1090 190)">
+    <text class="label" x="0" y="0">A3. Wink Motion Variant</text>
+    <text class="note" x="0" y="32">Adds a hint of speed/attitude while keeping the icon mostly minimal.</text>
+    <g transform="translate(20 78)" filter="url(#shadow)">
+      <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#ink2)"/>
+      <g transform="translate(0 54)"><use href="#mark-c"/></g>
+    </g>
+    <g transform="translate(20 548)">
+      <rect class="miniBg" x="0" y="0" width="78" height="78" rx="18"/>
+      <g transform="scale(.1857)">
+        <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#ink2)"/>
+        <g transform="translate(0 54)"><use href="#mark-c"/></g>
+      </g>
+      <text class="tiny" x="94" y="30">Most characterful.</text>
+      <text class="tiny" x="94" y="54">Best dark option.</text>
+    </g>
+  </g>
+
+  <g transform="translate(110 850)">
+    <text class="label" x="0" y="0">Recommendation</text>
+    <text class="note" x="0" y="42">A1 is the cleanest starting point for an Apple-style app icon. It still needs polish, but this is the first direction where minimalism and recognizability are compatible.</text>
+  </g>
+</svg>

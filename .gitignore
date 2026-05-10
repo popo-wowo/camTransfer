@@ -1,0 +1,30 @@
+# Build artifacts
+.build/
+build/
+DerivedData/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+*.xcuserstate
+xcuserdata/
+
+# Gradle
+.gradle/
+.kotlin/
+gradle/wrapper/gradle-wrapper.jar
+local.properties
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# Misc
+*.pbxproj.bak

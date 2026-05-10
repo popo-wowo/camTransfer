@@ -1,0 +1,165 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1040" viewBox="0 0 1600 1040">
+  <defs>
+    <radialGradient id="velvet" cx=".34" cy=".24" r=".82">
+      <stop offset="0" stop-color="#5b4a54"/>
+      <stop offset=".58" stop-color="#2a2229"/>
+      <stop offset="1" stop-color="#121014"/>
+    </radialGradient>
+    <radialGradient id="cream" cx=".3" cy=".22" r=".85">
+      <stop offset="0" stop-color="#fff0c1"/>
+      <stop offset=".54" stop-color="#e7b969"/>
+      <stop offset="1" stop-color="#a76f4d"/>
+    </radialGradient>
+    <radialGradient id="moss" cx=".28" cy=".24" r=".86">
+      <stop offset="0" stop-color="#edf0be"/>
+      <stop offset=".56" stop-color="#a9b875"/>
+      <stop offset="1" stop-color="#4f6f5a"/>
+    </radialGradient>
+    <linearGradient id="ivory" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fffaf0"/>
+      <stop offset=".62" stop-color="#f3dfb8"/>
+      <stop offset="1" stop-color="#d2a66e"/>
+    </linearGradient>
+    <linearGradient id="roseGold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffe6b7"/>
+      <stop offset=".45" stop-color="#eeb07d"/>
+      <stop offset="1" stop-color="#dd7f75"/>
+    </linearGradient>
+    <linearGradient id="pistachio" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f5f2bd"/>
+      <stop offset=".5" stop-color="#c7d889"/>
+      <stop offset="1" stop-color="#7da46b"/>
+    </linearGradient>
+    <filter id="softShadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="0" dy="22" stdDeviation="18" flood-color="#000" flood-opacity=".24"/>
+    </filter>
+    <style>
+      .page { fill: #f7f4ee; }
+      .title { font: 700 42px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #171410; }
+      .subtitle { font: 400 22px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #696054; }
+      .label { font: 700 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #171410; }
+      .note { font: 400 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #72685b; }
+      .tiny { font: 500 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #72685b; }
+      .miniBg { fill: #fff; stroke: #ded8cc; stroke-width: 1; }
+      .ribbon { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+      .dark { fill: #181513; }
+      .warmDark { fill: #231915; }
+      .eye { fill: #201916; }
+    </style>
+
+    <g id="mark-symbol">
+      <path d="M101 223C61 211 40 191 36 163c-2-14 11-24 24-18 35 17 74 25 118 24" class="ribbon" stroke="url(#roseGold)" stroke-width="34" opacity=".95"/>
+      <path d="M61 278c62-18 123-24 184-17" class="ribbon" stroke="#fff1cf" stroke-width="18" opacity=".55"/>
+      <ellipse cx="223" cy="209" rx="92" ry="78" fill="url(#ivory)"/>
+      <path d="M187 143C160 78 165 31 203 11c29 20 38 67 25 130-3 16-23 23-36 13l-5-11z" fill="url(#ivory)"/>
+      <path d="M248 143c27-65 22-112-16-132-29 20-38 67-25 130 3 16 23 23 36 13l5-11z" fill="url(#ivory)"/>
+      <path d="M202 53c-5 31-2 58 8 82" class="ribbon" stroke="#7c5f48" stroke-width="8" opacity=".18"/>
+      <path d="M232 53c5 31 2 58-8 82" class="ribbon" stroke="#7c5f48" stroke-width="8" opacity=".18"/>
+      <rect x="154" y="170" width="138" height="98" rx="34" class="dark"/>
+      <path d="M177 170l20-26h52l20 26" class="dark"/>
+      <circle cx="223" cy="220" r="37" fill="#fff2c6"/>
+      <circle cx="223" cy="220" r="24" fill="#2a2420"/>
+      <circle cx="214" cy="211" r="7" fill="#fff6dc" opacity=".9"/>
+      <ellipse cx="183" cy="190" rx="6" ry="8" class="eye"/>
+      <ellipse cx="263" cy="190" rx="6" ry="8" class="eye"/>
+      <circle cx="181" cy="188" r="2.2" fill="#fff"/>
+      <circle cx="261" cy="188" r="2.2" fill="#fff"/>
+      <path d="M140 237c-22 22-45 35-69 39" class="ribbon" stroke="#181513" stroke-width="18"/>
+      <path d="M306 238c22 23 45 36 70 39" class="ribbon" stroke="#181513" stroke-width="18"/>
+    </g>
+
+    <g id="orb-symbol">
+      <path d="M65 250c56-38 121-53 193-45" class="ribbon" stroke="url(#pistachio)" stroke-width="34" opacity=".95"/>
+      <path d="M45 302c81-27 163-35 247-24" class="ribbon" stroke="#fff5d2" stroke-width="18" opacity=".55"/>
+      <circle cx="226" cy="218" r="96" fill="url(#ivory)"/>
+      <path d="M186 154C152 82 157 31 201 9c31 23 39 76 20 143-4 15-25 19-35 2z" fill="url(#ivory)"/>
+      <path d="M266 154c34-72 29-123-15-145-31 23-39 76-20 143 4 15 25 19 35 2z" fill="url(#ivory)"/>
+      <circle cx="226" cy="226" r="60" class="warmDark"/>
+      <circle cx="226" cy="226" r="40" fill="#f6e9bf"/>
+      <circle cx="226" cy="226" r="22" class="warmDark"/>
+      <ellipse cx="192" cy="198" rx="7" ry="9" class="eye"/>
+      <ellipse cx="260" cy="198" rx="7" ry="9" class="eye"/>
+      <path d="M215 181h22" class="ribbon" stroke="#231915" stroke-width="8"/>
+      <rect x="166" y="164" width="120" height="36" rx="18" class="warmDark" opacity=".98"/>
+    </g>
+
+    <g id="stamp-symbol">
+      <path d="M53 239c63-25 130-33 201-24" class="ribbon" stroke="#fff0bd" stroke-width="34" opacity=".88"/>
+      <path d="M71 291c78-17 155-20 232-10" class="ribbon" stroke="#e7b57b" stroke-width="17" opacity=".52"/>
+      <path d="M226 327c-70 0-126-50-126-112 0-65 53-111 126-111s126 46 126 111c0 62-56 112-126 112z" fill="url(#ivory)"/>
+      <path d="M184 122C152 66 155 25 193 7c30 17 42 58 29 113-4 17-27 22-38 2z" fill="url(#ivory)"/>
+      <path d="M268 122c32-56 29-97-9-115-30 17-42 58-29 113 4 17 27 22 38 2z" fill="url(#ivory)"/>
+      <rect x="149" y="181" width="154" height="101" rx="36" class="dark"/>
+      <path d="M174 181l21-26h62l21 26" class="dark"/>
+      <circle cx="226" cy="233" r="39" fill="#f7df9b"/>
+      <circle cx="226" cy="233" r="20" class="dark"/>
+      <ellipse cx="184" cy="168" rx="7" ry="9" class="eye"/>
+      <ellipse cx="268" cy="168" rx="7" ry="9" class="eye"/>
+      <path d="M213 153h26" class="ribbon" stroke="#1f1a16" stroke-width="8"/>
+    </g>
+  </defs>
+
+  <rect class="page" width="1600" height="1040"/>
+  <text class="title" x="80" y="84">Premium Cute Rabbit Camera Marks</text>
+  <text class="subtitle" x="80" y="122">Not a cartoon character. Rabbit ears + camera lens + speed ribbon, built as a polished app mark.</text>
+
+  <g transform="translate(110 190)">
+    <text class="label" x="0" y="0">S1. Velvet Ribbon Mark</text>
+    <text class="note" x="0" y="32">Most premium. Cute is subtle; speed ribbon gives motion without childish running legs.</text>
+    <g transform="translate(20 78)" filter="url(#softShadow)">
+      <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#velvet)"/>
+      <g transform="translate(8 62)"><use href="#mark-symbol"/></g>
+    </g>
+    <g transform="translate(20 548)">
+      <rect class="miniBg" x="0" y="0" width="78" height="78" rx="18"/>
+      <g transform="scale(.1857)">
+        <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#velvet)"/>
+        <g transform="translate(8 62)"><use href="#mark-symbol"/></g>
+      </g>
+      <text class="tiny" x="94" y="30">High-end, cute, fast.</text>
+      <text class="tiny" x="94" y="54">Best overall direction.</text>
+    </g>
+  </g>
+
+  <g transform="translate(600 190)">
+    <text class="label" x="0" y="0">S2. Moss Lens Bunny</text>
+    <text class="note" x="0" y="32">More symbolic and clean. Rabbit reads through ears; product reads through lens.</text>
+    <g transform="translate(20 78)" filter="url(#softShadow)">
+      <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#moss)"/>
+      <g transform="translate(0 64)"><use href="#orb-symbol"/></g>
+    </g>
+    <g transform="translate(20 548)">
+      <rect class="miniBg" x="0" y="0" width="78" height="78" rx="18"/>
+      <g transform="scale(.1857)">
+        <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#moss)"/>
+        <g transform="translate(0 64)"><use href="#orb-symbol"/></g>
+      </g>
+      <text class="tiny" x="94" y="30">Cleanest as a logo mark.</text>
+      <text class="tiny" x="94" y="54">Less expressive than S1.</text>
+    </g>
+  </g>
+
+  <g transform="translate(1090 190)">
+    <text class="label" x="0" y="0">S3. Golden Camera Bunny</text>
+    <text class="note" x="0" y="32">Warmer and friendlier. More obvious camera, less premium than S1.</text>
+    <g transform="translate(20 78)" filter="url(#softShadow)">
+      <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#cream)"/>
+      <g transform="translate(0 58)"><use href="#stamp-symbol"/></g>
+    </g>
+    <g transform="translate(20 548)">
+      <rect class="miniBg" x="0" y="0" width="78" height="78" rx="18"/>
+      <g transform="scale(.1857)">
+        <rect x="0" y="0" width="420" height="420" rx="96" fill="url(#cream)"/>
+        <g transform="translate(0 58)"><use href="#stamp-symbol"/></g>
+      </g>
+      <text class="tiny" x="94" y="30">Most obvious camera meaning.</text>
+      <text class="tiny" x="94" y="54">Softer and more mainstream.</text>
+    </g>
+  </g>
+
+  <g transform="translate(110 850)">
+    <text class="label" x="0" y="0">Recommendation</text>
+    <text class="note" x="0" y="42">S1 is the strongest fit for “very cute, fast, but premium”: no awkward body, no childish cartoon pose, and the mark still reads as rabbit + camera + transfer.</text>
+    <text class="note" x="0" y="78">For a final icon, I would simplify S1 slightly, enlarge the lens by 8-10%, and export it as the production 1024 icon.</text>
+  </g>
+</svg>
