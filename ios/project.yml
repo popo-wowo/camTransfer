@@ -22,8 +22,11 @@ targets:
         LSRequiresIPhoneOS: true
         NSBluetoothAlwaysUsageDescription: CamTransfer 需要使用蓝牙来发现并连接相机
         NSBluetoothPeripheralUsageDescription: CamTransfer 需要使用蓝牙来发现并连接相机
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         NSLocalNetworkUsageDescription: CamTransfer 需要访问本地网络以连接相机
         NSLocationWhenInUseUsageDescription: CamTransfer 需要定位权限来确认当前连接的 Wi-Fi 网络名称，以便自动切换到相机热点
+        NSPhotoLibraryAddUsageDescription: CamTransfer 需要把下载的照片保存到你的相册
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

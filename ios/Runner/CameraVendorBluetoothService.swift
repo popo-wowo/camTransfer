@@ -5560,6 +5560,10 @@ final class CameraVendorBluetoothService: NSObject {
     rememberedPairedCamera?.connectionSummary
   }
 
+  var rememberedCameraID: UUID? {
+    rememberedPairedCamera?.peripheralID
+  }
+
   func clearLogs() {
     logStore.clear()
   }

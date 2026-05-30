@@ -1,9 +1,523 @@
 import CoreLocation
+import Network
 import NetworkExtension
 import XCTest
 @testable import Runner
 
 final class RunnerTests: XCTestCase {
+  func testWiredCameraImportPolicyAcceptsPhotosAndVideos() {
+    XCTAssertTrue(WiredCameraImportPolicy.isSupportedMedia(filename: "DSCF0001.JPG", uti: nil))
+    XCTAssertTrue(WiredCameraImportPolicy.isSupportedMedia(filename: "DSCF0002.RAF", uti: nil))
+    XCTAssertTrue(WiredCameraImportPolicy.isSupportedMedia(filename: "DSCF0003.MOV", uti: nil))
+    XCTAssertTrue(WiredCameraImportPolicy.isSupportedMedia(filename: "image.heic", uti: "public.heic"))
+    XCTAssertFalse(WiredCameraImportPolicy.isSupportedMedia(filename: "camera.db", uti: "public.data"))
+  }
+
+  func testWiredCameraImportStateSelectsOnlyImportableItems() {
+    let first = WiredCameraImportItem(
+      id: "1",
+      name: "DSCF0001.JPG",
+      uti: "public.jpeg",
+      fileSize: 1024,
+      createdAt: nil,
+      thumbnail: nil,
+      isImportable: true
+    )
+    let second = WiredCameraImportItem(
+      id: "2",
+      name: "README.TXT",
+      uti: "public.text",
+      fileSize: 512,
+      createdAt: nil,
+      thumbnail: nil,
+      isImportable: false
+    )
+
+    var state = WiredCameraImportState()
+    state.replaceItems([first, second])
+    state.selectAllImportable()
+
+    XCTAssertEqual(state.selectedItemIDs, ["1"])
+    XCTAssertEqual(state.selectedImportableItems, [first])
+  }
+
+  func testWiredCameraImportStateDropsSelectionsWhenItemsRefresh() {
+    let first = WiredCameraImportItem(
+      id: "1",
+      name: "DSCF0001.JPG",
+      uti: "public.jpeg",
+      fileSize: 1024,
+      createdAt: nil,
+      thumbnail: nil,
+      isImportable: true
+    )
+    let next = WiredCameraImportItem(
+      id: "2",
+      name: "DSCF0002.JPG",
+      uti: "public.jpeg",
+      fileSize: 2048,
+      createdAt: nil,
+      thumbnail: nil,
+      isImportable: true
+    )
+
+    var state = WiredCameraImportState()
+    state.replaceItems([first])
+    state.toggleSelection(for: first)
+    state.replaceItems([next])
+
+    XCTAssertTrue(state.selectedItemIDs.isEmpty)
+  }
+
+  func testWiredCameraImportItemIdentityDoesNotUseTemporaryPtpHandleAlone() {
+    let first = WiredCameraImportItemIdentity.make(
+      ptpObjectHandle: 1,
+      filename: "DSCF0001.JPG",
+      fileSize: 1_024,
+      createdAt: Date(timeIntervalSince1970: 1_800_000_000)
+    )
+    let second = WiredCameraImportItemIdentity.make(
+      ptpObjectHandle: 1,
+      filename: "DSCF0999.JPG",
+      fileSize: 2_048,
+      createdAt: Date(timeIntervalSince1970: 1_800_000_500)
+    )
+
+    XCTAssertNotEqual(first, "1")
+    XCTAssertNotEqual(first, second)
+  }
+
+  func testWiredCameraImportStateDropsImportedStatusForItemsNoLongerInLiveCatalog() {
+    let stale = wiredImportItem(id: "stale", name: "DSCF0001.JPG")
+    let current = wiredImportItem(id: "current", name: "DSCF0002.JPG")
+
+    var state = WiredCameraImportState()
+    state.replaceItems([stale, current], isLiveCatalog: false)
+    state.importedItemIDs = ["stale", "current", "missing"]
+
+    state.replaceItems([current], isLiveCatalog: true)
+
+    XCTAssertEqual(state.importedItemIDs, ["current"])
+  }
+
+  func testWiredCameraImportFilterPolicyCombinesDateFormatAndImportedStatus() {
+    let calendar = Calendar(identifier: .gregorian)
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+    let yesterday = calendar.date(byAdding: .day, value: -1, to: now)!
+    let todayJpg = wiredImportItem(id: "today-jpg", name: "DSCF0001.JPG", createdAt: now)
+    let todayRaw = wiredImportItem(id: "today-raw", name: "DSCF0002.RAF", uti: "com.fuji.raw-image", createdAt: now)
+    let oldJpg = wiredImportItem(id: "old-jpg", name: "DSCF0003.JPG", createdAt: yesterday)
+
+    let filtered = WiredCameraImportFilterPolicy.filteredItems(
+      [todayJpg, todayRaw, oldJpg],
+      state: WiredCameraImportFilterState(date: .today, format: .jpg, importedStatus: .notImported),
+      importedItemIDs: ["today-raw"],
+      now: now,
+      calendar: calendar
+    )
+
+    XCTAssertEqual(filtered.map(\.id), ["today-jpg"])
+  }
+
+  func testWiredCameraImportStateSelectsOnlyFilteredImportableItems() {
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+    let jpg = wiredImportItem(id: "jpg", name: "DSCF0001.JPG", createdAt: now)
+    let raw = wiredImportItem(id: "raw", name: "DSCF0002.RAF", uti: "com.fuji.raw-image", createdAt: now)
+    let unsupported = wiredImportItem(
+      id: "txt",
+      name: "README.TXT",
+      uti: "public.text",
+      createdAt: now,
+      isImportable: false
+    )
+
+    var state = WiredCameraImportState()
+    state.filterState = WiredCameraImportFilterState(format: .raw)
+    state.replaceItems([jpg, raw, unsupported])
+    state.selectAllFilteredImportable(now: now)
+
+    XCTAssertEqual(state.filteredItems(now: now).map(\.id), ["raw"])
+    XCTAssertEqual(state.selectedItemIDs, ["raw"])
+    XCTAssertEqual(state.selectedFilteredImportableItems(now: now), [raw])
+  }
+
+  func testWiredCameraImportStateTracksImportedItemsAndFiltersThem() {
+    let imported = wiredImportItem(id: "saved", name: "DSCF0001.JPG")
+    let pending = wiredImportItem(id: "pending", name: "DSCF0002.JPG")
+
+    var state = WiredCameraImportState()
+    state.replaceItems([imported, pending])
+    state.markImported(itemID: imported.id)
+    state.filterState = WiredCameraImportFilterState(importedStatus: .imported)
+
+    XCTAssertEqual(state.filteredItems().map(\.id), ["saved"])
+    XCTAssertFalse(state.selectedItemIDs.contains(imported.id))
+  }
+
+  func testWiredCameraImportStateKeepsProofingFavoritesSeparateFromImportSelectionAndImportedStatus() {
+    let imported = wiredImportItem(id: "saved", name: "DSCF0001.JPG")
+    let pending = wiredImportItem(id: "pending", name: "DSCF0002.JPG")
+
+    var state = WiredCameraImportState()
+    state.replaceItems([imported, pending])
+    state.markImported(itemID: imported.id)
+    state.setProofingFavorite(true, itemID: imported.id)
+    state.setProofingFavorite(true, itemID: pending.id)
+
+    XCTAssertEqual(state.proofingFavoriteItemIDs, ["pending", "saved"])
+    XCTAssertTrue(state.selectedItemIDs.isEmpty)
+
+    state.filterState = WiredCameraImportFilterState(importedStatus: .proofingFavorite)
+    XCTAssertEqual(state.filteredItems().map(\.id), ["saved", "pending"])
+
+    state.setProofingFavorite(false, itemID: imported.id)
+    XCTAssertEqual(state.proofingFavoriteItemIDs, ["pending"])
+  }
+
+  func testWiredCameraImportCacheSnapshotRoundTripsWithoutThumbnails() throws {
+    let tempDirectory = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let store = WiredCameraImportCacheStore(rootDirectory: tempDirectory)
+    let image = UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4)).image { context in
+      UIColor.red.setFill()
+      context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+    }
+    var item = wiredImportItem(id: "1", name: "DSCF0001.JPG")
+    item.thumbnail = image
+    let snapshot = WiredCameraImportCacheSnapshot(
+      device: WiredCameraImportDevice(id: "camera/1", name: "X-T5", transportName: "USB"),
+      items: [item],
+      importedItemIDs: ["1"],
+      cachedAt: Date(timeIntervalSince1970: 1_800_000_000)
+    )
+
+    try store.save(snapshot)
+    let restored = try store.load(deviceID: "camera/1")
+
+    XCTAssertEqual(restored?.device.id, "camera/1")
+    XCTAssertEqual(restored?.items.map(\.id), ["1"])
+    XCTAssertNil(restored?.items.first?.thumbnail)
+    XCTAssertEqual(restored?.importedItemIDs, ["1"])
+  }
+
+  func testWiredCameraImportStateDisablesSelectionBeforeLiveCatalogIsReady() {
+    let item = wiredImportItem(id: "1", name: "DSCF0001.JPG")
+
+    var state = WiredCameraImportState()
+    state.replaceItems([item], isLiveCatalog: false)
+    state.toggleSelection(for: item)
+
+    XCTAssertTrue(state.selectedItemIDs.isEmpty)
+    XCTAssertTrue(state.selectedImportableItems.isEmpty)
+  }
+
+  func testWiredCameraDownloadResolutionPolicyHandlesFileURLs() throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let downloaded = directory.appendingPathComponent("DSCF0001.JPG")
+    FileManager.default.createFile(atPath: downloaded.path, contents: Data([1, 2, 3]))
+
+    let resolved = WiredCameraDownloadResolutionPolicy.resolvedURL(
+      savedFilename: downloaded.absoluteString,
+      requestedFilename: "fallback.JPG",
+      directory: directory
+    )
+
+    XCTAssertEqual(resolved, downloaded)
+  }
+
+  func testWiredCameraAutoImportPolicyRequiresExplicitOptIn() {
+    let importable = wiredImportItem(id: "new", name: "DSCF0001.JPG")
+    let imported = wiredImportItem(id: "saved", name: "DSCF0002.JPG")
+    let unsupported = wiredImportItem(id: "txt", name: "README.TXT", uti: "public.text", isImportable: false)
+
+    var state = WiredCameraImportState()
+    state.replaceItems([importable, imported, unsupported], isLiveCatalog: true)
+    state.importedItemIDs = ["saved"]
+
+    XCTAssertTrue(WiredCameraAutoImportPolicy.itemsToImport(from: state).isEmpty)
+    XCTAssertEqual(WiredCameraAutoImportPolicy.itemsToImport(from: state, isEnabled: true), [importable])
+
+    state.replaceItems([importable], isLiveCatalog: false)
+    XCTAssertTrue(WiredCameraAutoImportPolicy.itemsToImport(from: state, isEnabled: true).isEmpty)
+  }
+
+  func testWiredCameraImportNavigationPolicyBlocksLeavingWhileImporting() {
+    XCTAssertFalse(WiredCameraImportNavigationPolicy.canLeaveImportScreen(isImporting: true))
+    XCTAssertTrue(WiredCameraImportNavigationPolicy.canLeaveImportScreen(isImporting: false))
+  }
+
+  func testWiredCameraImportStateSetsSelectionForDragOnlyWhenLiveImportableUnsaved() {
+    let importable = wiredImportItem(id: "new", name: "DSCF0001.JPG")
+    let imported = wiredImportItem(id: "saved", name: "DSCF0002.JPG")
+    let unsupported = wiredImportItem(id: "txt", name: "README.TXT", uti: "public.text", isImportable: false)
+
+    var state = WiredCameraImportState()
+    state.replaceItems([importable, imported, unsupported], isLiveCatalog: true)
+    state.markImported(itemID: imported.id)
+
+    state.setSelection(true, for: importable)
+    state.setSelection(true, for: imported)
+    state.setSelection(true, for: unsupported)
+
+    XCTAssertEqual(state.selectedItemIDs, ["new"])
+
+    state.setSelection(false, for: importable)
+    XCTAssertTrue(state.selectedItemIDs.isEmpty)
+
+    state.replaceItems([importable], isLiveCatalog: false)
+    state.setSelection(true, for: importable)
+    XCTAssertTrue(state.selectedItemIDs.isEmpty)
+  }
+
+  func testLocalProofingWebRendererSerializesPhotosWithFavoriteState() throws {
+    let photo = LocalProofingPhoto(
+      id: "photo-1",
+      filename: "DSCF0001.JPG",
+      detail: "JPG · 2 MB",
+      formatLabel: "JPG",
+      hasPreview: true
+    )
+
+    let data = try LocalProofingWebRenderer.photosJSON(
+      photos: [photo],
+      favoriteIDs: ["photo-1"]
+    )
+    let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    let photos = object?["photos"] as? [[String: Any]]
+
+    XCTAssertEqual(photos?.first?["id"] as? String, "photo-1")
+    XCTAssertEqual(photos?.first?["favorite"] as? Bool, true)
+    XCTAssertEqual(photos?.first?["previewURL"] as? String, "/preview/photo-1.jpg")
+  }
+
+  func testLocalProofingGalleryHTMLSupportsTapToPreviewLargePhoto() throws {
+    let html = String(
+      data: LocalProofingWebRenderer.galleryHTML(sessionToken: "ABC123"),
+      encoding: .utf8
+    )
+
+    XCTAssertTrue(html?.contains(#"id="viewer""#) == true)
+    XCTAssertTrue(html?.contains("openViewer(photo)") == true)
+    XCTAssertTrue(html?.contains("viewerImage") == true)
+  }
+
+  func testLocalProofingFavoriteUpdateDecodesJSONBody() throws {
+    let body = Data(#"{"id":"photo-1","favorite":true}"#.utf8)
+
+    let update = try LocalProofingWebRenderer.favoriteUpdate(from: body)
+
+    XCTAssertEqual(update, LocalProofingFavoriteUpdate(id: "photo-1", favorite: true))
+  }
+
+  func testLocalProofingRouterServesGalleryPhotosPreviewAndFavoriteUpdate() throws {
+    let photo = LocalProofingPhoto(
+      id: "photo-1",
+      filename: "DSCF0001.JPG",
+      detail: "JPG · 2 MB",
+      formatLabel: "JPG",
+      hasPreview: true
+    )
+    var favoriteUpdates: [LocalProofingFavoriteUpdate] = []
+    let router = LocalProofingRequestRouter(
+      sessionToken: "ABC123",
+      photosProvider: { [photo] },
+      favoriteIDsProvider: { [] },
+      previewProvider: { id in id == "photo-1" ? Data([1, 2, 3]) : nil },
+      favoriteHandler: { favoriteUpdates.append($0) }
+    )
+
+    let html = router.response(for: LocalProofingHTTPRequest(method: "GET", path: "/s/ABC123", body: Data()))
+    XCTAssertEqual(html.statusCode, 200)
+    XCTAssertTrue(String(data: html.body, encoding: .utf8)?.contains("/api/photos") == true)
+
+    let photos = router.response(for: LocalProofingHTTPRequest(method: "GET", path: "/api/photos", body: Data()))
+    XCTAssertEqual(photos.contentType, "application/json")
+    XCTAssertTrue(String(data: photos.body, encoding: .utf8)?.contains("DSCF0001.JPG") == true)
+
+    let preview = router.response(for: LocalProofingHTTPRequest(method: "GET", path: "/preview/photo-1.jpg", body: Data()))
+    XCTAssertEqual(preview.contentType, "image/jpeg")
+    XCTAssertEqual(preview.body, Data([1, 2, 3]))
+
+    let favorite = router.response(for: LocalProofingHTTPRequest(
+      method: "POST",
+      path: "/api/favorite",
+      body: Data(#"{"id":"photo-1","favorite":true}"#.utf8)
+    ))
+    XCTAssertEqual(favorite.statusCode, 200)
+    XCTAssertEqual(favoriteUpdates, [LocalProofingFavoriteUpdate(id: "photo-1", favorite: true)])
+  }
+
+  func testLocalProofingServerHandlesSplitBrowserRequest() throws {
+    let photo = LocalProofingPhoto(
+      id: "photo-1",
+      filename: "DSCF0001.JPG",
+      detail: "JPG · 2 MB",
+      formatLabel: "JPG",
+      hasPreview: false
+    )
+    let router = LocalProofingRequestRouter(
+      sessionToken: "ABC123",
+      photosProvider: { [photo] },
+      favoriteIDsProvider: { [] },
+      previewProvider: { _ in nil },
+      favoriteHandler: { _ in }
+    )
+    let server = LocalProofingServer(router: router)
+    let url = try server.start(
+      preferredPort: 18080,
+      advertisedInterface: LocalProofingNetworkInterface(name: "lo0", address: "127.0.0.1")
+    )
+    defer { server.stop() }
+
+    let responseExpectation = expectation(description: "server responds to split request")
+    let connection = NWConnection(
+      host: NWEndpoint.Host(url.host ?? "127.0.0.1"),
+      port: NWEndpoint.Port(rawValue: UInt16(url.port ?? 0))!,
+      using: .tcp
+    )
+    var response = Data()
+    connection.stateUpdateHandler = { state in
+      guard case .ready = state else { return }
+      connection.send(
+        content: Data("GET /s/ABC123 HTTP/1.1\r\nHost:".utf8),
+        completion: .contentProcessed { _ in
+          connection.send(
+            content: Data("127.0.0.1\r\n\r\n".utf8),
+            completion: .contentProcessed { _ in }
+          )
+        }
+      )
+    }
+    func receiveNext() {
+      connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, isComplete, _ in
+        if let data {
+          response.append(data)
+        }
+        if isComplete || String(data: response, encoding: .utf8)?.contains("</html>") == true {
+          responseExpectation.fulfill()
+          connection.cancel()
+        } else {
+          receiveNext()
+        }
+      }
+    }
+    receiveNext()
+    connection.start(queue: .global())
+
+    wait(for: [responseExpectation], timeout: 3)
+    let responseText = try XCTUnwrap(String(data: response, encoding: .utf8))
+    XCTAssertTrue(responseText.hasPrefix("HTTP/1.1 200 OK"), responseText)
+    XCTAssertTrue(responseText.contains("现场选片"), responseText)
+  }
+
+  func testLocalProofingHTTPRequestParsesMethodPathAndBody() throws {
+    let raw = Data("""
+    POST /api/favorite?cache=0 HTTP/1.1\r
+    Host: 192.168.2.2\r
+    Content-Type: application/json\r
+    \r
+    {"id":"photo-1","favorite":false}
+    """.utf8)
+
+    let request = try XCTUnwrap(LocalProofingHTTPRequest.parse(raw))
+
+    XCTAssertEqual(request.method, "POST")
+    XCTAssertEqual(request.path, "/api/favorite")
+    XCTAssertEqual(String(data: request.body, encoding: .utf8), #"{"id":"photo-1","favorite":false}"#)
+  }
+
+  func testLocalProofingSessionTokenAndQRCodeAreShareable() throws {
+    let token = LocalProofingSessionToken.make()
+
+    XCTAssertEqual(token.count, 6)
+    XCTAssertNotNil(token.range(of: #"^[A-Z2-9]+$"#, options: .regularExpression))
+    XCTAssertNotNil(LocalProofingQRCode.image(for: "http://192.168.2.2:8080/s/\(token)"))
+  }
+
+  func testLocalProofingNetworkPrefersWifiThenHotspotAndNeverCellular() {
+    let interfaces = [
+      LocalProofingNetworkInterface(name: "pdp_ip0", address: "10.12.0.8"),
+      LocalProofingNetworkInterface(name: "en0", address: "192.168.1.22"),
+      LocalProofingNetworkInterface(name: "bridge100", address: "172.20.10.1"),
+    ]
+
+    XCTAssertEqual(LocalProofingNetwork.preferredAddress(from: interfaces)?.address, "192.168.1.22")
+    XCTAssertEqual(LocalProofingNetwork.preferredAddress(from: Array(interfaces.prefix(2)))?.address, "192.168.1.22")
+    XCTAssertNil(LocalProofingNetwork.preferredAddress(from: [interfaces[0]]))
+  }
+
+  func testLocalProofingNetworkBuildsSeparateWifiAndHotspotShareEndpoints() {
+    let endpoints = LocalProofingNetwork.shareEndpoints(
+      port: 8080,
+      token: "ABC123",
+      interfaces: [
+        LocalProofingNetworkInterface(name: "pdp_ip0", address: "10.12.0.8"),
+        LocalProofingNetworkInterface(name: "bridge100", address: "172.20.10.1"),
+        LocalProofingNetworkInterface(name: "en0", address: "192.168.1.22"),
+      ]
+    )
+
+    XCTAssertEqual(endpoints.map(\.label), ["同一 Wi-Fi", "iPhone 热点"])
+    XCTAssertEqual(endpoints.map { $0.url.absoluteString }, [
+      "http://192.168.1.22:8080/s/ABC123",
+      "http://172.20.10.1:8080/s/ABC123",
+    ])
+  }
+
+  func testLocalProofingNetworkDoesNotInventHotspotFallback() {
+    let token = "ABC123"
+
+    let missingURL = LocalProofingNetwork.url(interface: nil, port: 8080, token: token)
+    let wifiURL = LocalProofingNetwork.url(
+      interface: LocalProofingNetworkInterface(name: "en0", address: "192.168.1.22"),
+      port: 8080,
+      token: token
+    )
+
+    XCTAssertNil(missingURL)
+    XCTAssertEqual(wifiURL?.absoluteString, "http://192.168.1.22:8080/s/ABC123")
+  }
+
+  func testLocalProofingPhotoMapperUsesWiredImportMetadataAndPreviewState() {
+    let item = wiredImportItem(
+      id: "photo-1",
+      name: "DSCF0001.JPG",
+      fileSize: 1_200_000,
+      thumbnail: UIImage(systemName: "photo")
+    )
+
+    let photo = LocalProofingPhotoMapper.photo(from: item)
+
+    XCTAssertEqual(photo.id, "photo-1")
+    XCTAssertEqual(photo.filename, "DSCF0001.JPG")
+    XCTAssertEqual(photo.formatLabel, "JPG")
+    XCTAssertTrue(photo.detail.contains("JPG"))
+    XCTAssertTrue(photo.detail.contains("MB"))
+    XCTAssertTrue(photo.hasPreview)
+  }
+
+  private func wiredImportItem(
+    id: String,
+    name: String,
+    uti: String? = "public.jpeg",
+    fileSize: Int64 = 1024,
+    createdAt: Date? = nil,
+    thumbnail: UIImage? = nil,
+    isImportable: Bool = true
+  ) -> WiredCameraImportItem {
+    WiredCameraImportItem(
+      id: id,
+      name: name,
+      uti: uti,
+      fileSize: fileSize,
+      createdAt: createdAt,
+      thumbnail: thumbnail,
+      isImportable: isImportable
+    )
+  }
+
   func testCameraVendorAdvertisementMatcherAcceptsCameraVendorName() {
     let match = CameraVendorDeviceMatcher.matchAdvertisement(
       name: "CAMERA-DEVICE-A",
@@ -1075,6 +1589,9 @@ final class RunnerTests: XCTestCase {
       plist["NSLocationWhenInUseUsageDescription"] as? String,
       "CamTransfer 需要定位权限来确认 iPhone 是否已切换到相机 Wi-Fi"
     )
+    XCTAssertNotNil(plist["NSLocalNetworkUsageDescription"] as? String)
+    let appTransportSecurity = try XCTUnwrap(plist["NSAppTransportSecurity"] as? [String: Any])
+    XCTAssertEqual(appTransportSecurity["NSAllowsLocalNetworking"] as? Bool, true)
   }
 
   func testManualWifiJoinInstructionsIncludeHiddenNetworkHint() {
@@ -1234,6 +1751,58 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(NativeGalleryDownloadSelectionPolicy.canSelect(downloadState: .queued))
     XCTAssertFalse(NativeGalleryDownloadSelectionPolicy.canSelect(downloadState: .downloading))
     XCTAssertFalse(NativeGalleryDownloadSelectionPolicy.canSelect(downloadState: .saved))
+  }
+
+  func testNativeGalleryNavigationPolicyBlocksLeavingWhileDownloading() {
+    XCTAssertFalse(NativeGalleryNavigationPolicy.canLeaveGallery(isDownloading: true))
+    XCTAssertTrue(NativeGalleryNavigationPolicy.canLeaveGallery(isDownloading: false))
+  }
+
+  func testNativeGalleryNavigationPolicyBlocksPreviewDismissWhileDownloading() {
+    XCTAssertFalse(NativeGalleryNavigationPolicy.canDismissPreview(isDownloading: true))
+    XCTAssertTrue(NativeGalleryNavigationPolicy.canDismissPreview(isDownloading: false))
+  }
+
+  func testHomeRememberedCameraPresenceDetectsOnlineCameraFromScanResults() {
+    let rememberedID = UUID(uuidString: "12345678-1234-1234-1234-1234567890AB")!
+
+    XCTAssertEqual(
+      NativeHomeRememberedCameraPresencePolicy.presence(
+        rememberedPeripheralID: rememberedID,
+        discoveredCameraIDs: [rememberedID],
+        status: "已发现 1 台相机",
+        isBusy: false
+      ),
+      .online
+    )
+  }
+
+  func testHomeRememberedCameraPresenceGuidesWhileScanningAndOfflineAfterMiss() {
+    let rememberedID = UUID(uuidString: "12345678-1234-1234-1234-1234567890AB")!
+
+    XCTAssertEqual(
+      NativeHomeRememberedCameraPresencePolicy.presence(
+        rememberedPeripheralID: rememberedID,
+        discoveredCameraIDs: [],
+        status: "搜索中",
+        isBusy: true
+      ),
+      .scanning
+    )
+    XCTAssertEqual(
+      NativeHomeRememberedCameraPresencePolicy.presence(
+        rememberedPeripheralID: rememberedID,
+        discoveredCameraIDs: [],
+        status: "未发现相机",
+        isBusy: false
+      ),
+      .offline
+    )
+  }
+
+  func testHomeCameraSearchActionUsesRefreshLanguageAfterAutoScan() {
+    XCTAssertEqual(NativeHomeCameraSearchActionPolicy.symbolName, "arrow.clockwise")
+    XCTAssertEqual(NativeHomeCameraSearchActionPolicy.accessibilityLabel, "刷新搜索附近相机")
   }
 
   func testGallerySelectAllSkipsItemsAlreadyInDownloadList() {
