@@ -339,30 +339,6 @@ enum NativeGalleryNavigationPolicy {
   }
 }
 
-enum NativePhotoPreviewRotationPolicy {
-  static func nextManualRotationDegrees(_ currentDegrees: Int) -> Int {
-    switch ((currentDegrees % 360) + 360) % 360 {
-    case 0:
-      return 90
-    case 90:
-      return 180
-    case 180:
-      return 270
-    default:
-      return 0
-    }
-  }
-
-  static func displaySize(for size: CGSize, manualRotationDegrees: Int) -> CGSize {
-    switch ((manualRotationDegrees % 360) + 360) % 360 {
-    case 90, 270:
-      return CGSize(width: size.height, height: size.width)
-    default:
-      return size
-    }
-  }
-}
-
 enum NativeHomeRememberedCameraPresence: Equatable {
   case none
   case online
@@ -6277,6 +6253,8 @@ private final class NativePhotoPreviewPageController: UIViewController, UIScroll
   private var imageWidthConstraint: NSLayoutConstraint?
   private var imageHeightConstraint: NSLayoutConstraint?
   private var dismissStartTransform: CGAffineTransform = .identity
+  private var sourceImage: UIImage?
+  private var manualRotationDegrees = 0
 
   init(
     item: CameraVendorGalleryItem,
@@ -6357,13 +6335,17 @@ private final class NativePhotoPreviewPageController: UIViewController, UIScroll
 
   override func viewWillLayoutSubviews() {
     super.viewWillLayoutSubviews()
-    centerImage()
+    if let image = imageView.image, sourceImage != nil {
+      layout(image: image)
+    } else {
+      centerImage()
+    }
   }
 
   private func loadImage() {
     if let data = item.thumbnailData,
        let image = CameraVendorGalleryThumbnailRenderer.decoded(from: data) {
-      apply(image: image)
+      setSourceImage(image)
     } else {
       spinner.startAnimating()
     }
@@ -6387,7 +6369,7 @@ private final class NativePhotoPreviewPageController: UIViewController, UIScroll
         let image = CameraVendorGalleryThumbnailRenderer.decoded(from: data)
         await MainActor.run {
           self.spinner.stopAnimating()
-          if let image { self.apply(image: image) }
+          if let image { self.setSourceImage(image) }
           self.loadTask = nil
         }
       } catch {
@@ -6405,9 +6387,29 @@ private final class NativePhotoPreviewPageController: UIViewController, UIScroll
     spinner.stopAnimating()
   }
 
-  private func apply(image: UIImage) {
+  func rotateClockwise() {
+    guard sourceImage != nil else { return }
+    manualRotationDegrees = NativePhotoPreviewRotationPolicy.nextManualRotationDegrees(manualRotationDegrees)
+    renderSourceImage()
+  }
+
+  private func setSourceImage(_ image: UIImage) {
+    sourceImage = image
+    renderSourceImage()
+  }
+
+  private func renderSourceImage() {
+    guard let sourceImage else { return }
+    let image = NativePhotoPreviewImageRenderer.rendered(
+      image: sourceImage,
+      manualRotationDegrees: manualRotationDegrees
+    )
     imageView.image = image
     placeholderView.isHidden = true
+    layout(image: image)
+  }
+
+  private func layout(image: UIImage) {
     let bounds = view.bounds.size
     guard bounds.width > 0, bounds.height > 0, image.size.width > 0, image.size.height > 0 else { return }
     let scale = min(bounds.width / image.size.width, bounds.height / image.size.height)

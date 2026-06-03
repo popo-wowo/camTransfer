@@ -1,7 +1,9 @@
 package com.camtransfer.ui
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
+import android.graphics.Matrix
 import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -1079,6 +1081,7 @@ private fun PhotoPreviewDialog(
     val downloadState = downloadStates[currentFile.info.handle]
     val canDownload = GalleryDownloadUiPolicy.canSelect(downloadState)
     val isSelected = currentFile.info.handle in selectedHandles
+    var manualRotationDegrees by remember(currentFile.info.handle) { mutableStateOf(0) }
     var previewVisible by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         previewVisible = true
@@ -1113,7 +1116,15 @@ private fun PhotoPreviewDialog(
                 modifier = Modifier.fillMaxSize(),
                 key = { index -> files[index].info.handle },
             ) { page ->
-                ZoomablePreviewImage(files[page])
+                val pageFile = files[page]
+                ZoomablePreviewImage(
+                    file = pageFile,
+                    manualRotationDegrees = if (pageFile.info.handle == currentFile.info.handle) {
+                        manualRotationDegrees
+                    } else {
+                        0
+                    },
+                )
             }
 
             Row(
@@ -1133,6 +1144,14 @@ private fun PhotoPreviewDialog(
                     enabled = canDownload,
                     onClick = { onToggleSelection(currentFile) },
                 )
+                TextButton(
+                    onClick = {
+                        manualRotationDegrees =
+                            GalleryPreviewRotationPolicy.nextManualRotationDegrees(manualRotationDegrees)
+                    },
+                ) {
+                    Text("旋转", color = Color.White)
+                }
                 Column(
                     modifier = Modifier.weight(1f),
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -1200,7 +1219,10 @@ private fun PreviewSelectionButton(
 }
 
 @Composable
-private fun ZoomablePreviewImage(file: CameraFile) {
+private fun ZoomablePreviewImage(
+    file: CameraFile,
+    manualRotationDegrees: Int,
+) {
     var scale by remember(file.info.handle) { mutableStateOf(1f) }
     var offset by remember(file.info.handle) { mutableStateOf(Offset.Zero) }
     var isTransforming by remember(file.info.handle) { mutableStateOf(false) }
@@ -1234,9 +1256,27 @@ private fun ZoomablePreviewImage(file: CameraFile) {
     )
     val thumb = file.thumbnail
     val bitmap = remember(thumb) { thumb?.let { decodeThumbnailBitmap(it) } }
-    if (bitmap != null) {
+    val autoRotationDegrees = remember(file.info, thumb, bitmap) {
+        if (bitmap == null) {
+            0
+        } else {
+            GalleryPreviewRotationPolicy.autoRotationDegrees(
+                file = file,
+                decodedWidth = bitmap.width,
+                decodedHeight = bitmap.height,
+                imageData = thumb,
+            )
+        }
+    }
+    val displayRotationDegrees = remember(autoRotationDegrees, manualRotationDegrees) {
+        (autoRotationDegrees + manualRotationDegrees) % 360
+    }
+    val displayBitmap = remember(bitmap, displayRotationDegrees) {
+        bitmap?.let { rotateBitmapForDisplay(it, displayRotationDegrees) }
+    }
+    if (displayBitmap != null) {
         Image(
-            bitmap = bitmap.asImageBitmap(),
+            bitmap = displayBitmap.asImageBitmap(),
             contentDescription = file.info.filename,
             modifier = Modifier
                 .fillMaxSize()
@@ -1424,11 +1464,20 @@ private fun EmptyGalleryMessage(text: String) {
 private fun decodeThumbnailBitmap(data: ByteArray) =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
         runCatching {
-            ImageDecoder.decodeBitmap(ImageDecoder.createSource(ByteBuffer.wrap(data)))
+            ImageDecoder.decodeBitmap(ImageDecoder.createSource(ByteBuffer.wrap(data))) { decoder, _, _ ->
+                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+            }
         }.getOrNull() ?: BitmapFactory.decodeByteArray(data, 0, data.size)
     } else {
         BitmapFactory.decodeByteArray(data, 0, data.size)
     }
+
+private fun rotateBitmapForDisplay(bitmap: Bitmap, degrees: Int): Bitmap {
+    val normalizedDegrees = ((degrees % 360) + 360) % 360
+    if (normalizedDegrees == 0) return bitmap
+    val matrix = Matrix().apply { postRotate(normalizedDegrees.toFloat()) }
+    return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+}
 
 @Composable
 private fun PlaceholderBox(file: CameraFile) {
