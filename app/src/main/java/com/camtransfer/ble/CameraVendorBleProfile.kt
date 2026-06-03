@@ -23,6 +23,15 @@ object CameraVendorBleProfile {
     val PAIR_TOKEN_CHAR = UUID.fromString("aba356eb-9633-4e60-b73f-f52516dbd671")
     val IDENTIFIER_CHAR = UUID.fromString("85b9163e-62d1-49ff-a6f5-054b4630d4a1")
     val SECURE_STATUS_CHAR = UUID.fromString("f557d96b-8284-4667-8793-b971c1deca2a")
+    val CAMERA_WIFI_SSID_CHAR = UUID.fromString("bf6dc9cf-3606-4ec9-a4c8-d77576e93ea4")
+    val CAMERA_WIFI_PASSPHRASE_CHAR = UUID.fromString("e809256a-915c-4967-92e8-53b7d4cad213")
+
+    val IMAGE_TRANSFER_SETTING_CHAR = UUID.fromString("caedb497-83bf-482c-91ef-91cf6f1216ff")
+    val IMAGE_TRANSFER_SETTING_EX_CHAR = UUID.fromString("98934b2c-756c-4632-aa2f-dcba1bfec824")
+    val IMAGE_RESIZE_SETTING_CHAR = UUID.fromString("82a9f452-c5ce-4ef5-8203-3fc9a47f8171")
+    val LAUNCH_REQUEST_CHAR = UUID.fromString("600655e6-3637-42f1-8fb2-44efc5c63b13")
+    val AP_STATE_CHAR = UUID.fromString("a68e3f66-0fcc-4395-8d4c-aa980b5877fa")
+    val TRANSFER_STATE_CHAR = UUID.fromString("bd17ba04-b76b-4892-a545-b73ba1f74dae")
 
     val CAMERA_VENDOR_ADVERT_UUIDS = setOf(
         LEGACY_REMOTE_ADVERT, LEGACY_REFERENCE_APP_ADVERT,

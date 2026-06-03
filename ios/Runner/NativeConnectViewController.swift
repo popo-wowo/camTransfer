@@ -16,6 +16,23 @@ enum NativeLogTextViewPolicy {
   static func shouldRenderLiveText(applicationState: UIApplication.State, hasWindow: Bool) -> Bool {
     applicationState == .active && hasWindow
   }
+
+  static func shouldRenderLiveText(
+    applicationState: UIApplication.State,
+    hasWindow: Bool,
+    visibleHeight: CGFloat
+  ) -> Bool {
+    shouldRenderLiveText(applicationState: applicationState, hasWindow: hasWindow)
+      && visibleHeight > 1
+  }
+}
+
+enum NativeCameraAdapterRegistry {
+  static let defaultAdapter = FujifilmCameraAdapter(profile: .xt5Current)
+
+  static var defaultAdapterDescriptor: CameraAdapterDescriptor {
+    defaultAdapter.descriptor
+  }
 }
 
 enum NativeGalleryGridLayoutPolicy {
@@ -35,6 +52,19 @@ enum NativeGalleryGridLayoutPolicy {
   }
 }
 
+enum NativeGalleryExitPolicy {
+  static func shouldConfirmBeforeLeaving(hasActiveCameraCommunication: Bool) -> Bool {
+    hasActiveCameraCommunication
+  }
+
+  static func shouldTerminateCameraCommunication(
+    hasActiveCameraCommunication: Bool,
+    userConfirmedExit: Bool
+  ) -> Bool {
+    hasActiveCameraCommunication && userConfirmedExit
+  }
+}
+
 enum NativeGalleryDateFilter: Equatable {
   case all
   case today
@@ -42,7 +72,7 @@ enum NativeGalleryDateFilter: Equatable {
   case range(from: Date, to: Date)
 }
 
-enum NativeGalleryFormatFilter: Equatable {
+enum NativeGalleryFormatFilter: Hashable {
   case all
   case jpg
   case heif
@@ -51,8 +81,21 @@ enum NativeGalleryFormatFilter: Equatable {
 }
 
 struct NativeGalleryFilterState: Equatable {
-  var date: NativeGalleryDateFilter = .all
-  var format: NativeGalleryFormatFilter = .all
+  var date: NativeGalleryDateFilter
+  var formats: Set<NativeGalleryFormatFilter>
+
+  init(
+    date: NativeGalleryDateFilter = .today,
+    formats: Set<NativeGalleryFormatFilter> = [.jpg, .heif]
+  ) {
+    self.date = date
+    self.formats = formats
+  }
+
+  init(date: NativeGalleryDateFilter = .all, format: NativeGalleryFormatFilter) {
+    self.date = date
+    self.formats = format == .all ? [.jpg, .heif, .raw, .video] : [format]
+  }
 }
 
 enum NativeGalleryFilterPolicy {
@@ -63,24 +106,33 @@ enum NativeGalleryFilterPolicy {
     calendar: Calendar = Calendar(identifier: .gregorian)
   ) -> [CameraVendorGalleryItem] {
     items.filter { item in
-      matchesFormat(item, format: state.format) &&
+      matchesFormat(item, formats: state.formats) &&
       matchesDate(item, date: state.date, now: now, calendar: calendar)
     }
   }
 
-  private static func matchesFormat(_ item: CameraVendorGalleryItem, format: NativeGalleryFormatFilter) -> Bool {
-    switch format {
-    case .all:
+  private static func matchesFormat(_ item: CameraVendorGalleryItem, formats: Set<NativeGalleryFormatFilter>) -> Bool {
+    guard !formats.isEmpty else { return false }
+    if formats.contains(.all) {
       return true
-    case .jpg:
-      return item.formatLabel == "JPG"
-    case .heif:
-      return item.formatLabel == "HEIF"
-    case .raw:
-      return item.formatLabel == "RAW"
-    case .video:
-      return item.formatLabel == "Video"
     }
+    if formats.contains(.jpg),
+       item.formatLabel == "JPG" {
+      return true
+    }
+    if formats.contains(.heif),
+       item.formatLabel == "HEIF" {
+      return true
+    }
+    if formats.contains(.raw),
+       item.formatLabel == "RAW" {
+      return true
+    }
+    if formats.contains(.video),
+       item.formatLabel == "Video" {
+      return true
+    }
+    return false
   }
 
   private static func matchesDate(
@@ -140,10 +192,31 @@ enum CameraVendorDownloadHistoryStore {
     UserDefaults.standard.set(dict, forKey: storageKey)
   }
 
+  static func removeSaved(handle: Int, for cameraID: String) {
+    var dict = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: [Int]] ?? [:]
+    var existing = Set(dict[cameraID] ?? [])
+    existing.remove(handle)
+    if existing.isEmpty {
+      dict.removeValue(forKey: cameraID)
+    } else {
+      dict[cameraID] = Array(existing).sorted()
+    }
+    UserDefaults.standard.set(dict, forKey: storageKey)
+  }
+
   static func clear(for cameraID: String) {
     var dict = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: [Int]] ?? [:]
     dict.removeValue(forKey: cameraID)
     UserDefaults.standard.set(dict, forKey: storageKey)
+  }
+}
+
+enum CameraVendorDownloadTimingFormatter {
+  static func megabytesPerSecond(byteCount: Int, elapsedMs: Int) -> String {
+    guard byteCount > 0, elapsedMs > 0 else { return "0.00" }
+    let megabytes = Double(byteCount) / 1_048_576.0
+    let seconds = Double(elapsedMs) / 1000.0
+    return String(format: "%.2f", megabytes / seconds)
   }
 }
 
@@ -200,8 +273,12 @@ enum NativeGalleryNavigationPolicy {
     !isDownloading
   }
 
+  static func canOpenPreview(isDownloading: Bool) -> Bool {
+    !isDownloading
+  }
+
   static func canDismissPreview(isDownloading: Bool) -> Bool {
-    canLeaveGallery(isDownloading: isDownloading)
+    true
   }
 }
 
@@ -237,9 +314,40 @@ enum NativeHomeRememberedCameraPresencePolicy {
   }
 }
 
+enum NativeHomeCameraCardCopyPolicy {
+  static let pairedActionTitle = "传图"
+  static let unpairedActionTitle = "配对"
+
+  static func unpairedDetailText(rssi: Int, shortID: String) -> String {
+    "未配对 · 信号 \(rssi) dB · \(shortID)"
+  }
+
+  static func pairedDetailText(for presence: NativeHomeRememberedCameraPresence) -> String {
+    switch presence {
+    case .none:
+      return "已配对"
+    case .online:
+      return "已配对 · 在线"
+    case .scanning:
+      return "已配对 · 正在搜索"
+    case .offline:
+      return "已配对 · 未在线"
+    }
+  }
+}
+
 enum NativeHomeCameraSearchActionPolicy {
   static let symbolName = "arrow.clockwise"
   static let accessibilityLabel = "刷新搜索附近相机"
+}
+
+enum NativeWiredImportEntryPolicy {
+  static let noDeviceTitle = "需要有线连接"
+  static let noDeviceMessage = "请先用数据线连接相机，并在相机上开启 USB 传输或读卡模式。"
+
+  static func canOpenImport(deviceCount: Int) -> Bool {
+    deviceCount > 0
+  }
 }
 
 extension Notification.Name {
@@ -427,9 +535,19 @@ final class NativeChipBarControl: UIControl {
   private(set) var items: [Item] = []
   private var buttons: [UIButton] = []
   private(set) var selectedID: String?
+  private(set) var selectedIDs: Set<String> = []
   private var heightConstraint: NSLayoutConstraint?
 
   var onSelected: ((String) -> Void)?
+  var onSelectionChanged: ((Set<String>) -> Void)?
+  var allowsMultipleSelection = false {
+    didSet {
+      if !allowsMultipleSelection, let selectedID {
+        selectedIDs = [selectedID]
+      }
+      refreshButtonStates()
+    }
+  }
 
   var useCompactStyle: Bool = false {
     didSet {
@@ -484,12 +602,28 @@ final class NativeChipBarControl: UIControl {
   func configure(items: [Item], selectedID: String) {
     self.items = items
     self.selectedID = selectedID
+    self.selectedIDs = [selectedID]
+    rebuild()
+  }
+
+  func configure(items: [Item], selectedIDs: Set<String>) {
+    self.items = items
+    self.selectedIDs = selectedIDs.filter { id in items.contains(where: { $0.id == id }) }
+    self.selectedID = self.selectedIDs.first
     rebuild()
   }
 
   func setSelected(_ id: String) {
     guard items.contains(where: { $0.id == id }) else { return }
     selectedID = id
+    selectedIDs = [id]
+    refreshButtonStates()
+  }
+
+  func setSelectedIDs(_ ids: Set<String>) {
+    let validIDs = ids.filter { id in items.contains(where: { $0.id == id }) }
+    selectedIDs = validIDs
+    selectedID = validIDs.first
     refreshButtonStates()
   }
 
@@ -497,6 +631,7 @@ final class NativeChipBarControl: UIControl {
     guard let index = items.firstIndex(where: { $0.id == id }) else { return }
     items[index] = Item(id: id, title: title)
     selectedID = id
+    selectedIDs = [id]
     refreshButtonStates()
   }
 
@@ -514,7 +649,20 @@ final class NativeChipBarControl: UIControl {
       button.layer.shadowRadius = 10
       button.addAction(UIAction { [weak self] _ in
         guard let self else { return }
+        if self.allowsMultipleSelection {
+          if self.selectedIDs.contains(item.id) {
+            guard self.selectedIDs.count > 1 else { return }
+            self.selectedIDs.remove(item.id)
+          } else {
+            self.selectedIDs.insert(item.id)
+          }
+          self.selectedID = self.selectedIDs.first
+          self.refreshButtonStates(animated: true)
+          self.onSelectionChanged?(self.selectedIDs)
+          return
+        }
         self.selectedID = item.id
+        self.selectedIDs = [item.id]
         self.refreshButtonStates(animated: true)
         self.onSelected?(item.id)
       }, for: .touchUpInside)
@@ -545,7 +693,7 @@ final class NativeChipBarControl: UIControl {
       : NSDirectionalEdgeInsets(top: 9, leading: 17, bottom: 9, trailing: 17)
     for (index, button) in buttons.enumerated() {
       let item = items[index]
-      let isActive = item.id == selectedID
+      let isActive = selectedIDs.contains(item.id)
       var config = button.configuration
       config?.contentInsets = insets
       let titleAttributes = AttributeContainer([
@@ -585,22 +733,261 @@ final class NativeChipBarControl: UIControl {
   }
 }
 
+enum NativeCameraSearchStartupPolicy {
+  static let shouldShowManualAddCameraButton = false
+  static let inlineDiscoveredCameraLimit = 3
+  static let shouldRestartScanningAfterRememberedCameraDeletion = true
+
+  static func shouldStartScanningOnLaunch(hasRememberedCamera _: Bool) -> Bool {
+    true
+  }
+
+  static func shouldHideRememberedCameraWhileScanning(hasRememberedCamera _: Bool) -> Bool {
+    false
+  }
+
+  static func shouldShowInlineDiscoveredCameraList(discoveredCameraCount: Int) -> Bool {
+    discoveredCameraCount > 0
+  }
+}
+
+enum NativeCameraDebugLaunchPolicy {
+  static let autoConnectRememberedArgument = "--camtransfer-autoconnect-remembered"
+
+  static func shouldAutoConnectRememberedCamera(arguments: [String]) -> Bool {
+    arguments.contains(autoConnectRememberedArgument)
+  }
+}
+
+enum NativePairingConfirmationPresentationPolicy {
+  static func shouldPresentPhoneConfirmationPrompt(status: String, isBusy: Bool) -> Bool {
+    status.trimmingCharacters(in: .whitespacesAndNewlines)
+      == CameraVendorCameraPairingConfirmationPolicy.waitingForPhoneConfirmationStatus && !isBusy
+  }
+}
+
+enum NativeTransferSizeSettingPolicy {
+  static let originalID = "original"
+  static let compressedID = "compressed"
+  static let originalLabelText = "原图"
+  static let compressedLabelText = "压缩"
+  static let originalSymbolName = "photo"
+  static let compressedSymbolName = "bolt.fill"
+  static let switchWidth: CGFloat = 132
+  static let switchHeight: CGFloat = 30
+  static let switchLabelFontSize: CGFloat = 10.5
+  static let switchSymbolPointSize: CGFloat = 9.5
+
+  static func selectedID(preferCompressedDownloads: Bool) -> String {
+    preferCompressedDownloads ? compressedID : originalID
+  }
+
+  static func preferCompressedDownloads(for selectedID: String) -> Bool {
+    selectedID == compressedID
+  }
+
+  static func switchIsOn(preferCompressedDownloads: Bool) -> Bool {
+    preferCompressedDownloads
+  }
+
+  static func preferCompressedDownloads(forSwitchIsOn isOn: Bool) -> Bool {
+    isOn
+  }
+
+  static func statusText(preferCompressedDownloads: Bool) -> String {
+    preferCompressedDownloads ? "下次连接使用压缩 ~3M" : "下次连接下载原图"
+  }
+}
+
+private final class NativeTransferSizeSwitchControl: UIControl {
+  private let selectedBackground = UIView()
+  private let originalButton = UIButton(type: .system)
+  private let compressedButton = UIButton(type: .system)
+  private var selectedLeadingConstraint: NSLayoutConstraint?
+
+  var isOn: Bool = true {
+    didSet { refresh(animated: true) }
+  }
+
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    setup()
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) has not been implemented")
+  }
+
+  private func setup() {
+    translatesAutoresizingMaskIntoConstraints = false
+    backgroundColor = UIColor.white
+    layer.cornerRadius = NativeTransferSizeSettingPolicy.switchHeight / 2
+    layer.cornerCurve = .continuous
+    layer.borderWidth = 1
+    layer.borderColor = NativeLuxuryTheme.hairline.cgColor
+    clipsToBounds = true
+
+    selectedBackground.translatesAutoresizingMaskIntoConstraints = false
+    selectedBackground.backgroundColor = UIColor(red: 0.18, green: 0.37, blue: 0.29, alpha: 1)
+    selectedBackground.layer.cornerRadius = (NativeTransferSizeSettingPolicy.switchHeight - 4) / 2
+    selectedBackground.layer.cornerCurve = .continuous
+    selectedBackground.isUserInteractionEnabled = false
+
+    [originalButton, compressedButton].forEach { button in
+      button.translatesAutoresizingMaskIntoConstraints = false
+      button.configuration = .plain()
+      button.configuration?.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0)
+      button.configuration?.imagePadding = 3
+      button.titleLabel?.font = .systemFont(
+        ofSize: NativeTransferSizeSettingPolicy.switchLabelFontSize,
+        weight: .bold
+      )
+      button.tintColor = NativeLuxuryTheme.ink
+    }
+    configure(
+      originalButton,
+      title: NativeTransferSizeSettingPolicy.originalLabelText,
+      symbolName: NativeTransferSizeSettingPolicy.originalSymbolName
+    )
+    configure(
+      compressedButton,
+      title: NativeTransferSizeSettingPolicy.compressedLabelText,
+      symbolName: NativeTransferSizeSettingPolicy.compressedSymbolName
+    )
+    originalButton.addTarget(self, action: #selector(originalTapped), for: .touchUpInside)
+    compressedButton.addTarget(self, action: #selector(compressedTapped), for: .touchUpInside)
+    addTarget(self, action: #selector(toggleTapped), for: .touchUpInside)
+
+    addSubview(selectedBackground)
+    addSubview(originalButton)
+    addSubview(compressedButton)
+
+    let segmentWidth = (NativeTransferSizeSettingPolicy.switchWidth - 4) / 2
+    let leading = selectedBackground.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2)
+    selectedLeadingConstraint = leading
+
+    NSLayoutConstraint.activate([
+      widthAnchor.constraint(equalToConstant: NativeTransferSizeSettingPolicy.switchWidth),
+      heightAnchor.constraint(equalToConstant: NativeTransferSizeSettingPolicy.switchHeight),
+
+      selectedBackground.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+      selectedBackground.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
+      selectedBackground.widthAnchor.constraint(equalToConstant: segmentWidth),
+      leading,
+
+      originalButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+      originalButton.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+      originalButton.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
+      originalButton.widthAnchor.constraint(equalToConstant: segmentWidth),
+
+      compressedButton.leadingAnchor.constraint(equalTo: originalButton.trailingAnchor),
+      compressedButton.topAnchor.constraint(equalTo: originalButton.topAnchor),
+      compressedButton.bottomAnchor.constraint(equalTo: originalButton.bottomAnchor),
+      compressedButton.widthAnchor.constraint(equalTo: originalButton.widthAnchor),
+    ])
+    refresh(animated: false)
+  }
+
+  private func configure(_ button: UIButton, title: String, symbolName: String) {
+    let symbol = UIImage(
+      systemName: symbolName,
+      withConfiguration: UIImage.SymbolConfiguration(
+        pointSize: NativeTransferSizeSettingPolicy.switchSymbolPointSize,
+        weight: .bold
+      )
+    )
+    button.configuration?.image = symbol
+    button.configuration?.attributedTitle = AttributedString(title, attributes: AttributeContainer([
+      .font: UIFont.systemFont(
+        ofSize: NativeTransferSizeSettingPolicy.switchLabelFontSize,
+        weight: .bold
+      )
+    ]))
+  }
+
+  private func refresh(animated: Bool) {
+    selectedLeadingConstraint?.constant = isOn
+      ? NativeTransferSizeSettingPolicy.switchWidth / 2
+      : 2
+    originalButton.tintColor = isOn ? NativeLuxuryTheme.secondaryInk : UIColor.white
+    compressedButton.tintColor = isOn ? UIColor.white : NativeLuxuryTheme.secondaryInk
+    originalButton.configuration?.baseForegroundColor = originalButton.tintColor
+    compressedButton.configuration?.baseForegroundColor = compressedButton.tintColor
+    accessibilityValue = isOn
+      ? NativeTransferSizeSettingPolicy.compressedLabelText
+      : NativeTransferSizeSettingPolicy.originalLabelText
+
+    guard animated else {
+      layoutIfNeeded()
+      return
+    }
+    UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) {
+      self.layoutIfNeeded()
+    }
+  }
+
+  @objc private func originalTapped() {
+    guard isOn else { return }
+    isOn = false
+    sendActions(for: .valueChanged)
+  }
+
+  @objc private func compressedTapped() {
+    guard !isOn else { return }
+    isOn = true
+    sendActions(for: .valueChanged)
+  }
+
+  @objc private func toggleTapped() {
+    isOn.toggle()
+    sendActions(for: .valueChanged)
+  }
+}
+
+enum NativeGalleryDragSelectionMode: Equatable {
+  case selecting
+  case deselecting
+}
+
+enum NativeGalleryDragSelectionPolicy {
+  static func mode(startHandle: Int, selectedHandles: Set<Int>) -> NativeGalleryDragSelectionMode {
+    selectedHandles.contains(startHandle) ? .deselecting : .selecting
+  }
+
+  static func updatedSelection(
+    selectedHandles: Set<Int>,
+    visiting handles: [Int],
+    mode: NativeGalleryDragSelectionMode
+  ) -> Set<Int> {
+    var updated = selectedHandles
+    switch mode {
+    case .selecting:
+      updated.formUnion(handles)
+    case .deselecting:
+      updated.subtract(handles)
+    }
+    return updated
+  }
+}
+
+enum NativeGalleryPriorityDownloadPolicy {
+  static func shouldInterruptPtpBeforeDownload(isThumbnailRequestInFlight: Bool) -> Bool {
+    CameraVendorThumbnailLoadPolicy.shouldInterruptInFlightRequestBeforeDownload && isThumbnailRequestInFlight
+  }
+
+  static func shouldLoadPreviewThumbnail(isDownloading: Bool) -> Bool {
+    !isDownloading || !CameraVendorThumbnailLoadPolicy.shouldPauseWhileDownloading
+  }
+}
+
 final class NativeConnectViewController: UIViewController {
   private let brandLabel = NativeLuxuryTheme.makeBrandLabel("CAMTRANSFER")
-  private let titleLabel = NativeLuxuryTheme.makeTitleLabel("Camera roll,\nrefined.", size: 32)
-  private let subtitleLabel = NativeLuxuryTheme.makeCopyLabel(
-    "从相机中取回 JPG、HEIF、RAW 与视频。轻量、安静、可靠。"
-  )
-
-  private let footerCopyLabel = NativeLuxuryTheme.makeCopyLabel(
-    "打开相机传图模式后连接。",
-    alignment: .center
-  )
 
   private let confirmPairingButton: UIButton = {
     let button = UIButton(type: .system)
     button.translatesAutoresizingMaskIntoConstraints = false
-    button.setTitle("相机已显示配对成功", for: .normal)
+    button.setTitle("手机确认配对完成", for: .normal)
     NativeLuxuryTheme.stylePrimaryButton(button)
     NativeLuxuryTheme.setIcon("checkmark", on: button)
     button.isHidden = true
@@ -635,6 +1022,29 @@ final class NativeConnectViewController: UIViewController {
     button.layer.shadowRadius = 18
     button.layer.shadowOffset = CGSize(width: 0, height: 10)
     button.accessibilityLabel = NativeHomeCameraSearchActionPolicy.accessibilityLabel
+    return button
+  }()
+
+  private let proEntryButton: UIButton = {
+    let button = UIButton(type: .system)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    var config = UIButton.Configuration.filled()
+    config.cornerStyle = .capsule
+    config.title = "Pro"
+    config.baseForegroundColor = UIColor(red: 0.24, green: 0.17, blue: 0.07, alpha: 1)
+    config.baseBackgroundColor = UIColor(red: 0.96, green: 0.88, blue: 0.68, alpha: 1)
+    config.image = UIImage(systemName: "sparkles", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .bold))
+    config.imagePadding = 5
+    config.contentInsets = NSDirectionalEdgeInsets(top: 7, leading: 12, bottom: 7, trailing: 12)
+    config.attributedTitle = AttributedString("Pro", attributes: AttributeContainer([
+      .font: UIFont.systemFont(ofSize: 13, weight: .heavy)
+    ]))
+    button.configuration = config
+    button.accessibilityLabel = "打开 CamTransfer Pro"
+    button.layer.shadowColor = UIColor.black.cgColor
+    button.layer.shadowOpacity = 0.10
+    button.layer.shadowRadius = 12
+    button.layer.shadowOffset = CGSize(width: 0, height: 6)
     return button
   }()
 
@@ -730,9 +1140,9 @@ final class NativeConnectViewController: UIViewController {
     let button = UIButton(type: .system)
     button.translatesAutoresizingMaskIntoConstraints = false
     button.configuration = .tinted()
-    button.configuration?.title = "分享日志"
+    button.configuration?.title = "导出诊断日志"
     button.configuration?.cornerStyle = .medium
-    button.isHidden = true
+    button.isHidden = false
     return button
   }()
 
@@ -748,16 +1158,38 @@ final class NativeConnectViewController: UIViewController {
     return view
   }()
 
+  private let discoveredCameraStack: UIStackView = {
+    let stack = UIStackView()
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    stack.axis = .vertical
+    stack.spacing = 10
+    stack.isHidden = true
+    return stack
+  }()
+
+  private let pairedCameraStack: UIStackView = {
+    let stack = UIStackView()
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    stack.axis = .vertical
+    stack.spacing = 10
+    stack.isHidden = true
+    return stack
+  }()
+
   private var pairedCameraCardHeightConstraint: NSLayoutConstraint?
   private var actionStackTopVisible: NSLayoutConstraint?
   private var actionStackTopHidden: NSLayoutConstraint?
 
   private let service = CameraVendorBluetoothService()
-  private let galleryService: CameraVendorGalleryService = CameraVendorRealtimeGalleryService()
+  private let wiredImportProbeService = WiredCameraImportService()
+  private let galleryService: CameraGallerySession = NativeCameraAdapterRegistry.defaultAdapter.makeGallerySession()
   private var cameras: [CameraVendorDiscoveredCamera] = []
+  private var wiredImportDevices: [WiredCameraImportDevice] = []
   private weak var scanController: NativeScanViewController?
   private var connectingOverlay: NativeConnectingOverlay?
-  private var didStartHomeScan = false
+  private var hasStartedInitialCameraSearch = false
+  private var hasRunDebugRememberedAutoConnect = false
+  private var isPresentingPairingConfirmationPrompt = false
   private var latestServiceStatus = ""
   private var latestServiceIsBusy = false
 
@@ -767,14 +1199,28 @@ final class NativeConnectViewController: UIViewController {
     NativeLuxuryTheme.applyNavigationAppearance(to: navigationController)
     print("CamTransferNative NativeConnectViewController viewDidLoad")
     service.delegate = self
-    service.restoreLastPairedCameraIfAvailable()
+    wiredImportProbeService.delegate = self
     setupUI()
+    service.restoreLastPairedCameraIfAvailable()
     updateRememberedCameraCard()
+    refreshWiredImportButton()
+    wiredImportProbeService.start()
+    if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+      Task {
+        await CamTransferProStore.shared.refreshPurchasedEntitlements()
+      }
+    }
+  }
+
+  deinit {
+    wiredImportProbeService.stop()
   }
 
   override func viewWillAppear(_ animated: Bool) {
     super.viewWillAppear(animated)
     NativeLuxuryTheme.applyNavigationAppearance(to: navigationController)
+    service.restoreLastPairedCameraIfAvailable()
+    updateRememberedCameraCard()
     service.delegate = self
     if navigationController?.viewControllers.first === self,
        navigationController?.viewControllers.count == 1 {
@@ -786,29 +1232,46 @@ final class NativeConnectViewController: UIViewController {
     }
   }
 
-  override func viewDidAppear(_ animated: Bool) {
-    super.viewDidAppear(animated)
-    startHomeScanIfNeeded()
-  }
-
   override var preferredStatusBarStyle: UIStatusBarStyle {
     .darkContent
+  }
+
+  override func viewDidAppear(_ animated: Bool) {
+    super.viewDidAppear(animated)
+    guard !startDebugRememberedAutoConnectIfRequested() else { return }
+    startInitialCameraSearchIfNeeded()
+  }
+
+  private func startDebugRememberedAutoConnectIfRequested() -> Bool {
+    #if DEBUG
+    guard !hasRunDebugRememberedAutoConnect else { return false }
+    guard NativeCameraDebugLaunchPolicy.shouldAutoConnectRememberedCamera(
+      arguments: ProcessInfo.processInfo.arguments
+    ) else { return false }
+
+    hasRunDebugRememberedAutoConnect = true
+    guard let record = service.rememberedCameraRecords.first else { return false }
+    connectRememberedCamera(record)
+    return true
+    #else
+    return false
+    #endif
   }
 
   private func setupUI() {
     view.backgroundColor = NativeLuxuryTheme.background
     navigationItem.title = "CamTransfer"
+    navigationItem.rightBarButtonItem = UIBarButtonItem(customView: proEntryButton)
 
-    let headerStack = UIStackView(arrangedSubviews: [brandLabel, titleLabel, subtitleLabel])
+    let headerStack = UIStackView(arrangedSubviews: [brandLabel])
     headerStack.translatesAutoresizingMaskIntoConstraints = false
     headerStack.axis = .vertical
-    headerStack.spacing = 8
-    headerStack.setCustomSpacing(7, after: brandLabel)
-    headerStack.setCustomSpacing(10, after: titleLabel)
+    headerStack.spacing = 0
 
     let actionStack = UIStackView(arrangedSubviews: [
       wiredImportButton,
-      confirmPairingButton
+      confirmPairingButton,
+      shareLogButton
     ])
     actionStack.translatesAutoresizingMaskIntoConstraints = false
     actionStack.axis = .vertical
@@ -816,94 +1279,44 @@ final class NativeConnectViewController: UIViewController {
     actionStack.alignment = .fill
 
     view.addSubview(headerStack)
-    view.addSubview(forgetPairedCameraButton)
-    view.addSubview(pairedCameraCard)
+    view.addSubview(pairedCameraStack)
     view.addSubview(actionStack)
-    view.addSubview(footerCopyLabel)
+    view.addSubview(discoveredCameraStack)
     view.addSubview(statusBadgeLabel)
     view.addSubview(spinner)
     view.addSubview(refreshSearchButton)
 
-    connectPairedCameraButton.addTarget(self, action: #selector(connectRememberedCameraTapped), for: .touchUpInside)
-    forgetPairedCameraButton.addTarget(self, action: #selector(forgetRememberedCameraTapped), for: .touchUpInside)
     confirmPairingButton.addTarget(self, action: #selector(confirmPairingTapped), for: .touchUpInside)
     wiredImportButton.addTarget(self, action: #selector(wiredImportTapped), for: .touchUpInside)
+    proEntryButton.addTarget(self, action: #selector(proEntryTapped), for: .touchUpInside)
     copyLogButton.addTarget(self, action: #selector(copyLogsTapped), for: .touchUpInside)
     shareLogButton.addTarget(self, action: #selector(shareLogsTapped), for: .touchUpInside)
     refreshSearchButton.addTarget(self, action: #selector(refreshSearchTapped), for: .touchUpInside)
     refreshSearchButton.addTarget(self, action: #selector(handleFabPress(_:)), for: .touchDown)
     refreshSearchButton.addTarget(self, action: #selector(handleFabRelease(_:)), for: [.touchUpInside, .touchUpOutside, .touchCancel])
 
-    let revealDeleteSwipe = UISwipeGestureRecognizer(target: self, action: #selector(revealPairedCameraDeleteAction))
-    revealDeleteSwipe.direction = .left
-    pairedCameraCard.addGestureRecognizer(revealDeleteSwipe)
-    let hideDeleteSwipe = UISwipeGestureRecognizer(target: self, action: #selector(hidePairedCameraDeleteAction))
-    hideDeleteSwipe.direction = .right
-    pairedCameraCard.addGestureRecognizer(hideDeleteSwipe)
-
-    pairedCameraCard.addSubview(pairedCameraBrandLabel)
-    pairedCameraCard.addSubview(pairedCameraTitleLabel)
-    pairedCameraCard.addSubview(pairedCameraSubtitleLabel)
-    pairedCameraCard.addSubview(pairedCameraBadgeLabel)
-    pairedCameraCard.addSubview(pairedCameraDivider)
-    pairedCameraCard.addSubview(connectPairedCameraButton)
-
-    let cardHeight = pairedCameraCard.heightAnchor.constraint(equalToConstant: 0)
-    cardHeight.priority = UILayoutPriority(999)
-    pairedCameraCardHeightConstraint = cardHeight
-
-    let actionTopVisible = actionStack.topAnchor.constraint(equalTo: pairedCameraCard.bottomAnchor, constant: 16)
-    let actionTopHidden = actionStack.topAnchor.constraint(equalTo: headerStack.bottomAnchor, constant: 24)
+    let actionTopVisible = actionStack.topAnchor.constraint(equalTo: pairedCameraStack.bottomAnchor, constant: 16)
+    let actionTopHidden = actionStack.topAnchor.constraint(equalTo: headerStack.bottomAnchor, constant: 18)
     actionStackTopVisible = actionTopVisible
     actionStackTopHidden = actionTopHidden
 
     NSLayoutConstraint.activate([
-      headerStack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 18),
+      headerStack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
       headerStack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 22),
       headerStack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -22),
 
-      pairedCameraCard.topAnchor.constraint(equalTo: headerStack.bottomAnchor, constant: 22),
-      pairedCameraCard.leadingAnchor.constraint(equalTo: headerStack.leadingAnchor),
-      pairedCameraCard.trailingAnchor.constraint(equalTo: headerStack.trailingAnchor),
-
-      pairedCameraBrandLabel.topAnchor.constraint(equalTo: pairedCameraCard.topAnchor, constant: 20),
-      pairedCameraBrandLabel.leadingAnchor.constraint(equalTo: pairedCameraCard.leadingAnchor, constant: 20),
-      pairedCameraBrandLabel.trailingAnchor.constraint(lessThanOrEqualTo: pairedCameraBadgeLabel.leadingAnchor, constant: -12),
-
-      pairedCameraTitleLabel.topAnchor.constraint(equalTo: pairedCameraBrandLabel.bottomAnchor, constant: 6),
-      pairedCameraTitleLabel.leadingAnchor.constraint(equalTo: pairedCameraBrandLabel.leadingAnchor),
-      pairedCameraTitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: pairedCameraBadgeLabel.leadingAnchor, constant: -12),
-
-      pairedCameraSubtitleLabel.topAnchor.constraint(equalTo: pairedCameraTitleLabel.bottomAnchor, constant: 4),
-      pairedCameraSubtitleLabel.leadingAnchor.constraint(equalTo: pairedCameraTitleLabel.leadingAnchor),
-      pairedCameraSubtitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: pairedCameraBadgeLabel.leadingAnchor, constant: -12),
-
-      pairedCameraBadgeLabel.topAnchor.constraint(equalTo: pairedCameraCard.topAnchor, constant: 20),
-      pairedCameraBadgeLabel.trailingAnchor.constraint(equalTo: pairedCameraCard.trailingAnchor, constant: -20),
-      pairedCameraBadgeLabel.widthAnchor.constraint(equalToConstant: 54),
-      pairedCameraBadgeLabel.heightAnchor.constraint(equalToConstant: 54),
-
-      pairedCameraDivider.topAnchor.constraint(equalTo: pairedCameraSubtitleLabel.bottomAnchor, constant: 18),
-      pairedCameraDivider.leadingAnchor.constraint(equalTo: pairedCameraCard.leadingAnchor, constant: 20),
-      pairedCameraDivider.trailingAnchor.constraint(equalTo: pairedCameraCard.trailingAnchor, constant: -20),
-
-      connectPairedCameraButton.topAnchor.constraint(equalTo: pairedCameraDivider.bottomAnchor, constant: 16),
-      connectPairedCameraButton.leadingAnchor.constraint(equalTo: pairedCameraCard.leadingAnchor, constant: 20),
-      connectPairedCameraButton.trailingAnchor.constraint(equalTo: pairedCameraCard.trailingAnchor, constant: -20),
-      connectPairedCameraButton.bottomAnchor.constraint(equalTo: pairedCameraCard.bottomAnchor, constant: -18),
-
-      forgetPairedCameraButton.centerYAnchor.constraint(equalTo: pairedCameraCard.centerYAnchor),
-      forgetPairedCameraButton.trailingAnchor.constraint(equalTo: pairedCameraCard.trailingAnchor, constant: -12),
-      forgetPairedCameraButton.widthAnchor.constraint(equalToConstant: 84),
+      pairedCameraStack.topAnchor.constraint(equalTo: headerStack.bottomAnchor, constant: 16),
+      pairedCameraStack.leadingAnchor.constraint(equalTo: headerStack.leadingAnchor),
+      pairedCameraStack.trailingAnchor.constraint(equalTo: headerStack.trailingAnchor),
 
       actionStack.leadingAnchor.constraint(equalTo: headerStack.leadingAnchor),
       actionStack.trailingAnchor.constraint(equalTo: headerStack.trailingAnchor),
 
-      footerCopyLabel.topAnchor.constraint(equalTo: actionStack.bottomAnchor, constant: 14),
-      footerCopyLabel.leadingAnchor.constraint(equalTo: headerStack.leadingAnchor),
-      footerCopyLabel.trailingAnchor.constraint(equalTo: headerStack.trailingAnchor),
+      discoveredCameraStack.topAnchor.constraint(equalTo: actionStack.bottomAnchor, constant: 14),
+      discoveredCameraStack.leadingAnchor.constraint(equalTo: headerStack.leadingAnchor),
+      discoveredCameraStack.trailingAnchor.constraint(equalTo: headerStack.trailingAnchor),
 
-      statusBadgeLabel.topAnchor.constraint(equalTo: footerCopyLabel.bottomAnchor, constant: 12),
+      statusBadgeLabel.topAnchor.constraint(equalTo: discoveredCameraStack.bottomAnchor, constant: 12),
       statusBadgeLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
       statusBadgeLabel.leadingAnchor.constraint(greaterThanOrEqualTo: headerStack.leadingAnchor),
       statusBadgeLabel.trailingAnchor.constraint(lessThanOrEqualTo: headerStack.trailingAnchor),
@@ -936,24 +1349,45 @@ final class NativeConnectViewController: UIViewController {
     service.clearLogs()
     logView.text = ""
     confirmPairingButton.isHidden = true
-    presentScanController()
-    service.startScan()
-  }
-
-  private func startHomeScanIfNeeded() {
-    guard !didStartHomeScan else { return }
-    didStartHomeScan = true
-    service.restoreLastPairedCameraIfAvailable()
+    hasStartedInitialCameraSearch = true
+    latestServiceStatus = "搜索中"
+    latestServiceIsBusy = true
     updateRememberedCameraCard()
-    if service.rememberedCameraSummary == nil {
-      presentScanController()
-    }
+    updateInlineDiscoveredCameras()
     service.startScan()
   }
 
   @objc private func wiredImportTapped() {
+    guard NativeWiredImportEntryPolicy.canOpenImport(deviceCount: wiredImportDevices.count) else {
+      presentNotice(
+        title: NativeWiredImportEntryPolicy.noDeviceTitle,
+        message: NativeWiredImportEntryPolicy.noDeviceMessage
+      )
+      return
+    }
+
     let controller = WiredCameraImportViewController()
     navigationController?.pushViewController(controller, animated: true)
+  }
+
+  private func refreshWiredImportButton() {
+    let hasWiredCamera = NativeWiredImportEntryPolicy.canOpenImport(deviceCount: wiredImportDevices.count)
+    let title = hasWiredCamera ? "有线导入 · 已连接" : "有线导入"
+    var config = wiredImportButton.configuration ?? UIButton.Configuration.filled()
+    config.cornerStyle = .capsule
+    config.baseForegroundColor = NativeLuxuryTheme.ink
+    config.baseBackgroundColor = hasWiredCamera ? NativeLuxuryTheme.warmFill : NativeLuxuryTheme.mutedFill
+    config.image = UIImage(systemName: "cable.connector", withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold))
+    config.imagePadding = 6
+    config.contentInsets = NSDirectionalEdgeInsets(top: 13, leading: 18, bottom: 13, trailing: 18)
+    config.attributedTitle = AttributedString(title, attributes: AttributeContainer([
+      .font: UIFont.systemFont(ofSize: 14, weight: .semibold)
+    ]))
+    wiredImportButton.configuration = config
+    wiredImportButton.alpha = hasWiredCamera ? 1 : 0.62
+    wiredImportButton.accessibilityHint = hasWiredCamera
+      ? "打开有线相机照片导入"
+      : NativeWiredImportEntryPolicy.noDeviceMessage
   }
 
   private func presentScanController() {
@@ -988,20 +1422,74 @@ final class NativeConnectViewController: UIViewController {
     present(nav, animated: true)
   }
 
-  @objc private func connectRememberedCameraTapped() {
-    guard let summary = service.rememberedCameraSummary else {
-      presentNotice(title: "还没有已配对相机", message: "请刷新搜索附近相机后完成配对")
+  private func startInitialCameraSearchIfNeeded() {
+    guard !hasStartedInitialCameraSearch else { return }
+    let hasRememberedCamera = service.rememberedCameraSummary != nil
+    guard NativeCameraSearchStartupPolicy.shouldStartScanningOnLaunch(
+      hasRememberedCamera: hasRememberedCamera
+    ) else { return }
+
+    hasStartedInitialCameraSearch = true
+    service.startScan()
+    if !NativeCameraSearchStartupPolicy.shouldHideRememberedCameraWhileScanning(
+      hasRememberedCamera: hasRememberedCamera
+    ) {
+      updateRememberedCameraCard()
+    }
+  }
+
+  private func updateInlineDiscoveredCameras() {
+    discoveredCameraStack.arrangedSubviews.forEach { view in
+      discoveredCameraStack.removeArrangedSubview(view)
+      view.removeFromSuperview()
+    }
+
+    let unpairedCameras = cameras
+      .filter { !service.isRememberedCamera($0) }
+      .prefix(NativeCameraSearchStartupPolicy.inlineDiscoveredCameraLimit)
+
+    guard NativeCameraSearchStartupPolicy.shouldShowInlineDiscoveredCameraList(
+      discoveredCameraCount: unpairedCameras.count
+    ) else {
+      discoveredCameraStack.isHidden = true
       return
     }
 
+    discoveredCameraStack.isHidden = false
+    for camera in unpairedCameras {
+      let card = NativeScanCameraCard(
+        camera: camera,
+        isConnecting: false
+      ) { [weak self] in
+        self?.beginPairing(with: camera)
+      }
+      discoveredCameraStack.addArrangedSubview(card)
+    }
+  }
+
+  private func beginPairing(with camera: CameraVendorDiscoveredCamera) {
+    service.connect(to: camera.id)
+    updateInlineDiscoveredCameras()
+  }
+
+  @objc private func connectRememberedCameraTapped() {
+    guard let record = service.rememberedCameraRecords.first else {
+      presentNotice(title: "还没有已配对相机", message: "请先点击左上角 + 完成配对")
+      return
+    }
+    connectRememberedCamera(record)
+  }
+
+  private func connectRememberedCamera(_ record: CameraVendorPairedCameraRecord) {
+    let summary = record.connectionSummary
     service.clearLogs()
     logView.text = ""
     connectPairedCameraButton.isEnabled = false
     showConnectingOverlay(deviceName: summary.deviceName)
 
-    service.resetForNewConnectionAttempt()
+    service.resetForNewConnectionAttempt(force: true)
     service.approveNextRememberedCameraConnection()
-    let started = service.connectLastPairedCameraIfAvailable()
+    let started = service.connectPairedCamera(peripheralID: record.peripheralID)
     if !started {
       hideConnectingOverlay()
       connectPairedCameraButton.isEnabled = true
@@ -1019,7 +1507,7 @@ final class NativeConnectViewController: UIViewController {
     overlay.configure(deviceName: deviceName)
     overlay.onCancel = { [weak self] in
       guard let self else { return }
-      self.service.resetForNewConnectionAttempt()
+      self.service.resetForNewConnectionAttempt(force: true)
       self.hideConnectingOverlay()
       self.connectPairedCameraButton.isEnabled = true
     }
@@ -1034,24 +1522,52 @@ final class NativeConnectViewController: UIViewController {
   }
 
   @objc private func forgetRememberedCameraTapped() {
+    guard let record = service.rememberedCameraRecords.first else { return }
+    forgetRememberedCamera(record)
+  }
+
+  private func forgetRememberedCamera(_ record: CameraVendorPairedCameraRecord) {
     let alert = UIAlertController(
       title: "删除已配对相机？",
-      message: "只会删除 CamTransfer 本地记录。若相机和 iPhone 系统仍保留蓝牙配对，重新连接时可能会自动识别。",
+      message: "CamTransfer 只能删除本地记录，不能直接移除 iPhone 系统蓝牙配对。\n\n如果要彻底重新配对，还需要到系统蓝牙里忽略“\(record.deviceName)”对应设备。",
       preferredStyle: .alert
     )
     alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-    alert.addAction(UIAlertAction(title: "删除", style: .destructive) { [weak self] _ in
+    alert.addAction(UIAlertAction(title: "只删本地记录", style: .destructive) { [weak self] _ in
       guard let self else { return }
-      self.service.forgetLastPairedCamera()
-      self.cameras = []
-      self.scanController?.update(cameras: [])
-      self.updateRememberedCameraCard()
+      self.completeForgetRememberedCamera(record)
+    })
+    alert.addAction(UIAlertAction(title: "删除并查看蓝牙步骤", style: .default) { [weak self] _ in
+      guard let self else { return }
+      self.completeForgetRememberedCamera(record)
+      self.presentSystemBluetoothForgetNotice(for: record.deviceName)
     })
     present(alert, animated: true)
   }
 
+  private func completeForgetRememberedCamera(_ record: CameraVendorPairedCameraRecord) {
+    service.forgetPairedCamera(peripheralID: record.peripheralID)
+    cameras = []
+    scanController?.update(cameras: [])
+    updateRememberedCameraCard()
+    if NativeCameraSearchStartupPolicy.shouldRestartScanningAfterRememberedCameraDeletion {
+      service.startScan()
+    }
+  }
+
+  private func presentSystemBluetoothForgetNotice(for deviceName: String) {
+    UIPasteboard.general.string = deviceName
+    let alert = UIAlertController(
+      title: "处理系统蓝牙配对",
+      message: "已复制设备名“\(deviceName)”。\n\n请到：设置 > 蓝牙 > 找到对应设备 > 忽略此设备。\n\n处理完再回 CamTransfer 重新配对。",
+      preferredStyle: .alert
+    )
+    alert.addAction(UIAlertAction(title: "知道了", style: .default))
+    present(alert, animated: true)
+  }
+
   @objc private func revealPairedCameraDeleteAction() {
-    guard service.rememberedCameraSummary != nil else { return }
+    guard !service.rememberedCameraRecords.isEmpty else { return }
     forgetPairedCameraButton.isHidden = false
     UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseOut]) {
       self.pairedCameraCard.transform = CGAffineTransform(translationX: -108, y: 0)
@@ -1078,29 +1594,74 @@ final class NativeConnectViewController: UIViewController {
     service.confirmCameraPairingSucceeded()
   }
 
+  @objc private func proEntryTapped() {
+    presentCamTransferPaywall()
+  }
+
+  private func presentPhonePairingConfirmationPromptIfNeeded(status: String, isBusy: Bool) {
+    guard NativePairingConfirmationPresentationPolicy.shouldPresentPhoneConfirmationPrompt(
+      status: status,
+      isBusy: isBusy
+    ) else { return }
+    guard !isPresentingPairingConfirmationPrompt else { return }
+
+    isPresentingPairingConfirmationPrompt = true
+    let presentPrompt: () -> Void = { [weak self] in
+      guard let self else { return }
+      let alert = UIAlertController(
+        title: "确认配对",
+        message: "相机已显示配对成功后，点“确认”返回结果给相机。",
+        preferredStyle: .alert
+      )
+      alert.addAction(UIAlertAction(title: "稍后", style: .cancel) { [weak self] _ in
+        self?.isPresentingPairingConfirmationPrompt = false
+      })
+      alert.addAction(UIAlertAction(title: "确认", style: .default) { [weak self] _ in
+        guard let self else { return }
+        self.isPresentingPairingConfirmationPrompt = false
+        self.service.confirmCameraPairingSucceeded()
+      })
+      self.present(alert, animated: true)
+    }
+
+    if let scan = scanController {
+      scan.dismiss(animated: true) { [weak self] in
+        self?.scanController = nil
+        presentPrompt()
+      }
+    } else {
+      presentPrompt()
+    }
+  }
+
   @objc private func manualConnectTapped() {
     let summary = CameraVendorConnectionSummary(
       deviceName: "Camera",
       serialNumber: "manual"
     )
-    if let configurable = galleryService as? CameraVendorGalleryConfigurable {
-      configurable.configureForDirectPTP()
-    }
+    galleryService.configureForDirectPTP()
     let controller = NativeGalleryViewController(summary: summary, galleryService: galleryService)
     navigationController?.pushViewController(controller, animated: true)
   }
 
   @objc private func copyLogsTapped() {
-    UIPasteboard.general.string = service.currentLogText
+    UIPasteboard.general.string = CamTransferDiagnosticLogRedactor.redacted(service.currentLogText)
     presentNotice(title: "已复制", message: "连接日志已经复制到剪贴板")
   }
 
   @objc private func shareLogsTapped() {
-    let activity = UIActivityViewController(
-      activityItems: [service.logFileURL],
-      applicationActivities: nil
-    )
-    present(activity, animated: true)
+    do {
+      let exportURL = try CamTransferDiagnosticLogExporter.makeExportFile(
+        sourceLogURLs: [service.logFileURL, CameraVendorFileLogger.logFileURL]
+      )
+      let activity = UIActivityViewController(
+        activityItems: [exportURL],
+        applicationActivities: nil
+      )
+      present(activity, animated: true)
+    } catch {
+      presentNotice(title: "导出失败", message: error.localizedDescription)
+    }
   }
 
   private func presentNotice(title: String, message: String) {
@@ -1110,77 +1671,63 @@ final class NativeConnectViewController: UIViewController {
   }
 
   private func refreshPairingConfirmationButton(for status: String, isBusy: Bool) {
-    confirmPairingButton.isHidden = status != "请先在相机上确认配对成功"
+    confirmPairingButton.isHidden = status != CameraVendorCameraPairingConfirmationPolicy.waitingForPhoneConfirmationStatus
     confirmPairingButton.isEnabled = !isBusy
   }
 
   private func updateRememberedCameraCard() {
-    if let summary = service.rememberedCameraSummary {
-      showPairedCard(summary: summary, presence: rememberedCameraPresence())
-    } else {
+    let records = service.rememberedCameraRecords
+    if records.isEmpty {
       hidePairedCard()
+    } else {
+      showPairedCards(records: records)
     }
   }
 
-  private func rememberedCameraPresence() -> NativeHomeRememberedCameraPresence {
-    NativeHomeRememberedCameraPresencePolicy.presence(
-      rememberedPeripheralID: service.rememberedCameraID,
-      discoveredCameraIDs: cameras.map(\.id),
-      status: latestServiceStatus,
-      isBusy: latestServiceIsBusy
-    )
-  }
+  private func showPairedCards(records: [CameraVendorPairedCameraRecord]) {
+    pairedCameraStack.arrangedSubviews.forEach { view in
+      pairedCameraStack.removeArrangedSubview(view)
+      view.removeFromSuperview()
+    }
 
-  private func showPairedCard(
-    summary: CameraVendorConnectionSummary,
-    presence: NativeHomeRememberedCameraPresence
-  ) {
-    pairedCameraCard.isHidden = false
+    pairedCameraStack.isHidden = false
     pairedCameraCardHeightConstraint?.isActive = false
     actionStackTopHidden?.isActive = false
     actionStackTopVisible?.isActive = true
-    connectPairedCameraButton.isHidden = false
-    connectPairedCameraButton.isEnabled = true
-    pairedCameraTitleLabel.attributedText = NSAttributedString(
-      string: summary.deviceName,
-      attributes: [
-        .font: UIFont.systemFont(ofSize: 32, weight: .heavy),
-        .kern: -1.6,
-        .foregroundColor: NativeLuxuryTheme.ink
-      ]
-    )
-    switch presence {
-    case .online:
-      pairedCameraSubtitleLabel.text = "\(summary.subtitle) · 在线"
-      connectPairedCameraButton.setTitle("连接这台相机", for: .normal)
-    case .scanning:
-      pairedCameraSubtitleLabel.text = "\(summary.subtitle) · 正在搜索"
-      connectPairedCameraButton.setTitle("连接这台相机", for: .normal)
-    case .offline:
-      pairedCameraSubtitleLabel.text = "\(summary.subtitle) · 未在线"
-      connectPairedCameraButton.setTitle("重新搜索并连接", for: .normal)
-    case .none:
-      pairedCameraSubtitleLabel.text = summary.subtitle
-      connectPairedCameraButton.setTitle("连接这台相机", for: .normal)
+    for record in records {
+      let presence = NativeHomeRememberedCameraPresencePolicy.presence(
+        rememberedPeripheralID: record.peripheralID,
+        discoveredCameraIDs: cameras.map(\.id),
+        status: latestServiceStatus,
+        isBusy: latestServiceIsBusy
+      )
+      let card = NativePairedCameraCard(
+        record: record,
+        presence: presence,
+        onConnect: { [weak self] in
+          self?.connectRememberedCamera(record)
+        },
+        onForget: { [weak self] in
+          self?.forgetRememberedCamera(record)
+        }
+      )
+      pairedCameraStack.addArrangedSubview(card)
     }
-    pairedCameraBadgeLabel.text = badgeText(for: summary.deviceName)
-    resetPairedCameraDeleteAction()
 
     confirmPairingButton.isHidden = true
-    footerCopyLabel.text = presence == .online
-      ? "相机已在线，可以连接。"
-      : "正在扫描相机；可点右下角刷新重新搜索。"
   }
 
   private func hidePairedCard() {
-    pairedCameraCard.isHidden = true
+    pairedCameraStack.arrangedSubviews.forEach { view in
+      pairedCameraStack.removeArrangedSubview(view)
+      view.removeFromSuperview()
+    }
+    pairedCameraStack.isHidden = true
     actionStackTopVisible?.isActive = false
     pairedCameraCardHeightConstraint?.isActive = true
     actionStackTopHidden?.isActive = true
-    resetPairedCameraDeleteAction()
 
     confirmPairingButton.isHidden = true
-    footerCopyLabel.text = "正在搜索附近相机；可点右下角刷新重试。"
   }
 
   private func badgeText(for deviceName: String) -> String {
@@ -1202,9 +1749,14 @@ extension NativeConnectViewController: CameraVendorBluetoothServiceDelegate {
       latestServiceIsBusy = isBusy
       statusBadgeLabel.text = trimmed
       statusBadgeLabel.isHidden = trimmed.isEmpty
-      connectPairedCameraButton.isEnabled = !isBusy
+      let isPassiveSearchStatus = trimmed == "搜索中"
+        || trimmed == "请选择相机"
+        || trimmed == "未发现相机"
+        || trimmed.hasPrefix("已发现 ")
+      connectPairedCameraButton.isEnabled = !isBusy || isPassiveSearchStatus
       refreshPairingConfirmationButton(for: status, isBusy: isBusy)
       updateRememberedCameraCard()
+      presentPhonePairingConfirmationPromptIfNeeded(status: status, isBusy: isBusy)
       if isBusy {
         spinner.startAnimating()
       } else {
@@ -1223,6 +1775,7 @@ extension NativeConnectViewController: CameraVendorBluetoothServiceDelegate {
       guard let self else { return }
       self.cameras = cameras
       self.updateRememberedCameraCard()
+      self.updateInlineDiscoveredCameras()
       self.scanController?.update(cameras: cameras)
     }
   }
@@ -1247,9 +1800,7 @@ extension NativeConnectViewController: CameraVendorBluetoothServiceDelegate {
   ) {
     CameraVendorMainThread.run { [weak self] in
       guard let self else { return }
-      if let configurable = galleryService as? CameraVendorGalleryConfigurable {
-        configurable.configure(connectionSummary: summary)
-      }
+      galleryService.configure(connectionSummary: summary)
       let pushGallery: () -> Void = {
         let controller = NativeGalleryViewController(summary: summary, galleryService: self.galleryService)
         self.navigationController?.pushViewController(controller, animated: true)
@@ -1300,9 +1851,48 @@ extension NativeConnectViewController: CameraVendorBluetoothServiceDelegate {
   }
 }
 
+extension NativeConnectViewController: WiredCameraImportServiceDelegate {
+  func wiredCameraImportServiceDidUpdateAuthorization(_ service: WiredCameraImportService, isAuthorized: Bool) {
+    CameraVendorMainThread.run { [weak self] in
+      self?.refreshWiredImportButton()
+    }
+  }
+
+  func wiredCameraImportServiceDidUpdateDevices(
+    _ service: WiredCameraImportService,
+    devices: [WiredCameraImportDevice]
+  ) {
+    CameraVendorMainThread.run { [weak self] in
+      self?.wiredImportDevices = devices
+      self?.refreshWiredImportButton()
+    }
+  }
+
+  func wiredCameraImportServiceDidStartLoadingItems(_ service: WiredCameraImportService) {}
+
+  func wiredCameraImportService(
+    _ service: WiredCameraImportService,
+    didUpdateItems items: [WiredCameraImportItem]
+  ) {}
+
+  func wiredCameraImportService(
+    _ service: WiredCameraImportService,
+    didUpdateThumbnailFor itemID: String,
+    thumbnail: UIImage
+  ) {}
+
+  func wiredCameraImportService(_ service: WiredCameraImportService, didFailWith message: String) {
+    CameraVendorMainThread.run { [weak self] in
+      self?.wiredImportDevices = []
+      self?.refreshWiredImportButton()
+    }
+  }
+}
+
 final class NativeWifiPromptOverlay: UIView {
   var onOpenSettings: (() -> Void)?
   var onRetry: (() -> Void)?
+  private var passphrase: String?
 
   private let backdrop: UIVisualEffectView = {
     let view = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialLight))
@@ -1380,6 +1970,22 @@ final class NativeWifiPromptOverlay: UIView {
     return label
   }()
 
+  private let passwordButton: UIButton = {
+    let button = UIButton(type: .system)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    var config = UIButton.Configuration.tinted()
+    config.cornerStyle = .capsule
+    config.image = UIImage(systemName: "doc.on.doc", withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
+    config.imagePadding = 6
+    config.baseForegroundColor = NativeLuxuryTheme.ink
+    config.attributedTitle = AttributedString("复制 Wi-Fi 密码", attributes: AttributeContainer([
+      .font: UIFont.systemFont(ofSize: 13, weight: .semibold)
+    ]))
+    button.configuration = config
+    button.isHidden = true
+    return button
+  }()
+
   private let openSettingsButton: UIButton = {
     let button = UIButton(type: .system)
     button.translatesAutoresizingMaskIntoConstraints = false
@@ -1411,13 +2017,23 @@ final class NativeWifiPromptOverlay: UIView {
     fatalError("init(coder:) has not been implemented")
   }
 
-  func configure(ssidHint: String?) {
+  func configure(ssidHint: String?, passphrase: String? = nil) {
     if let ssid = ssidHint, !ssid.isEmpty {
       ssidChip.text = "  \(ssid)  "
       ssidChip.isHidden = false
     } else {
       ssidChip.text = "  连接相机的 CAMERA-XXXX 网络  "
       ssidChip.isHidden = false
+    }
+    let trimmedPassword = passphrase?.trimmingCharacters(in: .whitespacesAndNewlines)
+    self.passphrase = trimmedPassword?.isEmpty == false ? trimmedPassword : nil
+    if let passphrase = self.passphrase {
+      passwordButton.isHidden = false
+      passwordButton.configuration?.attributedTitle = AttributedString("复制密码 \(passphrase)", attributes: AttributeContainer([
+        .font: UIFont.systemFont(ofSize: 13, weight: .semibold)
+      ]))
+    } else {
+      passwordButton.isHidden = true
     }
   }
 
@@ -1432,10 +2048,12 @@ final class NativeWifiPromptOverlay: UIView {
     card.addSubview(wifiArt)
     card.addSubview(ssidChip)
     card.addSubview(copyLabel)
+    card.addSubview(passwordButton)
     card.addSubview(openSettingsButton)
     card.addSubview(retryButton)
 
     openSettingsButton.addTarget(self, action: #selector(settingsTapped), for: .touchUpInside)
+    passwordButton.addTarget(self, action: #selector(copyPasswordTapped), for: .touchUpInside)
     retryButton.addTarget(self, action: #selector(retryTapped), for: .touchUpInside)
 
     NSLayoutConstraint.activate([
@@ -1473,7 +2091,12 @@ final class NativeWifiPromptOverlay: UIView {
       copyLabel.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 24),
       copyLabel.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -24),
 
-      openSettingsButton.topAnchor.constraint(equalTo: copyLabel.bottomAnchor, constant: 18),
+      passwordButton.topAnchor.constraint(equalTo: copyLabel.bottomAnchor, constant: 14),
+      passwordButton.centerXAnchor.constraint(equalTo: card.centerXAnchor),
+      passwordButton.leadingAnchor.constraint(greaterThanOrEqualTo: card.leadingAnchor, constant: 22),
+      passwordButton.trailingAnchor.constraint(lessThanOrEqualTo: card.trailingAnchor, constant: -22),
+
+      openSettingsButton.topAnchor.constraint(equalTo: passwordButton.bottomAnchor, constant: 14),
       openSettingsButton.leadingAnchor.constraint(equalTo: card.leadingAnchor, constant: 22),
       openSettingsButton.trailingAnchor.constraint(equalTo: card.trailingAnchor, constant: -22),
 
@@ -1512,6 +2135,14 @@ final class NativeWifiPromptOverlay: UIView {
   @objc private func settingsTapped() {
     onOpenSettings?()
   }
+
+  @objc private func copyPasswordTapped() {
+    guard let passphrase else { return }
+    UIPasteboard.general.string = passphrase
+    passwordButton.configuration?.attributedTitle = AttributedString("密码已复制", attributes: AttributeContainer([
+      .font: UIFont.systemFont(ofSize: 13, weight: .semibold)
+    ]))
+   }
 
   @objc private func retryTapped() {
     onRetry?()
@@ -2293,13 +2924,25 @@ private final class NativeScanCameraCard: UIControl {
 
     let detailLabel = UILabel()
     detailLabel.translatesAutoresizingMaskIntoConstraints = false
-    detailLabel.text = "信号 \(camera.rssi) dB · \(camera.id.uuidString.prefix(8))"
+    detailLabel.text = NativeHomeCameraCardCopyPolicy.unpairedDetailText(
+      rssi: camera.rssi,
+      shortID: String(camera.id.uuidString.prefix(8))
+    )
     detailLabel.font = .systemFont(ofSize: 12, weight: .medium)
     detailLabel.textColor = NativeLuxuryTheme.secondaryInk
 
-    let chevron = UIImageView(image: UIImage(systemName: "chevron.right", withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)))
-    chevron.translatesAutoresizingMaskIntoConstraints = false
-    chevron.tintColor = NativeLuxuryTheme.secondaryInk
+    let pairButton = UIButton(type: .system)
+    pairButton.translatesAutoresizingMaskIntoConstraints = false
+    pairButton.configuration = .filled()
+    pairButton.configuration?.cornerStyle = .capsule
+    pairButton.configuration?.baseBackgroundColor = NativeLuxuryTheme.ink
+    pairButton.configuration?.baseForegroundColor = NativeLuxuryTheme.cardBackground
+    pairButton.configuration?.image = UIImage(systemName: "link", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .bold))
+    pairButton.configuration?.imagePadding = 5
+    pairButton.configuration?.attributedTitle = AttributedString(NativeHomeCameraCardCopyPolicy.unpairedActionTitle, attributes: AttributeContainer([
+      .font: UIFont.systemFont(ofSize: 13, weight: .bold)
+    ]))
+    pairButton.addTarget(self, action: #selector(handleTap), for: .touchUpInside)
 
     let spinner = UIActivityIndicatorView(style: .medium)
     spinner.translatesAutoresizingMaskIntoConstraints = false
@@ -2309,12 +2952,12 @@ private final class NativeScanCameraCard: UIControl {
     addSubview(badge)
     addSubview(nameLabel)
     addSubview(detailLabel)
-    addSubview(chevron)
+    addSubview(pairButton)
     addSubview(spinner)
 
     if isConnecting {
       spinner.startAnimating()
-      chevron.isHidden = true
+      pairButton.isHidden = true
       alpha = 0.92
       isUserInteractionEnabled = false
     }
@@ -2329,15 +2972,17 @@ private final class NativeScanCameraCard: UIControl {
 
       nameLabel.leadingAnchor.constraint(equalTo: badge.trailingAnchor, constant: 14),
       nameLabel.topAnchor.constraint(equalTo: topAnchor, constant: 16),
-      nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: chevron.leadingAnchor, constant: -10),
+      nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: pairButton.leadingAnchor, constant: -10),
 
       detailLabel.leadingAnchor.constraint(equalTo: nameLabel.leadingAnchor),
       detailLabel.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 4),
-      detailLabel.trailingAnchor.constraint(lessThanOrEqualTo: chevron.leadingAnchor, constant: -10),
+      detailLabel.trailingAnchor.constraint(lessThanOrEqualTo: pairButton.leadingAnchor, constant: -10),
       detailLabel.bottomAnchor.constraint(lessThanOrEqualTo: bottomAnchor, constant: -16),
 
-      chevron.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
-      chevron.centerYAnchor.constraint(equalTo: centerYAnchor),
+      pairButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+      pairButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+      pairButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 72),
+      pairButton.heightAnchor.constraint(equalToConstant: 36),
 
       spinner.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
       spinner.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -2355,6 +3000,208 @@ private final class NativeScanCameraCard: UIControl {
 
   @objc private func handleTap() {
     onTap()
+  }
+
+  private func badgeText(for deviceName: String) -> String {
+    let upper = deviceName.uppercased()
+    return String(upper.filter { $0.isLetter }.prefix(2))
+  }
+}
+
+private final class NativePairedCameraCard: UIView {
+  private let record: CameraVendorPairedCameraRecord
+  private let presence: NativeHomeRememberedCameraPresence
+  private let onConnect: () -> Void
+  private let onForget: () -> Void
+  private let contentView = UIView()
+  private let transferSizeSwitch = NativeTransferSizeSwitchControl()
+  private let connectButton = UIButton(type: .system)
+  private let deleteButton = UIButton(type: .system)
+  private var isDeleteRevealed = false
+
+  init(
+    record: CameraVendorPairedCameraRecord,
+    presence: NativeHomeRememberedCameraPresence,
+    onConnect: @escaping () -> Void,
+    onForget: @escaping () -> Void
+  ) {
+    self.record = record
+    self.presence = presence
+    self.onConnect = onConnect
+    self.onForget = onForget
+    super.init(frame: .zero)
+    translatesAutoresizingMaskIntoConstraints = false
+    backgroundColor = .clear
+    setupSubviews()
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) has not been implemented")
+  }
+
+  private func setupSubviews() {
+    contentView.translatesAutoresizingMaskIntoConstraints = false
+    NativeLuxuryTheme.applyCardStyle(contentView, radius: 24)
+
+    let badge = UILabel()
+    badge.translatesAutoresizingMaskIntoConstraints = false
+    badge.text = badgeText(for: record.deviceName)
+    badge.textAlignment = .center
+    badge.font = .systemFont(ofSize: 14, weight: .heavy)
+    badge.textColor = NativeLuxuryTheme.ink
+    badge.layer.cornerRadius = 26
+    badge.layer.borderWidth = 1
+    badge.layer.borderColor = NativeLuxuryTheme.hairline.cgColor
+    badge.clipsToBounds = true
+
+    let nameLabel = UILabel()
+    nameLabel.translatesAutoresizingMaskIntoConstraints = false
+    nameLabel.text = record.deviceName
+    nameLabel.font = .systemFont(ofSize: 20, weight: .heavy)
+    nameLabel.textColor = NativeLuxuryTheme.ink
+    nameLabel.numberOfLines = 1
+    nameLabel.adjustsFontSizeToFitWidth = true
+    nameLabel.minimumScaleFactor = 0.82
+
+    let detailLabel = UILabel()
+    detailLabel.translatesAutoresizingMaskIntoConstraints = false
+    detailLabel.text = NativeHomeCameraCardCopyPolicy.pairedDetailText(for: presence)
+    detailLabel.font = .systemFont(ofSize: 12, weight: .medium)
+    detailLabel.textColor = NativeLuxuryTheme.secondaryInk
+    detailLabel.numberOfLines = 1
+    detailLabel.adjustsFontSizeToFitWidth = true
+    detailLabel.minimumScaleFactor = 0.82
+
+    connectButton.translatesAutoresizingMaskIntoConstraints = false
+    connectButton.configuration = .filled()
+    connectButton.configuration?.cornerStyle = .capsule
+    connectButton.configuration?.baseBackgroundColor = NativeLuxuryTheme.ink
+    connectButton.configuration?.baseForegroundColor = NativeLuxuryTheme.cardBackground
+    connectButton.configuration?.image = UIImage(systemName: "bolt.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .bold))
+    connectButton.configuration?.imagePadding = 5
+    connectButton.configuration?.attributedTitle = AttributedString(NativeHomeCameraCardCopyPolicy.pairedActionTitle, attributes: AttributeContainer([
+      .font: UIFont.systemFont(ofSize: 13, weight: .bold)
+    ]))
+    connectButton.addTarget(self, action: #selector(connectTapped), for: .touchUpInside)
+
+    transferSizeSwitch.addTarget(self, action: #selector(transferSizeChanged), for: .valueChanged)
+    transferSizeSwitch.accessibilityLabel = "下载尺寸"
+    refreshTransferSizeSwitch()
+
+    deleteButton.translatesAutoresizingMaskIntoConstraints = false
+    deleteButton.configuration = .filled()
+    deleteButton.configuration?.cornerStyle = .capsule
+    deleteButton.configuration?.baseBackgroundColor = UIColor.systemRed
+    deleteButton.configuration?.baseForegroundColor = .white
+    deleteButton.configuration?.image = UIImage(systemName: "trash", withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .bold))
+    deleteButton.accessibilityLabel = "删除已配对相机"
+    deleteButton.addTarget(self, action: #selector(deleteTapped), for: .touchUpInside)
+    deleteButton.alpha = 0
+    deleteButton.isHidden = true
+
+    addSubview(deleteButton)
+    addSubview(contentView)
+    contentView.addSubview(badge)
+    contentView.addSubview(nameLabel)
+    contentView.addSubview(detailLabel)
+    contentView.addSubview(transferSizeSwitch)
+    contentView.addSubview(connectButton)
+
+    let swipeLeft = UISwipeGestureRecognizer(target: self, action: #selector(revealDeleteAction))
+    swipeLeft.direction = .left
+    contentView.addGestureRecognizer(swipeLeft)
+    let swipeRight = UISwipeGestureRecognizer(target: self, action: #selector(hideDeleteAction))
+    swipeRight.direction = .right
+    contentView.addGestureRecognizer(swipeRight)
+    let tap = UITapGestureRecognizer(target: self, action: #selector(contentTapped))
+    tap.cancelsTouchesInView = false
+    contentView.addGestureRecognizer(tap)
+
+    NSLayoutConstraint.activate([
+      heightAnchor.constraint(greaterThanOrEqualToConstant: 122),
+
+      deleteButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+      deleteButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+      deleteButton.widthAnchor.constraint(equalToConstant: 58),
+      deleteButton.heightAnchor.constraint(equalToConstant: 46),
+
+      contentView.topAnchor.constraint(equalTo: topAnchor),
+      contentView.leadingAnchor.constraint(equalTo: leadingAnchor),
+      contentView.trailingAnchor.constraint(equalTo: trailingAnchor),
+      contentView.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+      badge.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 18),
+      badge.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 18),
+      badge.widthAnchor.constraint(equalToConstant: 52),
+      badge.heightAnchor.constraint(equalToConstant: 52),
+
+      nameLabel.leadingAnchor.constraint(equalTo: badge.trailingAnchor, constant: 14),
+      nameLabel.topAnchor.constraint(equalTo: badge.topAnchor, constant: 2),
+      nameLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -18),
+
+      detailLabel.leadingAnchor.constraint(equalTo: nameLabel.leadingAnchor),
+      detailLabel.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 5),
+      detailLabel.trailingAnchor.constraint(equalTo: nameLabel.trailingAnchor),
+
+      transferSizeSwitch.leadingAnchor.constraint(equalTo: badge.leadingAnchor),
+      transferSizeSwitch.topAnchor.constraint(equalTo: badge.bottomAnchor, constant: 18),
+      transferSizeSwitch.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -18),
+      transferSizeSwitch.trailingAnchor.constraint(lessThanOrEqualTo: connectButton.leadingAnchor, constant: -12),
+
+      connectButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -18),
+      connectButton.centerYAnchor.constraint(equalTo: transferSizeSwitch.centerYAnchor),
+      connectButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 86),
+      connectButton.heightAnchor.constraint(equalToConstant: 36),
+    ])
+  }
+
+  private func refreshTransferSizeSwitch() {
+    transferSizeSwitch.isOn = NativeTransferSizeSettingPolicy.switchIsOn(
+      preferCompressedDownloads: CameraVendorTransferActivationResizePolicy.preferCompressedDownloads
+    )
+  }
+
+  @objc private func connectTapped() {
+    onConnect()
+  }
+
+  @objc private func transferSizeChanged() {
+    CameraVendorTransferActivationResizePolicy.preferCompressedDownloads =
+      NativeTransferSizeSettingPolicy.preferCompressedDownloads(forSwitchIsOn: transferSizeSwitch.isOn)
+    refreshTransferSizeSwitch()
+    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+  }
+
+  @objc private func deleteTapped() {
+    onForget()
+  }
+
+  @objc private func revealDeleteAction() {
+    guard !isDeleteRevealed else { return }
+    isDeleteRevealed = true
+    deleteButton.isHidden = false
+    UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) {
+      self.contentView.transform = CGAffineTransform(translationX: -76, y: 0)
+      self.deleteButton.alpha = 1
+    }
+  }
+
+  @objc private func hideDeleteAction() {
+    guard isDeleteRevealed else { return }
+    isDeleteRevealed = false
+    UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) {
+      self.contentView.transform = .identity
+      self.deleteButton.alpha = 0
+    } completion: { _ in
+      self.deleteButton.isHidden = true
+    }
+  }
+
+  @objc private func contentTapped() {
+    if isDeleteRevealed {
+      hideDeleteAction()
+    }
   }
 
   private func badgeText(for deviceName: String) -> String {
@@ -2530,20 +3377,34 @@ extension NativeTransferReadyViewController: CameraVendorBluetoothServiceDelegat
   }
 }
 
-private final class NativeGalleryViewController: UIViewController {
+private final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDelegate {
   private let summary: CameraVendorConnectionSummary
   private let galleryService: CameraVendorGalleryService
   private var galleryState = CameraVendorGalleryState()
   private var allGalleryItems: [CameraVendorGalleryItem] = []
   private var filterState = NativeGalleryFilterState()
   private var isDownloading = false
+  private var thumbnailLoadTask: Task<Void, Never>?
+  private var isThumbnailRequestInFlight = false
   private var shouldRetryWhenAppBecomesActive = false
   private var networkStatusTimer: Timer?
   private var manualWifiBaselineIP: String?
   private var wifiPromptOverlay: NativeWifiPromptOverlay?
   private var downloadListButtonItem: UIBarButtonItem?
   private var selectAllButtonItem: UIBarButtonItem?
+  private var isShowingExitConfirmation = false
+  private var isExitingAfterConfirmation = false
   private var previousInteractivePopGestureEnabled: Bool?
+  private weak var previousInteractivePopGestureDelegate: UIGestureRecognizerDelegate?
+  private var dragSelectionMode: NativeGalleryDragSelectionMode?
+  private var dragSelectionVisitedHandles: Set<Int> = []
+  private lazy var dragSelectionGesture: UIPanGestureRecognizer = {
+    let gesture = UIPanGestureRecognizer(target: self, action: #selector(handleGalleryDragSelection(_:)))
+    gesture.maximumNumberOfTouches = 1
+    gesture.cancelsTouchesInView = false
+    gesture.delegate = self
+    return gesture
+  }()
 
   private let brandLabel = NativeLuxuryTheme.makeBrandLabel("DEVICE-A GALLERY", size: 10)
   private let titleLabel = NativeLuxuryTheme.makeTitleLabel("图库", size: 30)
@@ -2591,7 +3452,6 @@ private final class NativeGalleryViewController: UIViewController {
 
   private let dateChips = NativeChipBarControl()
   private let formatChips = NativeChipBarControl()
-  private let downloadSizeChips = NativeChipBarControl()
   private var currentColumnCount: Int = {
     let stored = UserDefaults.standard.integer(forKey: "camtransfer.galleryColumnCount")
     if (2...5).contains(stored) { return stored }
@@ -2739,19 +3599,17 @@ private final class NativeGalleryViewController: UIViewController {
   override func viewWillAppear(_ animated: Bool) {
     super.viewWillAppear(animated)
     NativeLuxuryTheme.applyNavigationAppearance(to: navigationController)
+    protectGalleryExitNavigation()
   }
 
   override func viewDidAppear(_ animated: Bool) {
     super.viewDidAppear(animated)
-    previousInteractivePopGestureEnabled = navigationController?.interactivePopGestureRecognizer?.isEnabled
     updateNavigationLock()
   }
 
   override func viewWillDisappear(_ animated: Bool) {
     super.viewWillDisappear(animated)
-    if let previousInteractivePopGestureEnabled {
-      navigationController?.interactivePopGestureRecognizer?.isEnabled = previousInteractivePopGestureEnabled
-    }
+    restoreGalleryExitNavigation()
   }
 
   override var preferredStatusBarStyle: UIStatusBarStyle {
@@ -2761,11 +3619,25 @@ private final class NativeGalleryViewController: UIViewController {
   private func setupUI() {
     view.backgroundColor = NativeLuxuryTheme.background
     navigationItem.title = summary.navigationTitle
+    navigationItem.hidesBackButton = true
+    navigationItem.leftBarButtonItem = UIBarButtonItem(
+      title: "断开",
+      style: .plain,
+      target: self,
+      action: #selector(exitGalleryTapped)
+    )
+    navigationItem.leftBarButtonItem?.tintColor = NativeLuxuryTheme.ink
     brandLabel.text = "\(summary.deviceName.uppercased()) GALLERY"
     brandLabel.letterSpacing = 2.2
     copyLabel.text = "准备加载图库"
     titleLabel.isHidden = true
-    // Right bar order from edge inwards: tray (download list), select-all.
+    // Right bar order from edge inwards: clear cache, tray (download list), select-all.
+    let clearCacheButtonItem = UIBarButtonItem(
+      title: "清缓存",
+      style: .plain,
+      target: self,
+      action: #selector(clearAllDownloadCacheTapped)
+    )
     let downloadListButtonItem = UIBarButtonItem(
       image: UIImage(systemName: "tray.full"),
       style: .plain,
@@ -2780,7 +3652,7 @@ private final class NativeGalleryViewController: UIViewController {
     )
     self.downloadListButtonItem = downloadListButtonItem
     self.selectAllButtonItem = selectAllButtonItem
-    navigationItem.rightBarButtonItems = [downloadListButtonItem, selectAllButtonItem]
+    navigationItem.rightBarButtonItems = [clearCacheButtonItem, downloadListButtonItem, selectAllButtonItem]
     navigationItem.rightBarButtonItems?.forEach { $0.tintColor = NativeLuxuryTheme.ink }
 
     let copyRow = UIStackView(arrangedSubviews: [loadingSpinner, copyLabel])
@@ -2799,36 +3671,20 @@ private final class NativeGalleryViewController: UIViewController {
     view.addSubview(diagnosticsView)
 
     dateChips.configure(items: [
-      .init(id: "all", title: "全部"),
       .init(id: "today", title: "今天"),
       .init(id: "pickDate", title: "选择日期"),
-    ], selectedID: "all")
+    ], selectedID: "today")
+    formatChips.allowsMultipleSelection = true
     formatChips.configure(items: [
-      .init(id: "all", title: "全部"),
       .init(id: "jpg", title: "JPG"),
       .init(id: "heif", title: "HEIF"),
       .init(id: "raw", title: "RAW"),
       .init(id: "video", title: "视频"),
-    ], selectedID: "all")
-    let initialDownloadSize = CameraVendorTransferActivationResizePolicy.preferCompressedDownloads ? "compressed" : "original"
-    downloadSizeChips.configure(items: [
-      .init(id: "original", title: "原图"),
-      .init(id: "compressed", title: "压缩 ~3M"),
-    ], selectedID: initialDownloadSize)
+    ], selectedIDs: ["jpg", "heif"])
     dateChips.onSelected = { [weak self] _ in self?.chipFilterChanged() }
-    formatChips.onSelected = { [weak self] _ in self?.chipFilterChanged() }
-    downloadSizeChips.onSelected = { [weak self] selected in
-      guard let self else { return }
-      let preferCompressed = selected == "compressed"
-      let wasCompressed = CameraVendorTransferActivationResizePolicy.preferCompressedDownloads
-      CameraVendorTransferActivationResizePolicy.preferCompressedDownloads = preferCompressed
-      UIImpactFeedbackGenerator(style: .light).impactOccurred()
-      if preferCompressed != wasCompressed {
-        self.showToast(preferCompressed ? "已切换到压缩 ~ 3M（下次连接生效）" : "已切换到原图（下次连接生效）")
-      }
-    }
+    formatChips.onSelectionChanged = { [weak self] _ in self?.chipFilterChanged() }
 
-    let filterStack = UIStackView(arrangedSubviews: [dateChips, formatChips, downloadSizeChips])
+    let filterStack = UIStackView(arrangedSubviews: [dateChips, formatChips])
     filterStack.translatesAutoresizingMaskIntoConstraints = false
     filterStack.axis = .vertical
     filterStack.spacing = 8
@@ -2848,6 +3704,7 @@ private final class NativeGalleryViewController: UIViewController {
 
     let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handleGalleryPinch(_:)))
     collectionView.addGestureRecognizer(pinch)
+    collectionView.addGestureRecognizer(dragSelectionGesture)
 
     NSLayoutConstraint.activate([
       headerStack.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
@@ -2904,6 +3761,79 @@ private final class NativeGalleryViewController: UIViewController {
       pinchHintBubbleLabel.trailingAnchor.constraint(equalTo: pinchHintBubble.trailingAnchor, constant: -14),
       pinchHintBubbleLabel.centerYAnchor.constraint(equalTo: pinchHintBubble.centerYAnchor),
     ])
+  }
+
+  private var hasActiveCameraCommunication: Bool {
+    galleryService is CameraVendorGalleryConnectionTerminating
+  }
+
+  private func protectGalleryExitNavigation() {
+    guard let gesture = navigationController?.interactivePopGestureRecognizer else { return }
+    if previousInteractivePopGestureEnabled == nil {
+      previousInteractivePopGestureEnabled = gesture.isEnabled
+      previousInteractivePopGestureDelegate = gesture.delegate
+    }
+    gesture.isEnabled = false
+  }
+
+  private func restoreGalleryExitNavigation() {
+    guard let gesture = navigationController?.interactivePopGestureRecognizer,
+          let wasEnabled = previousInteractivePopGestureEnabled else { return }
+    gesture.isEnabled = wasEnabled
+    gesture.delegate = previousInteractivePopGestureDelegate
+    previousInteractivePopGestureEnabled = nil
+    previousInteractivePopGestureDelegate = nil
+  }
+
+  @objc private func exitGalleryTapped() {
+    guard NativeGalleryExitPolicy.shouldConfirmBeforeLeaving(
+      hasActiveCameraCommunication: hasActiveCameraCommunication
+    ) else {
+      leaveGallery()
+      return
+    }
+    presentExitConfirmation()
+  }
+
+  private func presentExitConfirmation() {
+    guard !isShowingExitConfirmation else { return }
+    isShowingExitConfirmation = true
+    let message = isDownloading
+      ? "正在传输照片。只有主动断开后才能返回首页，当前传输会停止。"
+      : "退出后会断开和相机的通信，相机会离开当前传图状态。"
+    let alert = UIAlertController(
+      title: isDownloading ? "断开并返回？" : "退出相册？",
+      message: message,
+      preferredStyle: .alert
+    )
+    alert.addAction(UIAlertAction(title: "取消", style: .cancel) { [weak self] _ in
+      self?.isShowingExitConfirmation = false
+    })
+    alert.addAction(UIAlertAction(title: "退出并断开", style: .destructive) { [weak self] _ in
+      guard let self else { return }
+      self.isShowingExitConfirmation = false
+      self.confirmGalleryExit()
+    })
+    present(alert, animated: true)
+  }
+
+  private func confirmGalleryExit() {
+    if NativeGalleryExitPolicy.shouldTerminateCameraCommunication(
+      hasActiveCameraCommunication: hasActiveCameraCommunication,
+      userConfirmedExit: true
+    ) {
+      (galleryService as? CameraVendorGalleryConnectionTerminating)?.terminateCameraCommunication()
+    }
+    leaveGallery()
+  }
+
+  private func leaveGallery() {
+    isExitingAfterConfirmation = true
+    if let navigationController {
+      navigationController.popViewController(animated: true)
+    } else {
+      dismiss(animated: true)
+    }
   }
 
   private func showPinchHintIfNeeded() {
@@ -2980,22 +3910,86 @@ private final class NativeGalleryViewController: UIViewController {
     }
   }
 
+  @objc private func handleGalleryDragSelection(_ gesture: UIPanGestureRecognizer) {
+    let location = gesture.location(in: collectionView)
+    switch gesture.state {
+    case .began:
+      dragSelectionVisitedHandles.removeAll()
+      guard let indexPath = collectionView.indexPathForItem(at: location),
+            let item = galleryItem(at: indexPath),
+            NativeGalleryDownloadSelectionPolicy.canSelect(downloadState: galleryState.downloadState(for: item.handle)) else {
+        dragSelectionMode = nil
+        return
+      }
+      dragSelectionMode = NativeGalleryDragSelectionPolicy.mode(
+        startHandle: item.handle,
+        selectedHandles: galleryState.selectedHandles
+      )
+      applyDragSelection(at: indexPath)
+      UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    case .changed:
+      guard dragSelectionMode != nil,
+            let indexPath = collectionView.indexPathForItem(at: location) else { return }
+      applyDragSelection(at: indexPath)
+    case .ended, .cancelled, .failed:
+      dragSelectionMode = nil
+      dragSelectionVisitedHandles.removeAll()
+    default:
+      break
+    }
+  }
+
+  private func applyDragSelection(at indexPath: IndexPath) {
+    guard let mode = dragSelectionMode,
+          let item = galleryItem(at: indexPath),
+          !dragSelectionVisitedHandles.contains(item.handle),
+          NativeGalleryDownloadSelectionPolicy.canSelect(downloadState: galleryState.downloadState(for: item.handle)) else {
+      return
+    }
+    dragSelectionVisitedHandles.insert(item.handle)
+    let updated = NativeGalleryDragSelectionPolicy.updatedSelection(
+      selectedHandles: galleryState.selectedHandles,
+      visiting: [item.handle],
+      mode: mode
+    )
+    guard updated != galleryState.selectedHandles else { return }
+    galleryState.setSelection(handles: updated)
+    refreshStatusText()
+    collectionView.reloadItems(at: [indexPath])
+  }
+
+  private func galleryItem(at indexPath: IndexPath) -> CameraVendorGalleryItem? {
+    guard galleryState.items.indices.contains(indexPath.item) else { return nil }
+    return galleryState.items[indexPath.item]
+  }
+
+  func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+    guard gestureRecognizer === dragSelectionGesture else { return true }
+    let location = dragSelectionGesture.location(in: collectionView)
+    guard collectionView.indexPathForItem(at: location) != nil else { return false }
+    let velocity = dragSelectionGesture.velocity(in: collectionView)
+    return abs(velocity.x) > abs(velocity.y) * 0.65
+  }
+
   @objc private func chipFilterChanged() {
     switch dateChips.selectedID {
     case "today": filterState.date = .today
     case "pickDate":
       presentDatePicker()
       return
-    default: filterState.date = .all
+    default: filterState.date = .today
     }
 
-    switch formatChips.selectedID {
-    case "jpg": filterState.format = .jpg
-    case "heif": filterState.format = .heif
-    case "raw": filterState.format = .raw
-    case "video": filterState.format = .video
-    default: filterState.format = .all
+    let selectedFormats = formatChips.selectedIDs.compactMap { id -> NativeGalleryFormatFilter? in
+      switch id {
+      case "jpg": return .jpg
+      case "heif": return .heif
+      case "raw": return .raw
+      case "video": return .video
+      default: return nil
+      }
     }
+    filterState.formats = selectedFormats.isEmpty ? [.jpg, .heif] : Set(selectedFormats)
 
     applyCurrentFilters(shouldLoadThumbnails: true)
   }
@@ -3016,7 +4010,7 @@ private final class NativeGalleryViewController: UIViewController {
       initialTo: initialTo,
       onCancel: { [weak self] in
         self?.dismiss(animated: true)
-        self?.dateChips.setSelected(self?.dateFilterChipID() ?? "all")
+        self?.dateChips.setSelected(self?.dateFilterChipID() ?? "today")
       },
       onConfirm: { [weak self] from, to in
         guard let self else { return }
@@ -3045,7 +4039,7 @@ private final class NativeGalleryViewController: UIViewController {
 
   private func dateFilterChipID() -> String {
     switch filterState.date {
-    case .all: return "all"
+    case .all: return "today"
     case .today: return "today"
     case .specificDay, .range: return "pickDate"
     }
@@ -3073,13 +4067,16 @@ private final class NativeGalleryViewController: UIViewController {
 
     reporting.diagnosticHandler = { [weak self] message in
       DispatchQueue.main.async {
-        self?.appendDiagnostic(message)
+        self?.appendDiagnostic(message, writesToFile: false)
       }
     }
   }
 
-  private func appendDiagnostic(_ message: String) {
+  private func appendDiagnostic(_ message: String, writesToFile: Bool = true) {
     print("CamTransferGallery UI \(message)")
+    if writesToFile {
+      CameraVendorFileLogger.log("UI: \(message)")
+    }
     if galleryState.isLoading {
       let humanized = NativeGalleryLoadingPhrase.humanize(message)
       if !humanized.isEmpty {
@@ -3089,7 +4086,8 @@ private final class NativeGalleryViewController: UIViewController {
     }
     guard NativeLogTextViewPolicy.shouldRenderLiveText(
       applicationState: UIApplication.shared.applicationState,
-      hasWindow: view.window != nil
+      hasWindow: view.window != nil,
+      visibleHeight: diagnosticsView.bounds.height
     ) else {
       return
     }
@@ -3125,7 +4123,7 @@ private final class NativeGalleryViewController: UIViewController {
       baselineWifiIP: manualWifiBaselineIP,
       itemCount: galleryState.items.count,
       isLoading: galleryState.isLoading
-    ) {
+    ), galleryState.errorMessage == nil {
       appendDiagnostic("已检测到相机 Wi-Fi，自动加载图库。")
       loadGallery()
     }
@@ -3152,7 +4150,7 @@ private final class NativeGalleryViewController: UIViewController {
       baselineWifiIP: manualWifiBaselineIP,
       itemCount: galleryState.items.count,
       isLoading: galleryState.isLoading
-    ) {
+    ), galleryState.errorMessage == nil {
       appendDiagnostic("回到 CamTransfer 且已连接相机 Wi-Fi，自动加载图库。")
       loadGallery()
       return
@@ -3189,8 +4187,8 @@ private final class NativeGalleryViewController: UIViewController {
   @objc private func downloadSelectedTapped() {
     let selectedItems = galleryState.items.filter { galleryState.selectedHandles.contains($0.handle) }
     let unsupportedItems = selectedItems.filter { !CameraVendorGalleryDownloadPolicy.canDownloadOriginal($0) }
-    let handles = selectedItems
-      .filter { CameraVendorGalleryDownloadPolicy.canDownloadOriginal($0) }
+    let downloadableItems = selectedItems.filter { CameraVendorGalleryDownloadPolicy.canDownloadOriginal($0) }
+    let handles = downloadableItems
       .map(\.handle)
       .sorted()
     guard !handles.isEmpty else {
@@ -3202,6 +4200,12 @@ private final class NativeGalleryViewController: UIViewController {
     }
     if !unsupportedItems.isEmpty {
       appendDiagnostic("已跳过 \(unsupportedItems.count) 个暂不支持的视频下载。")
+    }
+    let handlesToDownload = Set(galleryState.downloadableHandles(from: handles))
+    let itemsToDownload = downloadableItems.filter { handlesToDownload.contains($0.handle) }
+    if let restriction = CamTransferProAccessController.shared.restriction(for: itemsToDownload) {
+      presentCamTransferPaywall(reason: restriction)
+      return
     }
     startDownload(for: handles)
   }
@@ -3220,9 +4224,22 @@ private final class NativeGalleryViewController: UIViewController {
       },
       progressProvider: { [weak self] handle in
         self?.galleryState.downloadProgressText(for: handle)
+      },
+      onClearDownloadCache: { [weak self] item in
+        self?.clearDownloadCache(for: item)
       }
     )
     navigationController?.pushViewController(controller, animated: true)
+  }
+
+  @objc private func clearAllDownloadCacheTapped() {
+    let clearedCount = galleryState.clearAllSavedDownloadCache()
+    CameraVendorDownloadHistoryStore.clear(for: cameraHistoryKey)
+    refreshStatusText()
+    collectionView.reloadData()
+    notifyDownloadStateChanged()
+    appendDiagnostic("[缓存] 已清理全部下载缓存 camera=\(cameraHistoryKey) count=\(clearedCount)")
+    showToast(clearedCount > 0 ? "已清理 \(clearedCount) 张缓存，可重新下载" : "没有可清理的下载缓存")
   }
 
   @objc private func reservedReceiveProbeTapped() {
@@ -3285,8 +4302,6 @@ private final class NativeGalleryViewController: UIViewController {
         }
       } catch {
         galleryState.isLoading = false
-        startNetworkStatusTimer()
-        updateManualReloadAvailability()
         galleryState.errorMessage = error.localizedDescription
         shouldRetryWhenAppBecomesActive = CameraVendorGalleryReloadPolicy.shouldRetryWhenAppBecomesActive(
           itemCount: galleryState.items.count,
@@ -3295,6 +4310,8 @@ private final class NativeGalleryViewController: UIViewController {
           currentWifiIP: CameraVendorNetworkUtils.wifiIPv4Address(),
           baselineWifiIP: manualWifiBaselineIP
         )
+        startNetworkStatusTimer()
+        updateManualReloadAvailability()
         refreshStatusText()
         appendDiagnostic("加载失败: \(error.localizedDescription)")
         if let nsError = error as NSError?,
@@ -3308,9 +4325,20 @@ private final class NativeGalleryViewController: UIViewController {
 
   @MainActor
   private func loadThumbnail(for handle: Int) async {
+    guard !isDownloading || !CameraVendorThumbnailLoadPolicy.shouldPauseWhileDownloading else {
+      appendDiagnostic("下载进行中，暂停缩略图加载 handle=\(handle)")
+      return
+    }
     do {
       appendDiagnostic("开始加载缩略图 handle=\(handle)")
+      isThumbnailRequestInFlight = true
+      defer { isThumbnailRequestInFlight = false }
       let data = try await galleryService.fetchThumbnail(for: handle)
+      guard CameraVendorGalleryThumbnailRenderer.decoded(from: data) != nil else {
+        let head = data.prefix(32).map { String(format: "%02x", $0) }.joined(separator: "")
+        appendDiagnostic("缩略图解码失败 handle=\(handle) bytes=\(data.count) head=\(head)")
+        return
+      }
       appendDiagnostic("缩略图加载成功 handle=\(handle) bytes=\(data.count)")
       galleryState.updateThumbnail(handle: handle, data: data)
       if let allIndex = allGalleryItems.firstIndex(where: { $0.handle == handle }) {
@@ -3329,6 +4357,11 @@ private final class NativeGalleryViewController: UIViewController {
   @MainActor
   private func loadThumbnailsSequentially(for handles: [Int]) async {
     for handle in handles {
+      guard !Task.isCancelled else { return }
+      guard !isDownloading || !CameraVendorThumbnailLoadPolicy.shouldPauseWhileDownloading else {
+        appendDiagnostic("下载进行中，暂停剩余缩略图加载")
+        return
+      }
       await loadThumbnail(for: handle)
     }
   }
@@ -3340,6 +4373,8 @@ private final class NativeGalleryViewController: UIViewController {
       showToast("已下载过，无需重复下载")
       return
     }
+    let itemsToDownload = galleryState.items.filter { handlesToDownload.contains($0.handle) }
+    CamTransferProAccessController.shared.registerFreeDownloads(items: itemsToDownload)
     galleryState.enqueueDownloads(for: handlesToDownload)
     refreshStatusText()
     if skippedSavedCount > 0 {
@@ -3354,43 +4389,101 @@ private final class NativeGalleryViewController: UIViewController {
     }
     isDownloading = true
     updateNavigationLock()
+    var interruptedThumbnailTask: Task<Void, Never>?
+    if CameraVendorThumbnailLoadPolicy.shouldPauseWhileDownloading {
+      let shouldInterruptThumbnailRequest = NativeGalleryPriorityDownloadPolicy
+        .shouldInterruptPtpBeforeDownload(isThumbnailRequestInFlight: isThumbnailRequestInFlight)
+      interruptedThumbnailTask = thumbnailLoadTask
+      thumbnailLoadTask?.cancel()
+      thumbnailLoadTask = nil
+      (galleryService as? CameraVendorPriorityDownloadPreparing)?.prepareForPriorityDownload()
+      if shouldInterruptThumbnailRequest {
+        appendDiagnostic("已打断正在进行的缩略图请求，优先下载原图")
+      } else {
+        appendDiagnostic("已进入下载优先模式，保留当前 PTP 连接直接下载")
+      }
+    }
 
     Task { @MainActor in
-      var successCount = 0
-      var startedCount = 0
-      while let handle = galleryState.nextQueuedDownloadHandle() {
-        startedCount += 1
-        do {
-          let totalCount = max(startedCount + galleryState.queuedDownloadHandles().count - 1, 1)
-          galleryState.markDownloadStarted(handle: handle, position: startedCount, total: totalCount)
-          refreshStatusText()
-          collectionView.reloadData()
-          notifyDownloadStateChanged()
+      if let interruptedThumbnailTask {
+        appendDiagnostic("[下载] 等待缩略图任务停止后开始原图下载")
+        await interruptedThumbnailTask.value
+        appendDiagnostic("[下载] 缩略图任务已停止，开始原图下载")
+      }
+      let counter = SafeParallelDownloadCounter()
+      let savePipeline = CameraVendorDownloadSavePipeline()
+      while true {
+        let queuedCount = galleryState.queuedDownloadHandles().count
+        guard queuedCount > 0 else { break }
+        let counterSnapshot = await counter.snapshot()
+        let totalCount = counterSnapshot.startedCount + queuedCount
+        let desiredWorkerCount = CameraVendorParallelDownloadPolicy.desiredWorkerCount(for: queuedCount)
+        let worker2Status = SafeParallelDownloadWorker2Status()
+        var secondaryWorker: CameraVendorParallelDownloadWorker?
 
-          let item = allGalleryItems.first(where: { $0.handle == handle })
-          if item.map(CameraVendorGalleryDownloadPolicy.mediaType(for:)) == .video {
-            let downloadedFile = try await galleryService.downloadOriginalFile(for: handle)
-            try await CameraVendorPhotoLibrarySaver.save(file: downloadedFile)
-          } else {
-            let data = try await galleryService.downloadOriginal(for: handle)
-            let filename = item?.filename ?? "CamTransfer.jpg"
-            try await CameraVendorPhotoLibrarySaver.save(data: data, filename: filename)
+        if desiredWorkerCount > 1, let factory = galleryService as? CameraVendorParallelDownloadFactory {
+          do {
+            secondaryWorker = try await factory.openParallelDownloadWorker()
+            appendDiagnostic("[下载] 已打开第二 PTP 通道，并行下载启用 workers=2")
+          } catch {
+            appendDiagnostic("[下载] 第二 PTP 通道不可用，回退单通道：\(error.localizedDescription)")
           }
-          galleryState.markDownloadFinished(handle: handle)
-          CameraVendorDownloadHistoryStore.markSaved(handle: handle, for: cameraHistoryKey)
-          successCount += 1
-        } catch {
-          galleryState.markDownloadFailed(handle: handle, message: error.localizedDescription)
+        } else {
+          appendDiagnostic("[下载] 单通道下载 workers=1 queued=\(queuedCount)")
         }
-        refreshStatusText()
-        collectionView.reloadData()
-        notifyDownloadStateChanged()
+
+        if let secondaryWorker {
+          async let primaryLoop: Void = runSafeDownloadLoop(
+            worker: .primary(galleryService),
+            label: "主通道",
+            isWorker2: false,
+            totalCount: totalCount,
+            counter: counter,
+            worker2Status: worker2Status,
+            savePipeline: savePipeline
+          )
+          async let secondaryLoop: Void = runSafeDownloadLoop(
+            worker: .secondary(secondaryWorker),
+            label: "副通道",
+            isWorker2: true,
+            totalCount: totalCount,
+            counter: counter,
+            worker2Status: worker2Status,
+            savePipeline: savePipeline
+          )
+          _ = await (primaryLoop, secondaryLoop)
+          secondaryWorker.disconnect()
+        } else {
+          await runSafeDownloadLoop(
+            worker: .primary(galleryService),
+            label: "主通道",
+            isWorker2: false,
+            totalCount: totalCount,
+            counter: counter,
+            worker2Status: worker2Status,
+            savePipeline: savePipeline
+          )
+        }
       }
 
+      appendDiagnostic("[下载] 相机传输队列已完成，等待保存队列 flush")
+      let saveSnapshot = await savePipeline.waitForAll()
+      appendDiagnostic(
+        "[下载] 保存队列完成 scheduled=\(saveSnapshot.scheduledCount) " +
+        "success=\(saveSnapshot.successCount) failed=\(saveSnapshot.failureCount)"
+      )
       isDownloading = false
       updateNavigationLock()
-      if successCount > 0 {
-        showToast("已保存 \(successCount) 张到系统相册")
+      (galleryService as? CameraVendorPriorityDownloadPreparing)?.finishPriorityDownload()
+      let snapshot = await counter.snapshot()
+      guard !isDownloading else { return }
+      if CameraVendorThumbnailLoadPolicy.shouldPauseWhileDownloading {
+        loadVisibleThumbnails()
+      }
+      if snapshot.successCount > 0 {
+        showToast("已保存 \(snapshot.successCount) 张到系统相册")
+      } else if snapshot.startedCount > 0 {
+        showToast("下载失败，请查看日志")
       }
     }
   }
@@ -3406,8 +4499,10 @@ private final class NativeGalleryViewController: UIViewController {
     worker: CameraVendorParallelDownloadAsyncFetcher,
     label: String,
     isWorker2: Bool,
+    totalCount: Int,
     counter: SafeParallelDownloadCounter,
-    worker2Status: SafeParallelDownloadWorker2Status
+    worker2Status: SafeParallelDownloadWorker2Status,
+    savePipeline: CameraVendorDownloadSavePipeline
   ) async {
     while true {
       if isWorker2 {
@@ -3416,26 +4511,55 @@ private final class NativeGalleryViewController: UIViewController {
       guard let handle = galleryState.nextQueuedDownloadHandle() else { return }
 
       let position = await counter.bumpStarted()
-      galleryState.markDownloadStarted(handle: handle, position: position, total: max(position, position))
+      galleryState.markDownloadStarted(handle: handle, position: position, total: totalCount)
       refreshStatusText()
       collectionView.reloadData()
       notifyDownloadStateChanged()
 
-      let item = allGalleryItems.first(where: { $0.handle == handle })
-      let isVideo = item.map(CameraVendorGalleryDownloadPolicy.mediaType(for:)) == .video
-      let filename = item?.filename ?? "CamTransfer.jpg"
-
       do {
-        if isVideo {
-          let file = try await worker.downloadOriginalFile(for: handle)
-          try await CameraVendorPhotoLibrarySaver.save(file: file)
-        } else {
-          let data = try await worker.downloadOriginal(for: handle)
-          try await CameraVendorPhotoLibrarySaver.save(data: data, filename: filename)
+        let downloadStartedAt = Date()
+        let file = try await worker.downloadOriginalFile(for: handle)
+        let downloadElapsedMs = Int(Date().timeIntervalSince(downloadStartedAt) * 1000)
+        let fileBytes = CameraVendorDownloadedFileDiagnostics.byteCount(fileURL: file.fileURL)
+        let speed = CameraVendorDownloadTimingFormatter.megabytesPerSecond(
+          byteCount: fileBytes,
+          elapsedMs: downloadElapsedMs
+        )
+        let saveQueuedAt = Date()
+        appendDiagnostic(
+          "[\(label)] 下载传输完成 handle=\(handle) bytes=\(fileBytes) " +
+          "transferMs=\(downloadElapsedMs) speedMBps=\(speed)，加入保存队列"
+        )
+        savePipeline.enqueue { [weak self] in
+          guard let self else { return false }
+          let saveStartedAt = Date()
+          let saveQueueDelayMs = Int(saveStartedAt.timeIntervalSince(saveQueuedAt) * 1000)
+          self.appendDiagnostic("[保存] 开始 handle=\(handle) queueDelayMs=\(saveQueueDelayMs) bytes=\(fileBytes)")
+          do {
+            try await CameraVendorPhotoLibrarySaver.save(file: file)
+            let saveElapsedMs = Int(Date().timeIntervalSince(saveStartedAt) * 1000)
+            let totalElapsedMs = Int(Date().timeIntervalSince(downloadStartedAt) * 1000)
+            self.appendDiagnostic(
+              "[保存] 完成 handle=\(handle) transferMs=\(downloadElapsedMs) " +
+              "saveQueueDelayMs=\(saveQueueDelayMs) saveMs=\(saveElapsedMs) " +
+              "totalMs=\(totalElapsedMs) speedMBps=\(speed)"
+            )
+            self.galleryState.markDownloadFinished(handle: handle)
+            CameraVendorDownloadHistoryStore.markSaved(handle: handle, for: self.cameraHistoryKey)
+            await counter.bumpSuccess()
+            self.refreshStatusText()
+            self.collectionView.reloadData()
+            self.notifyDownloadStateChanged()
+            return true
+          } catch {
+            self.appendDiagnostic("[保存] 失败 handle=\(handle): \(error.localizedDescription)")
+            self.galleryState.markDownloadFailed(handle: handle, message: error.localizedDescription)
+            self.refreshStatusText()
+            self.collectionView.reloadData()
+            self.notifyDownloadStateChanged()
+            return false
+          }
         }
-        galleryState.markDownloadFinished(handle: handle)
-        CameraVendorDownloadHistoryStore.markSaved(handle: handle, for: cameraHistoryKey)
-        await counter.bumpSuccess()
       } catch {
         if isWorker2 {
           // Safety net: worker 2 had a problem. Put the handle back into
@@ -3449,12 +4573,56 @@ private final class NativeGalleryViewController: UIViewController {
           notifyDownloadStateChanged()
           return
         }
+        appendDiagnostic("[\(label)] 下载失败 handle=\(handle): \(error.localizedDescription)")
         galleryState.markDownloadFailed(handle: handle, message: error.localizedDescription)
       }
       refreshStatusText()
       collectionView.reloadData()
       notifyDownloadStateChanged()
     }
+  }
+}
+
+fileprivate enum CameraVendorDownloadedFileDiagnostics {
+  static func byteCount(fileURL: URL) -> Int {
+    let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey])
+    return values?.fileSize ?? 0
+  }
+}
+
+@MainActor
+fileprivate final class CameraVendorDownloadSavePipeline {
+  struct Snapshot: Equatable {
+    let scheduledCount: Int
+    let successCount: Int
+    let failureCount: Int
+  }
+
+  private var tail: Task<Void, Never>?
+  private var scheduledCount = 0
+  private var successCount = 0
+  private var failureCount = 0
+
+  func enqueue(_ operation: @escaping @MainActor () async -> Bool) {
+    let previous = tail
+    scheduledCount += 1
+    tail = Task { @MainActor in
+      await previous?.value
+      if await operation() {
+        successCount += 1
+      } else {
+        failureCount += 1
+      }
+    }
+  }
+
+  func waitForAll() async -> Snapshot {
+    await tail?.value
+    return Snapshot(
+      scheduledCount: scheduledCount,
+      successCount: successCount,
+      failureCount: failureCount
+    )
   }
 }
 
@@ -3482,6 +4650,9 @@ fileprivate actor SafeParallelDownloadCounter {
   private(set) var successCount = 0
   func bumpStarted() -> Int { startedCount += 1; return startedCount }
   func bumpSuccess() { successCount += 1 }
+  func snapshot() -> (startedCount: Int, successCount: Int) {
+    (startedCount, successCount)
+  }
 }
 
 fileprivate actor SafeParallelDownloadWorker2Status {
@@ -3500,6 +4671,9 @@ extension NativeGalleryViewController {
       },
       progressProvider: { [weak self] handle in
         self?.galleryState.downloadProgressText(for: handle)
+      },
+      onClearDownloadCache: { [weak self] item in
+        self?.clearDownloadCache(for: item)
       }
     )
     navigationController?.pushViewController(controller, animated: true)
@@ -3544,6 +4718,20 @@ extension NativeGalleryViewController {
     }
   }
 
+  private func clearDownloadCache(for item: CameraVendorGalleryItem) {
+    galleryState.clearSavedDownloadCache(handle: item.handle)
+    CameraVendorDownloadHistoryStore.removeSaved(handle: item.handle, for: cameraHistoryKey)
+    refreshStatusText()
+    if let indexPath = indexPath(for: item) {
+      collectionView.reloadItems(at: [indexPath])
+    } else {
+      collectionView.reloadData()
+    }
+    notifyDownloadStateChanged()
+    appendDiagnostic("已清理下载缓存 handle=\(item.handle)，可重新下载")
+    showToast("已清理缓存，可重新下载")
+  }
+
   private func notifyDownloadStateChanged() {
     NotificationCenter.default.post(name: .nativeDownloadStateDidChange, object: nil)
   }
@@ -3572,7 +4760,8 @@ extension NativeGalleryViewController {
     let total = allGalleryItems.count
     let visible = galleryState.items.count
     let selected = galleryState.selectedHandles.count
-    let filterApplied = !(filterState.date == .all && filterState.format == .all)
+    let defaultFormats: Set<NativeGalleryFormatFilter> = [.jpg, .heif]
+    let filterApplied = filterState.date != .all || filterState.formats != defaultFormats
     let countText: String
     if total == 0 {
       countText = "暂无照片"
@@ -3595,8 +4784,7 @@ extension NativeGalleryViewController {
 
   private func updateNavigationLock() {
     let canLeave = NativeGalleryNavigationPolicy.canLeaveGallery(isDownloading: isDownloading)
-    navigationItem.hidesBackButton = !canLeave
-    navigationController?.interactivePopGestureRecognizer?.isEnabled = canLeave
+    navigationItem.leftBarButtonItem?.isEnabled = true
     isModalInPresentation = !canLeave
     downloadListButtonItem?.isEnabled = canLeave
     selectAllButtonItem?.isEnabled = canLeave
@@ -3622,9 +4810,16 @@ extension NativeGalleryViewController {
     let handles = galleryState.items
       .filter { $0.thumbnailData == nil }
       .map(\.handle)
+    guard !handles.isEmpty else { return }
+    guard !isDownloading || !CameraVendorThumbnailLoadPolicy.shouldPauseWhileDownloading else {
+      appendDiagnostic("下载进行中，跳过本轮缩略图加载")
+      return
+    }
+    thumbnailLoadTask?.cancel()
     if CameraVendorThumbnailLoadPolicy.shouldLoadSequentially {
-      Task { @MainActor in
+      thumbnailLoadTask = Task { @MainActor in
         await loadThumbnailsSequentially(for: handles)
+        thumbnailLoadTask = nil
       }
     } else {
       for handle in handles {
@@ -3651,10 +4846,19 @@ extension NativeGalleryViewController {
   }
 
   private func presentPreview(startingAt index: Int) {
+    guard NativeGalleryNavigationPolicy.canOpenPreview(isDownloading: isDownloading) else {
+      showToast("正在下载，请先保持在照片筛选页面")
+      return
+    }
     let controller = NativePhotoPreviewViewController(
       items: galleryState.items,
       initialIndex: index,
       galleryService: galleryService,
+      shouldLoadPreviewThumbnail: { [weak self] in
+        NativeGalleryPriorityDownloadPolicy.shouldLoadPreviewThumbnail(
+          isDownloading: self?.isDownloading == true
+        )
+      },
       isSelected: { [weak self] handle in
         self?.galleryState.selectedHandles.contains(handle) ?? false
       },
@@ -3669,7 +4873,9 @@ extension NativeGalleryViewController {
         self.toggleSelection(for: item)
       },
       onDownload: { [weak self] item in
-        self?.startDownload(for: [item.handle])
+        guard let self else { return }
+        self.startDownload(for: [item.handle])
+        self.navigationController?.popViewController(animated: true)
       },
       isTransferLocked: { [weak self] in
         self?.isDownloading ?? false
@@ -3708,7 +4914,8 @@ extension NativeGalleryViewController {
   func showWifiPromptOverlay() {
     if wifiPromptOverlay != nil { return }
     let overlay = NativeWifiPromptOverlay()
-    overlay.configure(ssidHint: summary.wifiCandidates.first)
+    let preferredWifi = summary.wifiConfigurations.first
+    overlay.configure(ssidHint: preferredWifi?.ssid ?? summary.wifiCandidates.first, passphrase: preferredWifi?.passphrase)
     overlay.onOpenSettings = { [weak self] in
       guard let self else { return }
       self.openSystemWifiSettings()
@@ -3851,6 +5058,7 @@ private final class NativeDownloadListViewController: UIViewController {
   private let itemsProvider: () -> [CameraVendorGalleryItem]
   private let stateProvider: (Int) -> CameraVendorDownloadState
   private let progressProvider: (Int) -> String?
+  private let onClearDownloadCache: (CameraVendorGalleryItem) -> Void
 
   private let brandLabel = NativeLuxuryTheme.makeBrandLabel("DOWNLOADS", size: 10)
   private let titleLabel = NativeLuxuryTheme.makeTitleLabel("下载中心", size: 30)
@@ -3911,11 +5119,13 @@ private final class NativeDownloadListViewController: UIViewController {
   init(
     itemsProvider: @escaping () -> [CameraVendorGalleryItem],
     stateProvider: @escaping (Int) -> CameraVendorDownloadState,
-    progressProvider: @escaping (Int) -> String?
+    progressProvider: @escaping (Int) -> String?,
+    onClearDownloadCache: @escaping (CameraVendorGalleryItem) -> Void
   ) {
     self.itemsProvider = itemsProvider
     self.stateProvider = stateProvider
     self.progressProvider = progressProvider
+    self.onClearDownloadCache = onClearDownloadCache
     super.init(nibName: nil, bundle: nil)
   }
 
@@ -4051,6 +5261,18 @@ extension NativeDownloadListViewController: UICollectionViewDataSource, UICollec
       showsSelection: false,
       dimsUndownloaded: true
     )
+    cell.onClearCacheTapped = { [weak self, weak collectionView, weak cell] in
+      guard let self,
+            let cell,
+            let indexPath = collectionView?.indexPath(for: cell) else {
+        return
+      }
+      let items = self.itemsProvider()
+      guard items.indices.contains(indexPath.item) else { return }
+      let currentItem = items[indexPath.item]
+      guard self.stateProvider(currentItem.handle) == .saved else { return }
+      self.onClearDownloadCache(currentItem)
+    }
     return cell
   }
 
@@ -4095,9 +5317,28 @@ extension NativeGalleryViewController: UICollectionViewDataSource {
       isSelected: galleryState.selectedHandles.contains(item.handle),
       downloadState: downloadState
     )
-    cell.onSelectionTapped = { [weak self] in
-      guard NativeGalleryDownloadSelectionPolicy.canSelect(downloadState: downloadState) else { return }
-      self?.toggleSelection(for: item)
+    cell.onSelectionTapped = { [weak self, weak collectionView, weak cell] in
+      guard let self,
+            let cell,
+            let indexPath = collectionView?.indexPath(for: cell),
+            self.galleryState.items.indices.contains(indexPath.item) else {
+        return
+      }
+      let currentItem = self.galleryState.items[indexPath.item]
+      let currentState = self.galleryState.downloadState(for: currentItem.handle)
+      guard NativeGalleryDownloadSelectionPolicy.canSelect(downloadState: currentState) else { return }
+      self.toggleSelection(for: currentItem)
+    }
+    cell.onClearCacheTapped = { [weak self, weak collectionView, weak cell] in
+      guard let self,
+            let cell,
+            let indexPath = collectionView?.indexPath(for: cell),
+            self.galleryState.items.indices.contains(indexPath.item) else {
+        return
+      }
+      let currentItem = self.galleryState.items[indexPath.item]
+      guard self.galleryState.downloadState(for: currentItem.handle) == .saved else { return }
+      self.clearDownloadCache(for: currentItem)
     }
     return cell
   }
@@ -4105,6 +5346,10 @@ extension NativeGalleryViewController: UICollectionViewDataSource {
 
 extension NativeGalleryViewController: UICollectionViewDelegateFlowLayout {
   func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+    guard NativeGalleryNavigationPolicy.canOpenPreview(isDownloading: isDownloading) else {
+      showToast("正在下载，请先保持在照片筛选页面")
+      return
+    }
     presentPreview(startingAt: indexPath.item)
   }
 
@@ -4160,6 +5405,7 @@ private final class NativeGalleryGridCell: UICollectionViewCell {
   static let reuseIdentifier = "NativeGalleryGridCell"
 
   var onSelectionTapped: (() -> Void)?
+  var onClearCacheTapped: (() -> Void)?
 
   private let imageView: UIImageView = {
     let view = UIImageView()
@@ -4239,6 +5485,24 @@ private final class NativeGalleryGridCell: UICollectionViewCell {
     return label
   }()
 
+  private let clearCacheButton: UIButton = {
+    let button = UIButton(type: .system)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    var configuration = UIButton.Configuration.filled()
+    configuration.attributedTitle = AttributedString("清缓存", attributes: AttributeContainer([
+      .font: UIFont.systemFont(ofSize: 10, weight: .heavy)
+    ]))
+    configuration.baseForegroundColor = NativeLuxuryTheme.ink
+    configuration.baseBackgroundColor = UIColor.white.withAlphaComponent(0.92)
+    configuration.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 7, bottom: 2, trailing: 7)
+    button.configuration = configuration
+    button.layer.cornerRadius = 10
+    button.clipsToBounds = true
+    button.isHidden = true
+    button.accessibilityLabel = "清理下载缓存"
+    return button
+  }()
+
   override init(frame: CGRect) {
     super.init(frame: frame)
     setup()
@@ -4259,7 +5523,9 @@ private final class NativeGalleryGridCell: UICollectionViewCell {
     statusBadgeLabel.text = nil
     statusBadgeLabel.isHidden = true
     onSelectionTapped = nil
+    onClearCacheTapped = nil
     selectionButton.isEnabled = true
+    clearCacheButton.isHidden = true
     downloadActivityIndicator.stopAnimating()
   }
 
@@ -4296,10 +5562,12 @@ private final class NativeGalleryGridCell: UICollectionViewCell {
     contentView.addSubview(downloadActivityIndicator)
     contentView.addSubview(formatBadgeLabel)
     contentView.addSubview(statusBadgeLabel)
+    contentView.addSubview(clearCacheButton)
     labelContainer.contentView.addSubview(titleLabel)
     labelContainer.contentView.addSubview(detailLabel)
     labelContainer.isHidden = true
     selectionButton.addTarget(self, action: #selector(selectionTapped), for: .touchUpInside)
+    clearCacheButton.addTarget(self, action: #selector(clearCacheTapped), for: .touchUpInside)
 
     NSLayoutConstraint.activate([
       imageView.topAnchor.constraint(equalTo: contentView.topAnchor),
@@ -4321,6 +5589,11 @@ private final class NativeGalleryGridCell: UICollectionViewCell {
       statusBadgeLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -7),
       statusBadgeLabel.heightAnchor.constraint(equalToConstant: 13),
       statusBadgeLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 26),
+
+      clearCacheButton.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 7),
+      clearCacheButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -7),
+      clearCacheButton.heightAnchor.constraint(equalToConstant: 22),
+      clearCacheButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 50),
 
       formatBadgeLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -5),
       formatBadgeLabel.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -5),
@@ -4369,6 +5642,7 @@ private final class NativeGalleryGridCell: UICollectionViewCell {
     case .idle, .failed:
       imageView.alpha = dimsUndownloaded ? 0.58 : 1
       statusBadgeLabel.isHidden = true
+      clearCacheButton.isHidden = true
       downloadActivityIndicator.stopAnimating()
     case .queued:
       imageView.alpha = 0.86
@@ -4376,17 +5650,20 @@ private final class NativeGalleryGridCell: UICollectionViewCell {
       statusBadgeLabel.backgroundColor = NativeLuxuryTheme.ink.withAlphaComponent(0.78)
       statusBadgeLabel.textColor = NativeLuxuryTheme.cardBackground
       statusBadgeLabel.isHidden = false
+      clearCacheButton.isHidden = true
       downloadActivityIndicator.stopAnimating()
     case .downloading:
       imageView.alpha = 0.86
       statusBadgeLabel.isHidden = true
+      clearCacheButton.isHidden = true
       downloadActivityIndicator.startAnimating()
     case .saved:
       imageView.alpha = 1
       statusBadgeLabel.text = " 已保存 "
-      statusBadgeLabel.backgroundColor = UIColor.white.withAlphaComponent(0.92)
-      statusBadgeLabel.textColor = NativeLuxuryTheme.ink
+      statusBadgeLabel.backgroundColor = NativeLuxuryTheme.ink.withAlphaComponent(0.78)
+      statusBadgeLabel.textColor = NativeLuxuryTheme.cardBackground
       statusBadgeLabel.isHidden = false
+      clearCacheButton.isHidden = true
       downloadActivityIndicator.stopAnimating()
     }
   }
@@ -4423,11 +5700,16 @@ private final class NativeGalleryGridCell: UICollectionViewCell {
   @objc private func selectionTapped() {
     onSelectionTapped?()
   }
+
+  @objc private func clearCacheTapped() {
+    onClearCacheTapped?()
+  }
 }
 
 private final class NativePhotoPreviewViewController: UIViewController, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
   private let items: [CameraVendorGalleryItem]
   private let galleryService: CameraVendorGalleryService
+  private let shouldLoadPreviewThumbnail: () -> Bool
   private let isSelected: (Int) -> Bool
   private let downloadStateProvider: (Int) -> CameraVendorDownloadState
   private let onSelectionToggle: (CameraVendorGalleryItem) -> Void
@@ -4507,6 +5789,7 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
     items: [CameraVendorGalleryItem],
     initialIndex: Int,
     galleryService: CameraVendorGalleryService,
+    shouldLoadPreviewThumbnail: @escaping () -> Bool,
     isSelected: @escaping (Int) -> Bool,
     downloadStateProvider: @escaping (Int) -> CameraVendorDownloadState,
     onSelectionToggle: @escaping (CameraVendorGalleryItem) -> Void,
@@ -4517,6 +5800,7 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
     self.items = items
     self.currentIndex = min(max(initialIndex, 0), max(items.count - 1, 0))
     self.galleryService = galleryService
+    self.shouldLoadPreviewThumbnail = shouldLoadPreviewThumbnail
     self.isSelected = isSelected
     self.downloadStateProvider = downloadStateProvider
     self.onSelectionToggle = onSelectionToggle
@@ -4594,10 +5878,10 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
     topBar.addSubview(closeButton)
     topBar.addSubview(titleLabel)
     topBar.addSubview(subtitleLabel)
+    topBar.addSubview(downloadButton)
 
     view.addSubview(bottomBar)
     bottomBar.addSubview(selectionButton)
-    bottomBar.addSubview(downloadButton)
 
     closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
     selectionButton.addTarget(self, action: #selector(selectionTapped), for: .touchUpInside)
@@ -4616,7 +5900,7 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
       topBar.topAnchor.constraint(equalTo: view.topAnchor),
       topBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
       topBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-      topBar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 56),
+      topBar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 64),
 
       closeButton.leadingAnchor.constraint(equalTo: topBar.leadingAnchor, constant: 16),
       closeButton.bottomAnchor.constraint(equalTo: topBar.bottomAnchor, constant: -10),
@@ -4624,10 +5908,17 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
       closeButton.heightAnchor.constraint(equalToConstant: 36),
 
       titleLabel.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
+      titleLabel.leadingAnchor.constraint(greaterThanOrEqualTo: closeButton.trailingAnchor, constant: 10),
+      titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: downloadButton.leadingAnchor, constant: -10),
       titleLabel.bottomAnchor.constraint(equalTo: subtitleLabel.topAnchor, constant: -2),
 
       subtitleLabel.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
+      subtitleLabel.leadingAnchor.constraint(greaterThanOrEqualTo: closeButton.trailingAnchor, constant: 10),
+      subtitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: downloadButton.leadingAnchor, constant: -10),
       subtitleLabel.bottomAnchor.constraint(equalTo: topBar.bottomAnchor, constant: -10),
+
+      downloadButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -16),
+      downloadButton.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
 
       bottomBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
       bottomBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -4638,9 +5929,6 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
       selectionButton.topAnchor.constraint(equalTo: bottomBar.topAnchor, constant: 14),
       selectionButton.widthAnchor.constraint(equalToConstant: 44),
       selectionButton.heightAnchor.constraint(equalToConstant: 44),
-
-      downloadButton.trailingAnchor.constraint(equalTo: bottomBar.trailingAnchor, constant: -22),
-      downloadButton.centerYAnchor.constraint(equalTo: selectionButton.centerYAnchor),
     ])
   }
 
@@ -4654,6 +5942,7 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
         guard let self else { return true }
         return NativeGalleryNavigationPolicy.canDismissPreview(isDownloading: self.isTransferLocked())
       },
+      shouldLoadPreviewThumbnail: shouldLoadPreviewThumbnail,
       onDismissDrag: { [weak self] progress in
         self?.applyDismissDragProgress(progress)
       },
@@ -4706,7 +5995,7 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
     case .downloading:
       title = "下载中…"; enabled = false
     case .saved:
-      title = "已下载"; enabled = false
+      title = "已保存"; enabled = false
     case .failed:
       title = "重试下载"; enabled = true
     }
@@ -4774,12 +6063,19 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
           NativeGalleryDownloadSelectionPolicy.canSelect(downloadState: downloadStateProvider(item.handle)) else {
       return
     }
+    cancelPreviewThumbnailLoads()
     onDownload(item)
     refreshChromeForCurrentItem()
   }
 
   @objc private func downloadStateChanged() {
     refreshChromeForCurrentItem()
+  }
+
+  private func cancelPreviewThumbnailLoads() {
+    for controller in pageController.viewControllers ?? [] {
+      (controller as? NativePhotoPreviewPageController)?.cancelThumbnailLoadForPriorityDownload()
+    }
   }
 
   // MARK: - UIPageViewControllerDataSource
@@ -4806,12 +6102,20 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
 
   func pageViewController(
     _ pageViewController: UIPageViewController,
+    willTransitionTo pendingViewControllers: [UIViewController]
+  ) {
+    guard let page = pendingViewControllers.first as? NativePhotoPreviewPageController else { return }
+    currentIndex = page.index
+    refreshChromeForCurrentItem()
+  }
+
+  func pageViewController(
+    _ pageViewController: UIPageViewController,
     didFinishAnimating finished: Bool,
     previousViewControllers: [UIViewController],
     transitionCompleted completed: Bool
   ) {
-    guard completed,
-          let page = pageController.viewControllers?.first as? NativePhotoPreviewPageController else { return }
+    guard let page = pageController.viewControllers?.first as? NativePhotoPreviewPageController else { return }
     currentIndex = page.index
     refreshChromeForCurrentItem()
   }
@@ -4822,6 +6126,7 @@ private final class NativePhotoPreviewPageController: UIViewController, UIScroll
   let item: CameraVendorGalleryItem
   private let galleryService: CameraVendorGalleryService
   private let canDismiss: () -> Bool
+  private let shouldLoadPreviewThumbnail: () -> Bool
   private let onDismissDrag: (CGFloat) -> Void
   private let onDismissBlocked: () -> Void
   private let onDismissCommit: () -> Void
@@ -4876,6 +6181,7 @@ private final class NativePhotoPreviewPageController: UIViewController, UIScroll
     index: Int,
     galleryService: CameraVendorGalleryService,
     canDismiss: @escaping () -> Bool,
+    shouldLoadPreviewThumbnail: @escaping () -> Bool,
     onDismissDrag: @escaping (CGFloat) -> Void,
     onDismissBlocked: @escaping () -> Void,
     onDismissCommit: @escaping () -> Void,
@@ -4885,6 +6191,7 @@ private final class NativePhotoPreviewPageController: UIViewController, UIScroll
     self.index = index
     self.galleryService = galleryService
     self.canDismiss = canDismiss
+    self.shouldLoadPreviewThumbnail = shouldLoadPreviewThumbnail
     self.onDismissDrag = onDismissDrag
     self.onDismissBlocked = onDismissBlocked
     self.onDismissCommit = onDismissCommit
@@ -4959,8 +6266,19 @@ private final class NativePhotoPreviewPageController: UIViewController, UIScroll
       spinner.startAnimating()
     }
     guard loadTask == nil else { return }
+    guard shouldLoadPreviewThumbnail() else {
+      spinner.stopAnimating()
+      return
+    }
     loadTask = Task { [weak self] in
       guard let self else { return }
+      guard self.shouldLoadPreviewThumbnail() else {
+        await MainActor.run {
+          self.spinner.stopAnimating()
+          self.loadTask = nil
+        }
+        return
+      }
       do {
         let data = try await galleryService.fetchThumbnail(for: item.handle)
         if Task.isCancelled { return }
@@ -4977,6 +6295,12 @@ private final class NativePhotoPreviewPageController: UIViewController, UIScroll
         }
       }
     }
+  }
+
+  func cancelThumbnailLoadForPriorityDownload() {
+    loadTask?.cancel()
+    loadTask = nil
+    spinner.stopAnimating()
   }
 
   private func apply(image: UIImage) {
@@ -5102,7 +6426,18 @@ private enum CameraVendorPhotoLibrarySaver {
           let request = PHAssetCreationRequest.forAsset()
           let options = PHAssetResourceCreationOptions()
           options.originalFilename = file.filename
-          request.addResource(with: .photo, fileURL: file.fileURL, options: options)
+          if CameraVendorPhotoLibrarySaveInputPolicy.shouldSavePhotoDownloadFromData(
+            filename: file.filename,
+            mediaType: file.mediaType
+          ), let data = try? Data(contentsOf: file.fileURL) {
+            request.addResource(
+              with: .photo,
+              data: CameraVendorImageDataNormalizer.imageData(from: data),
+              options: options
+            )
+          } else {
+            request.addResource(with: .photo, fileURL: file.fileURL, options: options)
+          }
         case .video:
           _ = PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: file.fileURL)
         }

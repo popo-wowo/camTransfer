@@ -93,7 +93,13 @@ class CameraVendorBleScanner(private val context: Context) {
             val name = result.device.name ?: record.deviceName ?: ""
             if (name.isNotEmpty()) {
                 val upper = name.uppercase()
-                if ("CAMERA_VENDOR" in upper || upper.startsWith("CAMERA-")) return true
+                if (
+                    "CAMERA_VENDOR" in upper ||
+                    "FUJIFILM" in upper ||
+                    upper.startsWith("X-") ||
+                    upper.startsWith("GFX") ||
+                    upper.startsWith("CAMERA-")
+                ) return true
             }
 
             val mfgData = record.manufacturerSpecificData

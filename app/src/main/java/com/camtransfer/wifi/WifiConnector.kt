@@ -6,7 +6,6 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.WifiNetworkSpecifier
-import android.os.PatternMatcher
 import android.util.Log
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeout
@@ -20,15 +19,21 @@ class WifiConnector(private val context: Context) {
 
     val connectedNetwork: Network? get() = network
 
-    suspend fun connect(ssid: String, password: String = "00000000", timeoutMs: Long = 30_000): Network {
+    suspend fun connect(
+        configuration: CameraVendorWifiNetworkConfiguration,
+        timeoutMs: Long = 30_000,
+    ): Network {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
         disconnect()
 
-        val specifier = WifiNetworkSpecifier.Builder()
-            .setSsidPattern(PatternMatcher(ssid, PatternMatcher.PATTERN_PREFIX))
-            .setWpa2Passphrase(password)
-            .build()
+        val builder = WifiNetworkSpecifier.Builder()
+            .setSsid(configuration.ssid)
+            .setWpa2Passphrase(configuration.passphrase)
+        if (configuration.isHidden) {
+            builder.setIsHiddenSsid(true)
+        }
+        val specifier = builder.build()
 
         val request = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
@@ -48,7 +53,7 @@ class WifiConnector(private val context: Context) {
 
             override fun onUnavailable() {
                 Log.w(TAG, "WiFi unavailable")
-                deferred.completeExceptionally(Exception("无法连接相机 WiFi: $ssid"))
+                deferred.completeExceptionally(Exception("无法连接相机 WiFi: ${configuration.ssid}"))
             }
 
             override fun onLost(net: Network) {
@@ -62,7 +67,10 @@ class WifiConnector(private val context: Context) {
 
         callback = cb
         cm.requestNetwork(request, cb)
-        Log.d(TAG, "Requesting WiFi: ssid=$ssid")
+        Log.d(
+            TAG,
+            "Requesting WiFi: ssid=${configuration.ssid} hidden=${configuration.isHidden} passphraseLength=${configuration.passphrase.length}",
+        )
 
         return withTimeout(timeoutMs) { deferred.await() }
     }

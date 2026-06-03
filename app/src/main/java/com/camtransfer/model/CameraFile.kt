@@ -18,15 +18,21 @@ data class ObjectInfo(
     val captureDate: String,
 ) {
     val isJpeg: Boolean get() = format == PtpObjectFormat.JPEG
-    val isRaw: Boolean get() = format == PtpObjectFormat.CAMERA_VENDOR_RAF
+    val isHeif: Boolean get() = format == PtpObjectFormat.HEIF ||
+        filename.endsWith(".HEIF", ignoreCase = true) ||
+        filename.endsWith(".HEIC", ignoreCase = true) ||
+        filename.endsWith(".HIF", ignoreCase = true)
+    val isRaw: Boolean get() = format == PtpObjectFormat.CAMERA_VENDOR_RAF ||
+        format == PtpObjectFormat.CAMERA_VENDOR_RAF_ALT
     val isVideo: Boolean get() = format == PtpObjectFormat.MOV || format == PtpObjectFormat.MP4
     val isFolder: Boolean get() = format == PtpObjectFormat.ASSOCIATION
 
     val formatLabel: String get() = when {
         isJpeg -> "JPG"
+        isHeif -> "HEIF"
         isRaw -> "RAW"
         isVideo -> "Video"
-        else -> "Unknown"
+        else -> "0x%04X".format(format)
     }
 }
 
@@ -37,9 +43,15 @@ data class CameraFile(
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is CameraFile) return false
-        return info == other.info
+        return info == other.info && thumbnail.contentEqualsNullable(other.thumbnail)
     }
-    override fun hashCode(): Int = info.hashCode()
+    override fun hashCode(): Int =
+        31 * info.hashCode() + (thumbnail?.contentHashCode() ?: 0)
+
+    private fun ByteArray?.contentEqualsNullable(other: ByteArray?): Boolean {
+        if (this == null || other == null) return this === other
+        return contentEquals(other)
+    }
 }
 
 enum class TransferState { PENDING, DOWNLOADING, SAVING, DONE, ERROR }

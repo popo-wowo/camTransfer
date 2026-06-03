@@ -1,34 +1,57 @@
 package com.camtransfer
 
-import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.camtransfer.ui.BrowseScreen
+import com.camtransfer.ui.CamTransferTheme
 import com.camtransfer.ui.ConnectScreen
 import com.camtransfer.ui.TransferScreen
+import com.camtransfer.service.CameraFileSource
+import com.camtransfer.service.DiagnosticLog
+import com.camtransfer.service.WiredCameraService
 import com.camtransfer.viewmodel.BrowseViewModel
+import com.camtransfer.viewmodel.ConnectionState
 import com.camtransfer.viewmodel.ConnectionViewModel
 import com.camtransfer.viewmodel.TransferViewModel
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
-
-    private val requiredPermissions = arrayOf(
-        Manifest.permission.BLUETOOTH_SCAN,
-        Manifest.permission.BLUETOOTH_CONNECT,
-        Manifest.permission.ACCESS_FINE_LOCATION,
-        Manifest.permission.READ_MEDIA_IMAGES,
-        Manifest.permission.READ_MEDIA_VIDEO,
-    )
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -36,20 +59,76 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        installCrashLogging()
 
-        val missing = requiredPermissions.filter {
+        setContent {
+            CamTransferTheme {
+                Surface(Modifier.fillMaxSize()) {
+                    val context = LocalContext.current
+                    var hasAcceptedDisclaimer by remember {
+                        mutableStateOf(context.hasAcceptedDisclaimer())
+                    }
+                    var trialAccess by remember { mutableStateOf(currentTrialAccess()) }
+                    LaunchedEffect(Unit) {
+                        while (true) {
+                            trialAccess = currentTrialAccess()
+                            delay(1_000)
+                        }
+                    }
+                    LaunchedEffect(hasAcceptedDisclaimer) {
+                        if (hasAcceptedDisclaimer) requestMissingPermissions()
+                    }
+
+                    if (!hasAcceptedDisclaimer) {
+                        DisclaimerDialog(
+                            trialDays = trialDays(),
+                            confirmText = "我已知晓并同意",
+                            dismissText = null,
+                            onConfirm = {
+                                context.markDisclaimerAccepted()
+                                hasAcceptedDisclaimer = true
+                            },
+                            onDismiss = {},
+                        )
+                    } else if (trialAccess.canUse) {
+                        CamTransferApp(trialDays = trialDays())
+                    } else {
+                        TrialExpiredScreen(trialAccess, trialDays = trialDays())
+                    }
+                }
+            }
+        }
+    }
+
+    private fun requestMissingPermissions() {
+        val missing = AppPermissionPolicy.requiredRuntimePermissions().filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
         if (missing.isNotEmpty()) {
             permissionLauncher.launch(missing.toTypedArray())
         }
+    }
 
-        setContent {
-            MaterialTheme {
-                Surface(Modifier.fillMaxSize()) {
-                    CamTransferApp()
-                }
+    private fun currentTrialAccess(): TrialAccess {
+        return TrialAccessPolicy.evaluateBuildStart(
+            startEpochMillis = BuildConfig.TRIAL_START_EPOCH_MILLIS,
+            durationMinutes = BuildConfig.TRIAL_DURATION_MINUTES,
+        )
+    }
+
+    fun shareDiagnosticLog() {
+        val shareIntent = DiagnosticLog.shareIntent(this)
+        startActivity(Intent.createChooser(shareIntent, "导出诊断日志"))
+    }
+
+    private fun installCrashLogging() {
+        val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            runCatching {
+                DiagnosticLog.appendCrash(applicationContext, thread, throwable)
             }
+            previousHandler?.uncaughtException(thread, throwable)
+                ?: kotlin.system.exitProcess(2)
         }
     }
 }
@@ -57,34 +136,256 @@ class MainActivity : ComponentActivity() {
 enum class Screen { CONNECT, BROWSE, TRANSFER }
 
 @Composable
-fun CamTransferApp() {
+fun CamTransferApp(trialDays: Long) {
+    val context = LocalContext.current
     val connectionVM: ConnectionViewModel = viewModel()
     val browseVM: BrowseViewModel = viewModel()
     val transferVM: TransferViewModel = viewModel()
+    val connectionState by connectionVM.state.collectAsState()
+    val scope = rememberCoroutineScope()
+    val wiredCameraService = remember { WiredCameraService(context.applicationContext) }
 
     var currentScreen by remember { mutableStateOf(Screen.CONNECT) }
+    var showsDisclaimer by remember { mutableStateOf(false) }
+    var wiredError by remember { mutableStateOf<String?>(null) }
+    var activeCameraSource by remember { mutableStateOf<CameraFileSource?>(null) }
+    var isWiredImport by remember { mutableStateOf(false) }
+
+    LaunchedEffect(connectionState) {
+        if (
+            CameraScreenRoutePolicy.shouldReturnToConnect(
+                isWiredImport = isWiredImport,
+                hasActiveCameraSource = activeCameraSource != null,
+                connectionState = connectionState,
+                currentScreen = currentScreen,
+            )
+        ) {
+            DiagnosticLog.append(context, "Navigation", "Return to connect state=$connectionState screen=$currentScreen")
+            currentScreen = Screen.CONNECT
+        }
+    }
 
     when (currentScreen) {
         Screen.CONNECT -> ConnectScreen(
             viewModel = connectionVM,
-            onConnected = { currentScreen = Screen.BROWSE },
-        )
-        Screen.BROWSE -> BrowseScreen(
-            viewModel = browseVM,
-            cameraService = connectionVM.cameraService,
-            onTransfer = { files ->
-                transferVM.init(connectionVM.cameraService)
-                transferVM.startTransfer(files)
-                currentScreen = Screen.TRANSFER
+            onConnected = {
+                isWiredImport = false
+                activeCameraSource = connectionVM.cameraService
+                transferVM.switchSource(connectionVM.cameraService)
+                browseVM.reset()
+                currentScreen = Screen.BROWSE
             },
-            onDisconnect = {
-                connectionVM.disconnect()
-                currentScreen = Screen.CONNECT
+            onOpenWiredImport = {
+                scope.launch {
+                    wiredError = null
+                    runCatching {
+                        wiredCameraService.connectFirstAvailableDevice()
+                    }.onSuccess {
+                        isWiredImport = true
+                        activeCameraSource = wiredCameraService
+                        transferVM.switchSource(wiredCameraService)
+                        browseVM.reset()
+                        currentScreen = Screen.BROWSE
+                    }.onFailure { error ->
+                        wiredError = error.message ?: "有线相机连接失败"
+                    }
+                }
             },
+            onShareDiagnosticLog = { (context as? MainActivity)?.shareDiagnosticLog() },
+            onShowDisclaimer = { showsDisclaimer = true },
         )
+        Screen.BROWSE -> {
+            val cameraSource = activeCameraSource ?: connectionVM.cameraService
+            transferVM.init(cameraSource)
+            val transferItems by transferVM.items.collectAsState()
+            val downloadedItems by transferVM.downloadedItems.collectAsState()
+            val isTransferring by transferVM.isTransferring.collectAsState()
+            val preferCompressedDownloads by connectionVM.preferCompressedDownloads.collectAsState()
+            BrowseScreen(
+                viewModel = browseVM,
+                cameraSource = cameraSource,
+                transferItems = transferItems,
+                downloadedItems = downloadedItems,
+                isTransferring = isTransferring,
+                preferCompressedDownloads = preferCompressedDownloads,
+                onFilesLoaded = { files -> transferVM.syncDownloadedFiles(files) },
+                onDownloadSelected = { files ->
+                    transferVM.init(cameraSource)
+                    transferVM.startTransfer(files)
+                },
+                onOpenDownloads = { currentScreen = Screen.TRANSFER },
+                onClearDownloadCache = { transferVM.clearDownloadedCache() },
+                onDisconnect = {
+                    browseVM.reset()
+                    scope.launch {
+                        if (isWiredImport) {
+                            wiredCameraService.disconnect()
+                        } else {
+                            connectionVM.disconnect()
+                        }
+                    }
+                    isWiredImport = false
+                    activeCameraSource = null
+                    currentScreen = Screen.CONNECT
+                },
+            )
+        }
         Screen.TRANSFER -> TransferScreen(
             viewModel = transferVM,
             onBack = { currentScreen = Screen.BROWSE },
+            onClearDownloadCache = { transferVM.clearDownloadedCache() },
+        )
+    }
+
+    if (showsDisclaimer) {
+        DisclaimerDialog(
+            trialDays = trialDays,
+            confirmText = "知道了",
+            dismissText = "关闭",
+            onConfirm = { showsDisclaimer = false },
+            onDismiss = { showsDisclaimer = false },
+        )
+    }
+    wiredError?.let { message ->
+        AlertDialog(
+            onDismissRequest = { wiredError = null },
+            confirmButton = {
+                Button(onClick = { wiredError = null }) {
+                    Text("知道了")
+                }
+            },
+            title = { Text("有线导入不可用") },
+            text = { Text(message) },
         )
     }
 }
+
+internal object CameraScreenRoutePolicy {
+    fun shouldReturnToConnect(
+        isWiredImport: Boolean,
+        hasActiveCameraSource: Boolean,
+        connectionState: ConnectionState,
+        currentScreen: Screen,
+    ): Boolean {
+        if (currentScreen == Screen.CONNECT) return false
+        if (isWiredImport) return false
+        if (hasActiveCameraSource) return false
+        return connectionState != ConnectionState.CONNECTED
+    }
+}
+
+@Composable
+private fun TrialExpiredScreen(trialAccess: TrialAccess, trialDays: Long) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterVertically),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text("内测版本已过期")
+        Text("本内测包已于 ${trialAccess.expiresAt.asLocalTimeText()} 过期，请联系开发者获取新版本。")
+        Text("本 App 为个人开发者独立内测版本，有效期 $trialDays 天，并非 FUJIFILM / 富士胶片官方应用。")
+        Text("App 不需要联网服务器，不会上传、收集、分析或出售用户照片、视频等个人信息。")
+        Image(
+            painter = painterResource(id = R.drawable.contact_xiaohongshu),
+            contentDescription = "开发者小红书联系方式",
+            modifier = Modifier
+                .fillMaxWidth()
+                .widthIn(max = 420.dp),
+            contentScale = ContentScale.FillWidth,
+        )
+    }
+}
+
+@Composable
+private fun DisclaimerDialog(
+    trialDays: Long,
+    confirmText: String,
+    dismissText: String?,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            Button(onClick = onConfirm) {
+                Text(confirmText)
+            }
+        },
+        dismissButton = dismissText?.let { text ->
+            {
+                TextButton(onClick = onDismiss) {
+                    Text(text)
+                }
+            }
+        },
+        title = { Text("使用须知与免责声明") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                AppDisclaimerText.sections(trialDays).forEach { section ->
+                    DisclaimerSectionView(section)
+                }
+            }
+        },
+    )
+}
+
+@Composable
+private fun DisclaimerSectionView(section: AppDisclaimerSection) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            section.title,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Black,
+        )
+        Text(
+            highlightedDisclaimerBody(section),
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+}
+
+private fun highlightedDisclaimerBody(section: AppDisclaimerSection) = buildAnnotatedString {
+    val body = section.body
+    var cursor = 0
+    val matches = section.highlights
+        .mapNotNull { phrase ->
+            val index = body.indexOf(phrase)
+            if (index >= 0) index to phrase else null
+        }
+        .sortedBy { it.first }
+
+    for ((index, phrase) in matches) {
+        if (index < cursor) continue
+        append(body.substring(cursor, index))
+        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+            append(phrase)
+        }
+        cursor = index + phrase.length
+    }
+    if (cursor < body.length) append(body.substring(cursor))
+}
+
+private fun android.content.Context.hasAcceptedDisclaimer(): Boolean =
+    getSharedPreferences(AppDisclaimerText.ACCEPTANCE_PREFS, android.content.Context.MODE_PRIVATE)
+        .getBoolean(AppDisclaimerText.ACCEPTED_KEY, false)
+
+private fun android.content.Context.markDisclaimerAccepted() {
+    getSharedPreferences(AppDisclaimerText.ACCEPTANCE_PREFS, android.content.Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(AppDisclaimerText.ACCEPTED_KEY, true)
+        .apply()
+}
+
+private fun trialDays(): Long = (BuildConfig.TRIAL_DURATION_MINUTES / 1_440L).coerceAtLeast(1L)
+
+private fun java.time.Instant.asLocalTimeText(): String =
+    DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+        .format(atZone(ZoneId.systemDefault()))

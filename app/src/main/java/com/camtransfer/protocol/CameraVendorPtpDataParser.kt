@@ -1,0 +1,151 @@
+package com.camtransfer.protocol
+
+import com.camtransfer.model.ObjectInfo
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+
+object CameraVendorPtpDataParser {
+    fun uint32Array(data: ByteArray): List<Int> {
+        if (data.size < 4) return emptyList()
+        val count = uint32(data, 0)
+        val result = mutableListOf<Int>()
+        for (i in 0 until count) {
+            val offset = 4 + i * 4
+            if (offset + 4 > data.size) break
+            result.add(uint32(data, offset))
+        }
+        return result
+    }
+
+    fun objectInfo(handle: Int, data: ByteArray): ObjectInfo {
+        val storageId = uint32OrZero(data, 0)
+        val format = uint16OrZero(data, 4)
+        val compressedSize = uint32OrZero(data, 8)
+        val thumbFormat = uint16OrZero(data, 12)
+        val thumbCompressedSize = uint32OrZero(data, 14)
+        val thumbPixWidth = uint32OrZero(data, 18)
+        val thumbPixHeight = uint32OrZero(data, 22)
+        val imagePixWidth = uint32OrZero(data, 26)
+        val imagePixHeight = uint32OrZero(data, 30)
+        val parentObject = uint32OrZero(data, 38)
+        val filenameOffset = 52
+        val filename = ptpString(data, filenameOffset)
+        val captureDateOffset = filenameOffset + ptpStringByteLength(data, filenameOffset)
+        val captureDate = ptpString(data, captureDateOffset)
+        return ObjectInfo(
+            handle = handle,
+            storageId = storageId,
+            format = format,
+            compressedSize = compressedSize,
+            thumbFormat = thumbFormat,
+            thumbCompressedSize = thumbCompressedSize,
+            thumbPixWidth = thumbPixWidth,
+            thumbPixHeight = thumbPixHeight,
+            imagePixWidth = imagePixWidth,
+            imagePixHeight = imagePixHeight,
+            parentObject = parentObject,
+            filename = filename.ifBlank { "0x%08X.JPG".format(handle) },
+            captureDate = captureDate,
+        )
+    }
+
+    fun cameraVendorObjectInfo(handle: Int, data: ByteArray): ObjectInfo {
+        val info = objectInfo(handle, data)
+        val filenameOffset = 54
+        val filename = ptpString(data, filenameOffset)
+        val captureDateOffset = filenameOffset + ptpStringByteLength(data, filenameOffset)
+        val captureDate = ptpString(data, captureDateOffset)
+        return info.copy(
+            filename = filename.ifBlank { info.filename },
+            captureDate = captureDate.ifBlank { info.captureDate },
+        )
+    }
+
+    fun imageData(data: ByteArray): ByteArray {
+        val jpeg = jpegData(data)
+        if (jpeg.size != data.size || (jpeg.size >= 2 && jpeg[0] == 0xFF.toByte() && jpeg[1] == 0xD8.toByte())) {
+            return jpeg
+        }
+        return heifData(data)
+    }
+
+    fun isLikelyImageData(data: ByteArray): Boolean {
+        if (data.size >= 2 && data[0] == 0xFF.toByte() && data[1] == 0xD8.toByte()) return true
+        if (data.size < 12) return false
+        val brands = setOf("heic", "heix", "hevc", "hevx", "heis", "hevm", "heif", "mif1", "msf1")
+        for (i in 4..data.size - 8) {
+            if (data[i] == 'f'.code.toByte() &&
+                data[i + 1] == 't'.code.toByte() &&
+                data[i + 2] == 'y'.code.toByte() &&
+                data[i + 3] == 'p'.code.toByte()
+            ) {
+                val brand = data.copyOfRange(i + 4, i + 8).toString(Charsets.US_ASCII)
+                if (brand in brands) return true
+            }
+        }
+        return false
+    }
+
+    private fun jpegData(data: ByteArray): ByteArray {
+        if (data.size < 2) return data
+        if (data[0] == 0xFF.toByte() && data[1] == 0xD8.toByte()) return data
+        for (i in 0 until data.size - 1) {
+            if (data[i] == 0xFF.toByte() && data[i + 1] == 0xD8.toByte()) {
+                return data.copyOfRange(i, data.size)
+            }
+        }
+        return data
+    }
+
+    private fun heifData(data: ByteArray): ByteArray {
+        if (data.size < 12) return data
+        val brands = setOf("heic", "heix", "hevc", "hevx", "heis", "hevm", "heif", "mif1", "msf1")
+        for (i in 4..data.size - 8) {
+            if (data[i] == 'f'.code.toByte() &&
+                data[i + 1] == 't'.code.toByte() &&
+                data[i + 2] == 'y'.code.toByte() &&
+                data[i + 3] == 'p'.code.toByte()
+            ) {
+                val brand = data.copyOfRange(i + 4, i + 8).toString(Charsets.US_ASCII)
+                if (brand in brands) {
+                    return data.copyOfRange(i - 4, data.size)
+                }
+            }
+        }
+        return data
+    }
+
+    private fun ptpString(data: ByteArray, offset: Int): String {
+        if (offset >= data.size) return ""
+        val numChars = data[offset].toInt() and 0xFF
+        if (numChars == 0) return ""
+        val chars = StringBuilder()
+        var pos = offset + 1
+        for (i in 0 until numChars) {
+            if (pos + 1 >= data.size) break
+            val c = uint16(data, pos)
+            if (c == 0) break
+            chars.append(c.toChar())
+            pos += 2
+        }
+        return chars.toString()
+    }
+
+    private fun ptpStringByteLength(data: ByteArray, offset: Int): Int {
+        if (offset >= data.size) return 1
+        val numChars = data[offset].toInt() and 0xFF
+        return 1 + numChars * 2
+    }
+
+    private fun uint16OrZero(data: ByteArray, offset: Int): Int =
+        if (offset + 2 <= data.size) uint16(data, offset) else 0
+
+    private fun uint32OrZero(data: ByteArray, offset: Int): Int =
+        if (offset + 4 <= data.size) uint32(data, offset) else 0
+
+    private fun uint16(data: ByteArray, offset: Int): Int =
+        ByteBuffer.wrap(data, offset, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
+
+    private fun uint32(data: ByteArray, offset: Int): Int =
+        ByteBuffer.wrap(data, offset, 4).order(ByteOrder.LITTLE_ENDIAN).int
+}

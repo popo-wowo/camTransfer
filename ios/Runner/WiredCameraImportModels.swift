@@ -295,6 +295,8 @@ struct WiredCameraImportState {
 enum WiredCameraImportDateFilter: Codable, Equatable {
   case all
   case today
+  case specificDay(Date)
+  case range(Date, Date)
 }
 
 enum WiredCameraImportFormatFilter: Codable, Equatable {
@@ -351,6 +353,20 @@ enum WiredCameraImportFilterPolicy {
     case .today:
       guard let createdAt = item.createdAt else { return false }
       return calendar.isDate(createdAt, inSameDayAs: now)
+    case .specificDay(let day):
+      guard let createdAt = item.createdAt else { return false }
+      return calendar.isDate(createdAt, inSameDayAs: day)
+    case .range(let firstDay, let secondDay):
+      guard let createdAt = item.createdAt else { return false }
+      let start = calendar.startOfDay(for: min(firstDay, secondDay))
+      guard let end = calendar.date(
+        byAdding: .day,
+        value: 1,
+        to: calendar.startOfDay(for: max(firstDay, secondDay))
+      ) else {
+        return false
+      }
+      return createdAt >= start && createdAt < end
     }
   }
 
@@ -571,6 +587,10 @@ enum WiredCameraAutoImportPolicy {
 
 enum WiredCameraImportNavigationPolicy {
   static func canLeaveImportScreen(isImporting: Bool) -> Bool {
+    !isImporting
+  }
+
+  static func canOpenPreview(isImporting: Bool) -> Bool {
     !isImporting
   }
 }

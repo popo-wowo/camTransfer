@@ -8,13 +8,12 @@ final class WiredCameraImportViewController: UIViewController {
   private var state = WiredCameraImportState()
   private var autoImportAttemptedItemIDs: Set<String> = []
   private var currentImportTotal = 0
-  private var dragSelectionTarget: Bool?
-  private var lastDragSelectionIndexPath: IndexPath?
   private var proofingServer: LocalProofingServer?
   private weak var proofingSheet: LocalProofingSessionViewController?
   private var refreshButtonItem: UIBarButtonItem?
   private var proofingButtonItem: UIBarButtonItem?
   private var previousInteractivePopGestureEnabled: Bool?
+  private var importTask: Task<Void, Never>?
 
   private let headerView = UIView()
   private let statusLabel = UILabel()
@@ -46,6 +45,13 @@ final class WiredCameraImportViewController: UIViewController {
     title = "有线导入 Beta"
     view.backgroundColor = NativeLuxuryTheme.background
     navigationItem.largeTitleDisplayMode = .never
+    navigationItem.hidesBackButton = true
+    navigationItem.leftBarButtonItem = UIBarButtonItem(
+      title: "断开",
+      style: .plain,
+      target: self,
+      action: #selector(disconnectTapped)
+    )
     let refreshButtonItem = UIBarButtonItem(
       title: "刷新",
       style: .plain,
@@ -83,6 +89,7 @@ final class WiredCameraImportViewController: UIViewController {
   }
 
   deinit {
+    importTask?.cancel()
     proofingServer?.stop()
     service.stop()
   }
@@ -109,6 +116,8 @@ final class WiredCameraImportViewController: UIViewController {
     dateChips.configure(items: [
       .init(id: "all", title: "全部日期"),
       .init(id: "today", title: "今天"),
+      .init(id: "pickDate", title: "选择日期"),
+      .init(id: "dateRange", title: "时间范围"),
     ], selectedID: "all")
     formatChips.configure(items: [
       .init(id: "all", title: "全部格式"),
@@ -131,10 +140,6 @@ final class WiredCameraImportViewController: UIViewController {
     collectionView.dataSource = self
     collectionView.delegate = self
     collectionView.register(WiredCameraImportGridCell.self, forCellWithReuseIdentifier: WiredCameraImportGridCell.reuseID)
-    let dragSelectionGesture = UILongPressGestureRecognizer(target: self, action: #selector(handleDragSelection(_:)))
-    dragSelectionGesture.minimumPressDuration = 0.18
-    dragSelectionGesture.allowableMovement = 18
-    collectionView.addGestureRecognizer(dragSelectionGesture)
 
     NativeLuxuryTheme.applyFloatingPillStyle(bottomImportBar)
     bottomImportBar.isHidden = true
@@ -276,15 +281,47 @@ final class WiredCameraImportViewController: UIViewController {
     bottomImportBar.isHidden = selectedCount == 0
     bottomImportLabel.text = "已选 \(selectedCount) 个文件"
     proofingSheet?.updateSelectedCount(proofingFavoriteCount)
+    updateDateFilterChips()
     updateNavigationLock()
     collectionView.reloadData()
   }
 
   private func updateNavigationLock() {
     let canLeave = WiredCameraImportNavigationPolicy.canLeaveImportScreen(isImporting: state.isImporting)
-    navigationItem.hidesBackButton = !canLeave
+    navigationItem.leftBarButtonItem?.isEnabled = true
     navigationController?.interactivePopGestureRecognizer?.isEnabled = canLeave
     isModalInPresentation = !canLeave
+  }
+
+  @objc private func disconnectTapped() {
+    guard state.isImporting else {
+      leaveImportScreen()
+      return
+    }
+    let alert = UIAlertController(
+      title: "断开并返回？",
+      message: "正在导入照片。只有主动断开后才能返回首页，当前导入会停止。",
+      preferredStyle: .alert
+    )
+    alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+    alert.addAction(UIAlertAction(title: "断开", style: .destructive) { [weak self] _ in
+      guard let self else { return }
+      self.importTask?.cancel()
+      self.state.isImporting = false
+      self.service.stop()
+      self.leaveImportScreen()
+    })
+    present(alert, animated: true)
+  }
+
+  private func leaveImportScreen() {
+    proofingServer?.stop()
+    service.stop()
+    if let navigationController {
+      navigationController.popViewController(animated: true)
+    } else {
+      dismiss(animated: true)
+    }
   }
 
   @objc private func refreshTapped() {
@@ -303,6 +340,14 @@ final class WiredCameraImportViewController: UIViewController {
   }
 
   @objc private func chipFilterChanged() {
+    if dateChips.selectedID == "pickDate" {
+      presentSpecificDatePicker()
+      return
+    }
+    if dateChips.selectedID == "dateRange" {
+      presentRangeStartPicker()
+      return
+    }
     state.filterState = WiredCameraImportFilterState(
       date: wiredDateFilter(for: dateChips.selectedID),
       format: wiredFormatFilter(for: formatChips.selectedID),
@@ -310,6 +355,19 @@ final class WiredCameraImportViewController: UIViewController {
     )
     render()
     requestThumbnailsForVisibleItems()
+  }
+
+  private func updateDateFilterChips() {
+    switch state.filterState.date {
+    case .all:
+      dateChips.setSelected("all")
+    case .today:
+      dateChips.setSelected("today")
+    case .specificDay(let day):
+      dateChips.refreshTitle(forID: "pickDate", title: dateChipLabel(for: day))
+    case .range(let start, let end):
+      dateChips.refreshTitle(forID: "dateRange", title: dateRangeChipLabel(start: start, end: end))
+    }
   }
 
   @objc private func importTapped() {
@@ -328,12 +386,16 @@ final class WiredCameraImportViewController: UIViewController {
     currentImportTotal = items.count
     render()
 
-    Task { [weak self] in
+    importTask?.cancel()
+    importTask = Task { [weak self] in
       guard let self else { return }
       do {
         for item in items {
+          try Task.checkCancellation()
           let file = try await self.service.downloadFile(for: item.id)
+          try Task.checkCancellation()
           try await WiredCameraPhotoLibrarySaver.save(file: file)
+          try Task.checkCancellation()
           await MainActor.run {
             self.state.importedCount += 1
             self.state.markImported(itemID: item.id)
@@ -353,9 +415,12 @@ final class WiredCameraImportViewController: UIViewController {
         }
       } catch {
         await MainActor.run {
+          guard !Task.isCancelled else { return }
           self.state.isImporting = false
           self.currentImportTotal = 0
-          print("CamTransferWired import failed error=\(error)")
+          let message = "CamTransferWired import failed error=\(error)"
+          print(message)
+          CameraVendorFileLogger.log(message)
           self.state.errorMessage = "导入失败：\(error.localizedDescription)"
           self.render()
         }
@@ -493,6 +558,109 @@ final class WiredCameraImportViewController: UIViewController {
     id == "today" ? .today : .all
   }
 
+  private func presentSpecificDatePicker() {
+    let days = availableCaptureDays()
+    guard !days.isEmpty else {
+      presentSimpleAlert(title: "选择日期", message: "相机文件里没有可识别日期")
+      updateDateFilterChips()
+      return
+    }
+    let alert = UIAlertController(title: "选择日期", message: nil, preferredStyle: .actionSheet)
+    days.forEach { day in
+      alert.addAction(UIAlertAction(title: fullDateLabel(for: day), style: .default) { [weak self] _ in
+        guard let self else { return }
+        self.state.filterState.date = .specificDay(day)
+        self.render()
+        self.requestThumbnailsForVisibleItems()
+      })
+    }
+    alert.addAction(UIAlertAction(title: "取消", style: .cancel) { [weak self] _ in
+      self?.updateDateFilterChips()
+    })
+    presentFilterSheet(alert)
+  }
+
+  private func presentRangeStartPicker() {
+    let days = availableCaptureDays()
+    guard !days.isEmpty else {
+      presentSimpleAlert(title: "选择时间范围", message: "相机文件里没有可识别日期")
+      updateDateFilterChips()
+      return
+    }
+    let alert = UIAlertController(title: "选择开始日期", message: nil, preferredStyle: .actionSheet)
+    days.forEach { day in
+      alert.addAction(UIAlertAction(title: fullDateLabel(for: day), style: .default) { [weak self] _ in
+        self?.presentRangeEndPicker(start: day)
+      })
+    }
+    alert.addAction(UIAlertAction(title: "取消", style: .cancel) { [weak self] _ in
+      self?.updateDateFilterChips()
+    })
+    presentFilterSheet(alert)
+  }
+
+  private func presentRangeEndPicker(start: Date) {
+    let alert = UIAlertController(title: "选择结束日期", message: "开始：\(fullDateLabel(for: start))", preferredStyle: .actionSheet)
+    availableCaptureDays().forEach { day in
+      alert.addAction(UIAlertAction(title: fullDateLabel(for: day), style: .default) { [weak self] _ in
+        guard let self else { return }
+        self.state.filterState.date = .range(start, day)
+        self.render()
+        self.requestThumbnailsForVisibleItems()
+      })
+    }
+    alert.addAction(UIAlertAction(title: "只选这一天", style: .default) { [weak self] _ in
+      guard let self else { return }
+      self.state.filterState.date = .range(start, start)
+      self.render()
+      self.requestThumbnailsForVisibleItems()
+    })
+    alert.addAction(UIAlertAction(title: "取消", style: .cancel) { [weak self] _ in
+      self?.updateDateFilterChips()
+    })
+    presentFilterSheet(alert)
+  }
+
+  private func availableCaptureDays(calendar: Calendar = Calendar(identifier: .gregorian)) -> [Date] {
+    let days = state.items.compactMap { item -> Date? in
+      guard let createdAt = item.createdAt else { return nil }
+      return calendar.startOfDay(for: createdAt)
+    }
+    return Array(Set(days)).sorted(by: >)
+  }
+
+  private func dateChipLabel(for day: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "zh_CN")
+    formatter.dateFormat = "MM-dd"
+    return formatter.string(from: day)
+  }
+
+  private func dateRangeChipLabel(start: Date, end: Date) -> String {
+    "\(dateChipLabel(for: min(start, end)))~\(dateChipLabel(for: max(start, end)))"
+  }
+
+  private func fullDateLabel(for day: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "zh_CN")
+    formatter.dateFormat = "yyyy-MM-dd"
+    return formatter.string(from: day)
+  }
+
+  private func presentFilterSheet(_ alert: UIAlertController) {
+    if let popover = alert.popoverPresentationController {
+      popover.sourceView = dateChips
+      popover.sourceRect = dateChips.bounds
+    }
+    present(alert, animated: true)
+  }
+
+  private func presentSimpleAlert(title: String, message: String) {
+    let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+    alert.addAction(UIAlertAction(title: "知道了", style: .default))
+    present(alert, animated: true)
+  }
+
   private func wiredFormatFilter(for id: String?) -> WiredCameraImportFormatFilter {
     switch id {
     case "jpg":
@@ -574,11 +742,12 @@ final class WiredCameraImportViewController: UIViewController {
     return items[indexPath.item]
   }
 
-  private func setSelection(_ shouldSelect: Bool, for item: WiredCameraImportItem) {
-    state.setSelection(shouldSelect, for: item)
-  }
-
   private func presentPreview(startingAt index: Int) {
+    guard WiredCameraImportNavigationPolicy.canOpenPreview(isImporting: state.isImporting) else {
+      state.errorMessage = "正在导入，请先保持在照片筛选页面"
+      render()
+      return
+    }
     let items = visibleItems()
     guard items.indices.contains(index) else { return }
     let controller = WiredCameraPhotoPreviewViewController(
@@ -589,10 +758,12 @@ final class WiredCameraImportViewController: UIViewController {
       },
       canImport: { [weak self] item in
         guard let self else { return false }
-        return self.state.isLiveCatalogReady && item.isImportable && !self.state.importedItemIDs.contains(item.id)
+        return self.state.isLiveCatalogReady && !self.state.isImporting && item.isImportable && !self.state.importedItemIDs.contains(item.id)
       },
       onImport: { [weak self] item in
-        self?.importItems([item], completionPrefix: "单张导入完成")
+        guard let self else { return }
+        self.importItems([item], completionPrefix: "单张导入完成")
+        self.dismiss(animated: true)
       }
     )
     let nav = UINavigationController(rootViewController: controller)
@@ -600,37 +771,6 @@ final class WiredCameraImportViewController: UIViewController {
     present(nav, animated: true)
   }
 
-  @objc private func handleDragSelection(_ gesture: UILongPressGestureRecognizer) {
-    let location = gesture.location(in: collectionView)
-    guard let indexPath = collectionView.indexPathForItem(at: location),
-          let item = item(at: indexPath),
-          state.isLiveCatalogReady,
-          item.isImportable,
-          !state.importedItemIDs.contains(item.id) else {
-      if gesture.state == .ended || gesture.state == .cancelled || gesture.state == .failed {
-        dragSelectionTarget = nil
-        lastDragSelectionIndexPath = nil
-      }
-      return
-    }
-
-    switch gesture.state {
-    case .began:
-      dragSelectionTarget = !state.selectedItemIDs.contains(item.id)
-      lastDragSelectionIndexPath = nil
-      fallthrough
-    case .changed:
-      guard lastDragSelectionIndexPath != indexPath else { return }
-      setSelection(dragSelectionTarget ?? true, for: item)
-      lastDragSelectionIndexPath = indexPath
-      render()
-    case .ended, .cancelled, .failed:
-      dragSelectionTarget = nil
-      lastDragSelectionIndexPath = nil
-    default:
-      break
-    }
-  }
 }
 
 extension WiredCameraImportViewController: WiredCameraImportServiceDelegate {
@@ -727,6 +867,11 @@ extension WiredCameraImportViewController: UICollectionViewDataSource, UICollect
   }
 
   func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+    guard WiredCameraImportNavigationPolicy.canOpenPreview(isImporting: state.isImporting) else {
+      state.errorMessage = "正在导入，请先保持在照片筛选页面"
+      render()
+      return
+    }
     presentPreview(startingAt: indexPath.item)
   }
 
@@ -1265,7 +1410,7 @@ private final class WiredCameraPhotoPreviewViewController: UIViewController, UIP
   }
 
   @objc private func closeTapped() {
-    dismiss(animated: true)
+    navigationController?.dismiss(animated: true) ?? dismiss(animated: true)
   }
 
   @objc private func importTapped() {

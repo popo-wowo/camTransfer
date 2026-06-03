@@ -1,122 +1,324 @@
 package com.camtransfer.protocol
 
+import android.util.Log
 import com.camtransfer.model.ObjectInfo
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
+import kotlinx.coroutines.flow.flow
+
+private const val TAG = "PtpCommands"
 
 class PtpCommands(private val connection: PtpConnection) {
 
     suspend fun getStorageIDs(): List<Int> {
         val data = connection.sendCommandGetData(PtpOpCode.GET_STORAGE_IDS)
-        return parseUint32Array(data)
+        return CameraVendorPtpDataParser.uint32Array(data)
     }
 
     suspend fun getObjectHandles(
         storageId: Int,
         formatCode: Int = 0,
-        parentHandle: Int = CameraVendorConst.ALL_HANDLES
+        parentHandle: Int = CameraVendorConst.ALL_HANDLES,
     ): List<Int> {
         val data = connection.sendCommandGetData(
             PtpOpCode.GET_OBJECT_HANDLES, listOf(storageId, formatCode, parentHandle)
         )
-        return parseUint32Array(data)
+        return CameraVendorPtpDataParser.uint32Array(data)
     }
 
     suspend fun getObjectInfo(handle: Int): ObjectInfo {
         val data = connection.sendCommandGetData(PtpOpCode.GET_OBJECT_INFO, listOf(handle))
-        return parseObjectInfo(handle, data)
+        return CameraVendorPtpDataParser.objectInfo(handle, data)
+    }
+
+    suspend fun galleryObjectInfos(): List<ObjectInfo> {
+        resetCameraVendorCompressionMode()
+        val specifiedHandles = connection.cameraVendorSpecifiedObjectHandles
+        if (specifiedHandles.isNotEmpty()) {
+            val specifiedInfos = specifiedHandles.map { handle ->
+                runCatching { getObjectInfo(handle) }
+                    .getOrElse { placeholderObjectInfo(handle) }
+            }
+            val forwardInfos = forwardObjectInfos(specifiedHandles, specifiedInfos)
+            val hiddenInfos = if (CameraVendorHiddenObjectProbePolicy.shouldProbeHiddenHandles(specifiedHandles)) {
+                hiddenObjectInfos(specifiedHandles, specifiedInfos)
+            } else {
+                emptyList()
+            }
+            val vendorInfos = mergeInfos(specifiedInfos + hiddenInfos + forwardInfos)
+            val standardInfos = if (
+                CameraVendorGalleryDiscoveryPolicy.shouldIncludeStandardEnumeration(specifiedHandles.size)
+            ) {
+                runCatching { standardObjectInfos() }
+                    .onSuccess { Log.d(TAG, "Standard enumeration loaded count=${it.size}") }
+                    .onFailure { Log.d(TAG, "Standard enumeration failed: ${it.message}") }
+                    .getOrElse { emptyList() }
+            } else {
+                emptyList()
+            }
+            val merged = mergeInfos(vendorInfos + standardInfos)
+            if (merged.isNotEmpty()) {
+                return merged
+            }
+        }
+
+        return standardObjectInfos()
     }
 
     suspend fun getThumb(handle: Int): ByteArray {
-        return connection.sendCommandGetData(PtpOpCode.GET_THUMB, listOf(handle))
+        runCatching { getObjectInfo(handle) }
+        val standard = runCatching {
+            connection.sendCommandGetData(PtpOpCode.GET_THUMB, listOf(handle))
+        }.getOrNull()
+        if (standard != null) {
+            val normalized = CameraVendorPtpDataParser.imageData(standard)
+            if (standard.size >= 100 && CameraVendorPtpDataParser.isLikelyImageData(normalized)) {
+                Log.d(TAG, "Thumbnail standard handle=$handle rawBytes=${standard.size} imageBytes=${normalized.size}")
+                return normalized
+            }
+            Log.d(
+                TAG,
+                "Thumbnail standard unusable handle=$handle rawBytes=${standard.size} " +
+                    "imageBytes=${normalized.size} head=${normalized.headHex()}",
+            )
+        }
+
+        val preview = getPartialObject(handle, 0, CameraVendorReferenceApp.PARTIAL_PREVIEW_READ_SIZE)
+        val normalizedPreview = CameraVendorPtpDataParser.imageData(preview)
+        Log.d(
+            TAG,
+            "Thumbnail partial handle=$handle rawBytes=${preview.size} " +
+                "imageBytes=${normalizedPreview.size} head=${normalizedPreview.headHex()}",
+        )
+        return normalizedPreview
     }
 
-    suspend fun getObject(handle: Int): ByteArray {
-        return connection.sendCommandGetData(PtpOpCode.GET_OBJECT, listOf(handle))
+    suspend fun getObject(handle: Int, expectedSize: Int? = null): ByteArray {
+        var shouldResetRealInfo = false
+        try {
+            Log.d(TAG, "Original download prepare handle=$handle expectedSize=$expectedSize")
+            runCatching {
+                connection.readDeviceProperty(CameraVendorDevicePropCode.REFERENCE_APP_GALLERY_OBJECT_CONTEXT)
+            }
+            runCatching {
+                connection.readDeviceProperty(CameraVendorDevicePropCode.COMPRESSION_CUT_OFF)
+            }
+            connection.setDevicePropertyUInt16(CameraVendorDevicePropCode.IMAGE_COMPRESSION_REAL_INFO, 1)
+            shouldResetRealInfo = true
+            val freshInfo = runCatching { getObjectInfo(handle) }.getOrNull()
+            val size = freshInfo?.compressedSize?.takeIf { it > 0 } ?: expectedSize
+            Log.d(
+                TAG,
+                "Original download partial handle=$handle freshSize=${freshInfo?.compressedSize ?: 0} readSize=${size ?: 0}",
+            )
+            val data = readObjectByPartialObjects(handle, size)
+            Log.d(TAG, "Original download complete handle=$handle bytes=${data.size} head=${data.headHex()}")
+            return CameraVendorPtpDataParser.imageData(data)
+        } finally {
+            if (shouldResetRealInfo) {
+                runCatching {
+                    connection.setDevicePropertyUInt16(CameraVendorDevicePropCode.IMAGE_COMPRESSION_REAL_INFO, 0)
+                }.onFailure {
+                    Log.d(TAG, "Reset ImageCompressionRealInfo failed: ${it.message}")
+                }
+            }
+        }
     }
 
-    fun getObjectStream(handle: Int) =
-        connection.sendCommandStreamData(PtpOpCode.GET_OBJECT, listOf(handle))
+    fun getObjectStream(handle: Int) = flow {
+        val expectedSize = runCatching { getObjectInfo(handle).compressedSize }.getOrNull()
+        emit(getObject(handle, expectedSize))
+    }
 
     suspend fun getPartialObject(handle: Int, offset: Int, maxBytes: Int): ByteArray {
         return connection.sendCommandGetData(
-            PtpOpCode.GET_PARTIAL_OBJECT, listOf(handle, offset, maxBytes)
+            PtpOpCode.GET_PARTIAL_OBJECT,
+            listOf(handle, offset, maxBytes),
+            readTimeoutMs = CameraVendorReferenceApp.PARTIAL_FILE_READ_TIMEOUT_MS,
         )
     }
 
-    private fun parseUint32Array(data: ByteArray): List<Int> {
-        if (data.size < 4) return emptyList()
-        val buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
-        val count = buf.getInt()
-        val result = mutableListOf<Int>()
-        for (i in 0 until count) {
-            if (4 + i * 4 + 4 > data.size) break
-            result.add(ByteBuffer.wrap(data, 4 + i * 4, 4).order(ByteOrder.LITTLE_ENDIAN).getInt())
+    private suspend fun resetCameraVendorCompressionMode() {
+        runCatching {
+            connection.setDevicePropertyUInt32(CameraVendorDevicePropCode.IMAGE_FORCE_COMPRESSION, 0)
+            connection.setDevicePropertyUInt32(CameraVendorDevicePropCode.IMAGE_COMPRESSION_REAL_INFO, 0)
+        }.onFailure {
+            Log.d(TAG, "Compression reset skipped: ${it.message}")
         }
-        return result
     }
 
-    private fun parseObjectInfo(handle: Int, data: ByteArray): ObjectInfo {
-        val buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+    private suspend fun standardObjectInfos(): List<ObjectInfo> {
+        val infos = mutableListOf<ObjectInfo>()
+        for (storageId in getStorageIDs()) {
+            for (handle in getObjectHandles(storageId)) {
+                runCatching { getObjectInfo(handle) }
+                    .onSuccess { if (!it.isFolder) infos.add(it) }
+                    .onFailure { Log.d(TAG, "Standard ObjectInfo failed handle=$handle: ${it.message}") }
+            }
+        }
+        return infos.sortedByDescending { it.handle }
+    }
+
+    private suspend fun hiddenObjectInfos(
+        specifiedHandles: List<Int>,
+        currentInfos: List<ObjectInfo>,
+    ): List<ObjectInfo> {
+        val candidates = hiddenHandleCandidates(specifiedHandles)
+        val existing = currentInfos.map { it.handle }.toSet()
+        return candidates.filterNot { it in existing }.mapNotNull { handle ->
+            runCatching { getObjectInfo(handle) }
+                .onFailure { Log.d(TAG, "Hidden ObjectInfo failed handle=$handle: ${it.message}") }
+                .getOrNull()
+        }
+    }
+
+    private suspend fun forwardObjectInfos(
+        specifiedHandles: List<Int>,
+        currentInfos: List<ObjectInfo>,
+    ): List<ObjectInfo> {
+        val maxHandle = specifiedHandles.maxOrNull() ?: return emptyList()
+        val existing = currentInfos.map { it.handle }.toMutableSet()
+        val infos = mutableListOf<ObjectInfo>()
+        var consecutiveFailures = 0
+        for (handle in (maxHandle + 1)..(maxHandle + 120)) {
+            if (handle in existing) continue
+            val info = runCatching { getObjectInfo(handle) }.getOrNull()
+            if (info != null) {
+                infos.add(info)
+                existing.add(handle)
+                consecutiveFailures = 0
+            } else {
+                consecutiveFailures += 1
+                val limit = if (infos.isEmpty()) 8 else 3
+                if (consecutiveFailures >= limit) break
+            }
+        }
+        return infos
+    }
+
+    private fun hiddenHandleCandidates(handles: List<Int>): List<Int> {
+        val unique = handles.toSet()
+        val min = unique.minOrNull() ?: return emptyList()
+        val max = unique.maxOrNull() ?: return emptyList()
+        if (max < min || max - min > CameraVendorHiddenObjectProbePolicy.MAX_HANDLE_RANGE) return emptyList()
+
+        val candidates = linkedSetOf<Int>()
+        for (handle in handles) {
+            if (handle > 0 && handle - 1 !in unique) candidates.add(handle - 1)
+            if (handle < Int.MAX_VALUE && handle + 1 !in unique) candidates.add(handle + 1)
+        }
+        val sorted = unique.sorted()
+        for (i in 0 until sorted.lastIndex) {
+            val lower = sorted[i]
+            val upper = sorted[i + 1]
+            val gapSize = upper - lower - 1
+            if (gapSize in 1..8) {
+                for (candidate in (lower + 1) until upper) candidates.add(candidate)
+            }
+        }
+        return candidates.toList()
+    }
+
+    private suspend fun readObjectByPartialObjects(handle: Int, expectedSize: Int?): ByteArray {
+        val maxBytes = expectedSize?.takeIf { it > 0 }
+            ?: CameraVendorReferenceApp.PARTIAL_MAX_BYTES_WITHOUT_KNOWN_SIZE
+        val chunks = mutableListOf<ByteArray>()
         var offset = 0
-
-        val storageId = buf.getInt(offset); offset += 4
-        val format = buf.getShort(offset).toInt() and 0xFFFF; offset += 2
-        offset += 2 // protectionStatus
-        val compressedSize = buf.getInt(offset); offset += 4
-        val thumbFormat = buf.getShort(offset).toInt() and 0xFFFF; offset += 2
-        val thumbCompressedSize = buf.getInt(offset); offset += 4
-        val thumbPixWidth = buf.getInt(offset); offset += 4
-        val thumbPixHeight = buf.getInt(offset); offset += 4
-        val imagePixWidth = buf.getInt(offset); offset += 4
-        val imagePixHeight = buf.getInt(offset); offset += 4
-        offset += 4 // imageBitDepth
-        val parentObject = buf.getInt(offset); offset += 4
-        offset += 2 // associationType
-        offset += 4 // associationDesc
-        offset += 4 // sequenceNumber
-
-        val filename = readPtpString(data, offset)
-        offset += ptpStringByteLength(data, offset)
-        val captureDate = readPtpString(data, offset)
-
-        return ObjectInfo(
-            handle = handle,
-            storageId = storageId,
-            format = format,
-            compressedSize = compressedSize,
-            thumbFormat = thumbFormat,
-            thumbCompressedSize = thumbCompressedSize,
-            thumbPixWidth = thumbPixWidth,
-            thumbPixHeight = thumbPixHeight,
-            imagePixWidth = imagePixWidth,
-            imagePixHeight = imagePixHeight,
-            parentObject = parentObject,
-            filename = filename,
-            captureDate = captureDate,
-        )
-    }
-
-    private fun readPtpString(data: ByteArray, offset: Int): String {
-        if (offset >= data.size) return ""
-        val numChars = data[offset].toInt() and 0xFF
-        if (numChars == 0) return ""
-        var pos = offset + 1
-        val buf = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
-        val chars = StringBuilder()
-        for (i in 0 until numChars) {
-            if (pos + 1 >= data.size) break
-            val c = buf.getShort(pos).toInt() and 0xFFFF
-            if (c == 0) break
-            chars.append(c.toChar())
-            pos += 2
+        var readSize = CameraVendorReferenceApp.PARTIAL_FILE_READ_SIZE
+        var previousLastByte: Byte? = null
+        while (offset < maxBytes) {
+            val remaining = maxBytes - offset
+            val requestSize = minOf(readSize, remaining)
+            val chunk = try {
+                getPartialObject(handle, offset, requestSize)
+            } catch (e: Throwable) {
+                if (readSize > CameraVendorReferenceApp.PARTIAL_INITIAL_READ_SIZE) {
+                    readSize = CameraVendorReferenceApp.PARTIAL_INITIAL_READ_SIZE
+                    continue
+                }
+                throw e
+            }
+            if (chunk.isEmpty()) break
+            chunks.add(chunk)
+            offset += chunk.size
+            Log.d(
+                TAG,
+                "Partial chunk handle=$handle offset=$offset/${maxBytes} bytes=${chunk.size} readSize=$readSize",
+            )
+            if (
+                CameraVendorPartialObjectReadPolicy.shouldStopAfterChunk(
+                    expectedSize = expectedSize,
+                    previousLastByte = previousLastByte,
+                    chunk = chunk,
+                    offset = offset,
+                    maxBytes = maxBytes,
+                )
+            ) {
+                return flatten(chunks)
+            }
+            previousLastByte = chunk.last()
         }
-        return chars.toString()
+        return flatten(chunks)
     }
 
-    private fun ptpStringByteLength(data: ByteArray, offset: Int): Int {
-        if (offset >= data.size) return 1
-        val numChars = data[offset].toInt() and 0xFF
-        return 1 + numChars * 2
+    private fun mergeInfos(infos: List<ObjectInfo>): List<ObjectInfo> =
+        infos.associateBy { it.handle }.values.sortedByDescending { it.handle }
+
+    private fun flatten(chunks: List<ByteArray>): ByteArray {
+        val total = chunks.sumOf { it.size }
+        val out = ByteArray(total)
+        var offset = 0
+        for (chunk in chunks) {
+            chunk.copyInto(out, offset)
+            offset += chunk.size
+        }
+        return out
+    }
+
+    private fun hasJpegEndMarker(previousLastByte: Byte?, chunk: ByteArray): Boolean {
+        if (chunk.isEmpty()) return false
+        if (previousLastByte == 0xFF.toByte() && chunk.first() == 0xD9.toByte()) return true
+        return chunk.size >= 2 &&
+            chunk[chunk.size - 2] == 0xFF.toByte() &&
+            chunk[chunk.size - 1] == 0xD9.toByte()
+    }
+
+    private fun placeholderObjectInfo(handle: Int): ObjectInfo = ObjectInfo(
+        handle = handle,
+        storageId = 0,
+        format = PtpObjectFormat.JPEG,
+        compressedSize = 0,
+        thumbFormat = 0,
+        thumbCompressedSize = 0,
+        thumbPixWidth = 0,
+        thumbPixHeight = 0,
+        imagePixWidth = 0,
+        imagePixHeight = 0,
+        parentObject = 0,
+        filename = "0x%08X.JPG".format(handle),
+        captureDate = "",
+    )
+
+    private fun ByteArray.headHex(byteCount: Int = 16): String {
+        return take(byteCount).joinToString("") { "%02x".format(it) }
+    }
+}
+
+internal object CameraVendorPartialObjectReadPolicy {
+    fun shouldStopAfterChunk(
+        expectedSize: Int?,
+        previousLastByte: Byte?,
+        chunk: ByteArray,
+        offset: Int,
+        maxBytes: Int,
+    ): Boolean {
+        if (offset >= maxBytes) return true
+        return expectedSize == null && hasJpegEndMarker(previousLastByte, chunk)
+    }
+
+    private fun hasJpegEndMarker(previousLastByte: Byte?, chunk: ByteArray): Boolean {
+        if (chunk.isEmpty()) return false
+        if (previousLastByte == 0xFF.toByte() && chunk.first() == 0xD9.toByte()) return true
+        return chunk.size >= 2 &&
+            chunk[chunk.size - 2] == 0xFF.toByte() &&
+            chunk[chunk.size - 1] == 0xD9.toByte()
     }
 }

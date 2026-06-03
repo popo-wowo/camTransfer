@@ -10,12 +10,14 @@ import com.camtransfer.protocol.PtpObjectFormat
 
 private const val TAG = "GalleryService"
 
-class GalleryService(private val context: Context) {
+class GalleryService(val context: Context) {
 
     fun saveToGallery(info: ObjectInfo, data: ByteArray): Boolean {
         val mimeType = when (info.format) {
             PtpObjectFormat.JPEG -> "image/jpeg"
-            PtpObjectFormat.CAMERA_VENDOR_RAF -> "image/x-cameraVendor-raf"
+            PtpObjectFormat.HEIF -> "image/heif"
+            PtpObjectFormat.CAMERA_VENDOR_RAF,
+            PtpObjectFormat.CAMERA_VENDOR_RAF_ALT -> "image/x-cameraVendor-raf"
             PtpObjectFormat.MOV -> "video/quicktime"
             PtpObjectFormat.MP4 -> "video/mp4"
             else -> "application/octet-stream"
@@ -42,6 +44,7 @@ class GalleryService(private val context: Context) {
         val resolver = context.contentResolver
         val uri = resolver.insert(collection, values) ?: run {
             Log.e(TAG, "Failed to create MediaStore entry for ${info.filename}")
+            DiagnosticLog.append(context, TAG, "Failed to create MediaStore entry format=${info.formatLabel}")
             return false
         }
 
@@ -52,6 +55,7 @@ class GalleryService(private val context: Context) {
         resolver.update(uri, values, null, null)
 
         Log.d(TAG, "Saved ${info.filename} (${data.size} bytes) to $relativePath")
+        DiagnosticLog.append(context, TAG, "Saved file bytes=${data.size} mediaType=${if (isVideo) "video" else "image"}")
         return true
     }
 }

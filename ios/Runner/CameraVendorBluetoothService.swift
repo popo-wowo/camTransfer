@@ -5,6 +5,76 @@ import NetworkExtension
 import UIKit
 import os.log
 
+enum CamTransferDiagnosticLogRedactor {
+  static func redacted(_ text: String) -> String {
+    var result = text
+    result = result.replacingOccurrences(
+      of: #"(?i)\b(password|passphrase|pwd)(\s*[:=]\s*)[^\s,;，；\n]+"#,
+      with: #"$1$2********"#,
+      options: .regularExpression
+    )
+    result = result.replacingOccurrences(
+      of: #"(密码\s*[:：=]\s*)[^\s,;，；\n]+"#,
+      with: #"$1********"#,
+      options: .regularExpression
+    )
+    return result
+  }
+}
+
+enum CamTransferDiagnosticExportPayload {
+  static func compose(
+    appVersion: String,
+    buildNumber: String,
+    deviceModel: String,
+    systemVersion: String,
+    generatedAt: String,
+    logText: String
+  ) -> String {
+    """
+    CamTransfer Diagnostic Log
+    App Version: \(appVersion) (\(buildNumber))
+    Device: \(deviceModel)
+    System: \(systemVersion)
+    Generated At: \(generatedAt)
+
+    ---- Log ----
+    \(CamTransferDiagnosticLogRedactor.redacted(logText))
+    """
+  }
+}
+
+enum CamTransferDiagnosticLogExporter {
+  static func makeExportFile(sourceLogURL: URL) throws -> URL {
+    try makeExportFile(sourceLogURLs: [sourceLogURL])
+  }
+
+  static func makeExportFile(sourceLogURLs: [URL]) throws -> URL {
+    let rawLog = sourceLogURLs.map { url in
+      let text = (try? String(contentsOf: url, encoding: .utf8)) ?? "(no log file)"
+      return "Source: \(url.lastPathComponent)\n\(text)"
+    }.joined(separator: "\n\n")
+    let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+    let buildNumber = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+    let generatedAt = ISO8601DateFormatter().string(from: Date())
+    let payload = CamTransferDiagnosticExportPayload.compose(
+      appVersion: appVersion,
+      buildNumber: buildNumber,
+      deviceModel: UIDevice.current.model,
+      systemVersion: "\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)",
+      generatedAt: generatedAt,
+      logText: rawLog
+    )
+    let filenameTimestamp = generatedAt
+      .replacingOccurrences(of: ":", with: "-")
+      .replacingOccurrences(of: ".", with: "-")
+    let exportURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CamTransfer-Diagnostics-\(filenameTimestamp).log")
+    try payload.write(to: exportURL, atomically: true, encoding: .utf8)
+    return exportURL
+  }
+}
+
 final class CameraVendorFileLogger {
   static let shared = CameraVendorFileLogger()
   private let fileURL: URL
@@ -23,7 +93,8 @@ final class CameraVendorFileLogger {
   }
   static func log(_ message: String) {
     shared.queue.async {
-      let line = "[\(ISO8601DateFormatter().string(from: Date()))] \(message)\n"
+      let safeMessage = CamTransferDiagnosticLogRedactor.redacted(message)
+      let line = "[\(ISO8601DateFormatter().string(from: Date()))] \(safeMessage)\n"
       os_log("%{public}@", line)
       if let data = line.data(using: .utf8),
          let h = try? FileHandle(forWritingTo: shared.fileURL) {
@@ -156,11 +227,12 @@ enum CameraVendorGalleryDiagnostics {
   static func log(_ message: String) {
     let formatter = DateFormatter()
     formatter.dateFormat = "HH:mm:ss.SSS"
-    let line = "[\(formatter.string(from: Date()))] \(message)"
-    print("CamTransferGallery \(message)")
-    NSLog("CamTransferGallery %@", message)
+    let safeMessage = CamTransferDiagnosticLogRedactor.redacted(message)
+    let line = "[\(formatter.string(from: Date()))] \(safeMessage)"
+    print("CamTransferGallery \(safeMessage)")
+    NSLog("CamTransferGallery %@", safeMessage)
     appendToFile(line)
-    externalLogHandler?(message)
+    externalLogHandler?(safeMessage)
   }
 
   static func observe(_ message: String) {
@@ -275,9 +347,14 @@ enum CameraVendorGalleryPtpStartupPolicy {
 
 enum CameraVendorPtpConnectionStartupPolicy {
   static let commandConnectTimeoutSeconds: TimeInterval = 1.5
+  static let maxElapsedSeconds: TimeInterval = 45
 
   static func retryDelaySeconds(afterFailedAttempt attempt: Int) -> TimeInterval {
     0.5
+  }
+
+  static func shouldContinueRetrying(elapsedSeconds: TimeInterval) -> Bool {
+    elapsedSeconds < maxElapsedSeconds
   }
 }
 
@@ -297,6 +374,40 @@ enum CameraVendorSearchModeDescRetryPolicy {
 
 enum CameraVendorSpecifiedObjectSnapshotPolicy {
   static let shouldCompareBeforeAndAfterEmptySearchMode = false
+}
+
+struct CameraVendorSpecifiedObjectDateGroup: Equatable {
+  let dateText: String
+  let objectCount: UInt32
+}
+
+enum CameraVendorForwardObjectHandleProbePolicy {
+  static let maxForwardRange: UInt32 = 120
+  static let maxConsecutiveFailures = 8
+  static let maxConsecutiveFailuresAfterFirstHit = 3
+
+  static func failureLimit(hasFoundForwardObject: Bool) -> Int {
+    hasFoundForwardObject ? maxConsecutiveFailuresAfterFirstHit : maxConsecutiveFailures
+  }
+
+  static func candidateHandles(after handles: [UInt32]) -> [UInt32] {
+    guard let maxHandle = Set(handles).max(), maxHandle < UInt32.max else {
+      return []
+    }
+    let upperBound = maxHandle > UInt32.max - maxForwardRange
+      ? UInt32.max
+      : maxHandle + maxForwardRange
+    guard maxHandle + 1 <= upperBound else { return [] }
+    return Array((maxHandle + 1)...upperBound)
+  }
+
+  static func shouldProbeAfterSpecifiedList(
+    dateGroups: [CameraVendorSpecifiedObjectDateGroup],
+    now: Date = Date(),
+    calendar: Calendar = Calendar(identifier: .gregorian)
+  ) -> Bool {
+    true
+  }
 }
 
 enum CameraVendorSearchModeAllPayload {
@@ -335,16 +446,43 @@ enum CameraVendorPtpCommandSerializationPolicy {
 
 enum CameraVendorThumbnailLoadPolicy {
   static let shouldLoadSequentially = true
+  static let shouldPauseWhileDownloading = true
+  static let shouldInterruptInFlightRequestBeforeDownload = true
+  static let shouldClosePtpSocketForPriorityDownloadInterruption = false
+}
+
+enum CameraVendorThumbnailPriorityDownloadPolicy {
+  static func shouldContinueToPartialPreviewFallback(
+    afterPriorityDownloadInterruption: Bool,
+    isConnected: Bool
+  ) -> Bool {
+    !afterPriorityDownloadInterruption && isConnected
+  }
+}
+
+enum CameraVendorPriorityDownloadThumbnailGatePolicy {
+  static let suspendedThumbnailErrorCode = 19
 }
 
 enum CameraVendorPartialObjectRequestPolicy {
-  /// Per-PartialObject chunk size. Was 1 MB which made big RAW transfers
-  /// pay ~30 round-trips. Bumped to 4 MB so a 30-50 MB RAW now takes
-  /// ~8-13 round-trips, shaving 10-15% off wall-clock time. Larger
-  /// values (8MB+) start to risk camera-side buffer pressure on some
-  /// firmware revisions, so 4 MB is the practical sweet spot.
+  /// Reference-app reads start at 4 MB. Full-size downloads prefer 8 MB to
+  /// reduce PTP round trips, with a guarded fallback when the camera is slow.
   static let referenceAppInitialReadSize: UInt32 = 4 * 1_048_576
+  static let fileDownloadReadSize: UInt32 = 8 * 1_048_576
+  static let fileDownloadFallbackReadSize = referenceAppInitialReadSize
   static let maxReadBytesWithoutKnownObjectSize = 128 * 1_024 * 1_024
+
+  static func fileDownloadRequestSize(remaining: UInt64, useFallback: Bool = false) -> UInt32 {
+    let preferredSize = useFallback ? fileDownloadFallbackReadSize : fileDownloadReadSize
+    return UInt32(min(UInt64(preferredSize), remaining))
+  }
+
+  static func maximumReadableByteCount(expectedSize: UInt32?) -> UInt64 {
+    if let expectedSize, expectedSize > 0 {
+      return UInt64(expectedSize)
+    }
+    return UInt64(maxReadBytesWithoutKnownObjectSize)
+  }
 
   static func extensionPartialObjectParameters(
     handle: UInt32,
@@ -379,6 +517,106 @@ enum CameraVendorJpegDataPolicy {
 
   static func hasStartMarker(_ data: Data) -> Bool {
     data.count >= 2 && data[0] == 0xFF && data[1] == 0xD8
+  }
+}
+
+enum CameraVendorDownloadDataDiagnosticPolicy {
+  static let headByteCount = 32
+
+  static func headHex(from data: Data, byteCount: Int = headByteCount) -> String {
+    data.prefix(byteCount).map { String(format: "%02x", $0) }.joined()
+  }
+
+  static func firstFtypOffset(in data: Data) -> Int? {
+    data.range(of: Data([0x66, 0x74, 0x79, 0x70]))?.lowerBound
+  }
+}
+
+enum CameraVendorBleScanDiagnosticsPolicy {
+  static let maxUnmatchedAdvertisementSamples = 12
+
+  static func shouldLogUnmatchedAdvertisement(sampleCount: Int) -> Bool {
+    sampleCount <= maxUnmatchedAdvertisementSamples
+  }
+}
+
+struct CameraVendorAdaptiveDownloadChunkState: Equatable {
+  var readSize: UInt32 = CameraVendorPartialObjectRequestPolicy.fileDownloadReadSize
+  var consecutiveFastChunks: Int = 0
+  var consecutiveSlowLargeChunks: Int = 0
+  var lastSlowLargeBytesPerSecond: Double?
+}
+
+enum CameraVendorAdaptiveDownloadChunkPolicy {
+  static let isEnabled = true
+  static let slowChunkBytesPerSecond: Double = 1.2 * 1_048_576
+  static let fastChunkBytesPerSecond: Double = 2.5 * 1_048_576
+  static let fastChunksRequiredForUpgrade = 2
+  static let slowLargeChunksRequiredForDowngrade = 1
+  static let fallbackImprovementFactor = 1.15
+  static let strategyName = "adaptive-probe"
+
+  static func requestSize(remaining: UInt64, state: CameraVendorAdaptiveDownloadChunkState) -> UInt32 {
+    UInt32(min(UInt64(state.readSize), remaining))
+  }
+
+  static func recordChunk(
+    byteCount: Int,
+    elapsedMs: Int,
+    state: inout CameraVendorAdaptiveDownloadChunkState
+  ) {
+    guard isEnabled, byteCount > 0, elapsedMs > 0 else { return }
+    let bytesPerSecond = Double(byteCount) / (Double(elapsedMs) / 1000.0)
+    let largeReadSize = CameraVendorPartialObjectRequestPolicy.fileDownloadReadSize
+    let fallbackReadSize = CameraVendorPartialObjectRequestPolicy.fileDownloadFallbackReadSize
+
+    if state.readSize >= largeReadSize {
+      if bytesPerSecond < slowChunkBytesPerSecond {
+        state.consecutiveSlowLargeChunks += 1
+        state.lastSlowLargeBytesPerSecond = bytesPerSecond
+        state.consecutiveFastChunks = 0
+        if state.consecutiveSlowLargeChunks >= slowLargeChunksRequiredForDowngrade {
+          state.readSize = fallbackReadSize
+        }
+      } else {
+        state.consecutiveSlowLargeChunks = 0
+        state.lastSlowLargeBytesPerSecond = nil
+      }
+      return
+    }
+
+    if let baseline = state.lastSlowLargeBytesPerSecond,
+       bytesPerSecond < baseline * fallbackImprovementFactor {
+      state.readSize = largeReadSize
+      state.consecutiveFastChunks = 0
+      state.consecutiveSlowLargeChunks = 0
+      state.lastSlowLargeBytesPerSecond = nil
+      return
+    }
+
+    if bytesPerSecond < slowChunkBytesPerSecond {
+      state.consecutiveFastChunks = 0
+      return
+    }
+
+    if bytesPerSecond > fastChunkBytesPerSecond {
+      state.consecutiveFastChunks += 1
+      if state.consecutiveFastChunks >= fastChunksRequiredForUpgrade {
+        state.readSize = largeReadSize
+        state.consecutiveSlowLargeChunks = 0
+        state.lastSlowLargeBytesPerSecond = nil
+      }
+    } else {
+      state.consecutiveFastChunks = 0
+    }
+  }
+}
+
+enum CameraVendorPtpSocketReadDiagnosticPolicy {
+  static let progressIntervalBytes = 1 * 1_048_576
+
+  static func shouldReportProgress(totalBytes: Int) -> Bool {
+    totalBytes >= progressIntervalBytes
   }
 }
 
@@ -575,42 +813,108 @@ struct CameraVendorPairedCameraRecord: Codable, Equatable {
 
 final class CameraVendorPairedCameraStore {
   static let storageKey = "CamTransfer.LastPairedCamera"
+  static let listStorageKey = "CamTransfer.PairedCameras"
 
   private let defaults: UserDefaults
-  private let storageKey: String
+  private let legacyStorageKey: String
+  private let listStorageKey: String
   private let encoder = JSONEncoder()
   private let decoder = JSONDecoder()
 
   init(
     defaults: UserDefaults = .standard,
-    storageKey: String = CameraVendorPairedCameraStore.storageKey
+    storageKey: String = CameraVendorPairedCameraStore.storageKey,
+    listStorageKey: String? = nil
   ) {
     self.defaults = defaults
-    self.storageKey = storageKey
+    self.legacyStorageKey = storageKey
+    if let listStorageKey {
+      self.listStorageKey = listStorageKey
+    } else if storageKey == CameraVendorPairedCameraStore.storageKey {
+      self.listStorageKey = CameraVendorPairedCameraStore.listStorageKey
+    } else {
+      self.listStorageKey = "\(storageKey).List"
+    }
   }
 
   func load() -> CameraVendorPairedCameraRecord? {
-    guard let data = defaults.data(forKey: storageKey) else {
+    loadAll().first
+  }
+
+  func loadAll() -> [CameraVendorPairedCameraRecord] {
+    if let data = defaults.data(forKey: listStorageKey) {
+      guard let records = try? decoder.decode([CameraVendorPairedCameraRecord].self, from: data) else {
+        defaults.removeObject(forKey: listStorageKey)
+        return loadLegacyRecord().map { [$0] } ?? []
+      }
+      return unique(records)
+    }
+
+    guard let legacyRecord = loadLegacyRecord() else {
+      return []
+    }
+    saveAll([legacyRecord])
+    defaults.removeObject(forKey: legacyStorageKey)
+    return [legacyRecord]
+  }
+
+  func save(_ record: CameraVendorPairedCameraRecord) {
+    var records = loadAll().filter { !isSameCamera($0, record) }
+    records.insert(record, at: 0)
+    saveAll(records)
+  }
+
+  func remove(peripheralID: UUID) {
+    saveAll(loadAll().filter { $0.peripheralID != peripheralID })
+  }
+
+  func clear() {
+    defaults.removeObject(forKey: listStorageKey)
+    defaults.removeObject(forKey: legacyStorageKey)
+  }
+
+  private func loadLegacyRecord() -> CameraVendorPairedCameraRecord? {
+    guard let data = defaults.data(forKey: legacyStorageKey) else {
       return nil
     }
 
     guard let record = try? decoder.decode(CameraVendorPairedCameraRecord.self, from: data) else {
-      defaults.removeObject(forKey: storageKey)
+      defaults.removeObject(forKey: legacyStorageKey)
       return nil
     }
 
     return record
   }
 
-  func save(_ record: CameraVendorPairedCameraRecord) {
-    guard let data = try? encoder.encode(record) else {
+  private func saveAll(_ records: [CameraVendorPairedCameraRecord]) {
+    let cleaned = unique(records)
+    guard !cleaned.isEmpty else {
+      clear()
       return
     }
-    defaults.set(data, forKey: storageKey)
+    guard let data = try? encoder.encode(cleaned) else { return }
+    defaults.set(data, forKey: listStorageKey)
+    defaults.removeObject(forKey: legacyStorageKey)
   }
 
-  func clear() {
-    defaults.removeObject(forKey: storageKey)
+  private func unique(_ records: [CameraVendorPairedCameraRecord]) -> [CameraVendorPairedCameraRecord] {
+    var result: [CameraVendorPairedCameraRecord] = []
+    for record in records where !result.contains(where: { isSameCamera($0, record) }) {
+      result.append(record)
+    }
+    return result
+  }
+
+  private func isSameCamera(
+    _ lhs: CameraVendorPairedCameraRecord,
+    _ rhs: CameraVendorPairedCameraRecord
+  ) -> Bool {
+    if lhs.peripheralID == rhs.peripheralID {
+      return true
+    }
+    let leftSerial = lhs.serialNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+    let rightSerial = rhs.serialNumber.trimmingCharacters(in: .whitespacesAndNewlines)
+    return !leftSerial.isEmpty && leftSerial != "-" && leftSerial == rightSerial
   }
 }
 
@@ -630,6 +934,33 @@ enum CameraVendorRememberedPairingPolicy {
     isAlreadyPairedIdentificationNumber: Bool
   ) -> Bool {
     isRememberedPeripheral || isAlreadyPairedIdentificationNumber
+  }
+}
+
+enum CameraVendorRememberedReconnectPolicy {
+  static let shouldStartNormalDiscoveryAfterTargetTimeout = true
+  static let shouldTrySystemRetrievedPeripheralBeforeScanning = true
+}
+
+enum CameraVendorConnectionResetPolicy {
+  static func shouldSkipPassiveResetDuringTransferHandoff(
+    force: Bool,
+    didCompleteHandshakeCallback: Bool,
+    hasCompletedPairing: Bool,
+    hasUserInitiatedTransfer: Bool,
+    hasPendingHandshakeSummary: Bool,
+    isRunningTransferActivation: Bool,
+    awaitingBluetoothDisconnectForWifiHandoff: Bool,
+    awaitingTransferActivationStateChange: Bool
+  ) -> Bool {
+    guard !force else { return false }
+    if isRunningTransferActivation || awaitingBluetoothDisconnectForWifiHandoff || awaitingTransferActivationStateChange {
+      return true
+    }
+    return !didCompleteHandshakeCallback
+      && hasCompletedPairing
+      && hasUserInitiatedTransfer
+      && hasPendingHandshakeSummary
   }
 }
 
@@ -668,12 +999,60 @@ enum CameraVendorPostPairingTransferPolicy {
   }
 }
 
+enum CameraVendorTransferActivationStatusTextPolicy {
+  static let enteringGalleryStatus = "正在进入相机相册"
+  static let readyToEnterGalleryStatus = "相机 Wi‑Fi 已启动，正在进入相册"
+}
+
 enum CameraVendorCameraPairingConfirmationPolicy {
+  static let waitingForPhoneConfirmationStatus = "相机确认后，请在手机上确认"
+
   static func canFinishPairing(
     hasWrittenIdentifier: Bool,
     hasUserConfirmedCameraSuccess: Bool
   ) -> Bool {
     hasWrittenIdentifier && hasUserConfirmedCameraSuccess
+  }
+
+  static func shouldQueuePhoneConfirmation(
+    hasWrittenIdentifier: Bool,
+    hasPendingHandshakeSummary: Bool,
+    hasUserConfirmedCameraSuccess: Bool
+  ) -> Bool {
+    hasUserConfirmedCameraSuccess && !canCompleteQueuedPhoneConfirmation(
+      hasWrittenIdentifier: hasWrittenIdentifier,
+      hasPendingHandshakeSummary: hasPendingHandshakeSummary,
+      hasQueuedPhoneConfirmation: true
+    )
+  }
+
+  static func canCompleteQueuedPhoneConfirmation(
+    hasWrittenIdentifier: Bool,
+    hasPendingHandshakeSummary: Bool,
+    hasQueuedPhoneConfirmation: Bool
+  ) -> Bool {
+    hasQueuedPhoneConfirmation && hasWrittenIdentifier && hasPendingHandshakeSummary
+  }
+
+  static func shouldWaitForPhoneConfirmationAfterIdentifierWrite(
+    shouldBypassManualConfirmation: Bool
+  ) -> Bool {
+    !shouldBypassManualConfirmation
+  }
+
+  static func shouldStartAutoTransferBeforePhoneConfirmation(
+    shouldBypassManualConfirmation: Bool,
+    shouldAutomaticallyPrepareTransferAfterPairing: Bool
+  ) -> Bool {
+    shouldBypassManualConfirmation && shouldAutomaticallyPrepareTransferAfterPairing
+  }
+
+  static func shouldReconnectAfterPhoneConfirmation(
+    hasWrittenIdentifier: Bool,
+    hasPendingHandshakeSummary: Bool,
+    shouldBypassManualConfirmation: Bool
+  ) -> Bool {
+    hasWrittenIdentifier && hasPendingHandshakeSummary && !shouldBypassManualConfirmation
   }
 }
 
@@ -1144,7 +1523,7 @@ enum CameraVendorReferenceAppTransferActivationPlan {
 
     switch strategy {
     case .officialImportImage:
-      return apState == .launched
+      return apState.isReadyToJoinWifi
     case .preferredRemoteImageView, .compatibleRemoteImageView:
       return apState.isReadyToJoinWifi
     }
@@ -1224,7 +1603,12 @@ enum CameraVendorTransferActivationResizePolicy {
   private static let preferenceKey = "camtransfer.downloadCompressionEnabled"
 
   static var preferCompressedDownloads: Bool {
-    get { UserDefaults.standard.bool(forKey: preferenceKey) }
+    get {
+      guard UserDefaults.standard.object(forKey: preferenceKey) != nil else {
+        return true
+      }
+      return UserDefaults.standard.bool(forKey: preferenceKey)
+    }
     set { UserDefaults.standard.set(newValue, forKey: preferenceKey) }
   }
 
@@ -1271,7 +1655,20 @@ enum CameraVendorTransferActivationCompletionPolicy {
   static func shouldActivelyDisconnectBluetooth(
     for strategy: CameraVendorReferenceAppTransferActivationStrategy
   ) -> Bool {
-    strategy == .officialImportImage
+    false
+  }
+
+  static func shouldFastHandoffAfterCommandWrites(
+    for strategy: CameraVendorReferenceAppTransferActivationStrategy
+  ) -> Bool {
+    false
+  }
+
+  static func shouldAttemptWifiHandoffAfterExhaustedStrategies(
+    observedChange: Bool,
+    observedWifiLaunch: Bool
+  ) -> Bool {
+    observedChange || observedWifiLaunch
   }
 }
 
@@ -1330,6 +1727,19 @@ enum CameraVendorGalleryDownloadPolicy {
 
   static func mediaType(for item: CameraVendorGalleryItem) -> CameraVendorDownloadedMediaType {
     item.formatLabel == "Video" ? .video : .photo
+  }
+}
+
+enum CameraVendorPhotoLibrarySaveInputPolicy {
+  static let shouldSavePhotoDownloadsFromTemporaryFile = true
+
+  static func shouldSavePhotoDownloadFromData(
+    filename: String,
+    mediaType: CameraVendorDownloadedMediaType
+  ) -> Bool {
+    guard mediaType == .photo else { return false }
+    let ext = (filename as NSString).pathExtension.lowercased()
+    return ext == "heic" || ext == "heif"
   }
 }
 
@@ -1416,6 +1826,26 @@ struct CameraVendorGalleryState: Equatable {
     downloadProgress[handle] = nil
   }
 
+  mutating func clearSavedDownloadCache(handle: Int) {
+    guard downloadStates[handle] == .saved else { return }
+    downloadStates.removeValue(forKey: handle)
+    downloadProgress.removeValue(forKey: handle)
+    selectedHandles.remove(handle)
+  }
+
+  @discardableResult
+  mutating func clearAllSavedDownloadCache() -> Int {
+    let savedHandles = downloadStates.compactMap { entry in
+      entry.value == .saved ? entry.key : nil
+    }
+    for handle in savedHandles {
+      downloadStates.removeValue(forKey: handle)
+      downloadProgress.removeValue(forKey: handle)
+    }
+    selectedHandles.subtract(savedHandles)
+    return savedHandles.count
+  }
+
   mutating func updateThumbnail(handle: Int, data: Data) {
     guard let index = items.firstIndex(where: { $0.handle == handle }) else {
       return
@@ -1461,6 +1891,15 @@ protocol CameraVendorGalleryService {
   func downloadOriginalFile(for handle: Int) async throws -> CameraVendorDownloadedFile
 }
 
+protocol CameraVendorGalleryConnectionTerminating: AnyObject {
+  func terminateCameraCommunication()
+}
+
+protocol CameraVendorPriorityDownloadPreparing: AnyObject {
+  func prepareForPriorityDownload()
+  func finishPriorityDownload()
+}
+
 /// A standalone PTP download worker that owns its own command socket so it
 /// can run in parallel with the main `CameraVendorGalleryService` session. Created
 /// via `CameraVendorParallelDownloadFactory.openWorker(...)`. Always call
@@ -1480,13 +1919,16 @@ protocol CameraVendorParallelDownloadFactory: AnyObject {
 }
 
 enum CameraVendorParallelDownloadPolicy {
-  /// Hard cap on workers. Empirically the verified reference device accepts 2
-  /// PTP sessions but reject the 3rd. Higher values usually saturate the
-  /// camera Wi-Fi anyway, so 2 is the sweet spot.
-  static let maxWorkers = 2
+  /// Keep single-channel downloads for the verified X-T5 path. A second PTP
+  /// session can connect at the TCP layer but leaves the camera transfer state
+  /// unresponsive before the init ACK, causing subsequent primary downloads to
+  /// time out.
+  static let isExperimentalSecondPtpSessionEnabled = false
+  static let maxWorkers = 1
 
   static func desiredWorkerCount(for queueSize: Int) -> Int {
     if queueSize <= 1 { return 1 }
+    guard isExperimentalSecondPtpSessionEnabled else { return 1 }
     return min(maxWorkers, max(1, queueSize))
   }
 }
@@ -1686,6 +2128,7 @@ enum CameraVendorLegacyGalleryObjectInfoPolicy {
   static let shouldReadSearchModeAllDuringColdStart = false
   static let shouldSetStillImageObjectFormatSearchMode = false
   static let shouldRefreshGalleryContextBeforeSpecifiedList = true
+  static let shouldResetCompressionModeBeforeObjectInfoList = false
 
   static func shouldProbeStandardObjectInfos(
     afterSpecifiedInfos infos: [CameraVendorCameraObjectInfo]
@@ -1697,12 +2140,38 @@ enum CameraVendorLegacyGalleryObjectInfoPolicy {
       info.formatLabel == "HEIF" || info.formatLabel == "RAW"
     }
   }
+
+  static func shouldReturnAfterForwardProbe(forwardInfoCount _: Int) -> Bool {
+    false
+  }
+
+  static func shouldProbeLatestObjectInfoForEmptySpecifiedList(
+    currentObjectHandle: UInt32?
+  ) -> Bool {
+    guard let currentObjectHandle else {
+      return false
+    }
+    return currentObjectHandle != 0
+  }
+}
+
+enum CameraVendorSpecifiedObjectEmptySnapshotRecoveryPolicy {
+  static let maxRetryCount = 1
+  static let retryDelaySeconds: TimeInterval = 1.5
+
+  static func shouldRetry(count: UInt32?, handles: [UInt32], retryCount: Int) -> Bool {
+    (count ?? 0) == 0 && handles.isEmpty && retryCount < maxRetryCount
+  }
 }
 
 enum CameraVendorReferenceAppCurrentImageContextPolicy {
   static let currentImageHandle: UInt32 = 0x10000001
   static let shouldPrimeBeforeImageHandleList = true
   static let shouldPrimeThumbnailBeforeSearchDescription = true
+
+  static func shouldPrimeThumbnailAfterImageContextPrime(imagePrimeSucceeded: Bool) -> Bool {
+    shouldPrimeThumbnailBeforeSearchDescription && imagePrimeSucceeded
+  }
 }
 
 enum CameraVendorDualSlotProbePolicy {
@@ -1725,19 +2194,77 @@ enum CameraVendorDualSlotProbePolicy {
 }
 
 enum CameraVendorHiddenObjectHandleProbePolicy {
-  static let maxGapRange: UInt32 = 120
+  static let maxOverallRange: UInt32 = 300
+  static let maxContiguousGapRange: UInt32 = 8
+  static let maxLowerBoundaryContinuationRange: UInt32 = 64
+  static let maxLowerBoundaryConsecutiveFailures = 4
 
   static func candidateHandles(from handles: [UInt32]) -> [UInt32] {
     let uniqueHandles = Set(handles)
     guard let minHandle = uniqueHandles.min(),
           let maxHandle = uniqueHandles.max(),
           maxHandle >= minHandle,
-          maxHandle - minHandle <= maxGapRange else {
+          maxHandle - minHandle <= maxOverallRange else {
       return []
     }
-    return (minHandle...maxHandle)
-      .filter { !uniqueHandles.contains($0) }
-      .sorted()
+    var candidates: [UInt32] = []
+    var seenCandidates = Set<UInt32>()
+    func appendCandidate(_ handle: UInt32) {
+      guard handle > 0,
+            !uniqueHandles.contains(handle),
+            !seenCandidates.contains(handle) else { return }
+      seenCandidates.insert(handle)
+      candidates.append(handle)
+    }
+
+    for handle in handles {
+      if handle > 0 {
+        appendCandidate(handle - 1)
+      }
+      if handle < UInt32.max {
+        appendCandidate(handle + 1)
+      }
+    }
+
+    let sortedHandles = uniqueHandles.sorted()
+    for (lowerHandle, upperHandle) in zip(sortedHandles, sortedHandles.dropFirst()) {
+      guard upperHandle > lowerHandle + 1 else { continue }
+      let gapSize = upperHandle - lowerHandle - 1
+      guard gapSize <= maxContiguousGapRange else { continue }
+      for handle in (lowerHandle + 1)..<upperHandle {
+        appendCandidate(handle)
+      }
+    }
+    return candidates
+  }
+
+  static func lowerBoundaryContinuationHandles(
+    from handles: [UInt32],
+    discoveredHiddenHandles: [UInt32]
+  ) -> [UInt32] {
+    let uniqueHandles = Set(handles)
+    guard let minHandle = uniqueHandles.min(),
+          minHandle > 2,
+          discoveredHiddenHandles.contains(minHandle - 1) else {
+      return []
+    }
+
+    let lowerBoundary = minHandle - 1
+    let lowerLimit = lowerBoundary > maxLowerBoundaryContinuationRange
+      ? lowerBoundary - maxLowerBoundaryContinuationRange
+      : 1
+    var candidates: [UInt32] = []
+    var handle = minHandle - 2
+    while handle >= lowerLimit {
+      if !uniqueHandles.contains(handle) {
+        candidates.append(handle)
+      }
+      if handle == lowerLimit {
+        break
+      }
+      handle -= 1
+    }
+    return candidates
   }
 }
 
@@ -1747,16 +2274,97 @@ enum CameraVendorOriginalDownloadPolicy {
   static let shouldSetForceCompressionBeforeStandardGetObject = false
   static let shouldAttemptStandardGetObjectDownload = false
   static let shouldDownloadUsingPartialObjectFallback = true
+  static let shouldPreparePartialObjectFileDownload = true
+  static let shouldPreferReferenceAppPreparationForFileDownload = true
+  static let referenceAppFileDownloadForceCompressionMode: UInt32 = 2
+
+  static func shouldUseReferenceAppFastStartPreparation(formatLabel: String) -> Bool {
+    shouldPreferReferenceAppPreparationForFileDownload && formatLabel == "RAW"
+  }
 
   static func correctFileSizePayload(enabled: Bool) -> Data {
     var value = UInt16(enabled ? 1 : 0).littleEndian
     return withUnsafeBytes(of: &value) { Data($0) }
+  }
+
+  static func expectedDownloadSize(
+    formatLabel: String,
+    freshCompressedSize: UInt32?,
+    cachedExpectedSize: UInt32?
+  ) -> UInt32? {
+    if formatLabel == "RAW", let cachedExpectedSize {
+      return cachedExpectedSize
+    }
+    return freshCompressedSize ?? cachedExpectedSize
+  }
+
+  static func shouldSkipFreshFileInfoProbe(
+    formatLabel: String,
+    cachedExpectedSize: UInt32?
+  ) -> Bool {
+    guard cachedExpectedSize != nil else { return false }
+    return formatLabel == "RAW"
+  }
+
+  static func shouldPrepareTransferStateBeforeFileDownload(
+    formatLabel _: String,
+    cachedExpectedSize _: UInt32?
+  ) -> Bool {
+    shouldPreparePartialObjectFileDownload
+  }
+
+  static func shouldReadReferenceAppContextBeforeFileDownload(
+    hasReadContextDuringCurrentPriorityDownload: Bool
+  ) -> Bool {
+    !hasReadContextDuringCurrentPriorityDownload
+  }
+
+  static func shouldSetCorrectFileSizeBeforeFileDownload(
+    formatLabel: String,
+    cachedExpectedSize: UInt32?
+  ) -> Bool {
+    shouldPrepareTransferStateBeforeFileDownload(
+      formatLabel: formatLabel,
+      cachedExpectedSize: cachedExpectedSize
+    ) && !shouldUseReferenceAppFastStartPreparation(formatLabel: formatLabel)
+  }
+
+  static func shouldSetForceCompressionBeforeFileDownload(
+    formatLabel: String,
+    cachedExpectedSize: UInt32?
+  ) -> Bool {
+    shouldPrepareTransferStateBeforeFileDownload(
+      formatLabel: formatLabel,
+      cachedExpectedSize: cachedExpectedSize
+    ) && shouldUseReferenceAppFastStartPreparation(formatLabel: formatLabel)
+  }
+
+  static func shouldReadCompressionCutOffBeforeFreshFileInfo(
+    formatLabel: String,
+    cachedExpectedSize: UInt32?
+  ) -> Bool {
+    shouldSetCorrectFileSizeBeforeFileDownload(
+      formatLabel: formatLabel,
+      cachedExpectedSize: cachedExpectedSize
+    )
+  }
+
+  static func shouldReadCompressionCutOffAfterFreshFileInfo(
+    formatLabel: String,
+    cachedExpectedSize: UInt32?
+  ) -> Bool {
+    shouldPrepareTransferStateBeforeFileDownload(
+      formatLabel: formatLabel,
+      cachedExpectedSize: cachedExpectedSize
+    ) && shouldUseReferenceAppFastStartPreparation(formatLabel: formatLabel)
   }
 }
 
 enum CameraVendorThumbnailFetchPolicy {
   static let shouldReadObjectInfoBeforeGetThumb = true
   static let shouldTryStandardGetThumbFirst = true
+  static let shouldUsePartialPreviewFallback = true
+  static let partialPreviewReadSize: UInt32 = 256 * 1_024
   static let minimumUsefulThumbnailBytes = 100
 }
 
@@ -2117,6 +2725,30 @@ enum CameraVendorPtpDataParser {
     return values
   }
 
+  static func specifiedObjectDateGroups(from data: Data) -> [CameraVendorSpecifiedObjectDateGroup] {
+    guard data.count >= 4 else { return [] }
+    let count = Int(uint32(from: data, offset: 0))
+    var offset = 4
+    var groups: [CameraVendorSpecifiedObjectDateGroup] = []
+    for _ in 0..<count {
+      guard offset + 4 <= data.count else { break }
+      let entryLength = Int(uint32(from: data, offset: offset))
+      guard entryLength >= 8 else { break }
+      let entryEnd = offset + entryLength
+      guard entryEnd <= data.count else { break }
+      let dateOffset = offset + 4
+      let dateText = ptpString(from: data, offset: dateOffset)
+      let objectCountOffset = dateOffset + ptpStringByteLength(from: data, offset: dateOffset)
+      guard objectCountOffset + 4 <= entryEnd else { break }
+      groups.append(CameraVendorSpecifiedObjectDateGroup(
+        dateText: dateText,
+        objectCount: uint32(from: data, offset: objectCountOffset)
+      ))
+      offset = entryEnd
+    }
+    return groups
+  }
+
   static func objectInfo(handle: Int, data: Data) -> CameraVendorCameraObjectInfo {
     let storageID = uint32(from: data, offset: 0)
     let formatCode = uint16(from: data, offset: 4)
@@ -2326,7 +2958,9 @@ private final class CameraVendorPtpSocket {
 
   func readExactly(
     _ length: Int,
-    timeout: TimeInterval = 10
+    timeout: TimeInterval = 10,
+    progressEveryBytes: Int? = nil,
+    progressHandler: ((Int, Int, Int) -> Void)? = nil
   ) throws -> Data {
     guard fd >= 0 else {
       throw NSError(domain: "CameraVendorPtpSocket", code: 6, userInfo: [NSLocalizedDescriptionKey: "socket 未建立"])
@@ -2334,6 +2968,8 @@ private final class CameraVendorPtpSocket {
     var buffer = [UInt8](repeating: 0, count: length)
     var offset = 0
     let deadline = Date().addingTimeInterval(timeout)
+    let startedAt = Date()
+    var nextProgressBytes = progressEveryBytes
 
     while offset < length {
       let remaining = deadline.timeIntervalSinceNow
@@ -2368,12 +3004,29 @@ private final class CameraVendorPtpSocket {
         throw NSError(domain: "CameraVendorPtpSocket", code: 8, userInfo: [NSLocalizedDescriptionKey: "相机提前断开连接 (已读 \(offset)/\(length) 字节)"])
       }
       offset += count
+      if let progressEveryBytes,
+         progressEveryBytes > 0,
+         let progressHandler,
+         let nextProgressBytesValue = nextProgressBytes,
+         offset >= nextProgressBytesValue {
+        progressHandler(
+          offset,
+          length,
+          Int(Date().timeIntervalSince(startedAt) * 1000)
+        )
+        var next = nextProgressBytesValue
+        while next <= offset {
+          next += progressEveryBytes
+        }
+        nextProgressBytes = next
+      }
     }
     return Data(buffer)
   }
 
   func close() {
     if fd >= 0 {
+      _ = Darwin.shutdown(fd, SHUT_RDWR)
       Darwin.close(fd)
       fd = -1
     }
@@ -2389,7 +3042,13 @@ private final class CameraVendorPtpSession {
   private var isConnected = false
   private var operationTransport: CameraVendorPtpOperationTransport = .standardPtpIp
   private var diagnosticHandler: ((String) -> Void)?
+  private var connectedHost = CameraVendorPtpConstants.defaultHost
+  private var connectedClientName = CameraVendorHandshakeIdentityPolicy.fallbackConnectedDeviceName
+  private var connectedPurpose: CameraVendorPtpSessionPurpose = .gallery
+  private var priorityDownloadInterruptionGeneration: UInt64 = 0
+  private var hasReadReferenceAppContextDuringCurrentPriorityDownload = false
   private var cameraVendorSpecifiedObjectHandles: [UInt32] = []
+  private var cameraVendorSpecifiedObjectDateGroups: [CameraVendorSpecifiedObjectDateGroup] = []
   private var cameraVendorCurrentSlotStatus: UInt8?
 
   func connect(
@@ -2406,6 +3065,9 @@ private final class CameraVendorPtpSession {
 
     report("准备连接 PTP 命令端口 \(host):\(CameraVendorPtpConstants.commandPort)")
     report("[OBS] PTP_CONNECT_START host=\(host) port=\(CameraVendorPtpConstants.commandPort) clientName=\(clientName)")
+    connectedHost = host
+    connectedClientName = clientName
+    connectedPurpose = purpose
     try commandSocket.connect(
       host: host,
       port: CameraVendorPtpConstants.commandPort,
@@ -2449,6 +3111,45 @@ private final class CameraVendorPtpSession {
     isConnected = true
     report("PTP 连接完成，purpose=\(purpose)")
     report("[OBS] PTP_HANDSHAKE_OK purpose=\(purpose)")
+  }
+
+  func interruptInFlightOperationForPriorityDownload() {
+    guard CameraVendorThumbnailLoadPolicy.shouldInterruptInFlightRequestBeforeDownload else { return }
+    guard isConnected else { return }
+    priorityDownloadInterruptionGeneration += 1
+    report("[OBS] PTP_PRIORITY_DOWNLOAD_INTERRUPT_IN_FLIGHT_REQUEST")
+    guard CameraVendorThumbnailLoadPolicy.shouldClosePtpSocketForPriorityDownloadInterruption else {
+      report("[OBS] PTP_PRIORITY_DOWNLOAD_SOCKET_CLOSE_SKIPPED")
+      return
+    }
+    commandSocket.close()
+    eventSocket.close()
+    isConnected = false
+  }
+
+  func beginPriorityDownloadBatch() {
+    hasReadReferenceAppContextDuringCurrentPriorityDownload = false
+    report("[OBS] PTP_PRIORITY_DOWNLOAD_BATCH_BEGIN")
+  }
+
+  func finishPriorityDownloadBatch() {
+    hasReadReferenceAppContextDuringCurrentPriorityDownload = false
+    report("[OBS] PTP_PRIORITY_DOWNLOAD_BATCH_FINISH")
+  }
+
+  func ensureConnectedForPriorityDownload() throws {
+    guard !isConnected else { return }
+    report("[OBS] PTP_PRIORITY_DOWNLOAD_RECONNECT_BEGIN clientName=\(connectedClientName)")
+    commandLock.lock()
+    commandLock.unlock()
+    guard !isConnected else { return }
+    try connect(
+      host: connectedHost,
+      clientName: connectedClientName,
+      diagnosticHandler: diagnosticHandler,
+      purpose: connectedPurpose
+    )
+    report("[OBS] PTP_PRIORITY_DOWNLOAD_RECONNECT_COMPLETE")
   }
 
   private func performStandardGalleryHandshake() throws {
@@ -2551,8 +3252,11 @@ private final class CameraVendorPtpSession {
       name: "CameraVendor/ReferenceApp 图库访问状态 #2 (0xD244)"
     )
 
-    primeCameraVendorCurrentImageContextIfNeeded(stage: "before-search-mode-desc")
-    primeCameraVendorCurrentThumbnailContextIfNeeded(stage: "before-search-mode-desc")
+    let didPrimeCurrentImage = primeCameraVendorCurrentImageContextIfNeeded(stage: "before-search-mode-desc")
+    primeCameraVendorCurrentThumbnailContextIfNeeded(
+      stage: "before-search-mode-desc",
+      imagePrimeSucceeded: didPrimeCurrentImage
+    )
     try requestCameraVendorSearchModeDescAll()
     if CameraVendorLegacyGalleryObjectInfoPolicy.shouldReadSearchModeAllDuringColdStart {
       try requestCameraVendorSearchModeAll()
@@ -2827,9 +3531,9 @@ private final class CameraVendorPtpSession {
     }
   }
 
-  private func primeCameraVendorCurrentImageContextIfNeeded(stage: String) {
+  private func primeCameraVendorCurrentImageContextIfNeeded(stage: String) -> Bool {
     guard CameraVendorReferenceAppCurrentImageContextPolicy.shouldPrimeBeforeImageHandleList else {
-      return
+      return true
     }
 
     let handle = CameraVendorReferenceAppCurrentImageContextPolicy.currentImageHandle
@@ -2845,13 +3549,18 @@ private final class CameraVendorPtpSession {
       report(
         "[OBS] PTP_CURRENT_IMAGE_CONTEXT_PRIME stage=\(stage) bytes=\(data.count) head=\(preview)"
       )
+      return true
     } catch {
       report("[OBS] PTP_CURRENT_IMAGE_CONTEXT_PRIME_FAILED stage=\(stage) error=\(error.localizedDescription)")
+      return false
     }
   }
 
-  private func primeCameraVendorCurrentThumbnailContextIfNeeded(stage: String) {
-    guard CameraVendorReferenceAppCurrentImageContextPolicy.shouldPrimeThumbnailBeforeSearchDescription else {
+  private func primeCameraVendorCurrentThumbnailContextIfNeeded(stage: String, imagePrimeSucceeded: Bool) {
+    guard CameraVendorReferenceAppCurrentImageContextPolicy.shouldPrimeThumbnailAfterImageContextPrime(
+      imagePrimeSucceeded: imagePrimeSucceeded
+    ) else {
+      report("[OBS] PTP_CURRENT_THUMB_CONTEXT_PRIME_SKIPPED stage=\(stage) reason=image-prime-failed")
       return
     }
 
@@ -2909,7 +3618,7 @@ private final class CameraVendorPtpSession {
     report("[OBS] PTP_SET_SEARCH_MODE_OBJECT_FORMAT response=0x\(String(format: "%04X", response.responseCode))")
   }
 
-  private func resetCameraVendorCompressionMode() throws {
+  func resetCameraVendorCompressionMode() throws {
     report("按 ReferenceApp resetCompressionMode 写入 ImageForceCompression (0xD226 = 0)")
     let forceResponse = try setCameraVendorImageForceCompression(0, reason: "resetCompressionMode")
     report("[OBS] PTP_SET_IMAGE_FORCE_COMPRESSION_ZERO response=0x\(String(format: "%04X", forceResponse.responseCode))")
@@ -2957,22 +3666,45 @@ private final class CameraVendorPtpSession {
   }
 
   private func requestCameraVendorSpecifiedObjectSnapshot(stage: String) throws {
-    report("[OBS] PTP_SPECIFIED_OBJECT_SNAPSHOT_BEGIN stage=\(stage)")
-    try requestCameraVendorSpecifiedObjectCountGroupByDate(stage: stage)
-    if CameraVendorLegacyGalleryObjectInfoPolicy.shouldRefreshGalleryContextBeforeSpecifiedList {
-      let context = try readCameraVendorDeviceProperty(
-        code: CameraVendorDevicePropCode.referenceAppGalleryObjectContext,
-        name: "CameraVendor/ReferenceApp 图库上下文 before specified list (0xD212)"
+    var retryCount = 0
+    while true {
+      let attemptStage = retryCount == 0 ? stage : "\(stage)-empty-retry-\(retryCount)"
+      report("[OBS] PTP_SPECIFIED_OBJECT_SNAPSHOT_BEGIN stage=\(attemptStage)")
+      try requestCameraVendorSpecifiedObjectCountGroupByDate(stage: attemptStage)
+      if CameraVendorLegacyGalleryObjectInfoPolicy.shouldRefreshGalleryContextBeforeSpecifiedList {
+        let context = try readCameraVendorDeviceProperty(
+          code: CameraVendorDevicePropCode.referenceAppGalleryObjectContext,
+          name: "CameraVendor/ReferenceApp 图库上下文 before specified list (0xD212)"
+        )
+        reportCameraVendorGalleryContextMarker(context)
+        report("[OBS] PTP_D212_BEFORE_SPECIFIED_LIST stage=\(attemptStage) bytes=\(context.map { String(format: "%02x", $0) }.joined(separator: ""))")
+      }
+      let count = try requestCameraVendorSpecifiedObjectCount(stage: attemptStage)
+      let handles = try requestCameraVendorSpecifiedObjectHandles(stage: attemptStage)
+      report(
+        "[OBS] PTP_SPECIFIED_OBJECT_SNAPSHOT_END stage=\(attemptStage) " +
+        "count=\(count.map(String.init) ?? "nil") handles=\(handles.count)"
       )
-      reportCameraVendorGalleryContextMarker(context)
-      report("[OBS] PTP_D212_BEFORE_SPECIFIED_LIST stage=\(stage) bytes=\(context.map { String(format: "%02x", $0) }.joined(separator: ""))")
+
+      guard CameraVendorSpecifiedObjectEmptySnapshotRecoveryPolicy.shouldRetry(
+        count: count,
+        handles: handles,
+        retryCount: retryCount
+      ) else {
+        return
+      }
+
+      retryCount += 1
+      report(
+        "[OBS] PTP_SPECIFIED_OBJECT_EMPTY_RECOVERY " +
+        "stage=\(stage) retry=\(retryCount) delay=\(String(format: "%.1f", CameraVendorSpecifiedObjectEmptySnapshotRecoveryPolicy.retryDelaySeconds))"
+      )
+      Thread.sleep(forTimeInterval: CameraVendorSpecifiedObjectEmptySnapshotRecoveryPolicy.retryDelaySeconds)
+      try requestCameraVendorSearchModeDescAll()
+      if CameraVendorLegacyGalleryObjectInfoPolicy.shouldReadCurrentObjectHandleBeforeSpecifiedList {
+        requestCameraVendorCurrentObjectHandleSnapshot(stage: "\(stage)-empty-recovery")
+      }
     }
-    let count = try requestCameraVendorSpecifiedObjectCount(stage: stage)
-    let handles = try requestCameraVendorSpecifiedObjectHandles(stage: stage)
-    report(
-      "[OBS] PTP_SPECIFIED_OBJECT_SNAPSHOT_END stage=\(stage) " +
-      "count=\(count.map(String.init) ?? "nil") handles=\(handles.count)"
-    )
   }
 
   private func requestCameraVendorSpecifiedObjectCountGroupByDate(stage: String = "default") throws {
@@ -2981,8 +3713,11 @@ private final class CameraVendorPtpSession {
       operationCode: UInt16(CameraVendorPtpOperationCode.cameraVendorGetSpecifiedObjectCountGroupByDate),
       parameters: [0, 30000]
     )
+    let groups = CameraVendorPtpDataParser.specifiedObjectDateGroups(from: data)
+    cameraVendorSpecifiedObjectDateGroups = groups
     let preview = data.prefix(96).map { String(format: "%02x", $0) }.joined(separator: "")
-    report("[OBS] PTP_SPECIFIED_OBJECT_COUNT_GROUP_BY_DATE stage=\(stage) bytes=\(data.count) head=\(preview)")
+    let groupSummary = groups.map { "\($0.dateText):\($0.objectCount)" }.joined(separator: ",")
+    report("[OBS] PTP_SPECIFIED_OBJECT_COUNT_GROUP_BY_DATE stage=\(stage) bytes=\(data.count) groups=\(groupSummary) head=\(preview)")
   }
 
   private func requestCameraVendorSpecifiedObjectCount(stage: String = "default") throws -> UInt32? {
@@ -3121,6 +3856,33 @@ private final class CameraVendorPtpSession {
         12,
         .cameraVendorLegacy
       ),
+      (
+        "CameraVendor legacy",
+        CameraVendorPtpPacketBuilder.buildInitCommandRequest(
+          friendlyName: clientName,
+          clientIP: nil
+        ),
+        12,
+        .cameraVendorLegacy
+      ),
+      (
+        "PTP/IP standard + client IP GUID",
+        CameraVendorPtpPacketBuilder.buildStandardInitCommandRequest(
+          friendlyName: clientName,
+          clientIP: clientIP
+        ),
+        12,
+        .standardPtpIp
+      ),
+      (
+        "PTP/IP standard",
+        CameraVendorPtpPacketBuilder.buildStandardInitCommandRequest(
+          friendlyName: clientName,
+          clientIP: nil
+        ),
+        12,
+        .standardPtpIp
+      ),
     ]
 
     var lastError: Error?
@@ -3215,7 +3977,10 @@ private final class CameraVendorPtpSession {
       parameters: [handle]
     )
     let info = CameraVendorPtpDataParser.objectInfo(handle: Int(handle), data: data)
-    report("对象 \(handle): \(info.filename) \(info.formatLabel)")
+    report(
+      "对象 \(handle): \(info.filename) \(info.formatLabel) " +
+      "size=\(info.compressedSize) thumbSize=\(info.thumbCompressedSize) captureDate=\(info.captureDate)"
+    )
     return info
   }
 
@@ -3263,16 +4028,29 @@ private final class CameraVendorPtpSession {
     case .cameraVendorLegacy:
       if !cameraVendorSpecifiedObjectHandles.isEmpty {
         let specifiedInfos = try cameraVendorLegacySpecifiedObjectInfos(handles: cameraVendorSpecifiedObjectHandles)
+        let forwardInfos = cameraVendorLegacyForwardObjectInfosIfNeeded(
+          specifiedHandles: cameraVendorSpecifiedObjectHandles,
+          currentInfos: specifiedInfos,
+          dateGroups: cameraVendorSpecifiedObjectDateGroups
+        )
+        if CameraVendorLegacyGalleryObjectInfoPolicy.shouldReturnAfterForwardProbe(forwardInfoCount: forwardInfos.count) {
+          let merged = mergeObjectInfos(specifiedInfos + forwardInfos)
+          report(
+            "[OBS] PTP_FORWARD_OBJECT_INFOS_SELECTED_FAST " +
+            "specified=\(specifiedInfos.count) forward=\(forwardInfos.count) merged=\(merged.count)"
+          )
+          return merged
+        }
         if CameraVendorLegacyGalleryObjectInfoPolicy.shouldProbeStandardObjectInfos(afterSpecifiedInfos: specifiedInfos) {
           let hiddenInfos = cameraVendorLegacyHiddenObjectInfos(
             specifiedHandles: cameraVendorSpecifiedObjectHandles,
             currentInfos: specifiedInfos
           )
-          if hiddenInfos.contains(where: { $0.formatLabel == "HEIF" || $0.formatLabel == "RAW" }) {
-            let merged = mergeObjectInfos(specifiedInfos + hiddenInfos)
+          if hiddenInfos.contains(where: { $0.formatLabel == "HEIF" || $0.formatLabel == "RAW" }) || !forwardInfos.isEmpty {
+            let merged = mergeObjectInfos(specifiedInfos + hiddenInfos + forwardInfos)
             report(
               "[OBS] PTP_HIDDEN_OBJECT_INFOS_SELECTED " +
-              "specified=\(specifiedInfos.count) hidden=\(hiddenInfos.count) merged=\(merged.count)"
+              "specified=\(specifiedInfos.count) hidden=\(hiddenInfos.count) forward=\(forwardInfos.count) merged=\(merged.count)"
             )
             return merged
           }
@@ -3297,6 +4075,14 @@ private final class CameraVendorPtpSession {
             report("[OBS] PTP_LEGACY_STANDARD_OBJECT_INFOS_PROBE_FAILED error=\(error.localizedDescription)")
           }
         }
+        if !forwardInfos.isEmpty {
+          let merged = mergeObjectInfos(specifiedInfos + forwardInfos)
+          report(
+            "[OBS] PTP_FORWARD_OBJECT_INFOS_SELECTED " +
+            "specified=\(specifiedInfos.count) forward=\(forwardInfos.count) merged=\(merged.count)"
+          )
+          return merged
+        }
         if CameraVendorLegacyGalleryObjectInfoPolicy.shouldProbeDualSlotWhenSpecifiedListIsSmall,
            CameraVendorDualSlotProbePolicy.shouldProbeAlternateSlots(currentObjectCount: specifiedInfos.count) {
           let mergedInfos = try cameraVendorLegacyObjectInfosByProbingAlternateSlots(currentInfos: specifiedInfos)
@@ -3315,7 +4101,14 @@ private final class CameraVendorPtpSession {
          !infos.isEmpty {
         return infos
       }
-      return [try cameraVendorLatestObjectInfo()]
+      let currentObjectHandle = cameraVendorCurrentObjectHandleForLatestProbe()
+      guard CameraVendorLegacyGalleryObjectInfoPolicy.shouldProbeLatestObjectInfoForEmptySpecifiedList(
+        currentObjectHandle: currentObjectHandle
+      ) else {
+        report("[OBS] PTP_LATEST_OBJECT_INFO_SKIPPED reason=empty-specified-list-current-handle-empty")
+        return []
+      }
+      return [try cameraVendorLatestObjectInfo(preferredHandle: currentObjectHandle)]
     }
   }
 
@@ -3370,7 +4163,96 @@ private final class CameraVendorPtpSession {
         report("[OBS] PTP_HIDDEN_OBJECT_INFO_FAILED handle=0x\(String(format: "%08X", handle)) error=\(error.localizedDescription)")
       }
     }
+    let continuationCandidates = CameraVendorHiddenObjectHandleProbePolicy.lowerBoundaryContinuationHandles(
+      from: specifiedHandles,
+      discoveredHiddenHandles: infos.map { UInt32($0.handle) }
+    )
+    if !continuationCandidates.isEmpty {
+      report(
+        "[OBS] PTP_HIDDEN_LOWER_BOUNDARY_PROBE_BEGIN maxConsecutiveFailures=" +
+        "\(CameraVendorHiddenObjectHandleProbePolicy.maxLowerBoundaryConsecutiveFailures) candidates=" +
+        continuationCandidates.prefix(20).map { String(format: "0x%08X", $0) }.joined(separator: ",") +
+        (continuationCandidates.count > 20 ? ",..." : "")
+      )
+    }
+    var discoveredHandles = Set(infos.map { UInt32($0.handle) })
+    var consecutiveFailures = 0
+    for handle in continuationCandidates
+      where !existingHandles.contains(handle) && !discoveredHandles.contains(handle) {
+      do {
+        let info = try objectInfo(handle: handle)
+        infos.append(info)
+        discoveredHandles.insert(handle)
+        consecutiveFailures = 0
+        report(
+          "[OBS] PTP_HIDDEN_LOWER_BOUNDARY_OBJECT_INFO handle=0x\(String(format: "%08X", handle)) " +
+          "format=\(info.formatLabel) filename=\(info.filename)"
+        )
+      } catch {
+        consecutiveFailures += 1
+        report(
+          "[OBS] PTP_HIDDEN_LOWER_BOUNDARY_OBJECT_INFO_FAILED " +
+          "handle=0x\(String(format: "%08X", handle)) consecutiveFailures=\(consecutiveFailures) " +
+          "error=\(error.localizedDescription)"
+        )
+        if consecutiveFailures >= CameraVendorHiddenObjectHandleProbePolicy.maxLowerBoundaryConsecutiveFailures {
+          break
+        }
+      }
+    }
     report("[OBS] PTP_HIDDEN_OBJECT_PROBE_END count=\(infos.count)")
+    return infos
+  }
+
+  private func cameraVendorLegacyForwardObjectInfosIfNeeded(
+    specifiedHandles: [UInt32],
+    currentInfos: [CameraVendorCameraObjectInfo],
+    dateGroups: [CameraVendorSpecifiedObjectDateGroup]
+  ) -> [CameraVendorCameraObjectInfo] {
+    guard CameraVendorForwardObjectHandleProbePolicy.shouldProbeAfterSpecifiedList(dateGroups: dateGroups) else {
+      report(
+        "[OBS] PTP_FORWARD_OBJECT_PROBE_SKIPPED groups=" +
+        dateGroups.map { "\($0.dateText):\($0.objectCount)" }.joined(separator: ",")
+      )
+      return []
+    }
+
+    let candidates = CameraVendorForwardObjectHandleProbePolicy.candidateHandles(after: specifiedHandles)
+    guard !candidates.isEmpty else {
+      report("[OBS] PTP_FORWARD_OBJECT_PROBE_SKIPPED reason=no-forward-candidates")
+      return []
+    }
+
+    report(
+      "[OBS] PTP_FORWARD_OBJECT_PROBE_BEGIN maxConsecutiveFailures=\(CameraVendorForwardObjectHandleProbePolicy.maxConsecutiveFailures) " +
+      "candidates=\(candidates.prefix(20).map { String(format: "0x%08X", $0) }.joined(separator: ","))" +
+      (candidates.count > 20 ? ",..." : "")
+    )
+    let existingHandles = Set(currentInfos.map { UInt32($0.handle) })
+    var infos: [CameraVendorCameraObjectInfo] = []
+    var consecutiveFailures = 0
+    for handle in candidates where !existingHandles.contains(handle) {
+      do {
+        let info = try objectInfo(handle: handle)
+        infos.append(info)
+        consecutiveFailures = 0
+        report(
+          "[OBS] PTP_FORWARD_OBJECT_INFO handle=0x\(String(format: "%08X", handle)) " +
+          "format=\(info.formatLabel) filename=\(info.filename) captureDate=\(info.captureDate)"
+        )
+      } catch {
+        consecutiveFailures += 1
+        let failureLimit = CameraVendorForwardObjectHandleProbePolicy.failureLimit(hasFoundForwardObject: !infos.isEmpty)
+        report(
+          "[OBS] PTP_FORWARD_OBJECT_INFO_FAILED handle=0x\(String(format: "%08X", handle)) " +
+          "consecutiveFailures=\(consecutiveFailures) failureLimit=\(failureLimit) error=\(error.localizedDescription)"
+        )
+        if consecutiveFailures >= failureLimit {
+          break
+        }
+      }
+    }
+    report("[OBS] PTP_FORWARD_OBJECT_PROBE_END count=\(infos.count)")
     return infos
   }
 
@@ -3445,23 +4327,10 @@ private final class CameraVendorPtpSession {
     return infos
   }
 
-  func cameraVendorLatestObjectInfo() throws -> CameraVendorCameraObjectInfo {
+  func cameraVendorLatestObjectInfo(preferredHandle: UInt32? = nil) throws -> CameraVendorCameraObjectInfo {
     try prepareCameraVendorVendorGalleryCommands()
-    var handle = UInt32(0x10000001)
-    if CameraVendorLegacyGalleryObjectInfoPolicy.shouldReadCurrentObjectHandleBeforeLatestProbe {
-      if CameraVendorLegacyGalleryObjectInfoPolicy.shouldReadCurrentObjectHandleViaObjectPropList,
-         let currentHandle = try? readCameraVendorCurrentObjectHandleViaObjectPropList(),
-         currentHandle != 0 {
-        handle = currentHandle
-      }
-      do {
-        if let currentHandle = try readCameraVendorCurrentObjectHandle(), currentHandle != 0 {
-          handle = currentHandle
-        }
-      } catch {
-        report("[OBS] PTP_CURRENT_OBJECT_HANDLE_FAILED error=\(error.localizedDescription)")
-      }
-    }
+    let handle = preferredHandle ?? cameraVendorCurrentObjectHandleForLatestProbe()
+      ?? CameraVendorReferenceAppCurrentImageContextPolicy.currentImageHandle
     report("请求 CameraVendor 专有图库首图信息 (0x9054, handle 0x\(String(format: "%08X", handle)))")
     let data = try sendCommandForData(
       operationCode: UInt16(CameraVendorPtpOperationCode.cameraVendorGetLatestObjectInfo),
@@ -3470,6 +4339,25 @@ private final class CameraVendorPtpSession {
     let info = CameraVendorPtpDataParser.cameraVendorVendorObjectInfo(handle: Int(handle), data: data)
     report("CameraVendor 专有图库首图: \(info.filename) \(info.formatLabel)")
     return info
+  }
+
+  private func cameraVendorCurrentObjectHandleForLatestProbe() -> UInt32? {
+    guard CameraVendorLegacyGalleryObjectInfoPolicy.shouldReadCurrentObjectHandleBeforeLatestProbe else {
+      return nil
+    }
+    if CameraVendorLegacyGalleryObjectInfoPolicy.shouldReadCurrentObjectHandleViaObjectPropList,
+       let currentHandle = try? readCameraVendorCurrentObjectHandleViaObjectPropList(),
+       currentHandle != 0 {
+      return currentHandle
+    }
+    do {
+      if let currentHandle = try readCameraVendorCurrentObjectHandle(), currentHandle != 0 {
+        return currentHandle
+      }
+    } catch {
+      report("[OBS] PTP_CURRENT_OBJECT_HANDLE_FAILED error=\(error.localizedDescription)")
+    }
+    return nil
   }
 
   private func readCameraVendorCurrentObjectHandleViaObjectPropList() throws -> UInt32? {
@@ -3532,13 +4420,36 @@ private final class CameraVendorPtpSession {
   }
 
   func thumb(handle: UInt32, expectedSize: UInt32?) throws -> Data {
+    let operationInterruptionGeneration = priorityDownloadInterruptionGeneration
+    var standardGetThumbError: Error?
     if CameraVendorThumbnailFetchPolicy.shouldTryStandardGetThumbFirst {
       do {
         let data = try readStandardThumbnailObject(handle: handle)
         return normalizedThumbnailData(data, handle: handle, source: "standardGetThumb")
       } catch {
+        standardGetThumbError = error
         report("[OBS] PTP_GET_THUMB_FALLBACK_TO_PARTIAL handle=0x\(String(format: "%08X", handle)) error=\(error.localizedDescription)")
       }
+    }
+
+    let wasInterruptedForPriorityDownload =
+      priorityDownloadInterruptionGeneration != operationInterruptionGeneration
+    guard CameraVendorThumbnailPriorityDownloadPolicy.shouldContinueToPartialPreviewFallback(
+      afterPriorityDownloadInterruption: wasInterruptedForPriorityDownload,
+      isConnected: isConnected
+    ) else {
+      report("[OBS] PTP_GET_THUMB_PARTIAL_FALLBACK_SKIPPED_FOR_PRIORITY_DOWNLOAD handle=0x\(String(format: "%08X", handle))")
+      throw standardGetThumbError ?? CancellationError()
+    }
+
+    guard CameraVendorThumbnailFetchPolicy.shouldUsePartialPreviewFallback else {
+      throw standardGetThumbError ?? NSError(
+        domain: "CameraVendorPtpSession",
+        code: Int(CameraVendorPtpOperationCode.getThumb),
+        userInfo: [
+          NSLocalizedDescriptionKey: "Thumbnail fallback is disabled"
+        ]
+      )
     }
 
     let data = try readPreviewObject(handle: handle)
@@ -3570,13 +4481,18 @@ private final class CameraVendorPtpSession {
   }
 
   private func readPreviewObject(handle: UInt32) throws -> Data {
+    let previewReadSize = CameraVendorThumbnailFetchPolicy.partialPreviewReadSize
     report(
       "[OBS] PTP_STANDARD_PARTIAL_OBJECT_REQUEST purpose=preview " +
-      "handle=0x\(String(format: "%08X", handle)) offset=0 size=\(CameraVendorPartialObjectRequestPolicy.referenceAppInitialReadSize)"
+      "handle=0x\(String(format: "%08X", handle)) offset=0 size=\(previewReadSize)"
     )
     let data = try sendCommandForData(
       operationCode: UInt16(CameraVendorPtpOperationCode.getPartialObject),
-      parameters: CameraVendorPartialObjectRequestPolicy.standardPartialObjectParameters(handle: handle)
+      parameters: CameraVendorPartialObjectRequestPolicy.standardPartialObjectParameters(
+        handle: handle,
+        offset: 0,
+        size: previewReadSize
+      )
     )
     report("[OBS] PTP_STANDARD_PARTIAL_OBJECT_PREVIEW bytes=\(data.count) handle=0x\(String(format: "%08X", handle))")
     return data
@@ -3611,15 +4527,16 @@ private final class CameraVendorPtpSession {
     }
     var offset: UInt64 = 0
     let expectedByteCount = expectedSize.map(UInt64.init)
-    let maxByteCount = max(
-      expectedByteCount ?? 0,
-      UInt64(CameraVendorPartialObjectRequestPolicy.maxReadBytesWithoutKnownObjectSize)
+    let maxByteCount = CameraVendorPartialObjectRequestPolicy.maximumReadableByteCount(
+      expectedSize: expectedSize
     )
     var isJpegObject = false
+    let startedAt = Date()
 
     while offset < maxByteCount {
       let remaining = maxByteCount - offset
       let requestSize = UInt32(min(UInt64(CameraVendorPartialObjectRequestPolicy.referenceAppInitialReadSize), remaining))
+      let chunkStartedAt = Date()
       report(
         "[OBS] PTP_STANDARD_PARTIAL_OBJECT_REQUEST purpose=\(purpose) " +
         "handle=0x\(String(format: "%08X", handle)) offset=\(offset) size=\(requestSize) expected=\(expectedSize ?? 0)"
@@ -3644,7 +4561,9 @@ private final class CameraVendorPtpSession {
       offset += UInt64(chunk.count)
       report(
         "[OBS] PTP_STANDARD_PARTIAL_OBJECT_CHUNK purpose=\(purpose) " +
-        "handle=0x\(String(format: "%08X", handle)) chunkBytes=\(chunk.count) totalBytes=\(received.count) isJpeg=\(isJpegObject)"
+        "handle=0x\(String(format: "%08X", handle)) chunkBytes=\(chunk.count) " +
+        "totalBytes=\(received.count) chunkMs=\(Int(Date().timeIntervalSince(chunkStartedAt) * 1000)) " +
+        "isJpeg=\(isJpegObject)"
       )
 
       let hasJpegEndMarker = CameraVendorJpegDataPolicy.hasEndMarker(received)
@@ -3655,12 +4574,20 @@ private final class CameraVendorPtpSession {
         hasJpegEndMarker: hasJpegEndMarker
       ) {
         let reason = hasJpegEndMarker ? "jpeg-eoi" : "expected-size"
-        report("[OBS] PTP_STANDARD_PARTIAL_OBJECT_COMPLETE reason=\(reason) handle=0x\(String(format: "%08X", handle)) totalBytes=\(received.count)")
+        report(
+          "[OBS] PTP_STANDARD_PARTIAL_OBJECT_COMPLETE reason=\(reason) " +
+          "handle=0x\(String(format: "%08X", handle)) totalBytes=\(received.count) " +
+          "elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1000))"
+        )
         return received
       }
     }
 
-    report("[OBS] PTP_STANDARD_PARTIAL_OBJECT_COMPLETE reason=max-or-empty handle=0x\(String(format: "%08X", handle)) totalBytes=\(received.count)")
+    report(
+      "[OBS] PTP_STANDARD_PARTIAL_OBJECT_COMPLETE reason=max-or-empty " +
+      "handle=0x\(String(format: "%08X", handle)) totalBytes=\(received.count) " +
+      "elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1000))"
+    )
     return received
   }
 
@@ -3679,44 +4606,102 @@ private final class CameraVendorPtpSession {
     var offset: UInt64 = 0
     var totalBytes = 0
     let expectedByteCount = expectedSize.map(UInt64.init)
-    let maxByteCount = max(
-      expectedByteCount ?? 0,
-      UInt64(CameraVendorPartialObjectRequestPolicy.maxReadBytesWithoutKnownObjectSize)
+    let maxByteCount = CameraVendorPartialObjectRequestPolicy.maximumReadableByteCount(
+      expectedSize: expectedSize
     )
+    let startedAt = Date()
+    var chunkState = CameraVendorAdaptiveDownloadChunkState()
 
     while offset < maxByteCount {
       let remaining = maxByteCount - offset
-      let requestSize = UInt32(min(UInt64(CameraVendorPartialObjectRequestPolicy.referenceAppInitialReadSize), remaining))
+      let requestSize = CameraVendorAdaptiveDownloadChunkPolicy.requestSize(
+        remaining: remaining,
+        state: chunkState
+      )
+      let chunkStartedAt = Date()
       report(
         "[OBS] PTP_STANDARD_PARTIAL_OBJECT_FILE_REQUEST purpose=\(purpose) " +
-        "handle=0x\(String(format: "%08X", handle)) offset=\(offset) size=\(requestSize) expected=\(expectedSize ?? 0)"
+        "handle=0x\(String(format: "%08X", handle)) offset=\(offset) size=\(requestSize) " +
+        "adaptiveReadSize=\(chunkState.readSize) strategy=\(CameraVendorAdaptiveDownloadChunkPolicy.strategyName) " +
+        "slowLargeChunks=\(chunkState.consecutiveSlowLargeChunks) expected=\(expectedSize ?? 0)"
       )
-      let chunk = try sendCommandForData(
-        operationCode: UInt16(CameraVendorPtpOperationCode.getPartialObject),
-        parameters: CameraVendorPartialObjectRequestPolicy.standardPartialObjectParameters(
-          handle: handle,
-          offset: offset,
-          size: requestSize
+      let chunk: Data
+      do {
+        chunk = try sendCommandForData(
+          operationCode: UInt16(CameraVendorPtpOperationCode.getPartialObject),
+          parameters: CameraVendorPartialObjectRequestPolicy.standardPartialObjectParameters(
+            handle: handle,
+            offset: offset,
+            size: requestSize
+          )
         )
-      )
+      } catch {
+        if chunkState.readSize > CameraVendorPartialObjectRequestPolicy.fileDownloadFallbackReadSize {
+          let previousReadSize = chunkState.readSize
+          chunkState.readSize = CameraVendorPartialObjectRequestPolicy.fileDownloadFallbackReadSize
+          chunkState.consecutiveFastChunks = 0
+          report(
+            "[OBS] PTP_STANDARD_PARTIAL_OBJECT_FILE_FALLBACK_READ_SIZE " +
+            "handle=0x\(String(format: "%08X", handle)) offset=\(offset) " +
+            "from=\(previousReadSize) to=\(chunkState.readSize) " +
+            "error=\(error.localizedDescription)"
+          )
+          continue
+        }
+        throw error
+      }
       guard !chunk.isEmpty else {
         report("[OBS] PTP_STANDARD_PARTIAL_OBJECT_FILE_EMPTY handle=0x\(String(format: "%08X", handle)) offset=\(offset)")
         break
       }
+      if offset == 0 {
+        let headHex = CameraVendorDownloadDataDiagnosticPolicy.headHex(from: chunk)
+        let ftypOffset = CameraVendorDownloadDataDiagnosticPolicy.firstFtypOffset(in: chunk)
+        report(
+          "[OBS] PTP_STANDARD_PARTIAL_OBJECT_FILE_HEAD purpose=\(purpose) " +
+          "handle=0x\(String(format: "%08X", handle)) bytes=\(chunk.count) " +
+          "head=\(headHex) ftypOffset=\(ftypOffset.map(String.init) ?? "nil")"
+        )
+      }
       try handleForWriting.write(contentsOf: chunk)
       totalBytes += chunk.count
       offset += UInt64(chunk.count)
+      let chunkElapsedMs = Int(Date().timeIntervalSince(chunkStartedAt) * 1000)
+      let previousReadSize = chunkState.readSize
+      CameraVendorAdaptiveDownloadChunkPolicy.recordChunk(
+        byteCount: chunk.count,
+        elapsedMs: chunkElapsedMs,
+        state: &chunkState
+      )
+      if previousReadSize != chunkState.readSize {
+        report(
+          "[OBS] PTP_ADAPTIVE_CHUNK_SIZE_CHANGED purpose=\(purpose) " +
+          "handle=0x\(String(format: "%08X", handle)) from=\(previousReadSize) " +
+          "to=\(chunkState.readSize) strategy=\(CameraVendorAdaptiveDownloadChunkPolicy.strategyName) " +
+          "chunkBytes=\(chunk.count) chunkMs=\(chunkElapsedMs)"
+        )
+      }
       report(
         "[OBS] PTP_STANDARD_PARTIAL_OBJECT_FILE_CHUNK purpose=\(purpose) " +
-        "handle=0x\(String(format: "%08X", handle)) chunkBytes=\(chunk.count) totalBytes=\(totalBytes)"
+        "handle=0x\(String(format: "%08X", handle)) chunkBytes=\(chunk.count) totalBytes=\(totalBytes) " +
+        "chunkMs=\(chunkElapsedMs) nextReadSize=\(chunkState.readSize) " +
+        "slowLargeChunks=\(chunkState.consecutiveSlowLargeChunks)"
       )
       if let expectedByteCount, UInt64(totalBytes) >= expectedByteCount {
-        report("[OBS] PTP_STANDARD_PARTIAL_OBJECT_FILE_COMPLETE reason=expected-size handle=0x\(String(format: "%08X", handle)) totalBytes=\(totalBytes)")
+        report(
+          "[OBS] PTP_STANDARD_PARTIAL_OBJECT_FILE_COMPLETE reason=expected-size " +
+          "handle=0x\(String(format: "%08X", handle)) totalBytes=\(totalBytes) " +
+          "elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1000)) finalReadSize=\(chunkState.readSize)"
+        )
         return totalBytes
       }
     }
 
-    report("[OBS] PTP_STANDARD_PARTIAL_OBJECT_FILE_COMPLETE reason=max-or-empty handle=0x\(String(format: "%08X", handle)) totalBytes=\(totalBytes)")
+    report(
+      "[OBS] PTP_STANDARD_PARTIAL_OBJECT_FILE_COMPLETE reason=max-or-empty " +
+      "handle=0x\(String(format: "%08X", handle)) totalBytes=\(totalBytes) " +
+      "elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1000)) finalReadSize=\(chunkState.readSize)"
+    )
     return totalBytes
   }
 
@@ -3787,6 +4772,7 @@ private final class CameraVendorPtpSession {
       "handle=0x\(String(format: "%08X", handle)) cachedExpectedSize=\(cachedExpectedSize ?? 0)"
     )
     var shouldResetRealInfo = false
+    var shouldResetForceCompression = false
     defer {
       if shouldResetRealInfo {
         do {
@@ -3800,26 +4786,63 @@ private final class CameraVendorPtpSession {
           report("[OBS] PTP_DOWNLOAD_RESET_REAL_INFO_ZERO_FAILED error=\(error.localizedDescription)")
         }
       }
+      if shouldResetForceCompression {
+        do {
+          try setCameraVendorImageForceCompression(0, reason: "download-partial-fallback-reset")
+        } catch {
+          report("[OBS] PTP_DOWNLOAD_RESET_FORCE_COMPRESSION_ZERO_FAILED error=\(error.localizedDescription)")
+        }
+      }
     }
     do {
       _ = try readCameraVendorDeviceProperty(
         code: CameraVendorDevicePropCode.referenceAppGalleryObjectContext,
         name: "CameraVendor/ReferenceApp EventsList before file download (0xD212)"
       )
-      _ = try readCameraVendorDeviceProperty(
-        code: CameraVendorDevicePropCode.compressionCutOff,
-        name: "CameraVendor CompressionCutOff/PartialSize (0xD235)"
-      )
-
-      let realInfoResponse = try sendCommandWithData(
-        operationCode: UInt16(CameraVendorPtpOperationCode.setDevicePropValue),
-        parameters: [CameraVendorDevicePropCode.imageCompressionRealInfo],
-        data: CameraVendorOriginalDownloadPolicy.correctFileSizePayload(enabled: true)
-      )
-      shouldResetRealInfo = true
-      report("[OBS] PTP_DOWNLOAD_SET_REAL_INFO_ONE response=0x\(String(format: "%04X", realInfoResponse.responseCode))")
+      if CameraVendorOriginalDownloadPolicy.shouldSetForceCompressionBeforeFileDownload(
+        formatLabel: "UNKNOWN",
+        cachedExpectedSize: cachedExpectedSize
+      ) {
+        try setCameraVendorImageForceCompression(
+          CameraVendorOriginalDownloadPolicy.referenceAppFileDownloadForceCompressionMode,
+          reason: "download-partial-fallback-prepare"
+        )
+        shouldResetForceCompression = true
+      }
+      if CameraVendorOriginalDownloadPolicy.shouldReadCompressionCutOffBeforeFreshFileInfo(
+        formatLabel: "UNKNOWN",
+        cachedExpectedSize: cachedExpectedSize
+      ) {
+        _ = try readCameraVendorDeviceProperty(
+          code: CameraVendorDevicePropCode.compressionCutOff,
+          name: "CameraVendor CompressionCutOff/PartialSize (0xD235)"
+        )
+      }
+      if CameraVendorOriginalDownloadPolicy.shouldSetCorrectFileSizeBeforeFileDownload(
+        formatLabel: "UNKNOWN",
+        cachedExpectedSize: cachedExpectedSize
+      ) {
+        let realInfoResponse = try sendCommandWithData(
+          operationCode: UInt16(CameraVendorPtpOperationCode.setDevicePropValue),
+          parameters: [CameraVendorDevicePropCode.imageCompressionRealInfo],
+          data: CameraVendorOriginalDownloadPolicy.correctFileSizePayload(enabled: true)
+        )
+        shouldResetRealInfo = true
+        report("[OBS] PTP_DOWNLOAD_SET_REAL_INFO_ONE response=0x\(String(format: "%04X", realInfoResponse.responseCode))")
+      } else {
+        report("[OBS] PTP_DOWNLOAD_SKIP_REAL_INFO_ONE reason=reference-app-fast-start")
+      }
 
       let freshInfo = try objectInfo(handle: handle)
+      if CameraVendorOriginalDownloadPolicy.shouldReadCompressionCutOffAfterFreshFileInfo(
+        formatLabel: freshInfo.formatLabel,
+        cachedExpectedSize: cachedExpectedSize
+      ) {
+        _ = try readCameraVendorDeviceProperty(
+          code: CameraVendorDevicePropCode.compressionCutOff,
+          name: "CameraVendor CompressionCutOff/PartialSize (0xD235)"
+        )
+      }
       let expectedSize = freshInfo.compressedSize.nonzero ?? cachedExpectedSize
       report(
         "[OBS] PTP_DOWNLOAD_PARTIAL_FALLBACK_INFO " +
@@ -3842,19 +4865,154 @@ private final class CameraVendorPtpSession {
     }
   }
 
-  func objectFile(handle: UInt32, expectedSize: UInt32?, filename: String) throws -> URL {
+  func objectFile(
+    handle: UInt32,
+    expectedSize: UInt32?,
+    filename: String,
+    formatLabel: String = "JPG"
+  ) throws -> URL {
+    let cachedExpectedSize = expectedSize
     let fileExtension = ((filename as NSString).pathExtension.isEmpty ? "bin" : (filename as NSString).pathExtension)
     let fileURL = FileManager.default.temporaryDirectory
       .appendingPathComponent(UUID().uuidString)
       .appendingPathExtension(fileExtension)
+    let startedAt = Date()
+    var shouldResetRealInfo = false
+    var shouldResetForceCompression = false
+    defer {
+      if shouldResetRealInfo {
+        do {
+          let resetResponse = try sendCommandWithData(
+            operationCode: UInt16(CameraVendorPtpOperationCode.setDevicePropValue),
+            parameters: [CameraVendorDevicePropCode.imageCompressionRealInfo],
+            data: CameraVendorOriginalDownloadPolicy.correctFileSizePayload(enabled: false)
+          )
+          report("[OBS] PTP_DOWNLOAD_FILE_RESET_REAL_INFO_ZERO response=0x\(String(format: "%04X", resetResponse.responseCode))")
+        } catch {
+          report("[OBS] PTP_DOWNLOAD_FILE_RESET_REAL_INFO_ZERO_FAILED error=\(error.localizedDescription)")
+        }
+      }
+      if shouldResetForceCompression {
+        do {
+          try setCameraVendorImageForceCompression(0, reason: "download-file-reset")
+        } catch {
+          report("[OBS] PTP_DOWNLOAD_FILE_RESET_FORCE_COMPRESSION_ZERO_FAILED error=\(error.localizedDescription)")
+        }
+      }
+    }
     do {
-      let info = try objectInfo(handle: handle)
-      let expectedSize = info.compressedSize.nonzero ?? expectedSize
-      _ = try readObjectByPartialObjectsToFile(
+      report(
+        "[OBS] PTP_DOWNLOAD_FILE_PREPARE_BEGIN " +
+        "handle=0x\(String(format: "%08X", handle)) cachedExpectedSize=\(expectedSize ?? 0)"
+      )
+      let shouldSkipFreshInfoProbe = CameraVendorOriginalDownloadPolicy.shouldSkipFreshFileInfoProbe(
+        formatLabel: formatLabel,
+        cachedExpectedSize: cachedExpectedSize
+      )
+      if CameraVendorOriginalDownloadPolicy.shouldPrepareTransferStateBeforeFileDownload(
+        formatLabel: formatLabel,
+        cachedExpectedSize: cachedExpectedSize
+      ) {
+        if CameraVendorOriginalDownloadPolicy.shouldReadReferenceAppContextBeforeFileDownload(
+          hasReadContextDuringCurrentPriorityDownload: hasReadReferenceAppContextDuringCurrentPriorityDownload
+        ) {
+          _ = try readCameraVendorDeviceProperty(
+            code: CameraVendorDevicePropCode.referenceAppGalleryObjectContext,
+            name: "CameraVendor/ReferenceApp EventsList before file download (0xD212)"
+          )
+          hasReadReferenceAppContextDuringCurrentPriorityDownload = true
+        } else {
+          report("[OBS] PTP_DOWNLOAD_FILE_SKIP_D212_CONTEXT reason=current-priority-batch-already-prepared")
+        }
+        if CameraVendorOriginalDownloadPolicy.shouldSetForceCompressionBeforeFileDownload(
+          formatLabel: formatLabel,
+          cachedExpectedSize: cachedExpectedSize
+        ) {
+          try setCameraVendorImageForceCompression(
+            CameraVendorOriginalDownloadPolicy.referenceAppFileDownloadForceCompressionMode,
+            reason: "download-file-prepare"
+          )
+          shouldResetForceCompression = true
+        }
+        if CameraVendorOriginalDownloadPolicy.shouldReadCompressionCutOffBeforeFreshFileInfo(
+          formatLabel: formatLabel,
+          cachedExpectedSize: cachedExpectedSize
+        ) {
+          _ = try readCameraVendorDeviceProperty(
+            code: CameraVendorDevicePropCode.compressionCutOff,
+            name: "CameraVendor CompressionCutOff/PartialSize (0xD235)"
+          )
+        }
+        if CameraVendorOriginalDownloadPolicy.shouldSetCorrectFileSizeBeforeFileDownload(
+          formatLabel: formatLabel,
+          cachedExpectedSize: cachedExpectedSize
+        ) {
+          let realInfoResponse = try sendCommandWithData(
+            operationCode: UInt16(CameraVendorPtpOperationCode.setDevicePropValue),
+            parameters: [CameraVendorDevicePropCode.imageCompressionRealInfo],
+            data: CameraVendorOriginalDownloadPolicy.correctFileSizePayload(enabled: true)
+          )
+          shouldResetRealInfo = true
+          report("[OBS] PTP_DOWNLOAD_FILE_SET_REAL_INFO_ONE response=0x\(String(format: "%04X", realInfoResponse.responseCode))")
+        } else {
+          report("[OBS] PTP_DOWNLOAD_FILE_SKIP_REAL_INFO_ONE reason=reference-app-fast-start")
+        }
+      } else {
+        report(
+          "[OBS] PTP_DOWNLOAD_FILE_PREPARE_SKIPPED " +
+          "reason=policy-disabled " +
+          "handle=0x\(String(format: "%08X", handle)) cachedExpectedSize=\(cachedExpectedSize ?? 0)"
+        )
+      }
+
+      let info: CameraVendorCameraObjectInfo?
+      if shouldSkipFreshInfoProbe {
+        report(
+          "[OBS] PTP_DOWNLOAD_FILE_FRESH_INFO_SKIPPED " +
+          "reason=cached-\(formatLabel.lowercased())-size " +
+          "handle=0x\(String(format: "%08X", handle)) cachedExpectedSize=\(cachedExpectedSize ?? 0)"
+        )
+        info = nil
+      } else {
+        info = try objectInfo(handle: handle)
+      }
+      let downloadFormatLabel = info?.formatLabel ?? formatLabel
+      let downloadFilename = info?.filename ?? filename
+      if CameraVendorOriginalDownloadPolicy.shouldReadCompressionCutOffAfterFreshFileInfo(
+        formatLabel: downloadFormatLabel,
+        cachedExpectedSize: cachedExpectedSize
+      ) {
+        _ = try readCameraVendorDeviceProperty(
+          code: CameraVendorDevicePropCode.compressionCutOff,
+          name: "CameraVendor CompressionCutOff/PartialSize (0xD235)"
+        )
+      }
+      let expectedSize = shouldSkipFreshInfoProbe
+        ? cachedExpectedSize
+        : CameraVendorOriginalDownloadPolicy.expectedDownloadSize(
+            formatLabel: downloadFormatLabel,
+            freshCompressedSize: info?.compressedSize.nonzero,
+          cachedExpectedSize: cachedExpectedSize
+        )
+      let sizeSource = shouldSkipFreshInfoProbe
+        ? "cached-skip-fresh"
+        : (info?.compressedSize.nonzero != nil ? "fresh-object-info" : "cached-after-empty-fresh")
+      report(
+        "[OBS] PTP_DOWNLOAD_FILE_INFO " +
+        "handle=0x\(String(format: "%08X", handle)) format=\(downloadFormatLabel) " +
+        "filename=\(downloadFilename) expectedSize=\(expectedSize ?? 0) cachedExpectedSize=\(cachedExpectedSize ?? 0) " +
+        "freshSize=\(info?.compressedSize ?? 0) sizeSource=\(sizeSource) freshProbe=\(!shouldSkipFreshInfoProbe)"
+      )
+      let bytes = try readObjectByPartialObjectsToFile(
         handle: handle,
         expectedSize: expectedSize,
         fileURL: fileURL,
         purpose: "download-file"
+      )
+      report(
+        "[OBS] PTP_DOWNLOAD_FILE_COMPLETE " +
+        "handle=0x\(String(format: "%08X", handle)) bytes=\(bytes) " +
+        "elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1000))"
       )
       return fileURL
     } catch {
@@ -4044,7 +5202,9 @@ private final class CameraVendorPtpSession {
     timeout: TimeInterval = 10
   ) throws -> CameraVendorPtpPacket {
     report("等待 CameraVendor legacy PTP 包头")
+    let headerStartedAt = Date()
     let header = try socket.readExactly(4, timeout: timeout)
+    let headerMs = Int(Date().timeIntervalSince(headerStartedAt) * 1000)
     guard header.count == 4 else {
       throw NSError(domain: "CameraVendorPtpSession", code: 5, userInfo: [NSLocalizedDescriptionKey: "CameraVendor legacy PTP 包头读取失败"])
     }
@@ -4052,13 +5212,34 @@ private final class CameraVendorPtpSession {
     guard length >= 6 else {
       throw NSError(domain: "CameraVendorPtpSession", code: 5, userInfo: [NSLocalizedDescriptionKey: "CameraVendor legacy PTP 包长度异常 \(length)"])
     }
-    let payload = try socket.readExactly(Int(length) - 4, timeout: timeout)
+    let payloadLength = Int(length) - 4
+    let payloadStartedAt = Date()
+    let progressEveryBytes = CameraVendorPtpSocketReadDiagnosticPolicy.shouldReportProgress(totalBytes: payloadLength)
+      ? CameraVendorPtpSocketReadDiagnosticPolicy.progressIntervalBytes
+      : nil
+    let payload = try socket.readExactly(
+      payloadLength,
+      timeout: timeout,
+      progressEveryBytes: progressEveryBytes
+    ) { [weak self] bytesRead, totalBytes, elapsedMs in
+      self?.report(
+        "[OBS] PTP_SOCKET_PAYLOAD_PROGRESS transport=legacy " +
+        "bytesRead=\(bytesRead) totalBytes=\(totalBytes) payloadMs=\(elapsedMs)"
+      )
+    }
+    let payloadMs = Int(Date().timeIntervalSince(payloadStartedAt) * 1000)
     guard payload.count >= 2 else {
       throw NSError(domain: "CameraVendorPtpSession", code: 5, userInfo: [NSLocalizedDescriptionKey: "CameraVendor legacy PTP 包内容为空"])
     }
     let kind = payload.subdata(in: 0..<2).withUnsafeBytes { $0.load(as: UInt16.self).littleEndian }
     let body = payload.subdata(in: 2..<payload.count)
     report("收到 CameraVendor legacy PTP 包 kind=\(kind) length=\(length)")
+    if CameraVendorPtpSocketReadDiagnosticPolicy.shouldReportProgress(totalBytes: payloadLength) {
+      report(
+        "[OBS] PTP_SOCKET_PACKET_READ transport=legacy kind=\(kind) " +
+        "length=\(length) headerMs=\(headerMs) payloadMs=\(payloadMs)"
+      )
+    }
     switch CameraVendorLegacyPacketMapper.packetType(forKind: kind) {
     case CameraVendorPtpPacketType.dataPacket:
       guard body.count >= 6 else {
@@ -4078,15 +5259,39 @@ private final class CameraVendorPtpSession {
   /// Read a standard PTP/IP packet with [4 length][4 type] header.
   private func readPacket(from socket: CameraVendorPtpSocket, timeout: TimeInterval = 10) throws -> CameraVendorPtpPacket {
     report("等待 PTP 包头")
+    let headerStartedAt = Date()
     let header = try socket.readExactly(8, timeout: timeout)
+    let headerMs = Int(Date().timeIntervalSince(headerStartedAt) * 1000)
     guard header.count == 8 else {
       throw NSError(domain: "CameraVendorPtpSession", code: 5, userInfo: [NSLocalizedDescriptionKey: "PTP 包头读取失败"])
     }
     let length = header.subdata(in: 0..<4).withUnsafeBytes { $0.load(as: UInt32.self).littleEndian }
     let type = header.subdata(in: 4..<8).withUnsafeBytes { $0.load(as: UInt32.self).littleEndian }
     let payloadLength = Int(length) - 8
-    let payload = payloadLength > 0 ? try socket.readExactly(payloadLength, timeout: timeout) : Data()
+    let payloadStartedAt = Date()
+    let progressEveryBytes = CameraVendorPtpSocketReadDiagnosticPolicy.shouldReportProgress(totalBytes: payloadLength)
+      ? CameraVendorPtpSocketReadDiagnosticPolicy.progressIntervalBytes
+      : nil
+    let payload = payloadLength > 0
+      ? try socket.readExactly(
+        payloadLength,
+        timeout: timeout,
+        progressEveryBytes: progressEveryBytes
+      ) { [weak self] bytesRead, totalBytes, elapsedMs in
+        self?.report(
+          "[OBS] PTP_SOCKET_PAYLOAD_PROGRESS transport=standard " +
+          "bytesRead=\(bytesRead) totalBytes=\(totalBytes) payloadMs=\(elapsedMs)"
+        )
+      }
+      : Data()
+    let payloadMs = Int(Date().timeIntervalSince(payloadStartedAt) * 1000)
     report("收到 PTP 包 type=\(type) length=\(length)")
+    if CameraVendorPtpSocketReadDiagnosticPolicy.shouldReportProgress(totalBytes: payloadLength) {
+      report(
+        "[OBS] PTP_SOCKET_PACKET_READ transport=standard type=\(type) " +
+        "length=\(length) headerMs=\(headerMs) payloadMs=\(payloadMs)"
+      )
+    }
     return CameraVendorPtpPacket(type: Int(type), payload: payload)
   }
 
@@ -4409,7 +5614,8 @@ final class CameraVendorPtpDownloadWorker: CameraVendorParallelDownloadWorker {
       try self.session.objectFile(
         handle: UInt32(handle),
         expectedSize: expectedSize,
-        filename: filename
+        filename: filename,
+        formatLabel: formatLabel
       )
     }.value
     return CameraVendorDownloadedFile(fileURL: fileURL, filename: filename, mediaType: mediaType)
@@ -4420,7 +5626,7 @@ final class CameraVendorPtpDownloadWorker: CameraVendorParallelDownloadWorker {
   }
 }
 
-final class CameraVendorRealtimeGalleryService: CameraVendorGalleryService, CameraVendorGalleryDiagnosticReporting, CameraVendorGalleryConfigurable, CameraVendorReservedReceiveDiagnosticService, CameraVendorParallelDownloadFactory {
+final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVendorPriorityDownloadPreparing {
   private let session = CameraVendorPtpSession()
   private var objectInfoCache: [Int: CameraVendorCameraObjectInfo] = [:]
   var diagnosticHandler: ((String) -> Void)?
@@ -4433,6 +5639,9 @@ final class CameraVendorRealtimeGalleryService: CameraVendorGalleryService, Came
   /// Re-entrancy guard: prevents parallel PTP connections that conflict with each other.
   private let fetchLock = NSLock()
   private var isFetching = false
+  private let priorityDownloadLock = NSLock()
+  private var isPriorityDownloadActive = false
+  private var activeThumbnailRequestCount = 0
 
   func configure(connectionSummary: CameraVendorConnectionSummary) {
     wifiConfigurations = connectionSummary.wifiConfigurations
@@ -4450,6 +5659,36 @@ final class CameraVendorRealtimeGalleryService: CameraVendorGalleryService, Came
     manualWifiPromptBaselineIP = nil
     directPTPMode = true
     transferMode = .gallery
+  }
+
+  func terminateCameraCommunication() {
+    report("[OBS] GALLERY_COMMUNICATION_TERMINATE_REQUESTED")
+    session.disconnect()
+  }
+
+  func prepareForPriorityDownload() {
+    priorityDownloadLock.lock()
+    isPriorityDownloadActive = true
+    let activeThumbnailRequests = activeThumbnailRequestCount
+    priorityDownloadLock.unlock()
+
+    report(
+      "[OBS] PRIORITY_DOWNLOAD_PREPARE " +
+      "interruptThumbnail=\(CameraVendorThumbnailLoadPolicy.shouldInterruptInFlightRequestBeforeDownload) " +
+      "activeThumbnailRequests=\(activeThumbnailRequests)"
+    )
+    session.beginPriorityDownloadBatch()
+    if activeThumbnailRequests > 0 {
+      session.interruptInFlightOperationForPriorityDownload()
+    }
+  }
+
+  func finishPriorityDownload() {
+    priorityDownloadLock.lock()
+    isPriorityDownloadActive = false
+    priorityDownloadLock.unlock()
+    session.finishPriorityDownloadBatch()
+    report("[OBS] PRIORITY_DOWNLOAD_FINISH")
   }
 
   func fetchGallery() async throws -> [CameraVendorGalleryItem] {
@@ -4718,8 +5957,35 @@ final class CameraVendorRealtimeGalleryService: CameraVendorGalleryService, Came
     return ssidMatchesCamera || CameraVendorPtpConstants.isCameraWifiIPv4Address(ip)
   }
 
+  private func beginThumbnailRequest(handle: Int) throws {
+    priorityDownloadLock.lock()
+    if isPriorityDownloadActive {
+      priorityDownloadLock.unlock()
+      report("[OBS] THUMBNAIL_REQUEST_REJECTED_PRIORITY_DOWNLOAD handle=0x\(String(format: "%08X", handle))")
+      throw NSError(
+        domain: "CameraVendorRealtimeGalleryService",
+        code: CameraVendorPriorityDownloadThumbnailGatePolicy.suspendedThumbnailErrorCode,
+        userInfo: [NSLocalizedDescriptionKey: "下载期间暂停缩略图加载"]
+      )
+    }
+    activeThumbnailRequestCount += 1
+    let activeCount = activeThumbnailRequestCount
+    priorityDownloadLock.unlock()
+    report("[OBS] THUMBNAIL_REQUEST_BEGIN handle=0x\(String(format: "%08X", handle)) active=\(activeCount)")
+  }
+
+  private func endThumbnailRequest(handle: Int) {
+    priorityDownloadLock.lock()
+    activeThumbnailRequestCount = max(0, activeThumbnailRequestCount - 1)
+    let activeCount = activeThumbnailRequestCount
+    priorityDownloadLock.unlock()
+    report("[OBS] THUMBNAIL_REQUEST_END handle=0x\(String(format: "%08X", handle)) active=\(activeCount)")
+  }
+
   func fetchThumbnail(for handle: Int) async throws -> Data {
     let expectedSize = objectInfoCache[handle]?.compressedSize.nonzero
+    try beginThumbnailRequest(handle: handle)
+    defer { endThumbnailRequest(handle: handle) }
     return try await Task.detached(priority: .userInitiated) {
       try self.session.thumb(handle: UInt32(handle), expectedSize: expectedSize)
     }.value
@@ -4728,7 +5994,8 @@ final class CameraVendorRealtimeGalleryService: CameraVendorGalleryService, Came
   func downloadOriginal(for handle: Int) async throws -> Data {
     let expectedSize = objectInfoCache[handle]?.compressedSize.nonzero
     return try await Task.detached(priority: .userInitiated) {
-      try self.session.object(handle: UInt32(handle), expectedSize: expectedSize)
+      try self.session.ensureConnectedForPriorityDownload()
+      return try self.session.object(handle: UInt32(handle), expectedSize: expectedSize)
     }.value
   }
 
@@ -4737,6 +6004,7 @@ final class CameraVendorRealtimeGalleryService: CameraVendorGalleryService, Came
     let handler = diagnosticHandler
     let workerSession = CameraVendorPtpSession()
     let cacheSnapshot = objectInfoCache
+    handler?("[OBS] PTP_PARALLEL_WORKER_OPEN_BEGIN clientName=\(clientName)-w2 cachedObjects=\(cacheSnapshot.count)")
     do {
       try await Task.detached(priority: .userInitiated) {
         try workerSession.connect(
@@ -4747,8 +6015,10 @@ final class CameraVendorRealtimeGalleryService: CameraVendorGalleryService, Came
       }.value
     } catch {
       workerSession.disconnect()
+      handler?("[OBS] PTP_PARALLEL_WORKER_OPEN_FAILED error=\(error.localizedDescription)")
       throw error
     }
+    handler?("[OBS] PTP_PARALLEL_WORKER_OPEN_COMPLETE")
     return CameraVendorPtpDownloadWorker(
       session: workerSession,
       diagnosticHandler: handler,
@@ -4769,10 +6039,12 @@ final class CameraVendorRealtimeGalleryService: CameraVendorGalleryService, Came
     )
     let mediaType = CameraVendorGalleryDownloadPolicy.mediaType(for: item)
     let fileURL = try await Task.detached(priority: .userInitiated) {
-      try self.session.objectFile(
+      try self.session.ensureConnectedForPriorityDownload()
+      return try self.session.objectFile(
         handle: UInt32(handle),
         expectedSize: expectedSize,
-        filename: filename
+        filename: filename,
+        formatLabel: info?.formatLabel ?? "JPG"
       )
     }.value
     return CameraVendorDownloadedFile(fileURL: fileURL, filename: filename, mediaType: mediaType)
@@ -4873,8 +6145,26 @@ final class CameraVendorRealtimeGalleryService: CameraVendorGalleryService, Came
       } else {
         recorder("[ROUTE \(route.id.rawValue)] 跳过额外 PTP 启动等待")
       }
+      let connectStartedAt = Date()
       try connectWithRetry(recorder: recorder)
+      recorder(
+        "[OBS] GALLERY_TIMING_CONNECT seconds=" +
+        String(format: "%.3f", Date().timeIntervalSince(connectStartedAt))
+      )
+      if CameraVendorLegacyGalleryObjectInfoPolicy.shouldResetCompressionModeBeforeObjectInfoList {
+        do {
+          try session.resetCameraVendorCompressionMode()
+          recorder("[OBS] GALLERY_OBJECT_INFO_COMPRESSION_RESET_DONE")
+        } catch {
+          recorder("[OBS] GALLERY_OBJECT_INFO_COMPRESSION_RESET_FAILED error=\(error.localizedDescription)")
+        }
+      }
+      let objectInfosStartedAt = Date()
       let infos = try session.galleryObjectInfos()
+      recorder(
+        "[OBS] GALLERY_TIMING_OBJECT_INFOS count=\(infos.count) seconds=" +
+        String(format: "%.3f", Date().timeIntervalSince(objectInfosStartedAt))
+      )
       for info in infos {
         objectInfoCache[info.handle] = info
       }
@@ -4904,10 +6194,16 @@ final class CameraVendorRealtimeGalleryService: CameraVendorGalleryService, Came
 
   private func connectWithRetry(
     maxAttempts: Int = 5,
+    maxElapsedSeconds: TimeInterval = CameraVendorPtpConnectionStartupPolicy.maxElapsedSeconds,
     recorder: ((String) -> Void)? = nil
   ) throws {
     var lastError: Error?
-    for attempt in 1...maxAttempts {
+    let startedAt = Date()
+    var attempt = 1
+    while attempt <= maxAttempts ||
+      CameraVendorPtpConnectionStartupPolicy.shouldContinueRetrying(
+        elapsedSeconds: Date().timeIntervalSince(startedAt)
+      ) {
       do {
         try session.connect(clientName: ptpClientName, diagnosticHandler: recorder)
         return
@@ -4918,11 +6214,17 @@ final class CameraVendorRealtimeGalleryService: CameraVendorGalleryService, Came
         }
 
         lastError = error
-        if attempt < maxAttempts {
+        let elapsed = Date().timeIntervalSince(startedAt)
+        if attempt < maxAttempts ||
+          CameraVendorPtpConnectionStartupPolicy.shouldContinueRetrying(elapsedSeconds: elapsed) {
           let delay = CameraVendorPtpConnectionStartupPolicy.retryDelaySeconds(afterFailedAttempt: attempt)
-          recorder?("PTP 连接失败 (第 \(attempt) 次)，\(String(format: "%.1f", delay))s 后重试: \(error.localizedDescription)")
+          recorder?(
+            "PTP 连接失败 (第 \(attempt) 次，已等待 \(String(format: "%.1f", elapsed))s/" +
+            "\(Int(maxElapsedSeconds))s)，\(String(format: "%.1f", delay))s 后重试: \(error.localizedDescription)"
+          )
           Thread.sleep(forTimeInterval: delay)
         }
+        attempt += 1
       }
     }
     throw lastError ?? NSError(
@@ -5097,6 +6399,18 @@ enum CameraVendorDeviceMatcher {
     let uppercase = name.uppercased()
     return uppercase.contains("CAMERA_VENDOR")
       || uppercase.hasPrefix("CAMERA-")
+      || isLikelyFujifilmModelName(uppercase)
+  }
+
+  private static func isLikelyFujifilmModelName(_ uppercaseName: String) -> Bool {
+    uppercaseName == "X-T5"
+      || uppercaseName.hasPrefix("X-T")
+      || uppercaseName.hasPrefix("X-H")
+      || uppercaseName.hasPrefix("X-S")
+      || uppercaseName.hasPrefix("X-E")
+      || uppercaseName.hasPrefix("X-PRO")
+      || uppercaseName.hasPrefix("GFX")
+      || uppercaseName.contains("FUJIFILM")
   }
 
   private static func normalize(uuid: String) -> String {
@@ -5166,9 +6480,8 @@ enum CameraVendorReferenceAppPairingCodec {
 
 enum CameraVendorHandshakeIdentityPolicy {
   static let fallbackConnectedDeviceName = "CamTransfer"
-  private static let genericIPhoneName = "iPhone"
-  // ReferenceApp 实际抓包看到的 PTP friendlyName 是 "iPhone-####"（保留前缀 i），
-  // 之前误把前缀去掉变成 "Phone-####"，相机识别时和 ReferenceApp 不一致。
+  // ReferenceApp 实际抓包看到的 PTP friendlyName 是 "iPhone-####"（保留前缀 i）。
+  // 相机配对列表对中文/自定义设备名兼容性不稳定，所以配对名固定走这个格式。
   private static let referenceAppGenericPhonePrefix = "iPhone"
 
   static func currentConnectedDeviceName(fallbackAppName: String? = nil) -> String {
@@ -5182,17 +6495,7 @@ enum CameraVendorHandshakeIdentityPolicy {
     preferredDeviceName: String?,
     fallbackAppName: String?
   ) -> String {
-    let candidates = [preferredDeviceName, fallbackAppName, fallbackConnectedDeviceName]
-    for candidate in candidates {
-      let trimmed = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-      if !trimmed.isEmpty {
-        if trimmed == genericIPhoneName {
-          return referenceAppStyleGenericIPhoneName()
-        }
-        return trimmed
-      }
-    }
-    return fallbackConnectedDeviceName
+    referenceAppStyleGenericIPhoneName()
   }
 
   private static func referenceAppStyleGenericIPhoneName() -> String {
@@ -5203,17 +6506,7 @@ enum CameraVendorHandshakeIdentityPolicy {
   }
 
   static func normalizedStoredConnectedDeviceName(_ storedName: String) -> String {
-    let trimmed = storedName.trimmingCharacters(in: .whitespacesAndNewlines)
-    if trimmed.hasPrefix("\(genericIPhoneName)-") {
-      return referenceAppStyleGenericIPhoneName()
-    }
-    // 兼容 FIX27 之前 buggy 版本写过 "Phone-####"（少 i），
-    // 这里强制升级为 "iPhone-####" 与 ReferenceApp 实抓的 friendlyName 对齐，
-    // 否则 PTP InitCommand / 配对时写给相机的 ConnectedDeviceName 都还是错的。
-    if trimmed.hasPrefix("Phone-") {
-      return referenceAppStyleGenericIPhoneName()
-    }
-    return trimmed
+    referenceAppStyleGenericIPhoneName()
   }
 }
 
@@ -5424,7 +6717,7 @@ protocol CameraVendorBluetoothServiceDelegate: AnyObject {
 }
 
 final class CameraVendorBluetoothService: NSObject {
-  private let buildMarker = "BUILD_MARK_20260504_FIX148_ACCEPT_CAMERA_SUBNET_FOR_PTP"
+  private let buildMarker = "BUILD_MARK_20260524_FIX163_TRANSFER_SIZE_INLINE_SWITCH"
   private let pairServiceUUID = CBUUID(string: "91F1DE68-DFF6-466E-8B65-FF13B0F16FB8")
   private let pairingCharacteristicUUID = CBUUID(string: "ABA356EB-9633-4E60-B73F-F52516DBD671")
   private let connectedDeviceNameCharacteristicUUID = CBUUID(string: "85B9163E-62D1-49FF-A6F5-054B4630D4A1")
@@ -5474,6 +6767,8 @@ final class CameraVendorBluetoothService: NSObject {
   private var notifiableCharacteristics: [CBCharacteristic] = []
   private var probedCharacteristics: [CBUUID: CBCharacteristic] = [:]
   private var observedCharacteristicValues: [String: Data] = [:]
+  private var unmatchedAdvertisementSampleKeys: Set<String> = []
+  private var unmatchedAdvertisementSampleCount = 0
   private var scanTimeoutWorkItem: DispatchWorkItem?
   private var postHandshakeProbeTimeoutWorkItem: DispatchWorkItem?
   private var transferActivationTimeoutWorkItem: DispatchWorkItem?
@@ -5512,11 +6807,13 @@ final class CameraVendorBluetoothService: NSObject {
   private var didCompletePairingCallback = false
   private var didCompleteHandshakeCallback = false
   private var hasWrittenPairingIdentifier = false
+  private var hasQueuedPhonePairingConfirmation = false
   private var hasCompletedPairing = false
   private var hasUserInitiatedTransfer = false
   private var secureHandshakePhase: CameraVendorSecureHandshakePhase = .idle
   private var secureHandshakeReconnectCount = 0
   private var secureIdentificationNumberAlreadyPaired = false
+  private var rememberedPairedCameras: [CameraVendorPairedCameraRecord]
   private var rememberedPairedCamera: CameraVendorPairedCameraRecord?
   private var autoReconnectTargetPeripheralID: UUID?
   private var shouldAutoReconnectRememberedCamera = false
@@ -5524,7 +6821,9 @@ final class CameraVendorBluetoothService: NSObject {
 
   init(pairingStore: CameraVendorPairedCameraStore = CameraVendorPairedCameraStore()) {
     self.pairingStore = pairingStore
-    self.rememberedPairedCamera = pairingStore.load()
+    let savedRecords = pairingStore.loadAll()
+    self.rememberedPairedCameras = savedRecords
+    self.rememberedPairedCamera = savedRecords.first
     super.init()
     // Clear log file on each app launch so we get fresh logs
     try? FileManager.default.removeItem(at: Self.debugLogURL)
@@ -5557,7 +6856,19 @@ final class CameraVendorBluetoothService: NSObject {
   }
 
   var rememberedCameraSummary: CameraVendorConnectionSummary? {
-    rememberedPairedCamera?.connectionSummary
+    rememberedPairedCameras.first?.connectionSummary
+  }
+
+  var rememberedCameraSummaries: [CameraVendorConnectionSummary] {
+    rememberedPairedCameras.map(\.connectionSummary)
+  }
+
+  var rememberedCameraRecords: [CameraVendorPairedCameraRecord] {
+    rememberedPairedCameras
+  }
+
+  func isRememberedCamera(_ camera: CameraVendorDiscoveredCamera) -> Bool {
+    rememberedPairedCameras.contains { $0.peripheralID == camera.id }
   }
 
   var rememberedCameraID: UUID? {
@@ -5570,19 +6881,30 @@ final class CameraVendorBluetoothService: NSObject {
 
   @discardableResult
   func restoreLastPairedCameraIfAvailable() -> Bool {
-    rememberedPairedCamera = pairingStore.load()
+    rememberedPairedCameras = pairingStore.loadAll()
+    rememberedPairedCamera = rememberedPairedCameras.first
 
-    guard let record = rememberedPairedCamera else {
+    guard let record = rememberedPairedCameras.first else {
       _ = central.state
       return false
     }
 
-    appendLog("已读取保存的配对相机: \(record.deviceName) [\(record.peripheralID.uuidString)]")
+    appendLog("已读取 \(rememberedPairedCameras.count) 台保存的配对相机，默认: \(record.deviceName) [\(record.peripheralID.uuidString)]")
     return true
   }
 
   @discardableResult
   func connectLastPairedCameraIfAvailable() -> Bool {
+    rememberedPairedCameras = pairingStore.loadAll()
+    guard let record = rememberedPairedCameras.first else {
+      _ = central.state
+      return false
+    }
+    return connectPairedCamera(peripheralID: record.peripheralID)
+  }
+
+  @discardableResult
+  func connectPairedCamera(peripheralID: UUID) -> Bool {
     guard isNextRememberedCameraConnectionUserApproved else {
       appendLog("已配对相机连接未经过用户确认，已阻止自动重连")
       return true
@@ -5594,15 +6916,15 @@ final class CameraVendorBluetoothService: NSObject {
       return true
     }
 
-    rememberedPairedCamera = pairingStore.load()
-
-    guard let record = rememberedPairedCamera else {
+    rememberedPairedCameras = pairingStore.loadAll()
+    guard let record = rememberedPairedCameras.first(where: { $0.peripheralID == peripheralID }) else {
       _ = central.state
       return false
     }
+    rememberedPairedCamera = record
 
     appendLog("检测到已保存配对相机: \(record.deviceName) [\(record.peripheralID.uuidString)]")
-    updateStatus("准备连接上次配对的相机", isBusy: true)
+    updateStatus("准备连接已配对的相机", isBusy: true)
     shouldAutoReconnectRememberedCamera = true
 
     if central.state == .poweredOn {
@@ -5622,7 +6944,21 @@ final class CameraVendorBluetoothService: NSObject {
   /// or `autoReconnectTargetPeripheralID` stays set and
   /// `connectLastPairedCameraIfAvailable()` would short-circuit forever
   /// until the app is killed.
-  func resetForNewConnectionAttempt() {
+  func resetForNewConnectionAttempt(force: Bool = false) {
+    if CameraVendorConnectionResetPolicy.shouldSkipPassiveResetDuringTransferHandoff(
+      force: force,
+      didCompleteHandshakeCallback: didCompleteHandshakeCallback,
+      hasCompletedPairing: hasCompletedPairing,
+      hasUserInitiatedTransfer: hasUserInitiatedTransfer,
+      hasPendingHandshakeSummary: pendingHandshakeSummary != nil,
+      isRunningTransferActivation: isRunningTransferActivation,
+      awaitingBluetoothDisconnectForWifiHandoff: awaitingBluetoothDisconnectForWifiHandoff,
+      awaitingTransferActivationStateChange: awaitingTransferActivationStateChange
+    ) {
+      appendLog("首页出现时检测到传图交接正在进行，跳过被动状态重置")
+      return
+    }
+
     appendLog("重置上一次连接的残留状态，准备再次尝试")
     scanTimeoutWorkItem?.cancel()
     scanTimeoutWorkItem = nil
@@ -5654,6 +6990,7 @@ final class CameraVendorBluetoothService: NSObject {
     didCompletePairingCallback = false
     didCompleteHandshakeCallback = false
     hasCompletedPairing = false
+    hasQueuedPhonePairingConfirmation = false
     hasUserInitiatedTransfer = false
     handshakeCoordinator = CameraVendorHandshakeCoordinator()
     handshakeMode = .undetermined
@@ -5661,25 +6998,113 @@ final class CameraVendorBluetoothService: NSObject {
 
   func forgetLastPairedCamera() {
     pairingStore.clear()
+    rememberedPairedCameras = []
     rememberedPairedCamera = nil
     autoReconnectTargetPeripheralID = nil
     shouldAutoReconnectRememberedCamera = false
     isNextRememberedCameraConnectionUserApproved = false
+    hasQueuedPhonePairingConfirmation = false
     appendLog("已删除本地保存的配对相机记录")
     updateStatus("已删除配对记录，请连接新设备", isBusy: false)
   }
 
+  func forgetPairedCamera(peripheralID: UUID) {
+    pairingStore.remove(peripheralID: peripheralID)
+    rememberedPairedCameras = pairingStore.loadAll()
+    if rememberedPairedCamera?.peripheralID == peripheralID {
+      rememberedPairedCamera = rememberedPairedCameras.first
+    }
+    if autoReconnectTargetPeripheralID == peripheralID {
+      autoReconnectTargetPeripheralID = nil
+      shouldAutoReconnectRememberedCamera = false
+    }
+    isNextRememberedCameraConnectionUserApproved = false
+    hasQueuedPhonePairingConfirmation = false
+    appendLog("已删除本地保存的配对相机记录: \(peripheralID.uuidString)")
+    updateStatus(
+      rememberedPairedCameras.isEmpty ? "已删除配对记录，请连接新设备" : "已删除配对记录",
+      isBusy: false
+    )
+  }
+
   func confirmCameraPairingSucceeded() {
-    guard CameraVendorCameraPairingConfirmationPolicy.canFinishPairing(
+    if CameraVendorCameraPairingConfirmationPolicy.canCompleteQueuedPhoneConfirmation(
       hasWrittenIdentifier: hasWrittenPairingIdentifier,
+      hasPendingHandshakeSummary: pendingHandshakeSummary != nil,
+      hasQueuedPhoneConfirmation: true
+    ) {
+      hasQueuedPhonePairingConfirmation = false
+      completePhonePairingConfirmation()
+      return
+    }
+
+    if CameraVendorCameraPairingConfirmationPolicy.shouldQueuePhoneConfirmation(
+      hasWrittenIdentifier: hasWrittenPairingIdentifier,
+      hasPendingHandshakeSummary: pendingHandshakeSummary != nil,
       hasUserConfirmedCameraSuccess: true
+    ) {
+      hasQueuedPhonePairingConfirmation = true
+      appendLog("已记录手机确认，等待相机 ACK 后自动完成配对")
+      updateStatus("已确认，等待相机返回结果", isBusy: false)
+      return
+    }
+
+    appendLog("相机端尚未到可确认阶段，忽略本次配对完成确认")
+    updateStatus("请先完成当前配对流程", isBusy: false)
+  }
+
+  @discardableResult
+  private func completeQueuedPhonePairingConfirmationIfReady() -> Bool {
+    guard CameraVendorCameraPairingConfirmationPolicy.canCompleteQueuedPhoneConfirmation(
+      hasWrittenIdentifier: hasWrittenPairingIdentifier,
+      hasPendingHandshakeSummary: pendingHandshakeSummary != nil,
+      hasQueuedPhoneConfirmation: hasQueuedPhonePairingConfirmation
     ) else {
-      appendLog("相机端尚未到可确认阶段，忽略本次配对完成确认")
-      updateStatus("请先完成当前配对流程", isBusy: false)
+      return false
+    }
+
+    hasQueuedPhonePairingConfirmation = false
+    appendLog("相机 ACK 已就绪，自动完成之前的手机确认")
+    completePhonePairingConfirmation()
+    return didCompletePairingCallback
+  }
+
+  private func completePhonePairingConfirmation() {
+    if CameraVendorCameraPairingConfirmationPolicy.shouldReconnectAfterPhoneConfirmation(
+      hasWrittenIdentifier: hasWrittenPairingIdentifier,
+      hasPendingHandshakeSummary: pendingHandshakeSummary != nil,
+      shouldBypassManualConfirmation: shouldBypassManualPairingConfirmation()
+    ), beginPhoneConfirmationReconnectIfNeeded() {
       return
     }
 
     notifyPairingCompletedIfPossible()
+  }
+
+  private func beginPhoneConfirmationReconnectIfNeeded() -> Bool {
+    guard let peripheral = selectedPeripheral,
+          let camera = selectedCamera,
+          savePendingPairingRecordIfPossible() else {
+      return false
+    }
+
+    appendLog("手机确认后自动重新连接相机，回写已配对识别号完成相机端确认")
+    updateStatus("正在向相机确认配对结果", isBusy: true)
+    prepareConnectionAttempt(peripheral: peripheral, camera: camera)
+    appendLog("开始连接 \(camera.name) [\(camera.appVariant.rawValue)]")
+    if peripheral.state == .connected {
+      appendLog("相机 BLE 已连接，直接重新发现服务完成配对确认")
+      peripheral.delegate = self
+      peripheral.discoverServices(nil)
+      return true
+    }
+    central.connect(peripheral, options: nil)
+    return true
+  }
+
+  private func waitForPhonePairingConfirmation() {
+    appendLog("手机端握手已完成，等待用户确认相机端已显示配对成功")
+    updateStatus(CameraVendorCameraPairingConfirmationPolicy.waitingForPhoneConfirmationStatus, isBusy: false)
   }
 
   func startPhotoTransfer() {
@@ -5716,8 +7141,8 @@ final class CameraVendorBluetoothService: NSObject {
       return
     }
 
-    appendLog("用户点击“传输照片”，开始准备 Wi‑Fi 和图库连接")
-    updateStatus("准备传输照片", isBusy: true)
+      appendLog("用户点击“传输照片”，开始让相机进入 Wi‑Fi 传图模式")
+      updateStatus(CameraVendorTransferActivationStatusTextPolicy.enteringGalleryStatus, isBusy: true)
     beginPostHandshakeProbeIfNeeded(on: peripheral)
   }
 
@@ -5763,6 +7188,7 @@ final class CameraVendorBluetoothService: NSObject {
     didCompletePairingCallback = false
     didCompleteHandshakeCallback = false
     hasWrittenPairingIdentifier = false
+    hasQueuedPhonePairingConfirmation = false
     hasCompletedPairing = false
     hasUserInitiatedTransfer = false
     secureHandshakePhase = .idle
@@ -5805,6 +7231,7 @@ final class CameraVendorBluetoothService: NSObject {
   private func beginScan() {
     scanTimeoutWorkItem?.cancel()
     central.stopScan()
+    resetScanAdvertisementDiagnostics()
     updateStatus("搜索中", isBusy: true)
     appendLog("运行构建标记: \(buildMarker)")
     appendLog("开始 BLE 扫描（不过滤服务，直接分析 CameraVendor 广播）")
@@ -5817,10 +7244,13 @@ final class CameraVendorBluetoothService: NSObject {
       guard let self else { return }
       self.central.stopScan()
       if self.discoveredCameras.isEmpty {
-        self.appendLog("扫描结束，没有发现 相机")
+        self.appendLog("扫描结束，没有发现 相机，未匹配广播样本数 \(self.unmatchedAdvertisementSampleCount)")
         self.updateStatus("未发现相机", isBusy: false)
       } else {
-        self.appendLog("扫描结束，发现 \(self.discoveredCameras.count) 台 CameraVendor 设备")
+        self.appendLog(
+          "扫描结束，发现 \(self.discoveredCameras.count) 台 CameraVendor 设备，" +
+          "未匹配广播样本数 \(self.unmatchedAdvertisementSampleCount)"
+        )
         self.updateStatus("请选择相机", isBusy: false)
       }
     }
@@ -5831,6 +7261,7 @@ final class CameraVendorBluetoothService: NSObject {
   private func beginPairingReadyRescan() {
     scanTimeoutWorkItem?.cancel()
     central.stopScan()
+    resetScanAdvertisementDiagnostics()
     updateStatus("等待相机切换到可配对广播", isBusy: true)
     appendLog("开始重新扫描，等待 ReferenceApp / Secure Pair / type=0x02 广播")
     central.scanForPeripherals(
@@ -5897,6 +7328,7 @@ final class CameraVendorBluetoothService: NSObject {
     didCompletePairingCallback = false
     didCompleteHandshakeCallback = false
     hasWrittenPairingIdentifier = false
+    hasQueuedPhonePairingConfirmation = false
     hasCompletedPairing = false
     hasUserInitiatedTransfer = false
     secureHandshakePhase = .idle
@@ -5912,6 +7344,29 @@ final class CameraVendorBluetoothService: NSObject {
     autoReconnectTargetPeripheralID = record.peripheralID
     shouldAutoReconnectRememberedCamera = false
 
+    if CameraVendorRememberedReconnectPolicy.shouldTrySystemRetrievedPeripheralBeforeScanning {
+      let peripherals = central.retrievePeripherals(withIdentifiers: [record.peripheralID])
+      if let peripheral = peripherals.first {
+        let camera = CameraVendorDiscoveredCamera(
+          id: peripheral.identifier,
+          name: record.deviceName,
+          rssi: 0,
+          appVariant: record.appVariant,
+          pairingToken: nil,
+          matchDetails: "remembered-system-retrieve"
+        )
+        discoveredPeripherals[peripheral.identifier] = peripheral
+        discoveredCameras = [camera]
+        notifyDevicesChanged()
+        appendLog("系统已取回上次配对的相机外设，直接发起连接: \(record.deviceName) [\(record.peripheralID.uuidString)]")
+        prepareConnectionAttempt(peripheral: peripheral, camera: camera)
+        updateStatus("连接上次配对的相机", isBusy: true)
+        central.connect(peripheral, options: nil)
+        return
+      }
+      appendLog("系统未取回上次配对外设，改为扫描广播: \(record.peripheralID.uuidString)")
+    }
+
     appendLog("开始扫描上次配对相机，等待广播后连接")
     beginAutoReconnectScan(for: record)
   }
@@ -5923,6 +7378,7 @@ final class CameraVendorBluetoothService: NSObject {
 
     scanTimeoutWorkItem?.cancel()
     central.stopScan()
+    resetScanAdvertisementDiagnostics()
     updateStatus("搜索上次配对的相机", isBusy: true)
     central.scanForPeripherals(
       withServices: nil,
@@ -5933,11 +7389,21 @@ final class CameraVendorBluetoothService: NSObject {
       guard let self else { return }
       self.central.stopScan()
       self.autoReconnectTargetPeripheralID = nil
-      self.appendLog("未找到上次配对的相机，等待手动搜索")
-      self.updateStatus("未找到上次配对的相机", isBusy: false)
+      guard CameraVendorRememberedReconnectPolicy.shouldStartNormalDiscoveryAfterTargetTimeout else {
+        self.appendLog("未找到上次配对的相机，等待手动搜索")
+        self.updateStatus("未找到上次配对的相机", isBusy: false)
+        return
+      }
+      self.appendLog("未找到上次配对的相机，切换为普通自动搜索")
+      self.beginScan()
     }
     scanTimeoutWorkItem = timeout
     DispatchQueue.main.asyncAfter(deadline: .now() + 12, execute: timeout)
+  }
+
+  private func resetScanAdvertisementDiagnostics() {
+    unmatchedAdvertisementSampleKeys.removeAll()
+    unmatchedAdvertisementSampleCount = 0
   }
 
   private func shouldSkipManualPairingConfirmationForCurrentCamera() -> Bool {
@@ -5989,6 +7455,7 @@ final class CameraVendorBluetoothService: NSObject {
     didCompletePairingCallback = false
     didCompleteHandshakeCallback = false
     hasWrittenPairingIdentifier = false
+    hasQueuedPhonePairingConfirmation = false
     hasCompletedPairing = false
     hasUserInitiatedTransfer = false
     secureHandshakePhase = .idle
@@ -6025,10 +7492,11 @@ final class CameraVendorBluetoothService: NSObject {
   private func appendLog(_ message: String) {
     let formatter = DateFormatter()
     formatter.dateFormat = "HH:mm:ss.SSS"
-    let line = "[\(formatter.string(from: Date()))] \(message)"
+    let safeMessage = CamTransferDiagnosticLogRedactor.redacted(message)
+    let line = "[\(formatter.string(from: Date()))] \(safeMessage)"
     NSLog("%@", line)
     // Use CameraVendorFileLogger for thread-safe file writes (single serial queue)
-    CameraVendorFileLogger.log(message)
+    CameraVendorFileLogger.log(safeMessage)
     logStore.append(line)
     delegate?.cameraVendorBluetoothService(self, didAppendLog: line)
   }
@@ -6216,23 +7684,12 @@ final class CameraVendorBluetoothService: NSObject {
       return
     }
 
-    if let peripheralID = selectedPeripheral?.identifier {
-      let record = CameraVendorPairedCameraRecord(
-        peripheralID: peripheralID,
-        deviceName: summary.deviceName,
-        serialNumber: summary.serialNumber,
-        connectedDeviceName: summary.connectedDeviceName,
-        appVariant: selectedCamera?.appVariant ?? rememberedPairedCamera?.appVariant ?? .unknown,
-        preferredWifiNetwork: summary.preferredWifiNetwork
-      )
-      pairingStore.save(record)
-      rememberedPairedCamera = record
-      appendLog("已保存配对相机: \(summary.deviceName) [\(peripheralID.uuidString)]")
-    }
+    savePendingPairingRecordIfPossible()
 
     didCompletePairingCallback = true
     hasCompletedPairing = true
-    appendLog("用户已确认相机端显示配对成功，进入传输准备页")
+    hasQueuedPhonePairingConfirmation = false
+    appendLog("用户已在手机端确认相机显示配对成功，进入传输准备页")
     updateStatus("配对完成", isBusy: false)
     delegate?.cameraVendorBluetoothService(self, didCompletePairing: summary)
 
@@ -6250,8 +7707,30 @@ final class CameraVendorBluetoothService: NSObject {
       "peripheralState=\(peripheral.state) knownCharacteristics=\(discoveredCharacteristicsByUUID.count)"
     )
     appendLog("按 ReferenceApp 连接流程，配对完成后自动触发传图模式")
-    updateStatus("准备传输照片", isBusy: true)
+    updateStatus(CameraVendorTransferActivationStatusTextPolicy.enteringGalleryStatus, isBusy: true)
     beginPostHandshakeProbeIfNeeded(on: peripheral)
+  }
+
+  @discardableResult
+  private func savePendingPairingRecordIfPossible() -> Bool {
+    guard let summary = pendingHandshakeSummary,
+          let peripheralID = selectedPeripheral?.identifier else {
+      return false
+    }
+
+    let record = CameraVendorPairedCameraRecord(
+      peripheralID: peripheralID,
+      deviceName: summary.deviceName,
+      serialNumber: summary.serialNumber,
+      connectedDeviceName: summary.connectedDeviceName,
+      appVariant: selectedCamera?.appVariant ?? rememberedPairedCamera?.appVariant ?? .unknown,
+      preferredWifiNetwork: summary.preferredWifiNetwork
+    )
+    pairingStore.save(record)
+    rememberedPairedCameras = pairingStore.loadAll()
+    rememberedPairedCamera = record
+    appendLog("已保存配对相机: \(summary.deviceName) [\(peripheralID.uuidString)]")
+    return true
   }
 
   private func finishHandshakeIfPossible() {
@@ -6484,6 +7963,16 @@ final class CameraVendorBluetoothService: NSObject {
       }
 
       scheduleBleStateSampling(on: peripheral)
+
+      if let strategy = currentTransferActivationStrategy,
+         CameraVendorTransferActivationCompletionPolicy.shouldFastHandoffAfterCommandWrites(for: strategy) {
+        appendObservation("ACTIVATION_FAST_HANDOFF_AFTER_WRITES strategy=\(strategy.rawValue)")
+        appendLog("传图命令已写入，跳过 BLE ready 等待，直接切换到 Wi‑Fi/PTP 流程")
+        transferActivationObservedChange = true
+        transferActivationObservedWifiLaunch = true
+        completeCurrentTransferActivationAttempt(on: peripheral, source: "fast-handoff-after-writes")
+        return
+      }
 
       guard !transferActivationCameraResponded else {
         appendLog("相机已响应过状态变化，保留现有 15 秒超时")
@@ -6724,13 +8213,27 @@ final class CameraVendorBluetoothService: NSObject {
       return
     }
 
-    // All strategies exhausted without observed change.
-    // Set awaitingTransferActivationStateChange so late BLE notifications can still be caught.
-    // Then disconnect BLE and proceed — camera may already be ready for PTP.
+    if !CameraVendorTransferActivationCompletionPolicy.shouldAttemptWifiHandoffAfterExhaustedStrategies(
+      observedChange: transferActivationObservedChange,
+      observedWifiLaunch: transferActivationObservedWifiLaunch
+    ) {
+      appendObservation("ACTIVATION_ABORT_NO_AP_READY strategy=\(strategyName)")
+      appendLog("传图模式 \(strategyName) 未观察到 AP_STATE_READY，暂不进入 Wi‑Fi/PTP 图库流程")
+      pendingTransferActivationStrategies.removeAll()
+      awaitingTransferActivationStateChange = false
+      awaitingTransferActivationStateChangeSince = nil
+      updateStatus("相机未确认进入传图模式，请重试连接", isBusy: false)
+      return
+    }
+
+    // All strategies exhausted after observing AP readiness.
+    // Keep waiting briefly for late BLE notifications, then continue the Wi-Fi handoff.
     awaitingTransferActivationStateChange = true
     awaitingTransferActivationStateChangeSince = Date()
-    appendLog("所有传图策略已尝试完毕，未观察到状态变化。主动断开 BLE 并尝试进入图库。")
-    if let peripheral = selectedPeripheral {
+    appendLog("已观察到相机 AP ready，保持 BLE 并尝试进入图库。")
+    if let strategy,
+       CameraVendorTransferActivationCompletionPolicy.shouldActivelyDisconnectBluetooth(for: strategy),
+       let peripheral = selectedPeripheral {
       awaitingBluetoothDisconnectForWifiHandoff = true
       updateStatus("断开 BLE 准备连接相机 Wi‑Fi", isBusy: true)
       central.cancelPeripheralConnection(peripheral)
@@ -6799,6 +8302,13 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
       serviceUUIDs: serviceUUIDs,
       manufacturerData: manufacturerData
     ) else {
+      logUnmatchedAdvertisementSample(
+        peripheral: peripheral,
+        name: name,
+        serviceUUIDs: serviceUUIDs,
+        manufacturerData: manufacturerData,
+        rssi: RSSI.intValue
+      )
       return
     }
 
@@ -6841,6 +8351,40 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
       updateStatus("重新连接相机中", isBusy: true)
       central.connect(peripheral, options: nil)
     }
+  }
+
+  private func logUnmatchedAdvertisementSample(
+    peripheral: CBPeripheral,
+    name: String?,
+    serviceUUIDs: [String],
+    manufacturerData: Data?,
+    rssi: Int
+  ) {
+    let key = [
+      peripheral.identifier.uuidString,
+      name ?? "nil",
+      serviceUUIDs.joined(separator: ","),
+      hexString(manufacturerData),
+    ].joined(separator: "|")
+    guard !unmatchedAdvertisementSampleKeys.contains(key) else {
+      return
+    }
+
+    unmatchedAdvertisementSampleKeys.insert(key)
+    unmatchedAdvertisementSampleCount += 1
+    guard CameraVendorBleScanDiagnosticsPolicy.shouldLogUnmatchedAdvertisement(
+      sampleCount: unmatchedAdvertisementSampleCount
+    ) else {
+      return
+    }
+
+    appendLog(
+      "忽略 BLE 广播样本 #\(unmatchedAdvertisementSampleCount): " +
+      "name=\(name ?? "nil") peripheral=\(peripheral.name ?? "nil") " +
+      "id=\(peripheral.identifier.uuidString.prefix(8)) rssi=\(rssi) " +
+      "services=\(serviceUUIDs.joined(separator: ",").isEmpty ? "-" : serviceUUIDs.joined(separator: ",")) " +
+      "mfg=\(hexString(manufacturerData))"
+    )
   }
 
   func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
@@ -6891,11 +8435,11 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
         bluetoothDisconnectHandoffTimeoutWorkItem?.cancel()
         bluetoothDisconnectHandoffTimeoutWorkItem = nil
         // Camera needs a few seconds after BLE disconnect to fully initialize
-        // its WiFi AP and PTP/IP listener. Without this delay, WiFi join and
-        // PTP INIT_COMMAND_REQUEST both fail silently.
-        appendLog("相机已断开 BLE，等待 3 秒让相机 Wi‑Fi AP 和 PTP 服务就绪")
+        // its WiFi AP and PTP/IP listener.
+        let handoffDelay = CameraVendorGalleryPtpStartupPolicy.startupDelaySeconds(didCompleteWifiHandoff: true)
+        appendLog("相机已断开 BLE，等待 \(String(format: "%.1f", handoffDelay)) 秒让相机 Wi‑Fi AP 和 PTP 服务就绪")
         updateStatus("等待相机 Wi‑Fi 就绪", isBusy: true)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + handoffDelay) { [weak self] in
           guard let self else { return }
           self.appendLog("延迟结束，开始连接相机 Wi‑Fi")
           self.finishHandshakeIfPossible()
@@ -7195,6 +8739,7 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
             "\(hexString(previousValue)) -> \(hexString(data))" +
             (statusDescription.map { " [\($0)]" } ?? "")
           )
+          updateStatus(CameraVendorTransferActivationStatusTextPolicy.readyToEnterGalleryStatus, isBusy: true)
           // Complete immediately instead of waiting for timeout
           transferActivationTimeoutWorkItem?.cancel()
           transferActivationTimeoutWorkItem = nil
@@ -7386,23 +8931,29 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
       hasWrittenPairingIdentifier = true
       secureHandshakePhase = .completed
       refreshPendingHandshakeSummary(using: peripheral)
-      if shouldBypassManualPairingConfirmation() {
+      if completeQueuedPhonePairingConfirmationIfReady() {
+        return
+      }
+      let shouldBypassConfirmation = shouldBypassManualPairingConfirmation()
+      if CameraVendorCameraPairingConfirmationPolicy.shouldWaitForPhoneConfirmationAfterIdentifierWrite(
+        shouldBypassManualConfirmation: shouldBypassConfirmation
+      ) {
+        waitForPhonePairingConfirmation()
+        return
+      }
+
+      if shouldBypassConfirmation {
         appendLog("识别为已配对重连，跳过人工确认")
         notifyPairingCompletedIfPossible()
-        if CameraVendorPostPairingTransferPolicy.shouldAutomaticallyPrepareTransferAfterPairing {
+        if CameraVendorCameraPairingConfirmationPolicy.shouldStartAutoTransferBeforePhoneConfirmation(
+          shouldBypassManualConfirmation: shouldBypassConfirmation,
+          shouldAutomaticallyPrepareTransferAfterPairing: CameraVendorPostPairingTransferPolicy.shouldAutomaticallyPrepareTransferAfterPairing
+        ) {
           hasUserInitiatedTransfer = true
           appendLog("自动传输模式：跳过手动确认，直接开始探测")
           beginPostHandshakeProbeIfNeeded(on: peripheral)
         }
         return
-      }
-      if CameraVendorPostPairingTransferPolicy.shouldAutomaticallyPrepareTransferAfterPairing {
-        hasUserInitiatedTransfer = true
-        appendLog("自动传输模式：设置传输标志，开始探测")
-        beginPostHandshakeProbeIfNeeded(on: peripheral)
-      } else {
-        appendLog("手机端握手已完成，等待相机端显示配对成功")
-        updateStatus("请先在相机上确认配对成功", isBusy: false)
       }
       return
     }
@@ -7416,6 +8967,9 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
         secureHandshakePhase = .completed
         hasWrittenPairingIdentifier = true
         refreshPendingHandshakeSummary(using: peripheral)
+        if completeQueuedPhonePairingConfirmationIfReady() {
+          return
+        }
         notifyPairingCompletedIfPossible()
         if CameraVendorPostPairingTransferPolicy.shouldAutomaticallyPrepareTransferAfterPairing {
           hasUserInitiatedTransfer = true
@@ -7445,24 +8999,29 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
         secureHandshakePhase = .completed
       }
       refreshPendingHandshakeSummary(using: peripheral)
-      if shouldBypassManualPairingConfirmation() {
+      if completeQueuedPhonePairingConfirmationIfReady() {
+        return
+      }
+      let shouldBypassConfirmation = shouldBypassManualPairingConfirmation()
+      if CameraVendorCameraPairingConfirmationPolicy.shouldWaitForPhoneConfirmationAfterIdentifierWrite(
+        shouldBypassManualConfirmation: shouldBypassConfirmation
+      ) {
+        waitForPhonePairingConfirmation()
+        return
+      }
+
+      if shouldBypassConfirmation {
         appendLog("识别为已配对重连，跳过人工确认")
         notifyPairingCompletedIfPossible()
-        if CameraVendorPostPairingTransferPolicy.shouldAutomaticallyPrepareTransferAfterPairing {
+        if CameraVendorCameraPairingConfirmationPolicy.shouldStartAutoTransferBeforePhoneConfirmation(
+          shouldBypassManualConfirmation: shouldBypassConfirmation,
+          shouldAutomaticallyPrepareTransferAfterPairing: CameraVendorPostPairingTransferPolicy.shouldAutomaticallyPrepareTransferAfterPairing
+        ) {
           hasUserInitiatedTransfer = true
           appendLog("自动传输模式：跳过手动确认，直接开始探测")
           beginPostHandshakeProbeIfNeeded(on: peripheral)
         }
         return
-      }
-      if CameraVendorPostPairingTransferPolicy.shouldAutomaticallyPrepareTransferAfterPairing {
-        hasUserInitiatedTransfer = true
-        notifyPairingCompletedIfPossible()
-        appendLog("自动传输模式：设置传输标志，开始探测")
-        beginPostHandshakeProbeIfNeeded(on: peripheral)
-      } else {
-        appendLog("手机端握手已完成，等待相机端显示配对成功")
-        updateStatus("请先在相机上确认配对成功", isBusy: false)
       }
     }
   }

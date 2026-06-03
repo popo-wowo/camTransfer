@@ -94,11 +94,15 @@ final class WiredCameraImportService: NSObject {
     file.requestThumbnailData(options: [.imageSourceThumbnailMaxPixelSize: 320]) { [weak self] data, error in
       guard let self else { return }
       if let error {
-        print("CamTransferWired thumbnail request failed item=\(itemID) error=\(error)")
+        let message = "CamTransferWired thumbnail request failed item=\(itemID) error=\(error)"
+        print(message)
+        CameraVendorFileLogger.log(message)
         return
       }
       guard let data, let image = UIImage(data: data) else {
-        print("CamTransferWired thumbnail request returned empty data item=\(itemID)")
+        let message = "CamTransferWired thumbnail request returned empty data item=\(itemID)"
+        print(message)
+        CameraVendorFileLogger.log(message)
         return
       }
       DispatchQueue.main.async {
@@ -158,7 +162,9 @@ final class WiredCameraImportService: NSObject {
           return
         }
 
-        print("CamTransferWired download succeeded item=\(itemID) saved=\(savedURL.path)")
+        let message = "CamTransferWired download succeeded item=\(itemID) saved=\(savedURL.path)"
+        print(message)
+        CameraVendorFileLogger.log(message)
 
         continuation.resume(
           returning: WiredCameraDownloadedFile(
@@ -329,7 +335,9 @@ extension WiredCameraImportService: ICCameraDeviceDelegate {
     error: Error?
   ) {
     if let error {
-      print("CamTransferWired delegate thumbnail failed item=\(item.name ?? "unknown") error=\(error)")
+      let message = "CamTransferWired delegate thumbnail failed item=\(item.name ?? "unknown") error=\(error)"
+      print(message)
+      CameraVendorFileLogger.log(message)
       return
     }
     guard let file = item as? ICCameraFile, let thumbnail else { return }
