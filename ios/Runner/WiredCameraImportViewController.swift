@@ -1257,6 +1257,7 @@ private final class WiredCameraPhotoPreviewViewController: UIViewController, UIP
   private let titleLabel = UILabel()
   private let subtitleLabel = UILabel()
   private let closeButton = UIButton(type: .system)
+  private let rotateButton = UIButton(type: .system)
   private let bottomBar = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
   private let importButton = UIButton(type: .system)
 
@@ -1316,7 +1317,7 @@ private final class WiredCameraPhotoPreviewViewController: UIViewController, UIP
       $0.translatesAutoresizingMaskIntoConstraints = false
       view.addSubview($0)
     }
-    [closeButton, titleLabel, subtitleLabel].forEach {
+    [closeButton, rotateButton, titleLabel, subtitleLabel].forEach {
       $0.translatesAutoresizingMaskIntoConstraints = false
       topBar.contentView.addSubview($0)
     }
@@ -1327,6 +1328,11 @@ private final class WiredCameraPhotoPreviewViewController: UIViewController, UIP
     closeButton.setImage(UIImage(systemName: "xmark", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold)), for: .normal)
     closeButton.accessibilityLabel = "关闭"
     closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
+
+    rotateButton.tintColor = .white
+    rotateButton.setImage(UIImage(systemName: "rotate.right", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold)), for: .normal)
+    rotateButton.accessibilityLabel = "旋转照片"
+    rotateButton.addTarget(self, action: #selector(rotateTapped), for: .touchUpInside)
 
     titleLabel.font = .systemFont(ofSize: 15, weight: .semibold)
     titleLabel.textColor = .white
@@ -1365,11 +1371,18 @@ private final class WiredCameraPhotoPreviewViewController: UIViewController, UIP
 
       titleLabel.centerXAnchor.constraint(equalTo: topBar.contentView.centerXAnchor),
       titleLabel.leadingAnchor.constraint(greaterThanOrEqualTo: closeButton.trailingAnchor, constant: 8),
-      titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: topBar.contentView.trailingAnchor, constant: -60),
+      titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: rotateButton.leadingAnchor, constant: -8),
       titleLabel.bottomAnchor.constraint(equalTo: subtitleLabel.topAnchor, constant: -2),
 
       subtitleLabel.centerXAnchor.constraint(equalTo: topBar.contentView.centerXAnchor),
+      subtitleLabel.leadingAnchor.constraint(greaterThanOrEqualTo: closeButton.trailingAnchor, constant: 8),
+      subtitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: rotateButton.leadingAnchor, constant: -8),
       subtitleLabel.bottomAnchor.constraint(equalTo: topBar.contentView.bottomAnchor, constant: -10),
+
+      rotateButton.trailingAnchor.constraint(equalTo: topBar.contentView.trailingAnchor, constant: -14),
+      rotateButton.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
+      rotateButton.widthAnchor.constraint(equalToConstant: 38),
+      rotateButton.heightAnchor.constraint(equalToConstant: 38),
 
       bottomBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
       bottomBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -1411,6 +1424,11 @@ private final class WiredCameraPhotoPreviewViewController: UIViewController, UIP
 
   @objc private func closeTapped() {
     navigationController?.dismiss(animated: true) ?? dismiss(animated: true)
+  }
+
+  @objc private func rotateTapped() {
+    guard let page = pageController.viewControllers?.first as? WiredCameraPhotoPreviewPageController else { return }
+    page.rotateClockwise()
   }
 
   @objc private func importTapped() {
@@ -1463,6 +1481,8 @@ private final class WiredCameraPhotoPreviewPageController: UIViewController, UIS
   private let placeholderView = UIImageView(image: UIImage(systemName: "photo"))
   private var imageWidthConstraint: NSLayoutConstraint?
   private var imageHeightConstraint: NSLayoutConstraint?
+  private var sourceImage: UIImage?
+  private var manualRotationDegrees = 0
 
   init(item: WiredCameraImportItem, index: Int) {
     self.item = item
@@ -1529,7 +1549,7 @@ private final class WiredCameraPhotoPreviewPageController: UIViewController, UIS
     scrollView.addGestureRecognizer(doubleTap)
 
     if let thumbnail = item.thumbnail {
-      apply(image: thumbnail)
+      setSourceImage(thumbnail)
     } else {
       placeholderView.isHidden = false
       imageView.image = UIImage(systemName: WiredCameraImportPolicy.mediaType(filename: item.name, uti: item.uti) == .video ? "video" : "photo")
@@ -1542,17 +1562,37 @@ private final class WiredCameraPhotoPreviewPageController: UIViewController, UIS
 
   override func viewWillLayoutSubviews() {
     super.viewWillLayoutSubviews()
-    if let image = imageView.image, item.thumbnail != nil {
-      apply(image: image)
+    if let image = imageView.image, sourceImage != nil {
+      layout(image: image)
     } else {
       centerImage()
     }
   }
 
-  private func apply(image: UIImage) {
+  func rotateClockwise() {
+    guard sourceImage != nil else { return }
+    manualRotationDegrees = NativePhotoPreviewRotationPolicy.nextManualRotationDegrees(manualRotationDegrees)
+    renderSourceImage()
+  }
+
+  private func setSourceImage(_ image: UIImage) {
+    sourceImage = image
+    renderSourceImage()
+  }
+
+  private func renderSourceImage() {
+    guard let sourceImage else { return }
+    let image = NativePhotoPreviewImageRenderer.rendered(
+      image: sourceImage,
+      manualRotationDegrees: manualRotationDegrees
+    )
     imageView.image = image
     imageView.contentMode = .scaleAspectFit
     placeholderView.isHidden = true
+    layout(image: image)
+  }
+
+  private func layout(image: UIImage) {
     let bounds = view.bounds.size
     guard bounds.width > 0, bounds.height > 0, image.size.width > 0, image.size.height > 0 else { return }
     let scale = min(bounds.width / image.size.width, bounds.height / image.size.height)
