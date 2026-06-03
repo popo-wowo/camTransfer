@@ -2,6 +2,63 @@ import UIKit
 import Photos
 import ImageIO
 
+enum NativePhotoPreviewRotationPolicy {
+  static func nextManualRotationDegrees(_ currentDegrees: Int) -> Int {
+    normalizedDegrees(currentDegrees + 90)
+  }
+
+  static func normalizedDegrees(_ degrees: Int) -> Int {
+    ((degrees % 360) + 360) % 360
+  }
+
+  static func displaySize(for size: CGSize, manualRotationDegrees: Int) -> CGSize {
+    let degrees = normalizedDegrees(manualRotationDegrees)
+    if degrees == 90 || degrees == 270 {
+      return CGSize(width: size.height, height: size.width)
+    }
+    return size
+  }
+}
+
+enum NativePhotoPreviewImageRenderer {
+  static func rendered(image: UIImage, manualRotationDegrees: Int) -> UIImage {
+    let normalized = normalized(image)
+    let degrees = NativePhotoPreviewRotationPolicy.normalizedDegrees(manualRotationDegrees)
+    guard degrees != 0 else { return normalized }
+
+    let targetSize = NativePhotoPreviewRotationPolicy.displaySize(
+      for: normalized.size,
+      manualRotationDegrees: degrees
+    )
+    let format = UIGraphicsImageRendererFormat.default()
+    format.scale = normalized.scale
+    let renderer = UIGraphicsImageRenderer(size: targetSize, format: format)
+    return renderer.image { context in
+      let cgContext = context.cgContext
+      cgContext.translateBy(x: targetSize.width / 2, y: targetSize.height / 2)
+      cgContext.rotate(by: CGFloat(degrees) * .pi / 180)
+      normalized.draw(
+        in: CGRect(
+          x: -normalized.size.width / 2,
+          y: -normalized.size.height / 2,
+          width: normalized.size.width,
+          height: normalized.size.height
+        )
+      )
+    }
+  }
+
+  private static func normalized(_ image: UIImage) -> UIImage {
+    guard image.imageOrientation != .up else { return image }
+    let format = UIGraphicsImageRendererFormat.default()
+    format.scale = image.scale
+    let renderer = UIGraphicsImageRenderer(size: image.size, format: format)
+    return renderer.image { _ in
+      image.draw(in: CGRect(origin: .zero, size: image.size))
+    }
+  }
+}
+
 enum NativeLogTextViewPolicy {
   static let maxDisplayedCharacters = 20_000
 
@@ -279,6 +336,30 @@ enum NativeGalleryNavigationPolicy {
 
   static func canDismissPreview(isDownloading: Bool) -> Bool {
     true
+  }
+}
+
+enum NativePhotoPreviewRotationPolicy {
+  static func nextManualRotationDegrees(_ currentDegrees: Int) -> Int {
+    switch ((currentDegrees % 360) + 360) % 360 {
+    case 0:
+      return 90
+    case 90:
+      return 180
+    case 180:
+      return 270
+    default:
+      return 0
+    }
+  }
+
+  static func displaySize(for size: CGSize, manualRotationDegrees: Int) -> CGSize {
+    switch ((manualRotationDegrees % 360) + 360) % 360 {
+    case 90, 270:
+      return CGSize(width: size.height, height: size.width)
+    default:
+      return size
+    }
   }
 }
 
@@ -5753,6 +5834,15 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
     return button
   }()
 
+  private let rotateButton: UIButton = {
+    let button = UIButton(type: .system)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    button.tintColor = .white
+    button.setImage(UIImage(systemName: "rotate.right", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold)), for: .normal)
+    button.accessibilityLabel = "旋转照片"
+    return button
+  }()
+
   private let bottomBar: NativeGradientChromeView = {
     let view = NativeGradientChromeView(direction: .bottomToTop)
     view.translatesAutoresizingMaskIntoConstraints = false
@@ -5876,6 +5966,7 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
 
     view.addSubview(topBar)
     topBar.addSubview(closeButton)
+    topBar.addSubview(rotateButton)
     topBar.addSubview(titleLabel)
     topBar.addSubview(subtitleLabel)
     topBar.addSubview(downloadButton)
@@ -5884,6 +5975,7 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
     bottomBar.addSubview(selectionButton)
 
     closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
+    rotateButton.addTarget(self, action: #selector(rotateTapped), for: .touchUpInside)
     selectionButton.addTarget(self, action: #selector(selectionTapped), for: .touchUpInside)
     downloadButton.addTarget(self, action: #selector(downloadTapped), for: .touchUpInside)
 
@@ -5909,16 +6001,21 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
 
       titleLabel.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
       titleLabel.leadingAnchor.constraint(greaterThanOrEqualTo: closeButton.trailingAnchor, constant: 10),
-      titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: downloadButton.leadingAnchor, constant: -10),
+      titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: rotateButton.leadingAnchor, constant: -10),
       titleLabel.bottomAnchor.constraint(equalTo: subtitleLabel.topAnchor, constant: -2),
 
       subtitleLabel.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
       subtitleLabel.leadingAnchor.constraint(greaterThanOrEqualTo: closeButton.trailingAnchor, constant: 10),
-      subtitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: downloadButton.leadingAnchor, constant: -10),
+      subtitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: rotateButton.leadingAnchor, constant: -10),
       subtitleLabel.bottomAnchor.constraint(equalTo: topBar.bottomAnchor, constant: -10),
 
       downloadButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -16),
       downloadButton.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
+
+      rotateButton.trailingAnchor.constraint(equalTo: downloadButton.leadingAnchor, constant: -8),
+      rotateButton.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
+      rotateButton.widthAnchor.constraint(equalToConstant: 36),
+      rotateButton.heightAnchor.constraint(equalToConstant: 36),
 
       bottomBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
       bottomBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -6054,6 +6151,11 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
     let item = items[currentIndex]
     onSelectionToggle(item)
     updateSelectionButton(for: item)
+  }
+
+  @objc private func rotateTapped() {
+    guard let page = pageController.viewControllers?.first as? NativePhotoPreviewPageController else { return }
+    page.rotateClockwise()
   }
 
   @objc private func downloadTapped() {

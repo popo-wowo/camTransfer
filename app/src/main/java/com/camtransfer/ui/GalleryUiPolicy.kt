@@ -2,6 +2,7 @@ package com.camtransfer.ui
 
 import com.camtransfer.model.CameraFile
 import com.camtransfer.model.TransferState
+import java.nio.ByteOrder
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import kotlin.math.abs
@@ -213,4 +214,236 @@ object GalleryPreviewNavigationPolicy {
         val index = files.indexOfFirst { it.info.handle == selectedHandle }
         return index.coerceAtLeast(0)
     }
+}
+
+object GalleryPreviewRotationPolicy {
+    fun nextManualRotationDegrees(currentDegrees: Int): Int =
+        normalizedDegrees(currentDegrees + 90)
+
+    fun autoRotationDegrees(
+        file: CameraFile,
+        decodedWidth: Int,
+        decodedHeight: Int,
+        imageData: ByteArray?,
+    ): Int {
+        exifRotationDegrees(imageData)?.let { return it }
+        if (decodedWidth <= 0 || decodedHeight <= 0) return 0
+        val expectedWidth = firstPositive(file.info.imagePixWidth, file.info.thumbPixWidth)
+        val expectedHeight = firstPositive(file.info.imagePixHeight, file.info.thumbPixHeight)
+        if (expectedWidth <= 0 || expectedHeight <= 0) return 0
+        val expectedPortrait = expectedHeight > expectedWidth
+        val decodedPortrait = decodedHeight > decodedWidth
+        return if (expectedPortrait != decodedPortrait) 90 else 0
+    }
+
+    fun exifRotationDegrees(data: ByteArray?): Int? {
+        if (data == null || data.size < 12) return null
+        if (data[0].unsigned() != 0xFF || data[1].unsigned() != 0xD8) return null
+        var offset = 2
+        while (offset + 4 <= data.size) {
+            if (data[offset].unsigned() != 0xFF) return null
+            val marker = data[offset + 1].unsigned()
+            if (marker == 0xDA || marker == 0xD9) return null
+            val segmentLength = data.uint16BE(offset + 2)
+            if (segmentLength < 2) return null
+            val segmentStart = offset + 4
+            val segmentEnd = offset + 2 + segmentLength
+            if (segmentEnd > data.size) return null
+            if (marker == 0xE1 && hasExifHeader(data, segmentStart)) {
+                return tiffOrientation(data, segmentStart + EXIF_HEADER.size, segmentEnd)
+                    ?.let(::rotationForExifOrientation)
+            }
+            offset = segmentEnd
+        }
+        return null
+    }
+
+    private fun tiffOrientation(data: ByteArray, tiffStart: Int, end: Int): Int? {
+        if (tiffStart + 8 > end) return null
+        val byteOrder = when {
+            data[tiffStart].toInt().toChar() == 'I' && data[tiffStart + 1].toInt().toChar() == 'I' ->
+                ByteOrder.LITTLE_ENDIAN
+            data[tiffStart].toInt().toChar() == 'M' && data[tiffStart + 1].toInt().toChar() == 'M' ->
+                ByteOrder.BIG_ENDIAN
+            else -> return null
+        }
+        if (data.uint16(tiffStart + 2, byteOrder) != 42) return null
+        val ifdOffset = data.uint32(tiffStart + 4, byteOrder)
+        val ifdStart = tiffStart + ifdOffset
+        if (ifdOffset < 8 || ifdStart + 2 > end) return null
+        val entryCount = data.uint16(ifdStart, byteOrder)
+        var entryOffset = ifdStart + 2
+        repeat(entryCount) {
+            if (entryOffset + 12 > end) return null
+            val tag = data.uint16(entryOffset, byteOrder)
+            val type = data.uint16(entryOffset + 2, byteOrder)
+            val count = data.uint32(entryOffset + 4, byteOrder)
+            if (tag == ORIENTATION_TAG && type == SHORT_TYPE && count == 1) {
+                return data.uint16(entryOffset + 8, byteOrder)
+            }
+            entryOffset += 12
+        }
+        return null
+    }
+
+    private fun rotationForExifOrientation(orientation: Int): Int? =
+        when (orientation) {
+            3, 4 -> 180
+            5, 6 -> 90
+            7, 8 -> 270
+            else -> null
+        }
+
+    private fun normalizedDegrees(degrees: Int): Int =
+        ((degrees % 360) + 360) % 360
+
+    private fun firstPositive(first: Int, second: Int): Int =
+        if (first > 0) first else second
+
+    private fun hasExifHeader(data: ByteArray, offset: Int): Boolean {
+        if (offset + EXIF_HEADER.size > data.size) return false
+        return EXIF_HEADER.indices.all { data[offset + it] == EXIF_HEADER[it] }
+    }
+
+    private fun ByteArray.uint16BE(offset: Int): Int =
+        (this[offset].unsigned() shl 8) or this[offset + 1].unsigned()
+
+    private fun ByteArray.uint16(offset: Int, byteOrder: ByteOrder): Int =
+        if (byteOrder == ByteOrder.LITTLE_ENDIAN) {
+            this[offset].unsigned() or (this[offset + 1].unsigned() shl 8)
+        } else {
+            (this[offset].unsigned() shl 8) or this[offset + 1].unsigned()
+        }
+
+    private fun ByteArray.uint32(offset: Int, byteOrder: ByteOrder): Int {
+        val value = if (byteOrder == ByteOrder.LITTLE_ENDIAN) {
+            this[offset].unsigned() or
+                (this[offset + 1].unsigned() shl 8) or
+                (this[offset + 2].unsigned() shl 16) or
+                (this[offset + 3].unsigned() shl 24)
+        } else {
+            (this[offset].unsigned() shl 24) or
+                (this[offset + 1].unsigned() shl 16) or
+                (this[offset + 2].unsigned() shl 8) or
+                this[offset + 3].unsigned()
+        }
+        return value.takeIf { it >= 0 } ?: return Int.MAX_VALUE
+    }
+
+    private fun Byte.unsigned(): Int = toInt() and 0xFF
+
+    private val EXIF_HEADER = byteArrayOf(0x45, 0x78, 0x69, 0x66, 0, 0)
+    private const val ORIENTATION_TAG = 0x0112
+    private const val SHORT_TYPE = 3
+}
+
+object GalleryPreviewRotationPolicy {
+    fun nextManualRotationDegrees(currentDegrees: Int): Int =
+        when (currentDegrees.floorMod(360)) {
+            0 -> 90
+            90 -> 180
+            180 -> 270
+            else -> 0
+        }
+
+    fun autoRotationDegrees(
+        file: CameraFile,
+        decodedWidth: Int,
+        decodedHeight: Int,
+        imageData: ByteArray,
+    ): Int {
+        exifRotationDegrees(imageData)?.let { return it }
+        val cameraWidth = file.info.imagePixWidth
+        val cameraHeight = file.info.imagePixHeight
+        val cameraPortrait = cameraHeight > cameraWidth
+        val decodedLandscape = decodedWidth > decodedHeight
+        return if (cameraPortrait && decodedLandscape) 90 else 0
+    }
+
+    fun exifRotationDegrees(jpegData: ByteArray): Int? {
+        var offset = 2
+        if (jpegData.size < offset || jpegData[0].toUnsignedInt() != 0xFF || jpegData[1].toUnsignedInt() != 0xD8) {
+            return null
+        }
+
+        while (offset + 4 <= jpegData.size) {
+            if (jpegData[offset].toUnsignedInt() != 0xFF) return null
+            val marker = jpegData[offset + 1].toUnsignedInt()
+            offset += 2
+            if (marker == 0xD9 || marker == 0xDA) return null
+            if (offset + 2 > jpegData.size) return null
+            val segmentLength = jpegData.readUInt16(offset, littleEndian = false)
+            if (segmentLength < 2 || offset + segmentLength > jpegData.size) return null
+            if (marker == 0xE1) {
+                val exifOffset = offset + 2
+                val exifEnd = offset + segmentLength
+                return readExifOrientation(jpegData, exifOffset, exifEnd)?.toRotationDegrees()
+            }
+            offset += segmentLength
+        }
+        return null
+    }
+
+    private fun readExifOrientation(data: ByteArray, exifOffset: Int, exifEnd: Int): Int? {
+        val header = byteArrayOf(0x45, 0x78, 0x69, 0x66, 0x00, 0x00)
+        if (exifOffset + header.size + 8 > exifEnd) return null
+        if (!header.indices.all { data[exifOffset + it] == header[it] }) return null
+
+        val tiffOffset = exifOffset + header.size
+        val littleEndian = when {
+            data[tiffOffset] == 0x49.toByte() && data[tiffOffset + 1] == 0x49.toByte() -> true
+            data[tiffOffset] == 0x4D.toByte() && data[tiffOffset + 1] == 0x4D.toByte() -> false
+            else -> return null
+        }
+        if (data.readUInt16(tiffOffset + 2, littleEndian) != 0x2A) return null
+        val ifdOffset = tiffOffset + data.readInt32(tiffOffset + 4, littleEndian)
+        if (ifdOffset + 2 > exifEnd) return null
+
+        val entryCount = data.readUInt16(ifdOffset, littleEndian)
+        repeat(entryCount) { index ->
+            val entryOffset = ifdOffset + 2 + (index * 12)
+            if (entryOffset + 12 > exifEnd) return null
+            val tag = data.readUInt16(entryOffset, littleEndian)
+            if (tag == 0x0112) {
+                val type = data.readUInt16(entryOffset + 2, littleEndian)
+                val count = data.readInt32(entryOffset + 4, littleEndian)
+                if (type == 3 && count == 1) {
+                    return data.readUInt16(entryOffset + 8, littleEndian)
+                }
+            }
+        }
+        return null
+    }
+
+    private fun Int.toRotationDegrees(): Int? =
+        when (this) {
+            3 -> 180
+            6 -> 90
+            8 -> 270
+            else -> null
+        }
+
+    private fun Byte.toUnsignedInt(): Int = toInt() and 0xFF
+
+    private fun ByteArray.readUInt16(offset: Int, littleEndian: Boolean): Int {
+        val first = this[offset].toUnsignedInt()
+        val second = this[offset + 1].toUnsignedInt()
+        return if (littleEndian) first or (second shl 8) else (first shl 8) or second
+    }
+
+    private fun ByteArray.readInt32(offset: Int, littleEndian: Boolean): Int {
+        val bytes = listOf(
+            this[offset].toUnsignedInt(),
+            this[offset + 1].toUnsignedInt(),
+            this[offset + 2].toUnsignedInt(),
+            this[offset + 3].toUnsignedInt(),
+        )
+        return if (littleEndian) {
+            bytes[0] or (bytes[1] shl 8) or (bytes[2] shl 16) or (bytes[3] shl 24)
+        } else {
+            (bytes[0] shl 24) or (bytes[1] shl 16) or (bytes[2] shl 8) or bytes[3]
+        }
+    }
+
+    private fun Int.floorMod(divisor: Int): Int = ((this % divisor) + divisor) % divisor
 }

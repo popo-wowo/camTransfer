@@ -297,6 +297,29 @@ final class RunnerTests: XCTestCase {
     XCTAssertTrue(WiredCameraImportNavigationPolicy.canOpenPreview(isImporting: false))
   }
 
+  func testNativePhotoPreviewRotationPolicyCyclesManualRotation() {
+    XCTAssertEqual(NativePhotoPreviewRotationPolicy.nextManualRotationDegrees(0), 90)
+    XCTAssertEqual(NativePhotoPreviewRotationPolicy.nextManualRotationDegrees(90), 180)
+    XCTAssertEqual(NativePhotoPreviewRotationPolicy.nextManualRotationDegrees(180), 270)
+    XCTAssertEqual(NativePhotoPreviewRotationPolicy.nextManualRotationDegrees(270), 0)
+    XCTAssertEqual(NativePhotoPreviewRotationPolicy.nextManualRotationDegrees(-90), 0)
+  }
+
+  func testNativePhotoPreviewRotationPolicySwapsDisplaySizeForQuarterTurns() {
+    let size = CGSize(width: 160, height: 120)
+
+    XCTAssertEqual(NativePhotoPreviewRotationPolicy.displaySize(for: size, manualRotationDegrees: 0), size)
+    XCTAssertEqual(
+      NativePhotoPreviewRotationPolicy.displaySize(for: size, manualRotationDegrees: 90),
+      CGSize(width: 120, height: 160)
+    )
+    XCTAssertEqual(
+      NativePhotoPreviewRotationPolicy.displaySize(for: size, manualRotationDegrees: 270),
+      CGSize(width: 120, height: 160)
+    )
+    XCTAssertEqual(NativePhotoPreviewRotationPolicy.displaySize(for: size, manualRotationDegrees: 180), size)
+  }
+
   func testWiredCameraImportStateSetsSelectionForDragOnlyWhenLiveImportableUnsaved() {
     let importable = wiredImportItem(id: "new", name: "DSCF0001.JPG")
     let imported = wiredImportItem(id: "saved", name: "DSCF0002.JPG")

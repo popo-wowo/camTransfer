@@ -235,7 +235,75 @@ class GalleryUiPolicyTest {
         assertEquals(0, GalleryPreviewNavigationPolicy.initialPage(files, selectedHandle = 99))
     }
 
+    @Test
+    fun previewRotationPolicyReadsJpegExifOrientation() {
+        assertEquals(90, GalleryPreviewRotationPolicy.exifRotationDegrees(jpegWithExifOrientation(6)))
+        assertEquals(180, GalleryPreviewRotationPolicy.exifRotationDegrees(jpegWithExifOrientation(3)))
+        assertEquals(270, GalleryPreviewRotationPolicy.exifRotationDegrees(jpegWithExifOrientation(8)))
+        assertEquals(null, GalleryPreviewRotationPolicy.exifRotationDegrees(jpegWithExifOrientation(1)))
+    }
+
+    @Test
+    fun previewRotationPolicyFallsBackToObjectAndDecodedDimensions() {
+        val portrait = file(
+            handle = 40,
+            format = PtpObjectFormat.JPEG,
+            captureDate = "20260529T111500",
+            imageWidth = 3000,
+            imageHeight = 4000,
+        )
+        val landscape = file(
+            handle = 50,
+            format = PtpObjectFormat.JPEG,
+            captureDate = "20260529T111500",
+            imageWidth = 4000,
+            imageHeight = 3000,
+        )
+
+        assertEquals(
+            90,
+            GalleryPreviewRotationPolicy.autoRotationDegrees(
+                file = portrait,
+                decodedWidth = 160,
+                decodedHeight = 120,
+                imageData = ByteArray(0),
+            ),
+        )
+        assertEquals(
+            0,
+            GalleryPreviewRotationPolicy.autoRotationDegrees(
+                file = landscape,
+                decodedWidth = 160,
+                decodedHeight = 120,
+                imageData = ByteArray(0),
+            ),
+        )
+    }
+
+    @Test
+    fun previewRotationPolicyCyclesManualClockwiseRotation() {
+        assertEquals(90, GalleryPreviewRotationPolicy.nextManualRotationDegrees(0))
+        assertEquals(180, GalleryPreviewRotationPolicy.nextManualRotationDegrees(90))
+        assertEquals(270, GalleryPreviewRotationPolicy.nextManualRotationDegrees(180))
+        assertEquals(0, GalleryPreviewRotationPolicy.nextManualRotationDegrees(270))
+    }
+
     private fun file(handle: Int, format: Int, captureDate: String): CameraFile =
+        file(
+            handle = handle,
+            format = format,
+            captureDate = captureDate,
+            imageWidth = 4000,
+            imageHeight = 3000,
+        )
+
+    private fun file(
+        handle: Int,
+        format: Int,
+        captureDate: String,
+        imageWidth: Int,
+        imageHeight: Int,
+    ): CameraFile =
         CameraFile(
             ObjectInfo(
                 handle = handle,
@@ -246,11 +314,32 @@ class GalleryUiPolicyTest {
                 thumbCompressedSize = 128,
                 thumbPixWidth = 160,
                 thumbPixHeight = 120,
-                imagePixWidth = 4000,
-                imagePixHeight = 3000,
+                imagePixWidth = imageWidth,
+                imagePixHeight = imageHeight,
                 parentObject = 0,
                 filename = "DSCF%04d.JPG".format(handle),
                 captureDate = captureDate,
             )
         )
+
+    private fun jpegWithExifOrientation(orientation: Int): ByteArray {
+        val tiff = byteArrayOf(
+            0x49, 0x49, 0x2A, 0x00,
+            0x08, 0x00, 0x00, 0x00,
+            0x01, 0x00,
+            0x12, 0x01,
+            0x03, 0x00,
+            0x01, 0x00, 0x00, 0x00,
+            orientation.toByte(), 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        )
+        val exif = "Exif\u0000\u0000".toByteArray(Charsets.US_ASCII) + tiff
+        val length = exif.size + 2
+        return byteArrayOf(
+            0xFF.toByte(), 0xD8.toByte(),
+            0xFF.toByte(), 0xE1.toByte(),
+            (length shr 8).toByte(),
+            length.toByte(),
+        ) + exif + byteArrayOf(0xFF.toByte(), 0xD9.toByte())
+    }
 }
