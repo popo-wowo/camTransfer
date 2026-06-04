@@ -144,3 +144,11 @@
 3. 对齐 Network 绑定: 确保 PTP socket 使用相机 WiFi 的 `Network`。
 4. 大图库首屏: 首屏限制 handle 数量、优先读取最新缩略图，完整 metadata 延后。
 5. 方向信息: 继续记录并解析 object info/vendor extension 字段，确认是否能直接获得方向或至少可靠宽高。
+
+## 2026-06-04 优化记录
+
+从日志看，旧实现会把 BLE 读到的精确 WiFi 凭据标记为隐藏网络，导致第一个 `hidden=true` attempt 直接等待到 30 秒超时，然后才继续试其他候选。官方 XApp 的 `WiFiHandOverService` 使用精确 SSID pattern、可选 BSSID、可选 passphrase，没有看到 `setIsHiddenSsid(true)` 分支。
+
+因此 Android 侧将 `referenceAppConfiguration(ssid, passphrase)` 改为 `isHidden=false`。只有没有官方 BLE SSID/passphrase、必须靠名称推导 fallback 时，才继续保留候选网络逻辑。
+
+同一轮也给 BLE WiFi 凭据刷新加了早返回: 如果 `performHandshake()` 已经拿到并保存了 SSID/passphrase，进入相册阶段不再重复读取这两个 characteristic。这样能减少进入相册前的 BLE 读等待；如果当前连接没有凭据，仍会按原逻辑尝试读取或回退到已保存配置。

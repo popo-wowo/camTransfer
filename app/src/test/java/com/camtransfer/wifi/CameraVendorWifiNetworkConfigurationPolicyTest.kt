@@ -17,16 +17,16 @@ class CameraVendorWifiNetworkConfigurationPolicyTest {
 
         assertEquals(
             listOf(
-                CameraVendorWifiNetworkConfiguration("FUJIFILM-X-T5-003B", "12345678", true),
+                CameraVendorWifiNetworkConfiguration("FUJIFILM-X-T5-003B", "12345678", false),
             ),
             candidates,
         )
     }
 
     @Test
-    fun referenceAppWifiConfigurationUsesHiddenRequestBecauseVisibleSpecifierTimesOutOnDevice() {
+    fun referenceAppWifiConfigurationUsesVisibleExactRequestLikeOfficialApp() {
         assertEquals(
-            CameraVendorWifiNetworkConfiguration("FUJIFILM-X-T5-003B", "12345678", true),
+            CameraVendorWifiNetworkConfiguration("FUJIFILM-X-T5-003B", "12345678", false),
             CameraVendorWifiNetworkConfigurationPolicy.referenceAppConfiguration(
                 ssid = " FUJIFILM-X-T5-003B ",
                 passphrase = "12345678",

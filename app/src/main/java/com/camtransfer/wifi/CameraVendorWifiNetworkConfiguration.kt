@@ -14,7 +14,7 @@ object CameraVendorWifiNetworkConfigurationPolicy {
         CameraVendorWifiNetworkConfiguration(
             ssid = ssid,
             passphrase = passphrase,
-            isHidden = true,
+            isHidden = false,
         ).normalized()
 
     fun configurations(

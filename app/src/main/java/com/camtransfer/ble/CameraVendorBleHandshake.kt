@@ -523,6 +523,11 @@ class CameraVendorBleHandshake(private val context: Context) {
     }
 
     private suspend fun refreshReferenceAppNetworkConfig() {
+        if (preferredWifiNetwork != null && !wifiSSID.isNullOrBlank() && !wifiPassphrase.isNullOrBlank()) {
+            Log.d(TAG, "ReferenceApp WiFi config already available; skip BLE reread")
+            return
+        }
+
         val observedSsid = observedCharacteristicValues[CameraVendorBleProfile.CAMERA_WIFI_SSID_CHAR]?.trimmedUtf8()
         val observedPassphrase = observedCharacteristicValues[CameraVendorBleProfile.CAMERA_WIFI_PASSPHRASE_CHAR]?.trimmedUtf8()
         val ssid = observedSsid ?: runCatching {
@@ -543,7 +548,7 @@ class CameraVendorBleHandshake(private val context: Context) {
             )
             wifiSSID = ssid
             wifiPassphrase = passphrase
-            Log.d(TAG, "ReferenceApp WiFi config: ssid=$ssid hidden=true passphraseLength=${passphrase.length}")
+            Log.d(TAG, "ReferenceApp WiFi config: ssid=$ssid hidden=false passphraseLength=${passphrase.length}")
         } else {
             Log.d(
                 TAG,
