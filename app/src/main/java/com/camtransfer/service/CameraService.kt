@@ -230,7 +230,12 @@ class CameraService(override val context: Context) : CameraFileSource {
                 if (joined) break
                 if (joinAttempt < CameraVendorWifiJoinPolicy.AUTO_JOIN_ATTEMPTS_PER_EXACT_NETWORK) {
                     val delayMs = CameraVendorWifiJoinPolicy.retryDelayMs(joinAttempt)
-                    onStatus("手机还没切到相机 Wi-Fi，正在再试一次")
+                    onStatus("手机系统还没切到相机 Wi-Fi，继续等待并自动重试")
+                    DiagnosticLog.append(
+                        context,
+                        TAG,
+                        "WiFi retry cooldown delayMs=$delayMs afterJoinAttempt=$joinAttempt",
+                    )
                     delay(delayMs)
                 }
             }

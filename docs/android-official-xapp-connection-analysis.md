@@ -198,3 +198,17 @@ UI 侧也同步调整: 已配对状态下如果还挂着进入相册阶段的问
 - 完整列表替换后再按可见项加载缩略图。
 - 缩略图 worker 回到 1 个，避免和 metadata/相机状态命令抢 PTP。
 - 缩略图 bitmap 解码最大边长采样到 1024，避免 fallback 大图直接进入网格 UI。
+
+## 2026-06-04 MIUI WiFi 短失败重试修正
+
+实机日志显示，同一个相机 WiFi、同一组 SSID/passphrase 下，首次进入相册阶段连续 3 次 `requestNetwork` 会被 MIUI 很快返回 `onUnavailable`:
+
+- 第 1 次约 3278ms 返回 `onUnavailable`。
+- 第 2/3 次约 1.1s 返回 `onUnavailable`。
+- 用户随后点重试，同一个 WiFi 在 2946ms 内 `onAvailable` 并完成 PTP。
+
+这说明失败不是凭据错误，而是手机系统短时间内还没完成/允许 WiFi handoff。Android 侧规则调整为:
+
+- 同一个精确 WiFi candidate 内部自动尝试 5 次。
+- 失败间隔改为 1500ms、3000ms、4000ms、6000ms。
+- 短 `onUnavailable` 不立即暴露给用户，先继续后台等待并自动重试。
