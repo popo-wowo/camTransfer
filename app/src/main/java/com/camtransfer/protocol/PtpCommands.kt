@@ -97,10 +97,12 @@ class PtpCommands(
 
     suspend fun getThumb(handle: Int): ByteArray {
         val startedMs = SystemClock.elapsedRealtime()
+        var objectInfo: ObjectInfo? = null
         if (CameraVendorThumbnailReadPolicy.shouldPrimeObjectContextBeforeStandardThumbnail()) {
             val primeStartedMs = SystemClock.elapsedRealtime()
             runCatching { getObjectInfo(handle) }
                 .onSuccess {
+                    objectInfo = it
                     diagnostic(
                         "Thumbnail context primed handle=$handle " +
                             "elapsedMs=${SystemClock.elapsedRealtime() - primeStartedMs}",
@@ -112,6 +114,16 @@ class PtpCommands(
                             "elapsedMs=${SystemClock.elapsedRealtime() - primeStartedMs} error=${error.message}",
                     )
                 }
+        }
+        if (CameraVendorThumbnailReadPolicy.shouldReadPartialPreviewBeforeStandardThumbnail(objectInfo)) {
+            runCatching {
+                return readPartialPreviewThumbnail(handle, startedMs, reason = "smallPreviewObject")
+            }.onFailure { error ->
+                diagnostic(
+                    "Thumbnail partial first failed handle=$handle " +
+                        "totalElapsedMs=${SystemClock.elapsedRealtime() - startedMs} error=${error.message}",
+                )
+            }
         }
         val standardStartedMs = SystemClock.elapsedRealtime()
         val standard = runCatching {
@@ -144,10 +156,14 @@ class PtpCommands(
             diagnostic(message)
         }
 
+        return readPartialPreviewThumbnail(handle, startedMs, reason = "fallback")
+    }
+
+    private suspend fun readPartialPreviewThumbnail(handle: Int, startedMs: Long, reason: String): ByteArray {
         val partialStartedMs = SystemClock.elapsedRealtime()
         val preview = getPartialObject(handle, 0, CameraVendorReferenceApp.PARTIAL_PREVIEW_READ_SIZE)
         val normalizedPreview = CameraVendorPtpDataParser.imageData(preview)
-        val message = "Thumbnail partial handle=$handle rawBytes=${preview.size} " +
+        val message = "Thumbnail partial handle=$handle reason=$reason rawBytes=${preview.size} " +
             "imageBytes=${normalizedPreview.size} head=${normalizedPreview.headHex()} " +
             "partialElapsedMs=${SystemClock.elapsedRealtime() - partialStartedMs} " +
             "totalElapsedMs=${SystemClock.elapsedRealtime() - startedMs}"
@@ -375,6 +391,12 @@ internal object CameraVendorThumbnailReadPolicy {
     const val STANDARD_THUMB_TIMEOUT_MS = 3_000
 
     fun shouldPrimeObjectContextBeforeStandardThumbnail(): Boolean = true
+
+    fun shouldReadPartialPreviewBeforeStandardThumbnail(objectInfo: ObjectInfo?): Boolean {
+        if (objectInfo == null) return false
+        return (objectInfo.isJpeg || objectInfo.isHeif) &&
+            objectInfo.compressedSize in 1..CameraVendorReferenceApp.PARTIAL_PREVIEW_READ_SIZE
+    }
 }
 
 internal object CameraVendorPartialObjectReadPolicy {

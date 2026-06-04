@@ -20,8 +20,6 @@ class CameraVendorBleReconnectPolicyTest {
 
         assertEquals(
             listOf(
-                CameraVendorBleReconnectStage.DirectAddress,
-                CameraVendorBleReconnectStage.FastScan,
                 CameraVendorBleReconnectStage.ScanFallback,
             ),
             stages,
@@ -34,7 +32,6 @@ class CameraVendorBleReconnectPolicyTest {
 
         assertEquals(
             listOf(
-                CameraVendorBleReconnectStage.FastScan,
                 CameraVendorBleReconnectStage.ScanFallback,
             ),
             stages,

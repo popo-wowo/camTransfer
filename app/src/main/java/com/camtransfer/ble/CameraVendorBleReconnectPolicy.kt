@@ -13,13 +13,7 @@ object CameraVendorBleReconnectPolicy {
     const val REMEMBERED_SCAN_TIMEOUT_MS = 12_000L
 
     fun reconnectStages(hasRememberedBluetoothAddress: Boolean): List<CameraVendorBleReconnectStage> =
-        buildList {
-            if (hasRememberedBluetoothAddress) {
-                add(CameraVendorBleReconnectStage.DirectAddress)
-            }
-            add(CameraVendorBleReconnectStage.FastScan)
-            add(CameraVendorBleReconnectStage.ScanFallback)
-        }
+        listOf(CameraVendorBleReconnectStage.ScanFallback)
 
     fun retryDelayMs(afterFailedAttempt: Int): Long {
         return 500L * afterFailedAttempt.coerceAtLeast(1)
