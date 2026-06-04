@@ -52,4 +52,18 @@ class CameraConnectionStatusPolicyTest {
 
         assertEquals(CameraConnectionStep.ConnectPtp, step)
     }
+
+    @Test
+    fun wifiJoinFailureRetriesWifiWithoutBleActivation() {
+        val target = CameraConnectionRetryPolicy.targetForStep(CameraConnectionStep.JoinCameraWifi)
+
+        assertEquals(CameraConnectionRetryTarget.WifiHandoffWithoutBle, target)
+    }
+
+    @Test
+    fun ptpFailureRetriesPtpWithoutBleActivation() {
+        val target = CameraConnectionRetryPolicy.targetForStep(CameraConnectionStep.ConnectPtp)
+
+        assertEquals(CameraConnectionRetryTarget.ExistingPtpProbe, target)
+    }
 }

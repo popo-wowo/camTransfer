@@ -273,19 +273,46 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private fun retryCameraWifiAndOpenGallery() {
+        _error.value = null
+        _connectionIssue.value = null
+        _activeStep.value = CameraConnectionStep.JoinCameraWifi
+        cancelConnectionJob()
+        connectionJob = viewModelScope.launch {
+            var currentStep = CameraConnectionStep.JoinCameraWifi
+            try {
+                cameraService.retryCameraWifiToGallery { status ->
+                    DiagnosticLog.append(appContext, "ConnectionStatus", status)
+                    _statusText.value = status
+                    currentStep = CameraConnectionStatusPolicy.galleryStep(status, currentStep)
+                    _activeStep.value = currentStep
+                    _state.value = CameraConnectionStatusPolicy.galleryState(status, _state.value)
+                }
+                _state.value = ConnectionState.CONNECTED
+                _activeStep.value = CameraConnectionStep.LoadGallery
+                _connectionIssue.value = null
+                DiagnosticLog.append(appContext, "Connection", "Gallery connection established after WiFi retry")
+                publishGalleryConnectionEvent()
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                DiagnosticLog.append(appContext, "Connection", "WiFi retry failed", e)
+                publishIssue(currentStep, e)
+                _state.value = ConnectionState.PAIRED
+                val remembered = cameraService.rememberedPairing()
+                _statusText.value = remembered?.let { "已配对 ${it.deviceName}" } ?: "已保存配对"
+                _error.value = e.message ?: "相册连接失败"
+            }
+        }
+    }
+
     fun retryCurrentIssue() {
-        when (connectionIssue.value?.step) {
-            CameraConnectionStep.PairingConfirmation -> confirmCameraPairingSucceeded()
-            CameraConnectionStep.JoinCameraWifi,
-            CameraConnectionStep.ConnectPtp,
-            CameraConnectionStep.LoadGallery -> confirmWifiJoinedAndOpenGallery()
-            CameraConnectionStep.StaleBondCheck,
-            CameraConnectionStep.BleScan,
-            CameraConnectionStep.BleHandshake,
-            CameraConnectionStep.EnvironmentCheck,
-            null -> connect()
-            CameraConnectionStep.CameraPairingMode -> confirmCameraPairingModeAndStartScan()
-            else -> enterCameraAlbum()
+        when (CameraConnectionRetryPolicy.targetForStep(connectionIssue.value?.step)) {
+            CameraConnectionRetryTarget.PairingConfirmation -> confirmCameraPairingSucceeded()
+            CameraConnectionRetryTarget.WifiHandoffWithoutBle -> retryCameraWifiAndOpenGallery()
+            CameraConnectionRetryTarget.ExistingPtpProbe -> confirmWifiJoinedAndOpenGallery()
+            CameraConnectionRetryTarget.PairingScan -> connect()
+            CameraConnectionRetryTarget.PairingModeConfirmation -> confirmCameraPairingModeAndStartScan()
+            CameraConnectionRetryTarget.GalleryEntryWithBle -> enterCameraAlbum()
         }
     }
 
@@ -351,6 +378,32 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
         cancelConnectionJob()
         viewModelScope.launch { cameraService.disconnect() }
     }
+}
+
+enum class CameraConnectionRetryTarget {
+    PairingConfirmation,
+    WifiHandoffWithoutBle,
+    ExistingPtpProbe,
+    PairingScan,
+    PairingModeConfirmation,
+    GalleryEntryWithBle,
+}
+
+internal object CameraConnectionRetryPolicy {
+    fun targetForStep(step: CameraConnectionStep?): CameraConnectionRetryTarget =
+        when (step) {
+            CameraConnectionStep.PairingConfirmation -> CameraConnectionRetryTarget.PairingConfirmation
+            CameraConnectionStep.JoinCameraWifi -> CameraConnectionRetryTarget.WifiHandoffWithoutBle
+            CameraConnectionStep.ConnectPtp,
+            CameraConnectionStep.LoadGallery -> CameraConnectionRetryTarget.ExistingPtpProbe
+            CameraConnectionStep.StaleBondCheck,
+            CameraConnectionStep.BleScan,
+            CameraConnectionStep.BleHandshake,
+            CameraConnectionStep.EnvironmentCheck,
+            null -> CameraConnectionRetryTarget.PairingScan
+            CameraConnectionStep.CameraPairingMode -> CameraConnectionRetryTarget.PairingModeConfirmation
+            else -> CameraConnectionRetryTarget.GalleryEntryWithBle
+        }
 }
 
 internal object CameraConnectionEntryPolicy {

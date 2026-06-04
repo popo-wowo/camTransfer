@@ -88,6 +88,17 @@ class ConnectionLiveGuidancePolicyTest {
     }
 
     @Test
+    fun pairedGalleryIssueKeepsRetryAsPrimaryAction() {
+        val issue = CameraConnectionIssue.wifiJoinTimeout(
+            ssid = "FUJIFILM-X-T5-003B",
+            passphrase = "12345678",
+        )
+
+        assertEquals(CameraConnectionAction.RetryStep, ConnectionPairedPrimaryActionPolicy.primaryAction(issue))
+        assertEquals("重试", ConnectionPairedPrimaryActionPolicy.primaryLabel(issue))
+    }
+
+    @Test
     fun idlePairingScreenPutsActionsAndPreparationFirst() {
         assertFalse(ConnectionUiLayoutPolicy.actionsBeforeGuidance(ConnectionState.IDLE))
         assertTrue(ConnectionUiLayoutPolicy.shouldShowPairingPreparation(ConnectionState.IDLE))

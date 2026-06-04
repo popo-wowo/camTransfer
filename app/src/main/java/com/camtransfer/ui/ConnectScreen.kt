@@ -225,6 +225,20 @@ internal object ConnectionFailureActionPolicy {
         }
 }
 
+internal object ConnectionPairedPrimaryActionPolicy {
+    fun primaryAction(issue: CameraConnectionIssue?): CameraConnectionAction =
+        when (issue?.phase) {
+            CameraConnectionPhase.ENTER_GALLERY -> CameraConnectionAction.RetryStep
+            else -> CameraConnectionAction.EnterGallery
+        }
+
+    fun primaryLabel(issue: CameraConnectionIssue?): String =
+        when (primaryAction(issue)) {
+            CameraConnectionAction.RetryStep -> "重试"
+            else -> "进入相机相册"
+        }
+}
+
 internal object ConnectionUiLayoutPolicy {
     fun actionsBeforeGuidance(state: ConnectionState): Boolean =
         false
@@ -822,11 +836,17 @@ private fun ConnectionActions(
                         onClick = { viewModel.retryCurrentIssue() },
                     )
                 } else {
+                    val action = ConnectionPairedPrimaryActionPolicy.primaryAction(issue)
                     PrimaryAction(
-                        label = "进入相机相册",
+                        label = ConnectionPairedPrimaryActionPolicy.primaryLabel(issue),
                         containerColor = CamTransferColors.Accent,
                         contentColor = CamTransferColors.Card,
-                        onClick = { viewModel.enterCameraAlbum() },
+                        onClick = {
+                            when (action) {
+                                CameraConnectionAction.RetryStep -> viewModel.retryCurrentIssue()
+                                else -> viewModel.enterCameraAlbum()
+                            }
+                        },
                     )
                 }
                 UtilityActionRow(

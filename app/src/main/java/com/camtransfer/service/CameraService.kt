@@ -155,6 +155,14 @@ class CameraService(override val context: Context) : CameraFileSource {
         connectWifiAndPtp(wifiConfigurations, onStatus)
     }
 
+    suspend fun retryCameraWifiToGallery(onStatus: (String) -> Unit = {}) {
+        if (connectExistingCameraWifiToGallery(onStatus)) return
+        val wifiConfigurations = handshake?.wifiConfigurations().orEmpty()
+            .ifEmpty { pairingStore.load()?.wifiConfigurations.orEmpty() }
+        DiagnosticLog.append(context, TAG, "Retrying camera WiFi/PTP without BLE activation")
+        connectWifiAndPtp(wifiConfigurations, onStatus)
+    }
+
     private suspend fun connectWifiAndPtp(
         wifiConfigurations: List<CameraVendorWifiNetworkConfiguration>,
         onStatus: (String) -> Unit,

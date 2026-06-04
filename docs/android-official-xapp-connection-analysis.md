@@ -152,3 +152,15 @@
 因此 Android 侧将 `referenceAppConfiguration(ssid, passphrase)` 改为 `isHidden=false`。只有没有官方 BLE SSID/passphrase、必须靠名称推导 fallback 时，才继续保留候选网络逻辑。
 
 同一轮也给 BLE WiFi 凭据刷新加了早返回: 如果 `performHandshake()` 已经拿到并保存了 SSID/passphrase，进入相册阶段不再重复读取这两个 characteristic。这样能减少进入相册前的 BLE 读等待；如果当前连接没有凭据，仍会按原逻辑尝试读取或回退到已保存配置。
+
+## 2026-06-04 WiFi 重试规则
+
+WiFi handoff 失败时，相机通常已经停在“等待手机连接 WiFi”的界面。这个状态下 App 的重试不能重新走 BLE 唤醒/传图启动，因为那会让相机和手机状态更不一致。
+
+Android 侧重试规则调整为:
+
+- `JoinCameraWifi` 失败: 先探测当前 PTP；如果没有连上，就复用已保存的 WiFi SSID/passphrase 重新 requestNetwork，然后再打开 PTP。不重新 BLE 唤醒。
+- `ConnectPtp` / `LoadGallery` 失败: 只探测当前相机 WiFi/PTP，不重新 BLE 唤醒。
+- 只有用户主动点“进入相机相册”开始新一轮，才会重新走 BLE 确认和相机 WiFi 启动。
+
+UI 侧也同步调整: 已配对状态下如果还挂着进入相册阶段的问题，主按钮显示“重试”，不再显示“进入相机相册”，避免误触完整重连流程。
