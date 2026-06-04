@@ -142,6 +142,7 @@ fun CamTransferApp(trialDays: Long) {
     val browseVM: BrowseViewModel = viewModel()
     val transferVM: TransferViewModel = viewModel()
     val connectionState by connectionVM.state.collectAsState()
+    val galleryConnectionEvent by connectionVM.galleryConnectionEvent.collectAsState()
     val scope = rememberCoroutineScope()
     val wiredCameraService = remember { WiredCameraService(context.applicationContext) }
 
@@ -150,8 +151,22 @@ fun CamTransferApp(trialDays: Long) {
     var wiredError by remember { mutableStateOf<String?>(null) }
     var activeCameraSource by remember { mutableStateOf<CameraFileSource?>(null) }
     var isWiredImport by remember { mutableStateOf(false) }
+    var isReturningToConnect by remember { mutableStateOf(false) }
+    var lastHandledGalleryConnectionEvent by remember { mutableStateOf(0L) }
+
+    fun openWirelessBrowse() {
+        isReturningToConnect = false
+        isWiredImport = false
+        activeCameraSource = connectionVM.cameraService
+        transferVM.switchSource(connectionVM.cameraService)
+        browseVM.reset()
+        currentScreen = Screen.BROWSE
+    }
 
     LaunchedEffect(connectionState) {
+        if (connectionState != ConnectionState.CONNECTED) {
+            isReturningToConnect = false
+        }
         if (
             CameraScreenRoutePolicy.shouldReturnToConnect(
                 isWiredImport = isWiredImport,
@@ -165,16 +180,25 @@ fun CamTransferApp(trialDays: Long) {
         }
     }
 
+    LaunchedEffect(galleryConnectionEvent, connectionState, currentScreen) {
+        if (
+            CameraScreenRoutePolicy.shouldOpenBrowseFromGalleryConnectionEvent(
+                lastHandledGalleryConnectionEvent = lastHandledGalleryConnectionEvent,
+                galleryConnectionEvent = galleryConnectionEvent,
+                isReturningToConnect = isReturningToConnect,
+                connectionState = connectionState,
+                currentScreen = currentScreen,
+            )
+        ) {
+            lastHandledGalleryConnectionEvent = galleryConnectionEvent
+            DiagnosticLog.append(context, "Navigation", "Open browse event=$galleryConnectionEvent state=$connectionState")
+            openWirelessBrowse()
+        }
+    }
+
     when (currentScreen) {
         Screen.CONNECT -> ConnectScreen(
             viewModel = connectionVM,
-            onConnected = {
-                isWiredImport = false
-                activeCameraSource = connectionVM.cameraService
-                transferVM.switchSource(connectionVM.cameraService)
-                browseVM.reset()
-                currentScreen = Screen.BROWSE
-            },
             onOpenWiredImport = {
                 scope.launch {
                     wiredError = null
@@ -216,6 +240,7 @@ fun CamTransferApp(trialDays: Long) {
                 onOpenDownloads = { currentScreen = Screen.TRANSFER },
                 onClearDownloadCache = { transferVM.clearDownloadedCache() },
                 onDisconnect = {
+                    isReturningToConnect = true
                     browseVM.reset()
                     scope.launch {
                         if (isWiredImport) {
@@ -261,6 +286,19 @@ fun CamTransferApp(trialDays: Long) {
 }
 
 internal object CameraScreenRoutePolicy {
+    fun shouldOpenBrowseFromGalleryConnectionEvent(
+        lastHandledGalleryConnectionEvent: Long,
+        galleryConnectionEvent: Long,
+        isReturningToConnect: Boolean,
+        connectionState: ConnectionState,
+        currentScreen: Screen,
+    ): Boolean =
+        galleryConnectionEvent > 0 &&
+            galleryConnectionEvent != lastHandledGalleryConnectionEvent &&
+            !isReturningToConnect &&
+            connectionState == ConnectionState.CONNECTED &&
+            currentScreen == Screen.CONNECT
+
     fun shouldReturnToConnect(
         isWiredImport: Boolean,
         hasActiveCameraSource: Boolean,
@@ -269,7 +307,7 @@ internal object CameraScreenRoutePolicy {
     ): Boolean {
         if (currentScreen == Screen.CONNECT) return false
         if (isWiredImport) return false
-        if (hasActiveCameraSource) return false
+        if (hasActiveCameraSource && connectionState == ConnectionState.CONNECTED) return false
         return connectionState != ConnectionState.CONNECTED
     }
 }

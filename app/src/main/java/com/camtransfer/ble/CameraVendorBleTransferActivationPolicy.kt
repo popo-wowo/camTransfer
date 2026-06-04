@@ -26,5 +26,5 @@ object CameraVendorBleTransferActivationPolicy {
 
     fun shouldActivelyDisconnectBluetoothBeforeWifi(): Boolean = true
 
-    const val BLUETOOTH_RELEASE_DELAY_MS = 1_500L
+    const val BLUETOOTH_RELEASE_DELAY_MS = 500L
 }

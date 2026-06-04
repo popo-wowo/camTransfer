@@ -281,11 +281,72 @@ class GalleryUiPolicyTest {
     }
 
     @Test
+    fun previewRotationPolicyDoesNotDoubleRotateExifImageAlreadyDecodedPortrait() {
+        val portraitWithLandscapePixelMetadata = file(
+            handle = 60,
+            format = PtpObjectFormat.JPEG,
+            captureDate = "20260529T111500",
+            imageWidth = 4000,
+            imageHeight = 3000,
+        )
+
+        assertEquals(
+            0,
+            GalleryPreviewRotationPolicy.autoRotationDegrees(
+                file = portraitWithLandscapePixelMetadata,
+                decodedWidth = 120,
+                decodedHeight = 160,
+                imageData = jpegWithExifOrientation(6),
+            ),
+        )
+    }
+
+    @Test
+    fun previewRotationPolicyAppliesExifWhenDecodedBitmapIsStillLandscape() {
+        val portraitWithLandscapePixelMetadata = file(
+            handle = 70,
+            format = PtpObjectFormat.JPEG,
+            captureDate = "20260529T111500",
+            imageWidth = 4000,
+            imageHeight = 3000,
+        )
+
+        assertEquals(
+            90,
+            GalleryPreviewRotationPolicy.autoRotationDegrees(
+                file = portraitWithLandscapePixelMetadata,
+                decodedWidth = 160,
+                decodedHeight = 120,
+                imageData = jpegWithExifOrientation(6),
+            ),
+        )
+    }
+
+    @Test
     fun previewRotationPolicyCyclesManualClockwiseRotation() {
         assertEquals(90, GalleryPreviewRotationPolicy.nextManualRotationDegrees(0))
         assertEquals(180, GalleryPreviewRotationPolicy.nextManualRotationDegrees(90))
         assertEquals(270, GalleryPreviewRotationPolicy.nextManualRotationDegrees(180))
         assertEquals(0, GalleryPreviewRotationPolicy.nextManualRotationDegrees(270))
+    }
+
+    @Test
+    fun thumbnailDiagnosticSummaryReportsThumbnailOrientationEvidence() {
+        val summary = GalleryThumbnailDiagnosticPolicy.summary(
+            handle = 80,
+            file = file(handle = 80, format = PtpObjectFormat.CAMERA_VENDOR_RAF, captureDate = "20260529T111500"),
+            thumbnail = jpegWithExifOrientation(6),
+            decodedWidth = 160,
+            decodedHeight = 120,
+        )
+
+        assertTrue(summary.contains("handle=80"))
+        assertTrue(summary.contains("bytes="))
+        assertTrue(summary.contains("thumbExifRotation=90"))
+        assertTrue(summary.contains("decoded=160x120"))
+        assertTrue(summary.contains("object=4000x3000"))
+        assertTrue(summary.contains("thumbInfo=160x120"))
+        assertTrue(summary.contains("autoRotation=90"))
     }
 
     private fun file(handle: Int, format: Int, captureDate: String): CameraFile =

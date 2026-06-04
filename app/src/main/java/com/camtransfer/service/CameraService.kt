@@ -16,6 +16,7 @@ import com.camtransfer.protocol.CameraVendorPtpConnectionStartupPolicy
 import com.camtransfer.protocol.PtpCommands
 import com.camtransfer.protocol.PtpConnection
 import com.camtransfer.wifi.CameraVendorWifiNetworkConfiguration
+import com.camtransfer.wifi.CameraVendorWifiJoinPolicy
 import com.camtransfer.wifi.WifiConnector
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -32,7 +33,7 @@ class CameraService(override val context: Context) : CameraFileSource {
     private val pairingStore = CameraVendorPairedCameraStore(context)
     private val transferPrefs = context.getSharedPreferences("camtransfer.transfer", Context.MODE_PRIVATE)
     val connection = PtpConnection()
-    val commands by lazy { PtpCommands(connection) }
+    val commands by lazy { PtpCommands(connection, context) }
 
     @SuppressLint("MissingPermission")
     fun rememberedPairing(): CameraVendorPairedCameraRecord? {
@@ -132,16 +133,16 @@ class CameraService(override val context: Context) : CameraFileSource {
             )
         }
 
-        onStatus("正在进入相机相册")
+        onStatus("正在用蓝牙唤醒相机的传图模式")
         val wifiConfigurations = hs.refreshWifiConfigurations().ifEmpty {
             remembered?.wifiConfigurations.orEmpty()
         }
 
-        onStatus("正在恢复相机传图授权")
+        onStatus("正在确认相机允许这台手机传图")
         hs.confirmCameraPairingSucceeded()
 
         val preferCompressedDownloads = preferCompressedDownloads()
-        onStatus("正在触发相机 WiFi 传图模式")
+        onStatus("正在让相机打开自己的 Wi-Fi")
         DiagnosticLog.append(
             context,
             TAG,
@@ -175,14 +176,23 @@ class CameraService(override val context: Context) : CameraFileSource {
         )
 
         val connected = wifiConfigurations.withIndex().firstOrNull { (index, configuration) ->
-            onStatus("正在连接 WiFi: ${configuration.ssid} (${index + 1}/${wifiConfigurations.size})")
+            onStatus(
+                CameraWifiJoinStatusPolicy.waitingForWifiJoin(
+                    ssid = configuration.ssid,
+                    attempt = index + 1,
+                    total = wifiConfigurations.size,
+                )
+            )
             DiagnosticLog.append(
                 context,
                 TAG,
                 "WiFi connect attempt ${index + 1}/${wifiConfigurations.size} hidden=${configuration.isHidden}",
             )
             runCatching {
-                wifiConnector.connect(configuration)
+                wifiConnector.connect(
+                    configuration,
+                    timeoutMs = CameraVendorWifiJoinPolicy.AUTO_JOIN_TIMEOUT_MS,
+                )
             }.fold(
                 onSuccess = { true },
                 onFailure = { error ->
@@ -202,16 +212,20 @@ class CameraService(override val context: Context) : CameraFileSource {
         if (connected == null) {
             val attempted = wifiConfigurations.joinToString { "${it.ssid}${if (it.isHidden) "(隐藏)" else ""}" }
             throw IllegalStateException(
-                "自动连接相机 WiFi 失败，请手动加入后重试。\n" +
+                "手机没有自动加入相机 Wi-Fi，请手动加入后重试。\n" +
                     "已尝试: $attempted\n" +
                     "SSID: ${configuration.ssid}\n" +
                     "密码: ${configuration.passphrase}" +
-                    if (configuration.isHidden) "\n这是隐藏网络，请在 WiFi 的“其他网络”里手动输入。" else "",
+                    if (configuration.isHidden) {
+                        "\n这是隐藏网络，请在 Wi-Fi 的“其他网络”里手动输入。这个 Wi-Fi 不能上网是正常的。"
+                    } else {
+                        "\n这个 Wi-Fi 不能上网是正常的。"
+                    },
                 lastError,
             )
         }
 
-        onStatus("等待相机 PTP 服务就绪...")
+        onStatus("手机已连到相机 Wi-Fi，正在等待相机打开相册通道")
         delay(CameraVendorPtpConnectionStartupPolicy.STARTUP_DELAY_MS)
         connectPtpWithRetry(onStatus)
 
@@ -224,7 +238,7 @@ class CameraService(override val context: Context) : CameraFileSource {
         var lastError: Throwable? = null
         for (attempt in 1..CameraVendorPtpConnectionStartupPolicy.MAX_CONNECT_ATTEMPTS) {
             try {
-                onStatus("正在建立 PTP 连接... ($attempt/${CameraVendorPtpConnectionStartupPolicy.MAX_CONNECT_ATTEMPTS})")
+                onStatus("正在打开相机相册通道 ($attempt/${CameraVendorPtpConnectionStartupPolicy.MAX_CONNECT_ATTEMPTS})")
                 connection.connect()
                 return
             } catch (error: Throwable) {
@@ -234,15 +248,35 @@ class CameraService(override val context: Context) : CameraFileSource {
                 DiagnosticLog.append(context, TAG, "PTP connection failed attempt=$attempt", error)
                 if (attempt == CameraVendorPtpConnectionStartupPolicy.MAX_CONNECT_ATTEMPTS) break
                 val delayMs = CameraVendorPtpConnectionStartupPolicy.retryDelayMs(attempt)
-                onStatus("PTP 暂未就绪，${delayMs / 1000.0}s 后重试")
+                onStatus("相机相册通道还没响应，${delayMs / 1000.0}s 后再试一次")
                 delay(delayMs)
             }
         }
-        throw IllegalStateException("PTP 连接失败，请确认相机仍停留在传图/相册模式后重试", lastError)
+        throw IllegalStateException("相册通道连接失败，请确认相机仍停留在传图/相册模式后重试", lastError)
     }
 
     private suspend fun reconnectRememberedCamera(onStatus: (String) -> Unit): CameraVendorBleHandshake {
         val remembered = rememberedPairing() ?: throw IllegalStateException("请先完成蓝牙配对")
+        runCatching {
+            onStatus("正在用蓝牙查找已配对相机: ${remembered.deviceName}")
+            val scanResult: ScanResult = withTimeout(CameraVendorBleReconnectPolicy.REMEMBERED_FAST_SCAN_TIMEOUT_MS) {
+                scanner.scanAll().first { result ->
+                    rememberedScanResultMatches(result, remembered)
+                }
+            }
+            val hs = CameraVendorBleHandshake(context)
+            handshake = hs
+            hs.performHandshake(scanResult)
+            saveRememberedHandshake(hs)
+            DiagnosticLog.append(context, TAG, "Remembered camera fast scan reconnect succeeded")
+            return hs
+        }.onFailure { error ->
+            DiagnosticLog.append(context, TAG, "Remembered camera fast scan reconnect skipped", error)
+            Log.w(TAG, "Remembered camera fast scan reconnect failed: $error")
+            handshake?.disconnect()
+            handshake = null
+        }
+
         for (address in rememberedBluetoothAddressCandidates(remembered)) {
             runCatching {
                 onStatus("正在直连已配对相机: ${remembered.deviceName}")
@@ -252,29 +286,17 @@ class CameraService(override val context: Context) : CameraFileSource {
         }
         var lastError: Throwable? = null
         for (attempt in 1..CameraVendorBleReconnectPolicy.MAX_REMEMBERED_RECONNECT_ATTEMPTS) {
-            onStatus("正在连接已配对相机: ${remembered.deviceName} ($attempt/${CameraVendorBleReconnectPolicy.MAX_REMEMBERED_RECONNECT_ATTEMPTS})")
+            onStatus("正在用蓝牙唤醒已配对相机: ${remembered.deviceName} ($attempt/${CameraVendorBleReconnectPolicy.MAX_REMEMBERED_RECONNECT_ATTEMPTS})")
             try {
                 val scanResult: ScanResult = withTimeout(CameraVendorBleReconnectPolicy.REMEMBERED_SCAN_TIMEOUT_MS) {
                     scanner.scanAll().first { result ->
-                        val name = result.device.name ?: result.scanRecord?.deviceName ?: ""
-                        name.isNotBlank() && (
-                            name == remembered.deviceName ||
-                            name.contains(remembered.deviceName, ignoreCase = true) ||
-                            remembered.deviceName.contains(name, ignoreCase = true)
-                            )
+                        rememberedScanResultMatches(result, remembered)
                     }
                 }
                 val hs = CameraVendorBleHandshake(context)
                 handshake = hs
                 hs.performHandshake(scanResult)
-                pairingStore.save(
-                    CameraVendorPairedCameraRecord(
-                        deviceName = hs.cameraName(),
-                        serialNumber = hs.cameraSerial(),
-                        wifiConfigurations = hs.wifiConfigurations(),
-                        bluetoothAddress = hs.bluetoothAddress(),
-                    )
-                )
+                saveRememberedHandshake(hs)
                 return hs
             } catch (error: Throwable) {
                 lastError = error
@@ -292,6 +314,20 @@ class CameraService(override val context: Context) : CameraFileSource {
         )
     }
 
+    private fun rememberedScanResultMatches(
+        result: ScanResult,
+        remembered: CameraVendorPairedCameraRecord,
+    ): Boolean {
+        val name = result.device.name ?: result.scanRecord?.deviceName ?: ""
+        val address = result.device.address
+        return address == remembered.bluetoothAddress ||
+            name.isNotBlank() && (
+                name == remembered.deviceName ||
+                    name.contains(remembered.deviceName, ignoreCase = true) ||
+                    remembered.deviceName.contains(name, ignoreCase = true)
+                )
+    }
+
     @SuppressLint("MissingPermission")
     private suspend fun connectRememberedCameraByAddress(address: String): CameraVendorBleHandshake {
         val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
@@ -299,6 +335,11 @@ class CameraService(override val context: Context) : CameraFileSource {
         val hs = CameraVendorBleHandshake(context)
         handshake = hs
         hs.performHandshake(device, autoConnect = true)
+        saveRememberedHandshake(hs)
+        return hs
+    }
+
+    private fun saveRememberedHandshake(hs: CameraVendorBleHandshake) {
         pairingStore.save(
             CameraVendorPairedCameraRecord(
                 deviceName = hs.cameraName(),
@@ -307,7 +348,6 @@ class CameraService(override val context: Context) : CameraFileSource {
                 bluetoothAddress = hs.bluetoothAddress(),
             )
         )
-        return hs
     }
 
     @SuppressLint("MissingPermission")

@@ -1,11 +1,13 @@
 package com.camtransfer.viewmodel
 
+import android.graphics.BitmapFactory
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.camtransfer.model.CameraFile
 import com.camtransfer.service.CameraFileSource
 import com.camtransfer.service.DiagnosticLog
+import com.camtransfer.ui.GalleryThumbnailDiagnosticPolicy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -98,8 +100,17 @@ class BrowseViewModel : ViewModel() {
         DiagnosticLog.append(cameraSource.context, TAG, "Thumbnail request handle=$handle")
         try {
             val thumb = cameraSource.getThumbnail(handle)
-            Log.d(TAG, "Thumbnail loaded handle=$handle bytes=${thumb.size} head=${thumb.headHex()}")
-            DiagnosticLog.append(cameraSource.context, TAG, "Thumbnail loaded handle=$handle bytes=${thumb.size}")
+            val file = _files.value.firstOrNull { it.info.handle == handle }
+            val decodedSize = thumb.decodedBounds()
+            val thumbnailSummary = GalleryThumbnailDiagnosticPolicy.summary(
+                handle = handle,
+                file = file,
+                thumbnail = thumb,
+                decodedWidth = decodedSize.width,
+                decodedHeight = decodedSize.height,
+            )
+            Log.d(TAG, thumbnailSummary)
+            DiagnosticLog.append(cameraSource.context, TAG, thumbnailSummary)
             _files.value = _files.value.map { file ->
                 if (file.info.handle == handle) file.copy(thumbnail = thumb) else file
             }
@@ -109,8 +120,14 @@ class BrowseViewModel : ViewModel() {
         }
     }
 
-    private fun ByteArray.headHex(byteCount: Int = 16): String =
-        take(byteCount).joinToString("") { "%02x".format(it) }
+    private fun ByteArray.decodedBounds(): ThumbnailDecodedBounds {
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(this, 0, size, options)
+        return ThumbnailDecodedBounds(
+            width = options.outWidth,
+            height = options.outHeight,
+        )
+    }
 
     fun toggleSelection(handle: Int) {
         val current = _selectedHandles.value.toMutableSet()
@@ -151,6 +168,11 @@ class BrowseViewModel : ViewModel() {
         const val TAG = "BrowseViewModel"
     }
 }
+
+private data class ThumbnailDecodedBounds(
+    val width: Int,
+    val height: Int,
+)
 
 internal class ThumbnailLoadQueue {
     private val handles = ArrayDeque<Int>()

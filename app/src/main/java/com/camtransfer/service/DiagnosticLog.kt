@@ -208,6 +208,8 @@ object DiagnosticLogRedactor {
         Regex("""(?i)(password\s*[=:：]\s*)([^\n\r]+)"""),
         Regex("""(?i)\b(filename|name|ssid|device|camera|serial|address|bluetoothAddress|path)\s*([=:：])(\s*)([^\s,\n\r]+)"""),
         Regex("""(?i)(正在连接\s*WiFi\s*[:：]\s*)([^\n\r]+)"""),
+        Regex("""(?i)(正在等待手机加入相机\s*Wi-?Fi\s*[:：]\s*)([^\s,\n\r]+)"""),
+        Regex("""(?i)(Wi-?Fi\s*名称\s*[:：]\s*)([^\n\r]+)"""),
         Regex("""(?i)(已尝试\s*[:：]\s*)([^\n\r]+)"""),
         Regex("""(?i)(SSID\s*[:：]\s*)([^\n\r]+)"""),
         Regex("""(?i)(Device\s*[:：]\s*)([^\n\r]+)"""),

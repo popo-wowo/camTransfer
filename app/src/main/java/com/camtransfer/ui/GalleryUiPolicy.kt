@@ -226,7 +226,10 @@ object GalleryPreviewRotationPolicy {
         decodedHeight: Int,
         imageData: ByteArray?,
     ): Int {
-        exifRotationDegrees(imageData)?.let { return it }
+        exifRotationDegrees(imageData)?.let { exifDegrees ->
+            if (exifRotationAlreadyApplied(exifDegrees, decodedWidth, decodedHeight)) return 0
+            return exifDegrees
+        }
         if (decodedWidth <= 0 || decodedHeight <= 0) return 0
         val expectedWidth = firstPositive(file.info.imagePixWidth, file.info.thumbPixWidth)
         val expectedHeight = firstPositive(file.info.imagePixHeight, file.info.thumbPixHeight)
@@ -234,6 +237,15 @@ object GalleryPreviewRotationPolicy {
         val expectedPortrait = expectedHeight > expectedWidth
         val decodedPortrait = decodedHeight > decodedWidth
         return if (expectedPortrait != decodedPortrait) 90 else 0
+    }
+
+    private fun exifRotationAlreadyApplied(
+        exifDegrees: Int,
+        decodedWidth: Int,
+        decodedHeight: Int,
+    ): Boolean {
+        if (decodedWidth <= 0 || decodedHeight <= 0) return false
+        return (exifDegrees == 90 || exifDegrees == 270) && decodedHeight > decodedWidth
     }
 
     fun exifRotationDegrees(data: ByteArray?): Int? {
@@ -335,4 +347,39 @@ object GalleryPreviewRotationPolicy {
     private val EXIF_HEADER = byteArrayOf(0x45, 0x78, 0x69, 0x66, 0, 0)
     private const val ORIENTATION_TAG = 0x0112
     private const val SHORT_TYPE = 3
+}
+
+object GalleryThumbnailDiagnosticPolicy {
+    fun summary(
+        handle: Int,
+        file: CameraFile?,
+        thumbnail: ByteArray,
+        decodedWidth: Int,
+        decodedHeight: Int,
+    ): String {
+        val thumbExifRotation = GalleryPreviewRotationPolicy.exifRotationDegrees(thumbnail)
+        val autoRotation = if (file != null) {
+            GalleryPreviewRotationPolicy.autoRotationDegrees(
+                file = file,
+                decodedWidth = decodedWidth,
+                decodedHeight = decodedHeight,
+                imageData = thumbnail,
+            )
+        } else {
+            null
+        }
+        val info = file?.info
+        return "Thumbnail loaded handle=$handle bytes=${thumbnail.size} head=${thumbnail.headHex()} " +
+            "thumbExifRotation=${thumbExifRotation?.toString() ?: "none"} " +
+            "decoded=${dimensionLabel(decodedWidth, decodedHeight)} " +
+            "object=${dimensionLabel(info?.imagePixWidth, info?.imagePixHeight)} " +
+            "thumbInfo=${dimensionLabel(info?.thumbPixWidth, info?.thumbPixHeight)} " +
+            "autoRotation=${autoRotation?.toString() ?: "unknown"}"
+    }
+
+    private fun dimensionLabel(width: Int?, height: Int?): String =
+        if (width != null && height != null && width > 0 && height > 0) "${width}x$height" else "unknown"
+
+    private fun ByteArray.headHex(byteCount: Int = 16): String =
+        take(byteCount).joinToString("") { "%02x".format(it) }
 }

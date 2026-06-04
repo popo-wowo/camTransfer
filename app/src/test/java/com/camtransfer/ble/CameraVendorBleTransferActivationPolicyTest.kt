@@ -1,6 +1,7 @@
 package com.camtransfer.ble
 
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -46,6 +47,7 @@ class CameraVendorBleTransferActivationPolicyTest {
     fun officialImportImageUsesFastHandoffAndDisconnectsBle() {
         assertTrue(CameraVendorBleTransferActivationPolicy.shouldFastHandoffAfterCommandWrites())
         assertTrue(CameraVendorBleTransferActivationPolicy.shouldActivelyDisconnectBluetoothBeforeWifi())
+        assertEquals(500L, CameraVendorBleTransferActivationPolicy.BLUETOOTH_RELEASE_DELAY_MS)
     }
 
     @Test

@@ -1,5 +1,7 @@
 package com.camtransfer.ui
 
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -23,36 +25,35 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.camtransfer.service.CameraConnectionAction
+import com.camtransfer.service.CameraConnectionIssue
+import com.camtransfer.service.CameraConnectionPhase
+import com.camtransfer.service.CameraConnectionStep
 import com.camtransfer.service.CameraPairingGuidance
 import com.camtransfer.viewmodel.ConnectionState
 import com.camtransfer.viewmodel.ConnectionViewModel
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConnectScreen(
     viewModel: ConnectionViewModel,
-    onConnected: () -> Unit,
     onOpenWiredImport: () -> Unit,
     onShareDiagnosticLog: () -> Unit,
     onShowDisclaimer: () -> Unit,
@@ -60,12 +61,11 @@ fun ConnectScreen(
     val state by viewModel.state.collectAsState()
     val statusText by viewModel.statusText.collectAsState()
     val error by viewModel.error.collectAsState()
+    val connectionIssue by viewModel.connectionIssue.collectAsState()
+    val activeStep by viewModel.activeStep.collectAsState()
     val preferCompressedDownloads by viewModel.preferCompressedDownloads.collectAsState()
-    var showTutorial by remember { mutableStateOf(false) }
-
-    LaunchedEffect(state) {
-        if (state == ConnectionState.CONNECTED) onConnected()
-    }
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
 
     Box(
         modifier = Modifier
@@ -81,31 +81,187 @@ fun ConnectScreen(
                 .padding(horizontal = 22.dp, vertical = 28.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
+            val actionsBeforeGuidance = ConnectionUiLayoutPolicy.actionsBeforeGuidance(state)
             ConnectHeader(state)
-            StatusPanel(state, statusText, error)
-            TutorialPrompt(onOpenTutorial = { showTutorial = true })
-            TransferSizeSelector(
-                preferCompressedDownloads = preferCompressedDownloads,
-                enabled = state == ConnectionState.IDLE ||
-                    state == ConnectionState.ERROR ||
-                    state == ConnectionState.PAIRED,
-                onPreferenceChanged = viewModel::setPreferCompressedDownloads,
-            )
-            ConnectionActions(
-                state = state,
-                viewModel = viewModel,
-                hasError = error != null,
-                onOpenWiredImport = onOpenWiredImport,
-                onShareDiagnosticLog = onShareDiagnosticLog,
-                onShowDisclaimer = onShowDisclaimer,
-            )
+            if (actionsBeforeGuidance) {
+                ConnectionActions(
+                    state = state,
+                    viewModel = viewModel,
+                    issue = connectionIssue,
+                    onOpenWiredImport = onOpenWiredImport,
+                    onShareDiagnosticLog = onShareDiagnosticLog,
+                    onShowDisclaimer = onShowDisclaimer,
+                )
+            }
+            if (ConnectionUiLayoutPolicy.shouldShowPairingPreparation(state)) {
+                PairingPreparationCards(
+                    onOpenBluetoothSettings = {
+                        context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
+                    },
+                )
+            }
+            if (ConnectionUiLayoutPolicy.shouldShowBluetoothPairingSteps(activeStep)) {
+                BluetoothPairingStepCards()
+            }
+            if (ConnectionUiLayoutPolicy.shouldShowLiveGuidance(state, error, connectionIssue)) {
+                ConnectionLiveGuidancePanel(
+                    state = state,
+                    statusText = statusText,
+                    error = error,
+                    issue = connectionIssue,
+                )
+            }
+            connectionIssue?.let { issue ->
+                if (ConnectionUiLayoutPolicy.shouldShowManualWifiCredentials(issue)) {
+                    ManualWifiCredentialPanel(
+                        issue = issue,
+                        onCopyPassphrase = { passphrase ->
+                            clipboardManager.setText(AnnotatedString(passphrase))
+                        },
+                    )
+                }
+            }
+            if (ConnectionUiLayoutPolicy.shouldShowTransferSizeSelector(state)) {
+                TransferSizeSelector(
+                    preferCompressedDownloads = preferCompressedDownloads,
+                    enabled = true,
+                    onPreferenceChanged = viewModel::setPreferCompressedDownloads,
+                )
+            }
+            if (!actionsBeforeGuidance) {
+                ConnectionActions(
+                    state = state,
+                    viewModel = viewModel,
+                    issue = connectionIssue,
+                    onOpenWiredImport = onOpenWiredImport,
+                    onShareDiagnosticLog = onShareDiagnosticLog,
+                    onShowDisclaimer = onShowDisclaimer,
+                )
+            }
         }
     }
+}
 
-    if (showTutorial) {
-        ConnectionTutorialSheet(onDismiss = { showTutorial = false })
+@Composable
+private fun ManualWifiCredentialPanel(
+    issue: CameraConnectionIssue,
+    onCopyPassphrase: (String) -> Unit,
+) {
+    val ssid = issue.wifiSsid?.takeIf { it.isNotBlank() }
+    val passphrase = issue.wifiPassphrase?.takeIf { it.isNotBlank() }
+    if (ssid == null && passphrase == null) return
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = CamTransferColors.Card,
+        border = BorderStroke(1.dp, CamTransferColors.Hairline),
+    ) {
+        Column(
+            modifier = Modifier.padding(13.dp),
+            verticalArrangement = Arrangement.spacedBy(9.dp),
+        ) {
+            Text(
+                "手动连接相机 Wi-Fi",
+                color = CamTransferColors.Ink,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Black,
+            )
+            ssid?.let {
+                ManualWifiCredentialRow(label = "Wi-Fi 名称", value = it)
+            }
+            passphrase?.let {
+                ManualWifiCredentialRow(label = "密码", value = it)
+                OutlinedButton(
+                    onClick = { onCopyPassphrase(it) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 42.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = CamTransferColors.Ink),
+                    border = BorderStroke(1.dp, CamTransferColors.Hairline),
+                ) {
+                    Text("复制密码", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
     }
 }
+
+@Composable
+private fun ManualWifiCredentialRow(label: String, value: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        Text(
+            label,
+            color = CamTransferColors.SecondaryInk,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            value,
+            color = CamTransferColors.Ink,
+            fontSize = 15.sp,
+            lineHeight = 20.sp,
+            fontWeight = FontWeight.Black,
+        )
+    }
+}
+
+internal object ConnectionStartActionPolicy {
+    fun primaryConnectLabel(): String = "开始配对"
+}
+
+internal object ConnectionFailureActionPolicy {
+    fun primaryAction(issue: CameraConnectionIssue?): CameraConnectionAction =
+        if (issue?.phase == CameraConnectionPhase.PAIR_CAMERA) {
+            CameraConnectionAction.RestartPairing
+        } else {
+            CameraConnectionAction.RetryStep
+        }
+
+    fun primaryLabel(issue: CameraConnectionIssue?): String =
+        when (primaryAction(issue)) {
+            CameraConnectionAction.RestartPairing -> "重新配对"
+            else -> "重试"
+        }
+}
+
+internal object ConnectionUiLayoutPolicy {
+    fun actionsBeforeGuidance(state: ConnectionState): Boolean =
+        false
+
+    fun shouldShowPairingPreparation(state: ConnectionState): Boolean =
+        state == ConnectionState.IDLE
+
+    fun shouldShowBluetoothPairingSteps(step: CameraConnectionStep?): Boolean =
+        step == CameraConnectionStep.BleScan ||
+            step == CameraConnectionStep.BleHandshake ||
+            step == CameraConnectionStep.PairingConfirmation
+
+    fun shouldShowLiveGuidance(
+        state: ConnectionState,
+        error: String?,
+        issue: CameraConnectionIssue?,
+    ): Boolean =
+        state != ConnectionState.IDLE || error != null || issue != null
+
+    fun shouldShowTransferSizeSelector(state: ConnectionState): Boolean =
+        state == ConnectionState.PAIRED
+
+    fun shouldShowManualWifiCredentials(issue: CameraConnectionIssue): Boolean =
+        !issue.wifiSsid.isNullOrBlank() || !issue.wifiPassphrase.isNullOrBlank()
+}
+
+private fun connectionActionLabel(action: CameraConnectionAction): String =
+    when (action) {
+        CameraConnectionAction.RetryStep -> "重试当前步骤"
+        CameraConnectionAction.RestartPairing -> "重新配对"
+        CameraConnectionAction.EnterGallery -> "进入相册"
+        CameraConnectionAction.ConfirmCameraPairingMode -> "我已准备好，开始搜索"
+        CameraConnectionAction.ConfirmCameraReady -> "我已在相机上确认，继续"
+        CameraConnectionAction.ConfirmWifiJoined -> "手机已连上相机 Wi-Fi"
+        CameraConnectionAction.OpenSystemBluetoothSettings -> "打开系统蓝牙"
+        CameraConnectionAction.ExportDiagnosticLog -> "诊断日志"
+    }
 
 @Composable
 private fun ConnectHeader(state: ConnectionState) {
@@ -136,11 +292,6 @@ private fun ConnectHeader(state: ConnectionState) {
             lineHeight = 36.sp,
             fontWeight = FontWeight.Black,
         )
-        Text(
-            "保持页面简单：先看教程，再连接相机。连接过程会在状态里显示。",
-            color = CamTransferColors.SecondaryInk,
-            style = MaterialTheme.typography.bodyMedium,
-        )
     }
 }
 
@@ -153,42 +304,165 @@ private fun connectionModeLabel(state: ConnectionState): String =
         else -> "连接中"
     }
 
+internal data class ConnectionLiveGuidanceContent(
+    val step: CameraConnectionStep,
+    val stepLabel: String,
+    val title: String,
+    val message: String,
+    val isProminent: Boolean,
+    val isError: Boolean,
+)
+
+internal object ConnectionLiveGuidancePolicy {
+    fun content(
+        state: ConnectionState,
+        statusText: String,
+        error: String?,
+        issue: CameraConnectionIssue?,
+    ): ConnectionLiveGuidanceContent {
+        if (issue != null) {
+            return ConnectionLiveGuidanceContent(
+                step = issue.step,
+                stepLabel = issueLabel(issue.step),
+                title = issue.title,
+                message = issue.detail,
+                isProminent = true,
+                isError = false,
+            )
+        }
+        if (error != null) {
+            return ConnectionLiveGuidanceContent(
+                step = stepForState(state),
+                stepLabel = "需要处理",
+                title = "需要处理",
+                message = error,
+                isProminent = true,
+                isError = true,
+            )
+        }
+        return ConnectionLiveGuidanceContent(
+            step = stepForState(state),
+            stepLabel = stepLabelForState(state),
+            title = titleForState(state),
+            message = messageForState(state, statusText),
+            isProminent = true,
+            isError = false,
+        )
+    }
+
+    private fun titleForState(state: ConnectionState): String =
+        when (state) {
+            ConnectionState.IDLE -> "准备连接"
+            ConnectionState.WAITING_CAMERA_CONFIRMATION -> "请看相机屏幕"
+            ConnectionState.PAIRED -> "已保存配对"
+            ConnectionState.CONNECTED -> "已连接"
+            ConnectionState.ERROR -> "需要处理"
+            else -> "正在处理"
+        }
+
+    private fun messageForState(state: ConnectionState, statusText: String): String =
+        when (state) {
+            ConnectionState.IDLE -> statusText.ifBlank { CameraPairingGuidance.IDLE_HINT }
+            ConnectionState.WAITING_CAMERA_CONFIRMATION -> CameraPairingGuidance.WAITING_CAMERA_CONFIRMATION_STATUS
+            else -> statusText.ifBlank { CameraPairingGuidance.IDLE_HINT }
+        }
+
+    private fun stepLabelForState(state: ConnectionState): String =
+        when (state) {
+            ConnectionState.IDLE -> "准备连接"
+            ConnectionState.WAITING_CAMERA_CONFIRMATION -> "看相机屏幕"
+            ConnectionState.PAIRED -> "下一步"
+            ConnectionState.CONNECTED -> "已完成"
+            ConnectionState.ERROR -> "需要处理"
+            else -> "实时提醒"
+        }
+
+    private fun issueLabel(step: CameraConnectionStep): String =
+        when (step) {
+            CameraConnectionStep.CameraPairingMode,
+            CameraConnectionStep.StaleBondCheck -> "请先确认"
+            CameraConnectionStep.JoinCameraWifi,
+            CameraConnectionStep.ConnectPtp,
+            CameraConnectionStep.LoadGallery -> "需要你处理"
+            else -> "实时提醒"
+        }
+
+    private fun stepForState(state: ConnectionState): CameraConnectionStep =
+        when (state) {
+            ConnectionState.IDLE -> CameraConnectionStep.CameraPairingMode
+            ConnectionState.SCANNING -> CameraConnectionStep.BleScan
+            ConnectionState.CONNECTING_BLE -> CameraConnectionStep.BleHandshake
+            ConnectionState.WAITING_CAMERA_CONFIRMATION -> CameraConnectionStep.PairingConfirmation
+            ConnectionState.PAIRED -> CameraConnectionStep.SavePairing
+            ConnectionState.CONNECTING_WIFI -> CameraConnectionStep.JoinCameraWifi
+            ConnectionState.CONNECTING_PTP -> CameraConnectionStep.ConnectPtp
+            ConnectionState.CONNECTED -> CameraConnectionStep.LoadGallery
+            ConnectionState.ERROR -> CameraConnectionStep.EnvironmentCheck
+        }
+}
+
 @Composable
-private fun StatusPanel(
+private fun ConnectionLiveGuidancePanel(
     state: ConnectionState,
     statusText: String,
     error: String?,
+    issue: CameraConnectionIssue?,
 ) {
-    val title = when (state) {
-        ConnectionState.IDLE -> "准备连接"
-        ConnectionState.ERROR -> "连接失败"
-        ConnectionState.WAITING_CAMERA_CONFIRMATION -> "等待相机确认"
-        ConnectionState.PAIRED -> "配对成功"
-        ConnectionState.CONNECTED -> "已连接"
-        else -> "连接中"
-    }
+    val content = ConnectionLiveGuidancePolicy.content(
+        state = state,
+        statusText = statusText,
+        error = error,
+        issue = issue,
+    )
+    val accentColor = liveGuidanceAccentColor(content)
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 132.dp),
         shape = RoundedCornerShape(18.dp),
         color = animateColorAsState(
-            targetValue = statusPanelColor(state, error),
-            label = "connection-status-color",
+            targetValue = CamTransferColors.Card,
+            label = "connection-live-guidance-color",
         ).value,
-        border = BorderStroke(1.dp, CamTransferColors.Hairline),
+        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.22f)),
     ) {
         Row(
             modifier = Modifier.padding(16.dp),
             verticalAlignment = Alignment.Top,
         ) {
-            StatusIndicator(state, hasError = error != null)
-            Spacer(Modifier.width(12.dp))
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(title, color = CamTransferColors.Ink, fontWeight = FontWeight.Bold)
+            Box(
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(RoundedCornerShape(17.dp))
+                    .background(accentColor.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                StatusIndicator(state, hasError = content.isError)
+            }
+            Spacer(Modifier.width(13.dp))
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
                 Text(
-                    connectionMessage(state, statusText, error),
-                    color = if (error != null) MaterialTheme.colorScheme.error else CamTransferColors.SecondaryInk,
-                    style = MaterialTheme.typography.bodySmall,
-                    lineHeight = 18.sp,
+                    content.stepLabel,
+                    color = accentColor,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Black,
+                )
+                Text(
+                    content.title,
+                    color = CamTransferColors.Ink,
+                    fontSize = 18.sp,
+                    lineHeight = 22.sp,
+                    fontWeight = FontWeight.Black,
+                )
+                Text(
+                    content.message,
+                    color = if (content.isError) MaterialTheme.colorScheme.error else CamTransferColors.SecondaryInk,
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    fontWeight = FontWeight.SemiBold,
                 )
             }
         }
@@ -223,181 +497,158 @@ private fun StatusIndicator(state: ConnectionState, hasError: Boolean) {
     }
 }
 
-private fun statusPanelColor(state: ConnectionState, error: String?): Color =
+private val ConnectionLiveGuidanceContent.isSuccess: Boolean
+    get() = (step == CameraConnectionStep.SavePairing && title == "已保存配对") ||
+        (step == CameraConnectionStep.LoadGallery && title == "已连接")
+
+private fun liveGuidanceAccentColor(content: ConnectionLiveGuidanceContent): Color =
     when {
-        error != null -> Color(0xFFFFF7F5)
-        state == ConnectionState.PAIRED || state == ConnectionState.CONNECTED -> Color(0xFFF3FAF1)
-        else -> CamTransferColors.WarmFill
+        content.isError -> Color(0xFFB6472D)
+        content.isSuccess -> Color(0xFF2D7D46)
+        else -> CamTransferColors.Accent
     }
-
-private fun connectionMessage(
-    state: ConnectionState,
-    statusText: String,
-    error: String?,
-): String {
-    if (error != null) return error
-    return when (state) {
-        ConnectionState.IDLE -> CameraPairingGuidance.IDLE_HINT
-        ConnectionState.WAITING_CAMERA_CONFIRMATION -> CameraPairingGuidance.WAITING_CAMERA_CONFIRMATION_STATUS
-        else -> statusText.ifBlank { CameraPairingGuidance.IDLE_HINT }
-    }
-}
 
 @Composable
-private fun TutorialPrompt(onOpenTutorial: () -> Unit) {
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { onOpenTutorial() },
-        shape = RoundedCornerShape(18.dp),
-        color = Color(0xFFFFF4DE),
-        border = BorderStroke(1.dp, Color(0x339E8257)),
-    ) {
-        Row(
-            modifier = Modifier.padding(15.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(
-                    "查看连接教程",
-                    color = CamTransferColors.Ink,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Black,
-                )
-                Text(
-                    "配对、连接、照片下载步骤都在这里。",
-                    color = CamTransferColors.SecondaryInk,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-            Text(
-                "打开",
-                color = CamTransferColors.Accent,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Black,
-            )
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun ConnectionTutorialSheet(onDismiss: () -> Unit) {
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        containerColor = CamTransferColors.Background,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 22.dp)
-                .padding(bottom = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Text(
-                "连接教程",
-                color = CamTransferColors.Ink,
-                fontSize = 28.sp,
-                lineHeight = 32.sp,
-                fontWeight = FontWeight.Black,
-            )
-            TutorialSection(
-                title = "配对",
-                steps = listOf(
-                    CameraPairingGuidance.CAMERA_MENU_PATH,
-                    "让相机停留在配对注册 / PAIRING REGISTRATION 画面。",
-                    "回到 App 点连接相机；手机弹出蓝牙配对请求时点配对或允许。",
-                    "看到相机显示配对成功后，再在 App 点确认。",
-                ),
-            )
-            TutorialSection(
-                title = "连接",
-                steps = listOf(
-                    "已配对后点进入相机相册。",
-                    "App 会先用蓝牙触发相机进入 Wi-Fi 传图模式。",
-                    "手机会连接相机 Wi-Fi，期间短暂不能上网是正常现象。",
-                ),
-            )
-            TutorialSection(
-                title = "照片",
-                steps = listOf(
-                    "进入相册后可以筛选、预览并下载照片。",
-                    "下载模式可以选择原图或压缩。",
-                    "下载失败时保持相机在传图/相册界面，再重试或导出诊断日志。",
-                ),
-            )
-            PrimarySheetAction("知道了") { onDismiss() }
-        }
-    }
-}
-
-@Composable
-private fun TutorialSection(title: String, steps: List<String>) {
-    Surface(
+private fun PairingPreparationCards(
+    onOpenBluetoothSettings: () -> Unit,
+) {
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(18.dp),
-        color = CamTransferColors.Card,
-        border = BorderStroke(1.dp, CamTransferColors.Hairline),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Text(
-                title,
-                color = CamTransferColors.Accent,
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Black,
-            )
-            steps.forEachIndexed { index, step ->
-                GuideStep(number = "${index + 1}", label = step)
-            }
-        }
-    }
-}
-
-@Composable
-private fun GuideStep(number: String, label: String) {
-    Row(verticalAlignment = Alignment.Top) {
-        Box(
-            modifier = Modifier
-                .size(24.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(CamTransferColors.MutedFill),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                number,
-                color = CamTransferColors.Ink,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Black,
-            )
-        }
-        Spacer(Modifier.width(10.dp))
-        Text(
-            label,
-            modifier = Modifier.weight(1f),
-            color = CamTransferColors.SecondaryInk,
-            style = MaterialTheme.typography.bodySmall,
-            lineHeight = 18.sp,
+        PairingPreparationCard(
+            number = "1",
+            label = "相机准备",
+            title = "进入配对注册界面",
+            body = "在相机上打开下面这个菜单，停在配对注册界面后，再回到 App 开始配对。",
+            footnote = CameraPairingGuidance.CAMERA_MENU_PATH,
+            accentColor = CamTransferColors.Accent,
+        )
+        PairingPreparationCard(
+            number = "2",
+            label = "手机准备",
+            title = "取消旧的蓝牙配对",
+            body = "如果这台相机以前配过，请到手机系统蓝牙里找到 X-T / FUJIFILM 相机记录，先取消配对，再回到这里。",
+            footnote = "系统设置 -> 蓝牙 -> 相机名称 -> 取消配对/忽略此设备",
+            accentColor = Color(0xFF2D7D46),
+            actionLabel = "打开系统蓝牙",
+            onAction = onOpenBluetoothSettings,
         )
     }
 }
 
 @Composable
-private fun PrimarySheetAction(label: String, onClick: () -> Unit) {
-    Button(
-        onClick = onClick,
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 52.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = CamTransferColors.Ink,
-            contentColor = CamTransferColors.Card,
-        ),
+private fun BluetoothPairingStepCards() {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text(label, fontWeight = FontWeight.Bold)
+        PairingPreparationCard(
+            number = "!",
+            label = "相机操作",
+            title = "需要相机确认",
+            body = "请看相机屏幕。如果出现 OK、确定、配对或允许连接提示，先在相机上按 OK/确定。",
+            accentColor = Color(0xFFB6472D),
+        )
+        PairingPreparationCard(
+            number = "2",
+            label = "手机操作",
+            title = "在手机上点配对/允许",
+            body = "如果手机弹出蓝牙配对请求，请点“配对”或“允许”。点完留在当前页面，App 会继续连接。",
+            accentColor = Color(0xFF2D7D46),
+        )
+    }
+}
+
+@Composable
+private fun PairingPreparationCard(
+    number: String,
+    label: String,
+    title: String,
+    body: String,
+    accentColor: Color,
+    footnote: String? = null,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        color = CamTransferColors.Card,
+        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.22f)),
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.Top,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(RoundedCornerShape(17.dp))
+                    .background(accentColor.copy(alpha = 0.14f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    number,
+                    color = accentColor,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Black,
+                )
+            }
+            Spacer(Modifier.width(13.dp))
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                Text(
+                    label,
+                    color = accentColor,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Black,
+                )
+                Text(
+                    title,
+                    color = CamTransferColors.Ink,
+                    fontSize = 18.sp,
+                    lineHeight = 22.sp,
+                    fontWeight = FontWeight.Black,
+                )
+                Text(
+                    body,
+                    color = CamTransferColors.SecondaryInk,
+                    fontSize = 14.sp,
+                    lineHeight = 20.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                footnote?.let {
+                    Surface(
+                        shape = RoundedCornerShape(9.dp),
+                        color = accentColor.copy(alpha = 0.08f),
+                    ) {
+                        Text(
+                            it,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                            color = CamTransferColors.Ink,
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
+                if (actionLabel != null && onAction != null) {
+                    OutlinedButton(
+                        onClick = onAction,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 42.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = CamTransferColors.Ink),
+                        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.34f)),
+                    ) {
+                        Text(actionLabel, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -508,7 +759,7 @@ private fun TransferModeOption(
 private fun ConnectionActions(
     state: ConnectionState,
     viewModel: ConnectionViewModel,
-    hasError: Boolean,
+    issue: CameraConnectionIssue?,
     onOpenWiredImport: () -> Unit,
     onShareDiagnosticLog: () -> Unit,
     onShowDisclaimer: () -> Unit,
@@ -518,9 +769,9 @@ private fun ConnectionActions(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         when (state) {
-            ConnectionState.IDLE, ConnectionState.ERROR -> {
+            ConnectionState.IDLE -> {
                 PrimaryAction(
-                    label = if (hasError) "重新搜索相机" else "连接相机",
+                    label = ConnectionStartActionPolicy.primaryConnectLabel(),
                     containerColor = CamTransferColors.Ink,
                     contentColor = CamTransferColors.Card,
                     onClick = { viewModel.connect() },
@@ -534,9 +785,22 @@ private fun ConnectionActions(
                 )
                 SecondaryDarkAction(label = "使用须知与免责声明", onClick = onShowDisclaimer)
             }
+            ConnectionState.ERROR -> {
+                PrimaryAction(
+                    label = ConnectionFailureActionPolicy.primaryLabel(issue),
+                    containerColor = CamTransferColors.Ink,
+                    contentColor = CamTransferColors.Card,
+                    onClick = {
+                        when (ConnectionFailureActionPolicy.primaryAction(issue)) {
+                            CameraConnectionAction.RestartPairing -> viewModel.forgetPairing()
+                            else -> viewModel.retryCurrentIssue()
+                        }
+                    },
+                )
+            }
             ConnectionState.WAITING_CAMERA_CONFIRMATION -> {
                 PrimaryAction(
-                    label = "相机已显示配对成功，确认",
+                    label = "我已在相机上确认，继续",
                     containerColor = Color(0xFF2D7D46),
                     contentColor = CamTransferColors.Card,
                     onClick = { viewModel.confirmCameraPairingSucceeded() },
@@ -550,12 +814,21 @@ private fun ConnectionActions(
                 SecondaryOutlinedAction(label = "有线导入", onClick = onOpenWiredImport)
             }
             ConnectionState.PAIRED -> {
-                PrimaryAction(
-                    label = "进入相机相册",
-                    containerColor = CamTransferColors.Accent,
-                    contentColor = CamTransferColors.Card,
-                    onClick = { viewModel.enterCameraAlbum() },
-                )
+                if (issue?.phase == CameraConnectionPhase.PAIR_CAMERA) {
+                    PrimaryAction(
+                        label = "继续处理配对问题",
+                        containerColor = CamTransferColors.Ink,
+                        contentColor = CamTransferColors.Card,
+                        onClick = { viewModel.retryCurrentIssue() },
+                    )
+                } else {
+                    PrimaryAction(
+                        label = "进入相机相册",
+                        containerColor = CamTransferColors.Accent,
+                        contentColor = CamTransferColors.Card,
+                        onClick = { viewModel.enterCameraAlbum() },
+                    )
+                }
                 UtilityActionRow(
                     leftLabel = "重新配对",
                     onLeftClick = { viewModel.forgetPairing() },

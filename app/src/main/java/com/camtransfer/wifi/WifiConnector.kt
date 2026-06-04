@@ -5,9 +5,13 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.os.SystemClock
 import android.net.wifi.WifiNetworkSpecifier
+import android.net.wifi.WifiManager
 import android.util.Log
+import com.camtransfer.service.DiagnosticLog
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 
 private const val TAG = "WifiConnector"
@@ -24,6 +28,7 @@ class WifiConnector(private val context: Context) {
         timeoutMs: Long = 30_000,
     ): Network {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
 
         disconnect()
 
@@ -42,17 +47,30 @@ class WifiConnector(private val context: Context) {
             .build()
 
         val deferred = CompletableDeferred<Network>()
+        val requestStartMs = SystemClock.elapsedRealtime()
+
+        fun elapsedMs(): Long = SystemClock.elapsedRealtime() - requestStartMs
 
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(net: Network) {
-                Log.d(TAG, "WiFi available: $net")
+                Log.d(TAG, "WiFi available: $net elapsedMs=${elapsedMs()}")
+                DiagnosticLog.append(
+                    context,
+                    TAG,
+                    "WiFi available elapsedMs=${elapsedMs()} hidden=${configuration.isHidden}",
+                )
                 cm.bindProcessToNetwork(net)
                 network = net
                 deferred.complete(net)
             }
 
             override fun onUnavailable() {
-                Log.w(TAG, "WiFi unavailable")
+                Log.w(TAG, "WiFi unavailable elapsedMs=${elapsedMs()}")
+                DiagnosticLog.append(
+                    context,
+                    TAG,
+                    "WiFi unavailable elapsedMs=${elapsedMs()} hidden=${configuration.isHidden}",
+                )
                 deferred.completeExceptionally(Exception("无法连接相机 WiFi: ${configuration.ssid}"))
             }
 
@@ -65,14 +83,37 @@ class WifiConnector(private val context: Context) {
             }
         }
 
+        runCatching {
+            wifiManager?.startScan() == true
+        }.onSuccess { started ->
+            DiagnosticLog.append(context, TAG, "WiFi active scan requested started=$started")
+        }.onFailure { error ->
+            DiagnosticLog.append(context, TAG, "WiFi active scan request failed", error)
+        }
+
         callback = cb
         cm.requestNetwork(request, cb)
         Log.d(
             TAG,
             "Requesting WiFi: ssid=${configuration.ssid} hidden=${configuration.isHidden} passphraseLength=${configuration.passphrase.length}",
         )
+        DiagnosticLog.append(
+            context,
+            TAG,
+            "WiFi request started hidden=${configuration.isHidden} timeoutMs=$timeoutMs passphraseLength=${configuration.passphrase.length}",
+        )
 
-        return withTimeout(timeoutMs) { deferred.await() }
+        return try {
+            withTimeout(timeoutMs) { deferred.await() }
+        } catch (error: TimeoutCancellationException) {
+            DiagnosticLog.append(
+                context,
+                TAG,
+                "WiFi request timed out elapsedMs=${elapsedMs()} hidden=${configuration.isHidden} timeoutMs=$timeoutMs",
+            )
+            disconnect()
+            throw error
+        }
     }
 
     fun disconnect() {

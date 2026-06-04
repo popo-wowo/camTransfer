@@ -11,6 +11,11 @@ class CameraVendorHiddenObjectProbePolicyTest {
     }
 
     @Test
+    fun skipsLargeSpecifiedGalleryToKeepInitialAlbumFast() {
+        assertFalse(CameraVendorHiddenObjectProbePolicy.shouldProbeHiddenHandles((1..2_000).toList()))
+    }
+
+    @Test
     fun skipsWhenRangeIsTooLargeToAvoidCameraPressure() {
         assertFalse(CameraVendorHiddenObjectProbePolicy.shouldProbeHiddenHandles(listOf(1, 500)))
     }

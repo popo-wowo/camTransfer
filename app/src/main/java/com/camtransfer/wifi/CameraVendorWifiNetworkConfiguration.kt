@@ -7,6 +7,16 @@ data class CameraVendorWifiNetworkConfiguration(
 )
 
 object CameraVendorWifiNetworkConfigurationPolicy {
+    fun referenceAppConfiguration(
+        ssid: String,
+        passphrase: String,
+    ): CameraVendorWifiNetworkConfiguration =
+        CameraVendorWifiNetworkConfiguration(
+            ssid = ssid,
+            passphrase = passphrase,
+            isHidden = true,
+        ).normalized()
+
     fun configurations(
         deviceName: String?,
         serialNumber: String?,
@@ -14,12 +24,7 @@ object CameraVendorWifiNetworkConfigurationPolicy {
     ): List<CameraVendorWifiNetworkConfiguration> {
         val candidates = mutableListOf<CameraVendorWifiNetworkConfiguration>()
         if (preferredWifiNetwork != null) {
-            if (preferredWifiNetwork.isHidden) {
-                candidates += preferredWifiNetwork
-                candidates += preferredWifiNetwork.copy(isHidden = false)
-            } else {
-                candidates += preferredWifiNetwork
-            }
+            return listOf(preferredWifiNetwork.normalized())
         }
 
         val cleanedName = deviceName?.trim().orEmpty()
@@ -70,7 +75,7 @@ object CameraVendorWifiNetworkConfigurationPolicy {
             if (trimmedSsid.isEmpty()) return@mapNotNull null
             val key = "$trimmedSsid|${configuration.passphrase}|${configuration.isHidden}"
             if (!seen.add(key)) return@mapNotNull null
-            configuration.copy(ssid = trimmedSsid)
+            configuration.normalized(trimmedSsid)
         }
     }
 
@@ -81,4 +86,13 @@ object CameraVendorWifiNetworkConfigurationPolicy {
     }
 
     private const val DEFAULT_CAMERA_WIFI_PASSPHRASE = "00000000"
+
+    private fun CameraVendorWifiNetworkConfiguration.normalized(
+        trimmedSsid: String = ssid.trim(),
+    ): CameraVendorWifiNetworkConfiguration =
+        copy(ssid = trimmedSsid)
+}
+
+object CameraVendorWifiJoinPolicy {
+    const val AUTO_JOIN_TIMEOUT_MS = 30_000L
 }

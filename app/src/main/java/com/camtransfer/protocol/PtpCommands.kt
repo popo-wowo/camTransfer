@@ -1,12 +1,18 @@
 package com.camtransfer.protocol
 
+import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import com.camtransfer.model.ObjectInfo
+import com.camtransfer.service.DiagnosticLog
 import kotlinx.coroutines.flow.flow
 
 private const val TAG = "PtpCommands"
 
-class PtpCommands(private val connection: PtpConnection) {
+class PtpCommands(
+    private val connection: PtpConnection,
+    private val diagnosticContext: Context? = null,
+) {
 
     suspend fun getStorageIDs(): List<Int> {
         val data = connection.sendCommandGetData(PtpOpCode.GET_STORAGE_IDS)
@@ -30,64 +36,123 @@ class PtpCommands(private val connection: PtpConnection) {
     }
 
     suspend fun galleryObjectInfos(): List<ObjectInfo> {
+        val startedMs = SystemClock.elapsedRealtime()
         resetCameraVendorCompressionMode()
         val specifiedHandles = connection.cameraVendorSpecifiedObjectHandles
+        diagnostic("Gallery discovery specifiedHandles=${specifiedHandles.size}")
         if (specifiedHandles.isNotEmpty()) {
-            val specifiedInfos = specifiedHandles.map { handle ->
+            val initialHandles = CameraVendorGalleryDiscoveryPolicy.initialSpecifiedHandles(specifiedHandles)
+            if (initialHandles.size < specifiedHandles.size) {
+                diagnostic(
+                    "Gallery discovery initialHandles=${initialHandles.size}/${specifiedHandles.size} " +
+                        "largeGallery=true",
+                )
+            }
+            val vendorStartedMs = SystemClock.elapsedRealtime()
+            val specifiedInfos = initialHandles.map { handle ->
                 runCatching { getObjectInfo(handle) }
                     .getOrElse { placeholderObjectInfo(handle) }
             }
-            val forwardInfos = forwardObjectInfos(specifiedHandles, specifiedInfos)
+            val forwardInfos = if (CameraVendorGalleryDiscoveryPolicy.isLargeGallery(specifiedHandles.size)) {
+                emptyList()
+            } else {
+                forwardObjectInfos(initialHandles, specifiedInfos)
+            }
             val hiddenInfos = if (CameraVendorHiddenObjectProbePolicy.shouldProbeHiddenHandles(specifiedHandles)) {
-                hiddenObjectInfos(specifiedHandles, specifiedInfos)
+                hiddenObjectInfos(initialHandles, specifiedInfos)
             } else {
                 emptyList()
             }
             val vendorInfos = mergeInfos(specifiedInfos + hiddenInfos + forwardInfos)
+            diagnostic(
+                "Gallery discovery vendorInfos=${vendorInfos.size} " +
+                    "elapsedMs=${SystemClock.elapsedRealtime() - vendorStartedMs}",
+            )
             val standardInfos = if (
                 CameraVendorGalleryDiscoveryPolicy.shouldIncludeStandardEnumeration(specifiedHandles.size)
             ) {
+                val standardStartedMs = SystemClock.elapsedRealtime()
                 runCatching { standardObjectInfos() }
-                    .onSuccess { Log.d(TAG, "Standard enumeration loaded count=${it.size}") }
+                    .onSuccess {
+                        val elapsedMs = SystemClock.elapsedRealtime() - standardStartedMs
+                        Log.d(TAG, "Standard enumeration loaded count=${it.size} elapsedMs=$elapsedMs")
+                        diagnostic("Gallery discovery standardInfos=${it.size} elapsedMs=$elapsedMs")
+                    }
                     .onFailure { Log.d(TAG, "Standard enumeration failed: ${it.message}") }
                     .getOrElse { emptyList() }
             } else {
                 emptyList()
             }
             val merged = mergeInfos(vendorInfos + standardInfos)
+            diagnostic("Gallery discovery merged=${merged.size} elapsedMs=${SystemClock.elapsedRealtime() - startedMs}")
             if (merged.isNotEmpty()) {
                 return merged
             }
         }
 
-        return standardObjectInfos()
+        val standardInfos = standardObjectInfos()
+        diagnostic("Gallery discovery standardOnly=${standardInfos.size} elapsedMs=${SystemClock.elapsedRealtime() - startedMs}")
+        return standardInfos
     }
 
     suspend fun getThumb(handle: Int): ByteArray {
-        runCatching { getObjectInfo(handle) }
+        val startedMs = SystemClock.elapsedRealtime()
+        if (CameraVendorThumbnailReadPolicy.shouldPrimeObjectContextBeforeStandardThumbnail()) {
+            val primeStartedMs = SystemClock.elapsedRealtime()
+            runCatching { getObjectInfo(handle) }
+                .onSuccess {
+                    diagnostic(
+                        "Thumbnail context primed handle=$handle " +
+                            "elapsedMs=${SystemClock.elapsedRealtime() - primeStartedMs}",
+                    )
+                }
+                .onFailure { error ->
+                    diagnostic(
+                        "Thumbnail context prime failed handle=$handle " +
+                            "elapsedMs=${SystemClock.elapsedRealtime() - primeStartedMs} error=${error.message}",
+                    )
+                }
+        }
+        val standardStartedMs = SystemClock.elapsedRealtime()
         val standard = runCatching {
-            connection.sendCommandGetData(PtpOpCode.GET_THUMB, listOf(handle))
+            connection.sendCommandGetData(
+                PtpOpCode.GET_THUMB,
+                listOf(handle),
+                readTimeoutMs = CameraVendorThumbnailReadPolicy.STANDARD_THUMB_TIMEOUT_MS,
+            )
+        }.onFailure { error ->
+            diagnostic(
+                "Thumbnail standard failed handle=$handle " +
+                    "elapsedMs=${SystemClock.elapsedRealtime() - standardStartedMs} " +
+                    "totalElapsedMs=${SystemClock.elapsedRealtime() - startedMs} error=${error.message}",
+            )
         }.getOrNull()
         if (standard != null) {
             val normalized = CameraVendorPtpDataParser.imageData(standard)
             if (standard.size >= 100 && CameraVendorPtpDataParser.isLikelyImageData(normalized)) {
-                Log.d(TAG, "Thumbnail standard handle=$handle rawBytes=${standard.size} imageBytes=${normalized.size}")
+                val message = "Thumbnail standard handle=$handle rawBytes=${standard.size} " +
+                    "imageBytes=${normalized.size} elapsedMs=${SystemClock.elapsedRealtime() - standardStartedMs} " +
+                    "totalElapsedMs=${SystemClock.elapsedRealtime() - startedMs}"
+                Log.d(TAG, message)
+                diagnostic(message)
                 return normalized
             }
-            Log.d(
-                TAG,
-                "Thumbnail standard unusable handle=$handle rawBytes=${standard.size} " +
-                    "imageBytes=${normalized.size} head=${normalized.headHex()}",
-            )
+            val message = "Thumbnail standard unusable handle=$handle rawBytes=${standard.size} " +
+                "imageBytes=${normalized.size} head=${normalized.headHex()} " +
+                "elapsedMs=${SystemClock.elapsedRealtime() - startedMs}"
+            Log.d(TAG, message)
+            diagnostic(message)
         }
 
+        val partialStartedMs = SystemClock.elapsedRealtime()
         val preview = getPartialObject(handle, 0, CameraVendorReferenceApp.PARTIAL_PREVIEW_READ_SIZE)
         val normalizedPreview = CameraVendorPtpDataParser.imageData(preview)
-        Log.d(
-            TAG,
-            "Thumbnail partial handle=$handle rawBytes=${preview.size} " +
-                "imageBytes=${normalizedPreview.size} head=${normalizedPreview.headHex()}",
-        )
+        val message = "Thumbnail partial handle=$handle rawBytes=${preview.size} " +
+            "imageBytes=${normalizedPreview.size} head=${normalizedPreview.headHex()} " +
+            "partialElapsedMs=${SystemClock.elapsedRealtime() - partialStartedMs} " +
+            "totalElapsedMs=${SystemClock.elapsedRealtime() - startedMs}"
+        Log.d(TAG, message)
+        diagnostic(message)
         return normalizedPreview
     }
 
@@ -300,6 +365,16 @@ class PtpCommands(private val connection: PtpConnection) {
     private fun ByteArray.headHex(byteCount: Int = 16): String {
         return take(byteCount).joinToString("") { "%02x".format(it) }
     }
+
+    private fun diagnostic(message: String) {
+        diagnosticContext?.let { DiagnosticLog.append(it, TAG, message) }
+    }
+}
+
+internal object CameraVendorThumbnailReadPolicy {
+    const val STANDARD_THUMB_TIMEOUT_MS = 3_000
+
+    fun shouldPrimeObjectContextBeforeStandardThumbnail(): Boolean = true
 }
 
 internal object CameraVendorPartialObjectReadPolicy {

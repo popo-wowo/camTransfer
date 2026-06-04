@@ -5,25 +5,32 @@ import org.junit.Test
 
 class CameraVendorWifiNetworkConfigurationPolicyTest {
     @Test
-    fun mirrorsIosWifiCandidateOrder() {
+    fun exactBleWifiConfigurationDoesNotAddGuessedCandidates() {
         val candidates = CameraVendorWifiNetworkConfigurationPolicy.configurations(
             deviceName = "X-T5",
             serialNumber = "221019F1932011003B",
-            preferredWifiNetwork = CameraVendorWifiNetworkConfiguration(
+            preferredWifiNetwork = CameraVendorWifiNetworkConfigurationPolicy.referenceAppConfiguration(
                 ssid = "FUJIFILM-X-T5-003B",
                 passphrase = "12345678",
-                isHidden = true,
             ),
         )
 
         assertEquals(
             listOf(
                 CameraVendorWifiNetworkConfiguration("FUJIFILM-X-T5-003B", "12345678", true),
-                CameraVendorWifiNetworkConfiguration("FUJIFILM-X-T5-003B", "12345678", false),
-                CameraVendorWifiNetworkConfiguration("X-T5-003B", "00000000", false),
-                CameraVendorWifiNetworkConfiguration("X-T5", "00000000", false),
             ),
             candidates,
+        )
+    }
+
+    @Test
+    fun referenceAppWifiConfigurationUsesHiddenRequestBecauseVisibleSpecifierTimesOutOnDevice() {
+        assertEquals(
+            CameraVendorWifiNetworkConfiguration("FUJIFILM-X-T5-003B", "12345678", true),
+            CameraVendorWifiNetworkConfigurationPolicy.referenceAppConfiguration(
+                ssid = " FUJIFILM-X-T5-003B ",
+                passphrase = "12345678",
+            ),
         )
     }
 

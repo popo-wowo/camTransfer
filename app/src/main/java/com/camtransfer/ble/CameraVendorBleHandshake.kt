@@ -437,7 +437,13 @@ class CameraVendorBleHandshake(private val context: Context) {
         connected = CompletableDeferred()
         Log.d(TAG, "Connecting to ${device.name ?: device.address} autoConnect=$autoConnect...")
         gatt = device.connectGatt(context, autoConnect, gattCallback, BluetoothDevice.TRANSPORT_LE)
-        withTimeout(if (autoConnect) 25_000 else 15_000) { connected.await() }
+        withTimeout(
+            if (autoConnect) {
+                CameraVendorBleReconnectPolicy.REMEMBERED_DIRECT_CONNECT_TIMEOUT_MS
+            } else {
+                15_000L
+            }
+        ) { connected.await() }
         Log.d(TAG, "GATT connected")
     }
 
@@ -531,10 +537,9 @@ class CameraVendorBleHandshake(private val context: Context) {
         }.getOrNull()
 
         if (!ssid.isNullOrBlank() && !passphrase.isNullOrBlank()) {
-            preferredWifiNetwork = CameraVendorWifiNetworkConfiguration(
+            preferredWifiNetwork = CameraVendorWifiNetworkConfigurationPolicy.referenceAppConfiguration(
                 ssid = ssid,
                 passphrase = passphrase,
-                isHidden = true,
             )
             wifiSSID = ssid
             wifiPassphrase = passphrase
