@@ -134,8 +134,8 @@ class GalleryUiPolicyTest {
     }
 
     @Test
-    fun visibleThumbnailRequestsRestartAfterFullObjectInfoFinishes() {
-        assertFalse(
+    fun visibleThumbnailRequestsCanStartBeforeFullObjectInfoFinishes() {
+        assertTrue(
             GalleryThumbnailVisibilityPolicy.shouldRequestThumbnail(
                 isLoadingFullObjectInfo = true,
                 hasThumbnail = false,

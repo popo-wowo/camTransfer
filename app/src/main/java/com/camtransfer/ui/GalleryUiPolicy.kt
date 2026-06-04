@@ -110,7 +110,7 @@ object GalleryScrollResetPolicy {
 
 object GalleryThumbnailVisibilityPolicy {
     fun shouldRequestThumbnail(isLoadingFullObjectInfo: Boolean, hasThumbnail: Boolean): Boolean =
-        !isLoadingFullObjectInfo && !hasThumbnail
+        !hasThumbnail
 }
 
 object GalleryFilterPanelPolicy {

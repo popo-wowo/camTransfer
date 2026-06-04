@@ -107,8 +107,8 @@ class GalleryFileLoadPolicyTest {
     }
 
     @Test
-    fun defersThumbnailRequestsWhileFullObjectInfoIsStillLoading() {
-        assertFalse(
+    fun allowsVisibleThumbnailRequestsWhileFullObjectInfoIsStillLoading() {
+        assertTrue(
             GalleryFastInitialLoadPolicy.shouldLoadThumbnail(
                 isLoadingFullObjectInfo = true,
                 hasThumbnail = false,

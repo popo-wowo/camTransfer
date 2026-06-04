@@ -248,7 +248,7 @@ internal object GalleryFastInitialLoadPolicy {
         currentFiles.isEmpty() && initialFiles.isNotEmpty()
 
     fun shouldLoadThumbnail(isLoadingFullObjectInfo: Boolean, hasThumbnail: Boolean): Boolean =
-        !isLoadingFullObjectInfo && !hasThumbnail
+        !hasThumbnail
 
     fun mergeWithExistingThumbnails(
         currentFiles: List<CameraFile>,
