@@ -44,6 +44,26 @@ class CameraConnectionStatusPolicyTest {
     }
 
     @Test
+    fun rememberedBleReconnectStatusLeavesPairedIdleStateImmediately() {
+        val state = CameraConnectionStatusPolicy.galleryState(
+            status = "正在直连已配对相机: X-T5",
+            currentState = ConnectionState.PAIRED,
+        )
+
+        assertEquals(ConnectionState.CONNECTING_BLE, state)
+    }
+
+    @Test
+    fun rememberedBleReconnectStatusMapsToReconnectStep() {
+        val step = CameraConnectionStatusPolicy.galleryStep(
+            status = "正在用蓝牙查找已配对相机: X-T5",
+            currentStep = CameraConnectionStep.ReconnectPairedBle,
+        )
+
+        assertEquals(CameraConnectionStep.ReconnectPairedBle, step)
+    }
+
+    @Test
     fun galleryStatusRecognizesAlbumChannelCopyAsPtpStep() {
         val step = CameraConnectionStatusPolicy.galleryStep(
             status = "正在打开相机相册通道 (1/5)",

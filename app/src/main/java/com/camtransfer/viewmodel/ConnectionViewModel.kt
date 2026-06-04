@@ -202,6 +202,8 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
         _error.value = null
         _connectionIssue.value = null
         _activeStep.value = CameraConnectionStep.ReconnectPairedBle
+        _state.value = CameraConnectionUiPolicy.stateForStep(CameraConnectionStep.ReconnectPairedBle)
+        DiagnosticLog.append(appContext, "Connection", "Enter gallery requested")
         cancelConnectionJob()
         connectionJob = viewModelScope.launch {
             var currentStep = CameraConnectionStep.ReconnectPairedBle
@@ -428,7 +430,10 @@ internal object CameraConnectionStatusPolicy {
             status.hasWifiText() -> ConnectionState.CONNECTING_WIFI
             status.hasAlbumChannelText() -> ConnectionState.CONNECTING_PTP
             "已连接" in status -> ConnectionState.CONNECTED
-            "蓝牙" in status || "传图" in status || "相机允许" in status -> ConnectionState.CONNECTING_BLE
+            status.hasRememberedBleReconnectText() ||
+                "蓝牙" in status ||
+                "传图" in status ||
+                "相机允许" in status -> ConnectionState.CONNECTING_BLE
             else -> currentState
         }
 
@@ -442,6 +447,7 @@ internal object CameraConnectionStatusPolicy {
 
     fun galleryStep(status: String, currentStep: CameraConnectionStep): CameraConnectionStep =
         when {
+            status.hasRememberedBleReconnectText() -> CameraConnectionStep.ReconnectPairedBle
             "恢复" in status || "触发" in status || "传图" in status -> CameraConnectionStep.ActivateCameraWifi
             status.hasWifiText() -> CameraConnectionStep.JoinCameraWifi
             status.hasAlbumChannelText() -> CameraConnectionStep.ConnectPtp
@@ -454,4 +460,9 @@ internal object CameraConnectionStatusPolicy {
 
     private fun String.hasAlbumChannelText(): Boolean =
         "PTP" in this || "相册通道" in this
+
+    private fun String.hasRememberedBleReconnectText(): Boolean =
+        "直连已配对相机" in this ||
+            "查找已配对相机" in this ||
+            "唤醒已配对相机" in this
 }
