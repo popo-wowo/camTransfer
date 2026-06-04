@@ -14,6 +14,7 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import javax.net.SocketFactory
 
 private const val TAG = "PtpConnection"
 
@@ -37,13 +38,14 @@ class PtpConnection {
     suspend fun connect(
         host: String = CameraVendorConst.DEFAULT_CAMERA_IP,
         clientName: String = "CamTransfer",
+        socketFactory: SocketFactory? = null,
     ) {
         disconnect()
         transactionId = 0
         specifiedObjectHandles = emptyList()
 
         withContext(Dispatchers.IO) {
-            val cmd = Socket()
+            val cmd = PtpConnectionSocketPolicy.createSocket(socketFactory)
             cmd.tcpNoDelay = true
             cmd.receiveBufferSize = 2 * 1024 * 1024
             cmd.sendBufferSize = 2 * 1024 * 1024
@@ -313,4 +315,9 @@ class PtpConnection {
 
     private fun littleEndianUInt32(value: Int): ByteArray =
         ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(value).array()
+}
+
+internal object PtpConnectionSocketPolicy {
+    fun createSocket(socketFactory: SocketFactory?): Socket =
+        socketFactory?.createSocket() ?: Socket()
 }

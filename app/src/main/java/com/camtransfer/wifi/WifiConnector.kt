@@ -5,6 +5,8 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.MacAddress
+import android.os.PatternMatcher
 import android.os.SystemClock
 import android.net.wifi.WifiNetworkSpecifier
 import android.net.wifi.WifiManager
@@ -33,10 +35,17 @@ class WifiConnector(private val context: Context) {
         disconnect()
 
         val builder = WifiNetworkSpecifier.Builder()
-            .setSsid(configuration.ssid)
+            .setSsidPattern(PatternMatcher(configuration.ssid, PatternMatcher.PATTERN_LITERAL))
             .setWpa2Passphrase(configuration.passphrase)
         if (configuration.isHidden) {
             builder.setIsHiddenSsid(true)
+        }
+        configuration.bssid?.let { bssid ->
+            runCatching {
+                builder.setBssid(MacAddress.fromString(bssid))
+            }.onFailure { error ->
+                DiagnosticLog.append(context, TAG, "WiFi BSSID ignored: invalid format", error)
+            }
         }
         val specifier = builder.build()
 
@@ -57,7 +66,7 @@ class WifiConnector(private val context: Context) {
                 DiagnosticLog.append(
                     context,
                     TAG,
-                    "WiFi available elapsedMs=${elapsedMs()} hidden=${configuration.isHidden}",
+                    "WiFi available elapsedMs=${elapsedMs()} hidden=${configuration.isHidden} hasBssid=${configuration.bssid != null}",
                 )
                 cm.bindProcessToNetwork(net)
                 network = net
@@ -69,7 +78,7 @@ class WifiConnector(private val context: Context) {
                 DiagnosticLog.append(
                     context,
                     TAG,
-                    "WiFi unavailable elapsedMs=${elapsedMs()} hidden=${configuration.isHidden}",
+                    "WiFi unavailable elapsedMs=${elapsedMs()} hidden=${configuration.isHidden} hasBssid=${configuration.bssid != null}",
                 )
                 deferred.completeExceptionally(Exception("无法连接相机 WiFi: ${configuration.ssid}"))
             }
@@ -95,12 +104,14 @@ class WifiConnector(private val context: Context) {
         cm.requestNetwork(request, cb)
         Log.d(
             TAG,
-            "Requesting WiFi: ssid=${configuration.ssid} hidden=${configuration.isHidden} passphraseLength=${configuration.passphrase.length}",
+            "Requesting WiFi: ssid=${configuration.ssid} hidden=${configuration.isHidden} " +
+                "hasBssid=${configuration.bssid != null} passphraseLength=${configuration.passphrase.length}",
         )
         DiagnosticLog.append(
             context,
             TAG,
-            "WiFi request started hidden=${configuration.isHidden} timeoutMs=$timeoutMs passphraseLength=${configuration.passphrase.length}",
+            "WiFi request started hidden=${configuration.isHidden} hasBssid=${configuration.bssid != null} " +
+                "timeoutMs=$timeoutMs passphraseLength=${configuration.passphrase.length}",
         )
 
         return try {
@@ -109,7 +120,8 @@ class WifiConnector(private val context: Context) {
             DiagnosticLog.append(
                 context,
                 TAG,
-                "WiFi request timed out elapsedMs=${elapsedMs()} hidden=${configuration.isHidden} timeoutMs=$timeoutMs",
+                "WiFi request timed out elapsedMs=${elapsedMs()} hidden=${configuration.isHidden} " +
+                    "hasBssid=${configuration.bssid != null} timeoutMs=$timeoutMs",
             )
             disconnect()
             throw error

@@ -81,17 +81,19 @@ class CameraVendorPairedCameraStore(context: Context) {
             configuration.ssid.encodeField(),
             configuration.passphrase.encodeField(),
             configuration.isHidden.toString(),
+            configuration.bssid.orEmpty().encodeField(),
         ).joinToString("|")
     }
 
     private fun decodeWifiConfiguration(raw: String): CameraVendorWifiNetworkConfiguration? {
         val parts = raw.split("|")
-        if (parts.size != 3) return null
+        if (parts.size !in 3..4) return null
         val ssid = parts[0].decodeField().takeIf { it.isNotBlank() } ?: return null
         return CameraVendorWifiNetworkConfiguration(
             ssid = ssid,
             passphrase = parts[1].decodeField(),
             isHidden = parts[2].toBoolean(),
+            bssid = parts.getOrNull(3)?.decodeField()?.takeIf { it.isNotBlank() },
         )
     }
 

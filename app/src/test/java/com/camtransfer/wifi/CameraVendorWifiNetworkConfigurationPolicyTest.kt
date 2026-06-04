@@ -12,12 +12,13 @@ class CameraVendorWifiNetworkConfigurationPolicyTest {
             preferredWifiNetwork = CameraVendorWifiNetworkConfigurationPolicy.referenceAppConfiguration(
                 ssid = "FUJIFILM-X-T5-003B",
                 passphrase = "12345678",
+                macAddress = "AABBCCDDEEFF",
             ),
         )
 
         assertEquals(
             listOf(
-                CameraVendorWifiNetworkConfiguration("FUJIFILM-X-T5-003B", "12345678", false),
+                CameraVendorWifiNetworkConfiguration("FUJIFILM-X-T5-003B", "12345678", false, "aa:bb:cc:dd:ee:ff"),
             ),
             candidates,
         )
@@ -31,6 +32,26 @@ class CameraVendorWifiNetworkConfigurationPolicyTest {
                 ssid = " FUJIFILM-X-T5-003B ",
                 passphrase = "12345678",
             ),
+        )
+    }
+
+    @Test
+    fun referenceAppWifiConfigurationNormalizesBssidLikeOfficialApp() {
+        assertEquals(
+            "aa:bb:cc:dd:ee:ff",
+            CameraVendorWifiNetworkConfigurationPolicy.referenceAppConfiguration(
+                ssid = "FUJIFILM-X-T5-003B",
+                passphrase = "12345678",
+                macAddress = "AA-BB-CC-DD-EE-FF",
+            ).bssid,
+        )
+        assertEquals(
+            null,
+            CameraVendorWifiNetworkConfigurationPolicy.referenceAppConfiguration(
+                ssid = "FUJIFILM-X-T5-003B",
+                passphrase = "12345678",
+                macAddress = "not-a-mac",
+            ).bssid,
         )
     }
 

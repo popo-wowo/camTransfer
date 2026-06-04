@@ -275,7 +275,9 @@ class CameraService(override val context: Context) : CameraFileSource {
         for (attempt in 1..CameraVendorPtpConnectionStartupPolicy.MAX_CONNECT_ATTEMPTS) {
             try {
                 onStatus("正在打开相机相册通道 ($attempt/${CameraVendorPtpConnectionStartupPolicy.MAX_CONNECT_ATTEMPTS})")
-                connection.connect()
+                val socketFactory = wifiConnector.connectedNetwork?.socketFactory
+                DiagnosticLog.append(context, TAG, "PTP connect attempt=$attempt hasNetworkSocketFactory=${socketFactory != null}")
+                connection.connect(socketFactory = socketFactory)
                 return
             } catch (error: Throwable) {
                 lastError = error

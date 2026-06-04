@@ -530,6 +530,8 @@ class CameraVendorBleHandshake(private val context: Context) {
 
         val observedSsid = observedCharacteristicValues[CameraVendorBleProfile.CAMERA_WIFI_SSID_CHAR]?.trimmedUtf8()
         val observedPassphrase = observedCharacteristicValues[CameraVendorBleProfile.CAMERA_WIFI_PASSPHRASE_CHAR]?.trimmedUtf8()
+        val observedMacAddress = observedCharacteristicValues[CameraVendorBleProfile.CAMERA_WIFI_MAC_ADDRESS_CHAR]
+            ?.cameraVendorMacAddressString()
         val ssid = observedSsid ?: runCatching {
             readCharAny(CameraVendorBleProfile.CAMERA_WIFI_SSID_CHAR).trimmedUtf8()
         }.onFailure {
@@ -540,15 +542,26 @@ class CameraVendorBleHandshake(private val context: Context) {
         }.onFailure {
             Log.w(TAG, "ReferenceApp WiFi passphrase read failed: $it")
         }.getOrNull()
+        val macAddress = observedMacAddress ?: runCatching {
+            readCharAny(CameraVendorBleProfile.CAMERA_WIFI_MAC_ADDRESS_CHAR).cameraVendorMacAddressString()
+        }.onFailure {
+            Log.w(TAG, "ReferenceApp WiFi MAC read failed: $it")
+        }.getOrNull()
 
         if (!ssid.isNullOrBlank() && !passphrase.isNullOrBlank()) {
             preferredWifiNetwork = CameraVendorWifiNetworkConfigurationPolicy.referenceAppConfiguration(
                 ssid = ssid,
                 passphrase = passphrase,
+                macAddress = macAddress,
             )
             wifiSSID = ssid
             wifiPassphrase = passphrase
-            Log.d(TAG, "ReferenceApp WiFi config: ssid=$ssid hidden=false passphraseLength=${passphrase.length}")
+            Log.d(
+                TAG,
+                "ReferenceApp WiFi config: ssid=$ssid hidden=false " +
+                    "passphraseLength=${passphrase.length} " +
+                    "hasBssid=${preferredWifiNetwork?.bssid != null}",
+            )
         } else {
             Log.d(
                 TAG,
@@ -597,6 +610,12 @@ class CameraVendorBleHandshake(private val context: Context) {
             delay(500)
         }
         throw Exception("相机尚未确认配对或 WiFi 未启动，已停止连接 WiFi。请等相机显示配对成功后再继续")
+    }
+
+    private fun ByteArray.cameraVendorMacAddressString(): String {
+        val text = trimmedUtf8()
+        if (CameraVendorWifiNetworkConfigurationPolicy.normalizeBssid(text) != null) return text
+        return joinToString("") { "%02x".format(it) }
     }
 
     private suspend fun writeChar(serviceUuid: UUID, charUuid: UUID, value: ByteArray) {

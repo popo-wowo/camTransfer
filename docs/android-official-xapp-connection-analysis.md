@@ -212,3 +212,12 @@ UI 侧也同步调整: 已配对状态下如果还挂着进入相册阶段的问
 - 同一个精确 WiFi candidate 内部自动尝试 5 次。
 - 失败间隔改为 1500ms、3000ms、4000ms、6000ms。
 - 短 `onUnavailable` 不立即暴露给用户，先继续后台等待并自动重试。
+
+## 2026-06-04 对齐官方 WiFi handover 关键点
+
+官方 XApp 的 `WiFiHandOverService` 会用精确 SSID、可选 BSSID、passphrase 发起 `requestNetwork`，并在后续 socket 层使用目标 `Network.getSocketFactory()`。Android 侧同步对齐:
+
+- 新增读取 `CAMERA_WIFI_MAC_ADDRESS_CHAR`，兼容 12 位十六进制字符串和 6 字节原始 MAC。
+- `CameraVendorWifiNetworkConfiguration` 保存规范化后的 `bssid`，旧的 3 字段本地配对记录继续兼容。
+- `WifiNetworkSpecifier` 改用 literal `setSsidPattern(...)`，有 BSSID 时调用 `setBssid(...)`，继续设置 WPA2 passphrase。
+- PTP 连接在自动 WiFi handoff 成功后使用当前相机 WiFi 的 `Network.socketFactory` 创建 socket；日志记录 `hasNetworkSocketFactory` 便于验证。

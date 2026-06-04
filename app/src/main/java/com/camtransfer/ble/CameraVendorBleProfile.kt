@@ -25,6 +25,7 @@ object CameraVendorBleProfile {
     val SECURE_STATUS_CHAR = UUID.fromString("f557d96b-8284-4667-8793-b971c1deca2a")
     val CAMERA_WIFI_SSID_CHAR = UUID.fromString("bf6dc9cf-3606-4ec9-a4c8-d77576e93ea4")
     val CAMERA_WIFI_PASSPHRASE_CHAR = UUID.fromString("e809256a-915c-4967-92e8-53b7d4cad213")
+    val CAMERA_WIFI_MAC_ADDRESS_CHAR = UUID.fromString("49a12959-dfaa-4eb2-89ce-62548ad948f3")
 
     val IMAGE_TRANSFER_SETTING_CHAR = UUID.fromString("caedb497-83bf-482c-91ef-91cf6f1216ff")
     val IMAGE_TRANSFER_SETTING_EX_CHAR = UUID.fromString("98934b2c-756c-4632-aa2f-dcba1bfec824")

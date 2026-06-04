@@ -4,17 +4,20 @@ data class CameraVendorWifiNetworkConfiguration(
     val ssid: String,
     val passphrase: String,
     val isHidden: Boolean,
+    val bssid: String? = null,
 )
 
 object CameraVendorWifiNetworkConfigurationPolicy {
     fun referenceAppConfiguration(
         ssid: String,
         passphrase: String,
+        macAddress: String? = null,
     ): CameraVendorWifiNetworkConfiguration =
         CameraVendorWifiNetworkConfiguration(
             ssid = ssid,
             passphrase = passphrase,
             isHidden = false,
+            bssid = normalizeBssid(macAddress),
         ).normalized()
 
     fun configurations(
@@ -73,7 +76,7 @@ object CameraVendorWifiNetworkConfigurationPolicy {
         return candidates.mapNotNull { configuration ->
             val trimmedSsid = configuration.ssid.trim()
             if (trimmedSsid.isEmpty()) return@mapNotNull null
-            val key = "$trimmedSsid|${configuration.passphrase}|${configuration.isHidden}"
+            val key = "$trimmedSsid|${configuration.passphrase}|${configuration.isHidden}|${configuration.bssid.orEmpty()}"
             if (!seen.add(key)) return@mapNotNull null
             configuration.normalized(trimmedSsid)
         }
@@ -87,10 +90,20 @@ object CameraVendorWifiNetworkConfigurationPolicy {
 
     private const val DEFAULT_CAMERA_WIFI_PASSPHRASE = "00000000"
 
+    fun normalizeBssid(raw: String?): String? {
+        val hex = raw
+            ?.trim()
+            ?.filter { it.isLetterOrDigit() }
+            ?.lowercase()
+            .orEmpty()
+        if (hex.length != 12 || !hex.all { it in '0'..'9' || it in 'a'..'f' }) return null
+        return hex.chunked(2).joinToString(":")
+    }
+
     private fun CameraVendorWifiNetworkConfiguration.normalized(
         trimmedSsid: String = ssid.trim(),
     ): CameraVendorWifiNetworkConfiguration =
-        copy(ssid = trimmedSsid)
+        copy(ssid = trimmedSsid, bssid = normalizeBssid(bssid))
 }
 
 object CameraVendorWifiJoinPolicy {
