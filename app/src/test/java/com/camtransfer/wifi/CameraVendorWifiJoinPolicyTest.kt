@@ -15,4 +15,9 @@ class CameraVendorWifiJoinPolicyTest {
         assertEquals(1_500L, CameraVendorWifiJoinPolicy.retryDelayMs(afterFailedAttempt = 1))
         assertEquals(2_000L, CameraVendorWifiJoinPolicy.retryDelayMs(afterFailedAttempt = 2))
     }
+
+    @Test
+    fun probesExistingPtpBeforeRequestingWifiAgain() {
+        assertEquals(true, CameraVendorWifiJoinPolicy.SHOULD_PROBE_EXISTING_PTP_BEFORE_WIFI_REQUEST)
+    }
 }

@@ -13,4 +13,31 @@ class CameraVendorBleReconnectPolicyTest {
         assertEquals(500L, CameraVendorBleReconnectPolicy.retryDelayMs(afterFailedAttempt = 1))
         assertEquals(1_000L, CameraVendorBleReconnectPolicy.retryDelayMs(afterFailedAttempt = 2))
     }
+
+    @Test
+    fun rememberedBluetoothAddressUsesDirectConnectBeforeScanning() {
+        val stages = CameraVendorBleReconnectPolicy.reconnectStages(hasRememberedBluetoothAddress = true)
+
+        assertEquals(
+            listOf(
+                CameraVendorBleReconnectStage.DirectAddress,
+                CameraVendorBleReconnectStage.FastScan,
+                CameraVendorBleReconnectStage.ScanFallback,
+            ),
+            stages,
+        )
+    }
+
+    @Test
+    fun missingRememberedBluetoothAddressStartsWithScan() {
+        val stages = CameraVendorBleReconnectPolicy.reconnectStages(hasRememberedBluetoothAddress = false)
+
+        assertEquals(
+            listOf(
+                CameraVendorBleReconnectStage.FastScan,
+                CameraVendorBleReconnectStage.ScanFallback,
+            ),
+            stages,
+        )
+    }
 }

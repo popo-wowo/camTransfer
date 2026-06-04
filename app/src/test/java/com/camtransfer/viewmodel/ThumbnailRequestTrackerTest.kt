@@ -33,4 +33,13 @@ class ThumbnailRequestTrackerTest {
         assertTrue(queue.poll() == 42)
         assertTrue(queue.poll() == 43)
     }
+
+    @Test
+    fun thumbnailLoadingUsesSmallConcurrentWindow() {
+        assertTrue(ThumbnailLoadPolicy.MAX_CONCURRENT_WORKERS == 2)
+        assertTrue(ThumbnailLoadPolicy.shouldStartWorker(activeWorkers = 0, pendingHandles = 3))
+        assertTrue(ThumbnailLoadPolicy.shouldStartWorker(activeWorkers = 1, pendingHandles = 3))
+        assertFalse(ThumbnailLoadPolicy.shouldStartWorker(activeWorkers = 2, pendingHandles = 3))
+        assertFalse(ThumbnailLoadPolicy.shouldStartWorker(activeWorkers = 0, pendingHandles = 0))
+    }
 }

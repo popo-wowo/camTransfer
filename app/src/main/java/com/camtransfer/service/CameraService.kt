@@ -10,6 +10,7 @@ import com.camtransfer.ble.CameraVendorCameraPairingConfirmationPolicy
 import com.camtransfer.ble.CameraVendorBleHandshake
 import com.camtransfer.ble.CameraVendorBleScanner
 import com.camtransfer.ble.CameraVendorBleReconnectPolicy
+import com.camtransfer.ble.CameraVendorBleReconnectStage
 import com.camtransfer.ble.CameraVendorBleTransferActivationPolicy
 import com.camtransfer.model.CameraFile
 import com.camtransfer.model.ObjectInfo
@@ -159,7 +160,11 @@ class CameraService(override val context: Context) : CameraFileSource {
     }
 
     suspend fun retryCameraWifiToGallery(onStatus: (String) -> Unit = {}) {
-        if (connectExistingCameraWifiToGallery(onStatus)) return
+        if (CameraVendorWifiJoinPolicy.SHOULD_PROBE_EXISTING_PTP_BEFORE_WIFI_REQUEST) {
+            onStatus("正在确认手机是否已经手动连上相机 Wi-Fi")
+            DiagnosticLog.append(context, TAG, "Probing existing PTP before retrying WiFi request")
+            if (connectExistingCameraWifiToGallery(onStatus)) return
+        }
         val wifiConfigurations = handshake?.wifiConfigurations().orEmpty()
             .ifEmpty { pairingStore.load()?.wifiConfigurations.orEmpty() }
         DiagnosticLog.append(context, TAG, "Retrying camera WiFi/PTP without BLE activation")
@@ -250,7 +255,9 @@ class CameraService(override val context: Context) : CameraFileSource {
         }
 
         onStatus("手机已连到相机 Wi-Fi，正在等待相机打开相册通道")
-        delay(CameraVendorPtpConnectionStartupPolicy.STARTUP_DELAY_MS)
+        if (CameraVendorPtpConnectionStartupPolicy.STARTUP_DELAY_MS > 0) {
+            delay(CameraVendorPtpConnectionStartupPolicy.STARTUP_DELAY_MS)
+        }
         connectPtpWithRetry(onStatus)
 
         onStatus("已连接")
@@ -281,33 +288,62 @@ class CameraService(override val context: Context) : CameraFileSource {
 
     private suspend fun reconnectRememberedCamera(onStatus: (String) -> Unit): CameraVendorBleHandshake {
         val remembered = rememberedPairing() ?: throw IllegalStateException("请先完成蓝牙配对")
-        runCatching {
-            onStatus("正在用蓝牙查找已配对相机: ${remembered.deviceName}")
-            val scanResult: ScanResult = withTimeout(CameraVendorBleReconnectPolicy.REMEMBERED_FAST_SCAN_TIMEOUT_MS) {
-                scanner.scanAll().first { result ->
-                    rememberedScanResultMatches(result, remembered)
+        val addressCandidates = rememberedBluetoothAddressCandidates(remembered)
+        val stages = CameraVendorBleReconnectPolicy.reconnectStages(
+            hasRememberedBluetoothAddress = addressCandidates.isNotEmpty(),
+        )
+        DiagnosticLog.append(context, TAG, "Remembered BLE reconnect stages=$stages")
+
+        for (stage in stages) {
+            when (stage) {
+                CameraVendorBleReconnectStage.DirectAddress -> {
+                    for (address in addressCandidates) {
+                        runCatching {
+                            onStatus("正在直连已配对相机: ${remembered.deviceName}")
+                            connectRememberedCameraByAddress(address)
+                        }.onSuccess {
+                            DiagnosticLog.append(context, TAG, "Remembered camera direct BLE connect succeeded")
+                            return it
+                        }.onFailure { error ->
+                            DiagnosticLog.append(context, TAG, "Remembered camera direct BLE connect failed", error)
+                            Log.w(TAG, "Remembered camera direct BLE connect failed address=$address: $error")
+                        }
+                    }
+                }
+                CameraVendorBleReconnectStage.FastScan -> {
+                    runCatching {
+                        onStatus("正在用蓝牙查找已配对相机: ${remembered.deviceName}")
+                        val scanResult: ScanResult = withTimeout(CameraVendorBleReconnectPolicy.REMEMBERED_FAST_SCAN_TIMEOUT_MS) {
+                            scanner.scanAll().first { result ->
+                                rememberedScanResultMatches(result, remembered)
+                            }
+                        }
+                        val hs = CameraVendorBleHandshake(context)
+                        handshake = hs
+                        hs.performHandshake(scanResult)
+                        saveRememberedHandshake(hs)
+                        DiagnosticLog.append(context, TAG, "Remembered camera fast scan reconnect succeeded")
+                        return hs
+                    }.onFailure { error ->
+                        DiagnosticLog.append(context, TAG, "Remembered camera fast scan reconnect skipped", error)
+                        Log.w(TAG, "Remembered camera fast scan reconnect failed: $error")
+                        handshake?.disconnect()
+                        handshake = null
+                    }
+                }
+                CameraVendorBleReconnectStage.ScanFallback -> {
+                    return reconnectRememberedCameraByScanFallback(remembered, onStatus)
                 }
             }
-            val hs = CameraVendorBleHandshake(context)
-            handshake = hs
-            hs.performHandshake(scanResult)
-            saveRememberedHandshake(hs)
-            DiagnosticLog.append(context, TAG, "Remembered camera fast scan reconnect succeeded")
-            return hs
-        }.onFailure { error ->
-            DiagnosticLog.append(context, TAG, "Remembered camera fast scan reconnect skipped", error)
-            Log.w(TAG, "Remembered camera fast scan reconnect failed: $error")
-            handshake?.disconnect()
-            handshake = null
         }
 
-        for (address in rememberedBluetoothAddressCandidates(remembered)) {
-            runCatching {
-                onStatus("正在直连已配对相机: ${remembered.deviceName}")
-                connectRememberedCameraByAddress(address)
-            }.onSuccess { return it }
-                .onFailure { Log.w(TAG, "Remembered camera direct BLE connect failed address=$address: $it") }
-        }
+        throw IllegalStateException("无法连接已配对相机，请确认相机蓝牙已开启并停留在可传图/配对连接界面后重试")
+    }
+
+    private suspend fun reconnectRememberedCameraByScanFallback(
+        remembered: CameraVendorPairedCameraRecord,
+        onStatus: (String) -> Unit,
+    ): CameraVendorBleHandshake {
         var lastError: Throwable? = null
         for (attempt in 1..CameraVendorBleReconnectPolicy.MAX_REMEMBERED_RECONNECT_ATTEMPTS) {
             onStatus("正在用蓝牙唤醒已配对相机: ${remembered.deviceName} ($attempt/${CameraVendorBleReconnectPolicy.MAX_REMEMBERED_RECONNECT_ATTEMPTS})")

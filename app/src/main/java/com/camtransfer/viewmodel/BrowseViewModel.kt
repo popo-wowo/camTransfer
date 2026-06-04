@@ -31,7 +31,7 @@ class BrowseViewModel : ViewModel() {
     val error: StateFlow<String?> = _error.asStateFlow()
 
     private val thumbnailQueue = ThumbnailLoadQueue()
-    private var thumbnailWorker: Job? = null
+    private val thumbnailWorkers = mutableSetOf<Job>()
     private var loadJob: Job? = null
     private var loadedSource: CameraFileSource? = null
 
@@ -84,9 +84,20 @@ class BrowseViewModel : ViewModel() {
     fun loadThumbnail(cameraSource: CameraFileSource, handle: Int) {
         if (_files.value.any { it.info.handle == handle && it.thumbnail != null }) return
         if (!thumbnailQueue.offer(handle)) return
-        if (thumbnailWorker?.isActive == true) return
-        thumbnailWorker = viewModelScope.launch(Dispatchers.IO) {
-            drainThumbnailQueue(cameraSource)
+        startThumbnailWorkers(cameraSource)
+    }
+
+    private fun startThumbnailWorkers(cameraSource: CameraFileSource) {
+        thumbnailWorkers.removeAll { !it.isActive }
+        while (ThumbnailLoadPolicy.shouldStartWorker(
+                activeWorkers = thumbnailWorkers.count { it.isActive },
+                pendingHandles = thumbnailQueue.pendingCount,
+            )
+        ) {
+            val worker = viewModelScope.launch(Dispatchers.IO) {
+                drainThumbnailQueue(cameraSource)
+            }
+            thumbnailWorkers.add(worker)
         }
     }
 
@@ -157,9 +168,9 @@ class BrowseViewModel : ViewModel() {
 
     fun reset() {
         loadJob?.cancel()
-        thumbnailWorker?.cancel()
+        thumbnailWorkers.forEach { it.cancel() }
         loadJob = null
-        thumbnailWorker = null
+        thumbnailWorkers.clear()
         _files.value = emptyList()
         _isLoading.value = false
         _selectedHandles.value = emptySet()
@@ -186,17 +197,30 @@ internal class ThumbnailLoadQueue {
     private val handles = ArrayDeque<Int>()
     private val pendingHandles = mutableSetOf<Int>()
 
+    val pendingCount: Int
+        @Synchronized get() = handles.size
+
+    @Synchronized
     fun offer(handle: Int): Boolean {
         if (!pendingHandles.add(handle)) return false
         handles.addLast(handle)
         return true
     }
 
+    @Synchronized
     fun poll(): Int? = handles.removeFirstOrNull()
 
+    @Synchronized
     fun finish(handle: Int) {
         pendingHandles.remove(handle)
     }
+}
+
+internal object ThumbnailLoadPolicy {
+    const val MAX_CONCURRENT_WORKERS = 2
+
+    fun shouldStartWorker(activeWorkers: Int, pendingHandles: Int): Boolean =
+        pendingHandles > 0 && activeWorkers < MAX_CONCURRENT_WORKERS
 }
 
 internal object GalleryFileLoadPolicy {
