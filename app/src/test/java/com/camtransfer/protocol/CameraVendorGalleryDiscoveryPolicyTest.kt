@@ -57,4 +57,15 @@ class CameraVendorGalleryDiscoveryPolicyTest {
 
         assertEquals(handles.sortedDescending(), initial)
     }
+
+    @Test
+    fun placeholderHandlesUseNewestBatchWithoutWaitingForObjectInfo() {
+        val handles = (1..600).toList()
+
+        val initial = CameraVendorGalleryDiscoveryPolicy.initialPlaceholderHandles(handles)
+
+        assertEquals(CameraVendorGalleryDiscoveryPolicy.INITIAL_LARGE_GALLERY_HANDLE_LIMIT, initial.size)
+        assertEquals(600, initial.first())
+        assertEquals(401, initial.last())
+    }
 }

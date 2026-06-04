@@ -6,6 +6,8 @@ import com.camtransfer.model.CameraFile
 interface CameraFileSource {
     val context: Context
 
+    suspend fun fastInitialFiles(): List<CameraFile> = emptyList()
+
     suspend fun listFiles(): List<CameraFile>
 
     suspend fun getThumbnail(handle: Int): ByteArray

@@ -13,6 +13,9 @@ object CameraVendorGalleryDiscoveryPolicy {
         return sorted.take(INITIAL_LARGE_GALLERY_HANDLE_LIMIT)
     }
 
+    fun initialPlaceholderHandles(specifiedHandles: List<Int>): List<Int> =
+        initialSpecifiedHandles(specifiedHandles)
+
     fun isLargeGallery(specifiedHandleCount: Int): Boolean =
         specifiedHandleCount > LARGE_GALLERY_THRESHOLD
 }

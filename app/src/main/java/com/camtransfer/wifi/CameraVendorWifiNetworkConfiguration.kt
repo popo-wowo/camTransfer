@@ -95,4 +95,11 @@ object CameraVendorWifiNetworkConfigurationPolicy {
 
 object CameraVendorWifiJoinPolicy {
     const val AUTO_JOIN_TIMEOUT_MS = 30_000L
+    const val AUTO_JOIN_ATTEMPTS_PER_EXACT_NETWORK = 3
+
+    fun retryDelayMs(afterFailedAttempt: Int): Long =
+        when (afterFailedAttempt) {
+            1 -> 1_500L
+            else -> 2_000L
+        }
 }

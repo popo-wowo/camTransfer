@@ -58,9 +58,17 @@ class BrowseViewModel : ViewModel() {
         loadJob = viewModelScope.launch(Dispatchers.IO) {
             try {
                 DiagnosticLog.append(cameraSource.context, "Gallery", "Loading file list")
+                val initialFiles = cameraSource.fastInitialFiles()
+                if (GalleryFastInitialLoadPolicy.shouldPublishInitialFiles(_files.value, initialFiles)) {
+                    DiagnosticLog.append(cameraSource.context, "Gallery", "Fast file placeholders loaded total=${initialFiles.size}")
+                    _files.value = initialFiles
+                }
                 val fileList = cameraSource.listFiles()
                 DiagnosticLog.appendFileSummary(cameraSource.context, fileList)
-                _files.value = fileList
+                _files.value = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
+                    currentFiles = _files.value,
+                    fullFiles = fileList,
+                )
                 loadedSource = cameraSource
                 _isLoading.value = false
             } catch (e: Exception) {
@@ -201,5 +209,24 @@ internal object GalleryFileLoadPolicy {
         if (isLoading) return false
         if (lastLoadFailed) return true
         return currentSource !== loadedSource
+    }
+}
+
+internal object GalleryFastInitialLoadPolicy {
+    fun shouldPublishInitialFiles(currentFiles: List<CameraFile>, initialFiles: List<CameraFile>): Boolean =
+        currentFiles.isEmpty() && initialFiles.isNotEmpty()
+
+    fun mergeWithExistingThumbnails(
+        currentFiles: List<CameraFile>,
+        fullFiles: List<CameraFile>,
+    ): List<CameraFile> {
+        val thumbnailsByHandle = currentFiles.mapNotNull { file ->
+            file.thumbnail?.let { file.info.handle to it }
+        }.toMap()
+        if (thumbnailsByHandle.isEmpty()) return fullFiles
+        return fullFiles.map { file ->
+            val thumbnail = thumbnailsByHandle[file.info.handle]
+            if (thumbnail == null || file.thumbnail != null) file else file.copy(thumbnail = thumbnail)
+        }
     }
 }

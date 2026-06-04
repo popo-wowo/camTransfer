@@ -12,9 +12,12 @@ import com.camtransfer.ble.CameraVendorBleScanner
 import com.camtransfer.ble.CameraVendorBleReconnectPolicy
 import com.camtransfer.ble.CameraVendorBleTransferActivationPolicy
 import com.camtransfer.model.CameraFile
+import com.camtransfer.model.ObjectInfo
+import com.camtransfer.protocol.CameraVendorGalleryDiscoveryPolicy
 import com.camtransfer.protocol.CameraVendorPtpConnectionStartupPolicy
 import com.camtransfer.protocol.PtpCommands
 import com.camtransfer.protocol.PtpConnection
+import com.camtransfer.protocol.PtpObjectFormat
 import com.camtransfer.wifi.CameraVendorWifiNetworkConfiguration
 import com.camtransfer.wifi.CameraVendorWifiJoinPolicy
 import com.camtransfer.wifi.WifiConnector
@@ -184,36 +187,49 @@ class CameraService(override val context: Context) : CameraFileSource {
         )
 
         val connected = wifiConfigurations.withIndex().firstOrNull { (index, configuration) ->
-            onStatus(
-                CameraWifiJoinStatusPolicy.waitingForWifiJoin(
-                    ssid = configuration.ssid,
-                    attempt = index + 1,
-                    total = wifiConfigurations.size,
-                )
-            )
-            DiagnosticLog.append(
-                context,
-                TAG,
-                "WiFi connect attempt ${index + 1}/${wifiConfigurations.size} hidden=${configuration.isHidden}",
-            )
-            runCatching {
-                wifiConnector.connect(
-                    configuration,
-                    timeoutMs = CameraVendorWifiJoinPolicy.AUTO_JOIN_TIMEOUT_MS,
-                )
-            }.fold(
-                onSuccess = { true },
-                onFailure = { error ->
-                    lastError = error
-                    DiagnosticLog.append(
-                        context,
-                        TAG,
-                        "WiFi connect failed attempt=${index + 1} hidden=${configuration.isHidden}",
-                        error,
+            var joined = false
+            for (joinAttempt in 1..CameraVendorWifiJoinPolicy.AUTO_JOIN_ATTEMPTS_PER_EXACT_NETWORK) {
+                onStatus(
+                    CameraWifiJoinStatusPolicy.waitingForWifiJoin(
+                        ssid = configuration.ssid,
+                        attempt = index + 1,
+                        total = wifiConfigurations.size,
                     )
-                    false
-                },
-            )
+                )
+                DiagnosticLog.append(
+                    context,
+                    TAG,
+                    "WiFi connect attempt ${index + 1}/${wifiConfigurations.size} " +
+                        "joinAttempt=$joinAttempt/${CameraVendorWifiJoinPolicy.AUTO_JOIN_ATTEMPTS_PER_EXACT_NETWORK} " +
+                        "hidden=${configuration.isHidden}",
+                )
+                joined = runCatching {
+                    wifiConnector.connect(
+                        configuration,
+                        timeoutMs = CameraVendorWifiJoinPolicy.AUTO_JOIN_TIMEOUT_MS,
+                    )
+                }.fold(
+                    onSuccess = { true },
+                    onFailure = { error ->
+                        lastError = error
+                        DiagnosticLog.append(
+                            context,
+                            TAG,
+                            "WiFi connect failed attempt=${index + 1} " +
+                                "joinAttempt=$joinAttempt hidden=${configuration.isHidden}",
+                            error,
+                        )
+                        false
+                    },
+                )
+                if (joined) break
+                if (joinAttempt < CameraVendorWifiJoinPolicy.AUTO_JOIN_ATTEMPTS_PER_EXACT_NETWORK) {
+                    val delayMs = CameraVendorWifiJoinPolicy.retryDelayMs(joinAttempt)
+                    onStatus("手机还没切到相机 Wi-Fi，正在再试一次")
+                    delay(delayMs)
+                }
+            }
+            joined
         }
 
         val configuration = connected?.value ?: firstConfiguration
@@ -394,6 +410,15 @@ class CameraService(override val context: Context) : CameraFileSource {
         return files
     }
 
+    override suspend fun fastInitialFiles(): List<CameraFile> {
+        val handles = CameraVendorGalleryDiscoveryPolicy.initialPlaceholderHandles(
+            connection.cameraVendorSpecifiedObjectHandles
+        )
+        if (handles.isEmpty()) return emptyList()
+        DiagnosticLog.append(context, TAG, "Fast gallery placeholders count=${handles.size}")
+        return handles.map { handle -> CameraFile(placeholderObjectInfo(handle)) }
+    }
+
     override suspend fun getThumbnail(handle: Int): ByteArray {
         DiagnosticLog.append(context, TAG, "Get thumbnail handle=$handle")
         return commands.getThumb(handle)
@@ -427,6 +452,22 @@ class CameraService(override val context: Context) : CameraFileSource {
             "Transfer size preference=${if (preferCompressedDownloads) "compressed" else "original"}",
         )
     }
+
+    private fun placeholderObjectInfo(handle: Int): ObjectInfo = ObjectInfo(
+        handle = handle,
+        storageId = 0,
+        format = PtpObjectFormat.JPEG,
+        compressedSize = 0,
+        thumbFormat = 0,
+        thumbCompressedSize = 0,
+        thumbPixWidth = 0,
+        thumbPixHeight = 0,
+        imagePixWidth = 0,
+        imagePixHeight = 0,
+        parentObject = 0,
+        filename = "0x%08X.JPG".format(handle),
+        captureDate = "",
+    )
 
     override suspend fun disconnect() {
         DiagnosticLog.append(context, TAG, "Disconnecting services")
