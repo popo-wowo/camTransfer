@@ -350,6 +350,7 @@ fun BrowseScreen(
                                     file = file,
                                     isSelected = file.info.handle in selectedHandles,
                                     downloadState = state,
+                                    isLoadingFullObjectInfo = isLoading,
                                     onOpen = { previewFile = file },
                                     onToggleSelection = {
                                         if (GalleryDownloadUiPolicy.canSelect(state)) {
@@ -869,12 +870,20 @@ private fun GalleryGridItem(
     file: CameraFile,
     isSelected: Boolean,
     downloadState: TransferState?,
+    isLoadingFullObjectInfo: Boolean,
     onOpen: () -> Unit,
     onToggleSelection: () -> Unit,
     onVisible: () -> Unit,
 ) {
-    LaunchedEffect(file.info.handle) {
-        if (file.thumbnail == null) onVisible()
+    LaunchedEffect(file.info.handle, file.thumbnail, isLoadingFullObjectInfo) {
+        if (
+            GalleryThumbnailVisibilityPolicy.shouldRequestThumbnail(
+                isLoadingFullObjectInfo = isLoadingFullObjectInfo,
+                hasThumbnail = file.thumbnail != null,
+            )
+        ) {
+            onVisible()
+        }
     }
     var tileVisible by remember(file.info.handle) { mutableStateOf(false) }
     LaunchedEffect(file.info.handle) {

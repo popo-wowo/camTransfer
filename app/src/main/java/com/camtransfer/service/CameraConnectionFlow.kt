@@ -1,5 +1,8 @@
 package com.camtransfer.service
 
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.TimeoutCancellationException
+
 enum class CameraConnectionPhase {
     PAIR_CAMERA,
     ENTER_GALLERY,
@@ -226,6 +229,11 @@ object CameraConnectionFlowPolicy {
         CameraConnectionFailure.PairingAckPending,
         CameraConnectionFailure.WifiJoinTimeout,
     )
+}
+
+object CameraConnectionCancellationPolicy {
+    fun shouldPropagate(error: Throwable): Boolean =
+        error is CancellationException && error !is TimeoutCancellationException
 }
 
 object CameraConnectionIssueClassifier {

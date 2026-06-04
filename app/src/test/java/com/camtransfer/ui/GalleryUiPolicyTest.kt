@@ -134,6 +134,28 @@ class GalleryUiPolicyTest {
     }
 
     @Test
+    fun visibleThumbnailRequestsRestartAfterFullObjectInfoFinishes() {
+        assertFalse(
+            GalleryThumbnailVisibilityPolicy.shouldRequestThumbnail(
+                isLoadingFullObjectInfo = true,
+                hasThumbnail = false,
+            )
+        )
+        assertTrue(
+            GalleryThumbnailVisibilityPolicy.shouldRequestThumbnail(
+                isLoadingFullObjectInfo = false,
+                hasThumbnail = false,
+            )
+        )
+        assertFalse(
+            GalleryThumbnailVisibilityPolicy.shouldRequestThumbnail(
+                isLoadingFullObjectInfo = false,
+                hasThumbnail = true,
+            )
+        )
+    }
+
+    @Test
     fun filterPanelDefaultsCollapsedAndSummarizesActiveControls() {
         assertFalse(GalleryFilterPanelPolicy.defaultExpanded())
         assertEquals(

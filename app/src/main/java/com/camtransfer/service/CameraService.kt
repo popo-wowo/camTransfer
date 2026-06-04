@@ -80,6 +80,7 @@ class CameraService(override val context: Context) : CameraFileSource {
             DiagnosticLog.append(context, TAG, "Existing camera PTP connection established")
             true
         }.getOrElse { error ->
+            if (CameraConnectionCancellationPolicy.shouldPropagate(error)) throw error
             connection.disconnect()
             Log.d(TAG, "Existing camera PTP probe failed: ${error.message}")
             DiagnosticLog.append(context, TAG, "Existing camera PTP probe failed", error)
@@ -130,6 +131,7 @@ class CameraService(override val context: Context) : CameraFileSource {
         val hs = handshake ?: runCatching {
             reconnectRememberedCamera(onStatus)
         }.getOrElse { reconnectError ->
+            if (CameraConnectionCancellationPolicy.shouldPropagate(reconnectError)) throw reconnectError
             Log.w(TAG, "BLE remembered reconnect failed; not attempting WiFi before camera transfer activation", reconnectError)
             throw IllegalStateException(
                 "无法唤醒相机进入传图模式。请确认相机蓝牙已开启，然后重新点进入相机相册；不会在未唤醒相机时直接连接 WiFi。",
@@ -216,6 +218,7 @@ class CameraService(override val context: Context) : CameraFileSource {
                 }.fold(
                     onSuccess = { true },
                     onFailure = { error ->
+                        if (CameraConnectionCancellationPolicy.shouldPropagate(error)) throw error
                         lastError = error
                         DiagnosticLog.append(
                             context,
@@ -280,6 +283,7 @@ class CameraService(override val context: Context) : CameraFileSource {
                 connection.connect(socketFactory = socketFactory)
                 return
             } catch (error: Throwable) {
+                if (CameraConnectionCancellationPolicy.shouldPropagate(error)) throw error
                 lastError = error
                 connection.disconnect()
                 Log.w(TAG, "PTP connection failed ($attempt/${CameraVendorPtpConnectionStartupPolicy.MAX_CONNECT_ATTEMPTS}): $error")
@@ -312,6 +316,7 @@ class CameraService(override val context: Context) : CameraFileSource {
                             DiagnosticLog.append(context, TAG, "Remembered camera direct BLE connect succeeded")
                             return it
                         }.onFailure { error ->
+                            if (CameraConnectionCancellationPolicy.shouldPropagate(error)) throw error
                             DiagnosticLog.append(context, TAG, "Remembered camera direct BLE connect failed", error)
                             Log.w(TAG, "Remembered camera direct BLE connect failed address=$address: $error")
                         }
@@ -332,6 +337,7 @@ class CameraService(override val context: Context) : CameraFileSource {
                         DiagnosticLog.append(context, TAG, "Remembered camera fast scan reconnect succeeded")
                         return hs
                     }.onFailure { error ->
+                        if (CameraConnectionCancellationPolicy.shouldPropagate(error)) throw error
                         DiagnosticLog.append(context, TAG, "Remembered camera fast scan reconnect skipped", error)
                         Log.w(TAG, "Remembered camera fast scan reconnect failed: $error")
                         handshake?.disconnect()
@@ -366,6 +372,7 @@ class CameraService(override val context: Context) : CameraFileSource {
                 saveRememberedHandshake(hs)
                 return hs
             } catch (error: Throwable) {
+                if (CameraConnectionCancellationPolicy.shouldPropagate(error)) throw error
                 lastError = error
                 Log.w(TAG, "Remembered camera reconnect failed ($attempt/${CameraVendorBleReconnectPolicy.MAX_REMEMBERED_RECONNECT_ATTEMPTS}): $error")
                 handshake?.disconnect()

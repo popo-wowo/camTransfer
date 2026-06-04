@@ -108,6 +108,11 @@ object GalleryScrollResetPolicy {
     fun shouldScrollToTopAfterFilterOrSortChange(): Boolean = true
 }
 
+object GalleryThumbnailVisibilityPolicy {
+    fun shouldRequestThumbnail(isLoadingFullObjectInfo: Boolean, hasThumbnail: Boolean): Boolean =
+        !isLoadingFullObjectInfo && !hasThumbnail
+}
+
 object GalleryFilterPanelPolicy {
     private val shortDateFormatter = DateTimeFormatter.ofPattern("MM-dd")
 
