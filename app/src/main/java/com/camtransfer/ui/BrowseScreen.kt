@@ -142,6 +142,13 @@ fun BrowseScreen(
     val sortedFiles by remember(filteredFiles, sortMode, downloadStates) {
         derivedStateOf { GallerySortPolicy.sortedFiles(filteredFiles, sortMode, downloadStates) }
     }
+    val visibleGridHandles by remember {
+        derivedStateOf {
+            gridState.layoutInfo.visibleItemsInfo
+                .mapNotNull { it.key as? Int }
+                .toSet()
+        }
+    }
     val selectableFilteredHandles = remember(sortedFiles, downloadStates) {
         sortedFiles
             .filter { GalleryDownloadUiPolicy.canSelect(downloadStates[it.info.handle]) }
@@ -351,6 +358,7 @@ fun BrowseScreen(
                                     isSelected = file.info.handle in selectedHandles,
                                     downloadState = state,
                                     isLoadingFullObjectInfo = isLoading,
+                                    isItemVisible = file.info.handle in visibleGridHandles,
                                     onOpen = { previewFile = file },
                                     onToggleSelection = {
                                         if (GalleryDownloadUiPolicy.canSelect(state)) {
@@ -871,13 +879,15 @@ private fun GalleryGridItem(
     isSelected: Boolean,
     downloadState: TransferState?,
     isLoadingFullObjectInfo: Boolean,
+    isItemVisible: Boolean,
     onOpen: () -> Unit,
     onToggleSelection: () -> Unit,
     onVisible: () -> Unit,
 ) {
-    LaunchedEffect(file.info.handle, file.thumbnail, isLoadingFullObjectInfo) {
+    LaunchedEffect(file.info.handle, file.thumbnail, isLoadingFullObjectInfo, isItemVisible) {
         if (
             GalleryThumbnailVisibilityPolicy.shouldRequestThumbnail(
+                isItemVisible = isItemVisible,
                 isLoadingFullObjectInfo = isLoadingFullObjectInfo,
                 hasThumbnail = file.thumbnail != null,
             )

@@ -137,20 +137,34 @@ class GalleryUiPolicyTest {
     fun visibleThumbnailRequestsCanStartBeforeFullObjectInfoFinishes() {
         assertTrue(
             GalleryThumbnailVisibilityPolicy.shouldRequestThumbnail(
+                isItemVisible = true,
                 isLoadingFullObjectInfo = true,
                 hasThumbnail = false,
             )
         )
         assertTrue(
             GalleryThumbnailVisibilityPolicy.shouldRequestThumbnail(
+                isItemVisible = true,
                 isLoadingFullObjectInfo = false,
                 hasThumbnail = false,
             )
         )
         assertFalse(
             GalleryThumbnailVisibilityPolicy.shouldRequestThumbnail(
+                isItemVisible = true,
                 isLoadingFullObjectInfo = false,
                 hasThumbnail = true,
+            )
+        )
+    }
+
+    @Test
+    fun offscreenThumbnailRequestsDoNotStartFromLazyGridPrefetch() {
+        assertFalse(
+            GalleryThumbnailVisibilityPolicy.shouldRequestThumbnail(
+                isItemVisible = false,
+                isLoadingFullObjectInfo = false,
+                hasThumbnail = false,
             )
         )
     }
