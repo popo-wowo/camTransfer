@@ -224,6 +224,13 @@ class GalleryUiPolicyTest {
     }
 
     @Test
+    fun thumbnailDecodePolicyDownsamplesFullSizeFallbackImages() {
+        assertEquals(8, GalleryThumbnailDecodePolicy.sampleSize(width = 7728, height = 5152))
+        assertEquals(1, GalleryThumbnailDecodePolicy.sampleSize(width = 640, height = 480))
+        assertEquals(1, GalleryThumbnailDecodePolicy.sampleSize(width = 0, height = 0))
+    }
+
+    @Test
     fun previewNavigationStartsAtSelectedHandleAndClampsMissingHandle() {
         val files = listOf(
             file(10, PtpObjectFormat.JPEG, "20260529T081500"),

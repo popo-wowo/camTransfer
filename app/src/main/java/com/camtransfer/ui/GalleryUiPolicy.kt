@@ -7,6 +7,7 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import kotlin.math.abs
 import kotlin.math.hypot
+import kotlin.math.max
 
 sealed interface GalleryDateFilter {
     data object All : GalleryDateFilter
@@ -382,4 +383,18 @@ object GalleryThumbnailDiagnosticPolicy {
 
     private fun ByteArray.headHex(byteCount: Int = 16): String =
         take(byteCount).joinToString("") { "%02x".format(it) }
+}
+
+internal object GalleryThumbnailDecodePolicy {
+    const val MAX_DECODED_SIDE = 1024
+
+    fun sampleSize(width: Int, height: Int): Int {
+        val maxSide = max(width, height)
+        if (maxSide <= MAX_DECODED_SIDE || width <= 0 || height <= 0) return 1
+        var sampleSize = 1
+        while (maxSide / sampleSize > MAX_DECODED_SIDE) {
+            sampleSize *= 2
+        }
+        return sampleSize
+    }
 }

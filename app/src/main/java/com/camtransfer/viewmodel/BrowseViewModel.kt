@@ -82,6 +82,13 @@ class BrowseViewModel : ViewModel() {
     }
 
     fun loadThumbnail(cameraSource: CameraFileSource, handle: Int) {
+        if (!GalleryFastInitialLoadPolicy.shouldLoadThumbnail(
+                isLoadingFullObjectInfo = _isLoading.value,
+                hasThumbnail = _files.value.any { it.info.handle == handle && it.thumbnail != null },
+            )
+        ) {
+            return
+        }
         if (_files.value.any { it.info.handle == handle && it.thumbnail != null }) return
         if (!thumbnailQueue.offer(handle)) return
         startThumbnailWorkers(cameraSource)
@@ -217,7 +224,7 @@ internal class ThumbnailLoadQueue {
 }
 
 internal object ThumbnailLoadPolicy {
-    const val MAX_CONCURRENT_WORKERS = 2
+    const val MAX_CONCURRENT_WORKERS = 1
 
     fun shouldStartWorker(activeWorkers: Int, pendingHandles: Int): Boolean =
         pendingHandles > 0 && activeWorkers < MAX_CONCURRENT_WORKERS
@@ -239,6 +246,9 @@ internal object GalleryFileLoadPolicy {
 internal object GalleryFastInitialLoadPolicy {
     fun shouldPublishInitialFiles(currentFiles: List<CameraFile>, initialFiles: List<CameraFile>): Boolean =
         currentFiles.isEmpty() && initialFiles.isNotEmpty()
+
+    fun shouldLoadThumbnail(isLoadingFullObjectInfo: Boolean, hasThumbnail: Boolean): Boolean =
+        !isLoadingFullObjectInfo && !hasThumbnail
 
     fun mergeWithExistingThumbnails(
         currentFiles: List<CameraFile>,

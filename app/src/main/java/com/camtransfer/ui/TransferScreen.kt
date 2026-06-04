@@ -1,5 +1,6 @@
 package com.camtransfer.ui
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
 import android.os.Build
@@ -252,8 +253,31 @@ private fun StatusChip(state: TransferState, modifier: Modifier = Modifier) {
 private fun decodeThumbnailBitmap(data: ByteArray) =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
         runCatching {
-            ImageDecoder.decodeBitmap(ImageDecoder.createSource(ByteBuffer.wrap(data)))
-        }.getOrNull() ?: BitmapFactory.decodeByteArray(data, 0, data.size)
+            ImageDecoder.decodeBitmap(ImageDecoder.createSource(ByteBuffer.wrap(data))) { decoder, info, _ ->
+                val sampleSize = GalleryThumbnailDecodePolicy.sampleSize(
+                    width = info.size.width,
+                    height = info.size.height,
+                )
+                if (sampleSize > 1) {
+                    decoder.setTargetSampleSize(sampleSize)
+                }
+            }
+        }.getOrNull() ?: decodeThumbnailBitmapLegacy(data)
     } else {
-        BitmapFactory.decodeByteArray(data, 0, data.size)
+        decodeThumbnailBitmapLegacy(data)
     }
+
+private fun decodeThumbnailBitmapLegacy(data: ByteArray): Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
+    val sampleSize = GalleryThumbnailDecodePolicy.sampleSize(
+        width = bounds.outWidth,
+        height = bounds.outHeight,
+    )
+    return BitmapFactory.decodeByteArray(
+        data,
+        0,
+        data.size,
+        BitmapFactory.Options().apply { inSampleSize = sampleSize },
+    )
+}

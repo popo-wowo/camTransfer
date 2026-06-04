@@ -1464,13 +1464,35 @@ private fun EmptyGalleryMessage(text: String) {
 private fun decodeThumbnailBitmap(data: ByteArray) =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
         runCatching {
-            ImageDecoder.decodeBitmap(ImageDecoder.createSource(ByteBuffer.wrap(data))) { decoder, _, _ ->
+            ImageDecoder.decodeBitmap(ImageDecoder.createSource(ByteBuffer.wrap(data))) { decoder, info, _ ->
                 decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                val sampleSize = GalleryThumbnailDecodePolicy.sampleSize(
+                    width = info.size.width,
+                    height = info.size.height,
+                )
+                if (sampleSize > 1) {
+                    decoder.setTargetSampleSize(sampleSize)
+                }
             }
-        }.getOrNull() ?: BitmapFactory.decodeByteArray(data, 0, data.size)
+        }.getOrNull() ?: decodeThumbnailBitmapLegacy(data)
     } else {
-        BitmapFactory.decodeByteArray(data, 0, data.size)
+        decodeThumbnailBitmapLegacy(data)
     }
+
+private fun decodeThumbnailBitmapLegacy(data: ByteArray): Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
+    val sampleSize = GalleryThumbnailDecodePolicy.sampleSize(
+        width = bounds.outWidth,
+        height = bounds.outHeight,
+    )
+    return BitmapFactory.decodeByteArray(
+        data,
+        0,
+        data.size,
+        BitmapFactory.Options().apply { inSampleSize = sampleSize },
+    )
+}
 
 private fun rotateBitmapForDisplay(bitmap: Bitmap, degrees: Int): Bitmap {
     val normalizedDegrees = ((degrees % 360) + 360) % 360

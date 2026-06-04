@@ -106,6 +106,28 @@ class GalleryFileLoadPolicyTest {
         assertSame(fullThumb, merged[1].thumbnail)
     }
 
+    @Test
+    fun defersThumbnailRequestsWhileFullObjectInfoIsStillLoading() {
+        assertFalse(
+            GalleryFastInitialLoadPolicy.shouldLoadThumbnail(
+                isLoadingFullObjectInfo = true,
+                hasThumbnail = false,
+            )
+        )
+        assertTrue(
+            GalleryFastInitialLoadPolicy.shouldLoadThumbnail(
+                isLoadingFullObjectInfo = false,
+                hasThumbnail = false,
+            )
+        )
+        assertFalse(
+            GalleryFastInitialLoadPolicy.shouldLoadThumbnail(
+                isLoadingFullObjectInfo = false,
+                hasThumbnail = true,
+            )
+        )
+    }
+
     private fun cameraFile(
         handle: Int,
         filename: String = "DSCF%04d.JPG".format(handle),
