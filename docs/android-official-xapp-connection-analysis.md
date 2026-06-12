@@ -221,3 +221,15 @@ UI 侧也同步调整: 已配对状态下如果还挂着进入相册阶段的问
 - `CameraVendorWifiNetworkConfiguration` 保存规范化后的 `bssid`，旧的 3 字段本地配对记录继续兼容。
 - `WifiNetworkSpecifier` 改用 literal `setSsidPattern(...)`，有 BSSID 时调用 `setBssid(...)`，继续设置 WPA2 passphrase。
 - PTP 连接在自动 WiFi handoff 成功后使用当前相机 WiFi 的 `Network.socketFactory` 创建 socket；日志记录 `hasNetworkSocketFactory` 便于验证。
+
+## 2026-06-12 AP ready 协议对齐
+
+进入相册不再把 BLE 启动命令写完视为相机 WiFi 已准备好。Android 侧现在按官方 ReferenceApp import-image 启动顺序执行:
+
+1. `ImageTransferSetting = 00`
+2. `ImageTransferSettingEx = 01`
+3. `ImageResizeSetting = 00/01`
+4. `FunctionLaunchRequest = 0300`
+5. 等待 `AP_STATE` 返回 `0x8001` 或 `0x8003`
+
+只有 AP ready 后才主动断开 BLE 并进入 WiFi handoff。诊断日志会记录每次 `AP_STATE` 值和耗时，例如 `ReferenceApp AP ready elapsedMs=...`。如果 6 秒内没有 ready，流程会停止并提示相机 WiFi 未启动，避免手机提前 requestNetwork 后长时间等待。

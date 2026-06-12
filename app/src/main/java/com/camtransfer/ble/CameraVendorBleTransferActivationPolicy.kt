@@ -22,9 +22,12 @@ object CameraVendorBleTransferActivationPolicy {
             "当前模式：原图"
         }
 
-    fun shouldFastHandoffAfterCommandWrites(): Boolean = true
+    fun shouldFastHandoffAfterCommandWrites(): Boolean = false
 
     fun shouldActivelyDisconnectBluetoothBeforeWifi(): Boolean = true
 
+    const val AP_READY_TIMEOUT_MS = 6_000L
+    const val AP_READY_POLL_INTERVAL_MS = 250L
+    const val AP_READY_READ_TIMEOUT_MS = 1_000L
     const val BLUETOOTH_RELEASE_DELAY_MS = 500L
 }

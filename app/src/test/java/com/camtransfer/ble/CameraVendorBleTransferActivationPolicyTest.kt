@@ -44,8 +44,11 @@ class CameraVendorBleTransferActivationPolicyTest {
     }
 
     @Test
-    fun officialImportImageUsesFastHandoffAndDisconnectsBle() {
-        assertTrue(CameraVendorBleTransferActivationPolicy.shouldFastHandoffAfterCommandWrites())
+    fun officialImportImageWaitsForApReadyBeforeWifiHandoff() {
+        assertFalse(CameraVendorBleTransferActivationPolicy.shouldFastHandoffAfterCommandWrites())
+        assertEquals(6_000L, CameraVendorBleTransferActivationPolicy.AP_READY_TIMEOUT_MS)
+        assertEquals(250L, CameraVendorBleTransferActivationPolicy.AP_READY_POLL_INTERVAL_MS)
+        assertEquals(1_000L, CameraVendorBleTransferActivationPolicy.AP_READY_READ_TIMEOUT_MS)
         assertTrue(CameraVendorBleTransferActivationPolicy.shouldActivelyDisconnectBluetoothBeforeWifi())
         assertEquals(500L, CameraVendorBleTransferActivationPolicy.BLUETOOTH_RELEASE_DELAY_MS)
     }

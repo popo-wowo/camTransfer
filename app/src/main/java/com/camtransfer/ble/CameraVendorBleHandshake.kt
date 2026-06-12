@@ -5,8 +5,10 @@ import android.bluetooth.*
 import android.bluetooth.le.ScanResult
 import android.content.Context
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import com.camtransfer.service.CameraBluetoothPermissionPolicy
+import com.camtransfer.service.DiagnosticLog
 import com.camtransfer.wifi.CameraVendorWifiNetworkConfiguration
 import com.camtransfer.wifi.CameraVendorWifiNetworkConfigurationPolicy
 import kotlinx.coroutines.*
@@ -578,37 +580,75 @@ class CameraVendorBleHandshake(private val context: Context) {
             CameraVendorBleProfile.IMAGE_TRANSFER_SETTING_EX_CHAR,
             CameraVendorBleProfile.IMAGE_RESIZE_SETTING_CHAR,
             CameraVendorBleProfile.LAUNCH_REQUEST_CHAR,
+            CameraVendorBleProfile.AP_STATE_CHAR,
         )
         if (required.any { findCharacteristic(it) == null }) {
             throw Exception("相机还没有进入可传图的配对服务，已停止连接 WiFi。请确认相机处于配对/传图确认界面后重试")
         }
 
+        observedCharacteristicValues.remove(CameraVendorBleProfile.AP_STATE_CHAR)
+        observedCharacteristicValues.remove(CameraVendorBleProfile.TRANSFER_STATE_CHAR)
         Log.d(TAG, "=== ReferenceApp official import-image activation ===")
         Log.d(TAG, "Transfer resize mode=${if (preferCompressedDownloads) "compressed" else "original"}")
+        DiagnosticLog.append(context, TAG, "ReferenceApp activation started mode=${if (preferCompressedDownloads) "compressed" else "original"}")
         writeCharAny(CameraVendorBleProfile.IMAGE_TRANSFER_SETTING_CHAR, byteArrayOf(0x00))
+        DiagnosticLog.append(context, TAG, "ReferenceApp activation write ImageTransferSetting=00")
         writeCharAny(CameraVendorBleProfile.IMAGE_TRANSFER_SETTING_EX_CHAR, byteArrayOf(0x01))
+        DiagnosticLog.append(context, TAG, "ReferenceApp activation write ImageTransferSettingEx=01")
         writeCharAny(
             CameraVendorBleProfile.IMAGE_RESIZE_SETTING_CHAR,
             CameraVendorBleTransferActivationPolicy.resizePayload(preferCompressedDownloads),
         )
+        DiagnosticLog.append(
+            context,
+            TAG,
+            "ReferenceApp activation write ImageResizeSetting=${if (preferCompressedDownloads) "01" else "00"}",
+        )
         delay(500)
         writeCharAny(CameraVendorBleProfile.LAUNCH_REQUEST_CHAR, byteArrayOf(0x03, 0x00))
+        DiagnosticLog.append(context, TAG, "ReferenceApp activation write FunctionLaunchRequest=0300")
 
         if (CameraVendorBleTransferActivationPolicy.shouldFastHandoffAfterCommandWrites()) {
             Log.d(TAG, "Transfer activation commands written; fast handoff to WiFi/PTP")
             return
         }
 
-        repeat(30) { attempt ->
+        waitForReferenceAppApReady()
+    }
+
+    private suspend fun waitForReferenceAppApReady() {
+        val startedMs = SystemClock.elapsedRealtime()
+        var attempt = 0
+        while (SystemClock.elapsedRealtime() - startedMs < CameraVendorBleTransferActivationPolicy.AP_READY_TIMEOUT_MS) {
+            attempt += 1
             val state = observedCharacteristicValues[CameraVendorBleProfile.AP_STATE_CHAR]
-                ?: runCatching { readCharAny(CameraVendorBleProfile.AP_STATE_CHAR) }.getOrNull()
+                ?: runCatching {
+                    readCharAny(
+                        CameraVendorBleProfile.AP_STATE_CHAR,
+                        timeoutMs = CameraVendorBleTransferActivationPolicy.AP_READY_READ_TIMEOUT_MS,
+                    )
+                }.getOrNull()
             if (state != null && state.size >= 2) {
                 val value = (state[0].toInt() and 0xFF) or ((state[1].toInt() and 0xFF) shl 8)
-                Log.d(TAG, "AP state attempt=${attempt + 1}: 0x${value.toString(16)}")
-                if (CameraVendorBleTransferActivationPolicy.isReadyToJoinWifi(state)) return
+                val elapsedMs = SystemClock.elapsedRealtime() - startedMs
+                Log.d(TAG, "AP state attempt=$attempt: 0x${value.toString(16)} elapsedMs=$elapsedMs")
+                DiagnosticLog.append(
+                    context,
+                    TAG,
+                    "ReferenceApp AP state attempt=$attempt value=0x${value.toString(16)} elapsedMs=$elapsedMs",
+                )
+                if (CameraVendorBleTransferActivationPolicy.isReadyToJoinWifi(state)) {
+                    DiagnosticLog.append(context, TAG, "ReferenceApp AP ready elapsedMs=$elapsedMs")
+                    return
+                }
             }
-            delay(500)
+            delay(CameraVendorBleTransferActivationPolicy.AP_READY_POLL_INTERVAL_MS)
         }
+        DiagnosticLog.append(
+            context,
+            TAG,
+            "ReferenceApp AP ready timed out timeoutMs=${CameraVendorBleTransferActivationPolicy.AP_READY_TIMEOUT_MS}",
+        )
         throw Exception("相机尚未确认配对或 WiFi 未启动，已停止连接 WiFi。请等相机显示配对成功后再继续")
     }
 
@@ -663,11 +703,11 @@ class CameraVendorBleHandshake(private val context: Context) {
         return withTimeout(timeoutMs) { readResult.await() }
     }
 
-    private suspend fun readCharAny(charUuid: UUID): ByteArray {
+    private suspend fun readCharAny(charUuid: UUID, timeoutMs: Long = 8_000L): ByteArray {
         val ch = findCharacteristic(charUuid) ?: throw Exception("Char missing: $charUuid")
         readResult = CompletableDeferred()
         gatt!!.readCharacteristic(ch)
-        return withTimeout(8_000) { readResult.await() }
+        return withTimeout(timeoutMs) { readResult.await() }
     }
 
     private suspend fun readHandshakeMetadata(
