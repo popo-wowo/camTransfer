@@ -395,13 +395,18 @@ object GalleryThumbnailDiagnosticPolicy {
 }
 
 internal object GalleryThumbnailDecodePolicy {
-    const val MAX_DECODED_SIDE = 1024
+    const val GRID_MAX_DECODED_SIDE = 512
+    const val PREVIEW_MAX_DECODED_SIDE = 1024
 
-    fun sampleSize(width: Int, height: Int): Int {
+    fun sampleSize(
+        width: Int,
+        height: Int,
+        maxDecodedSide: Int = PREVIEW_MAX_DECODED_SIDE,
+    ): Int {
         val maxSide = max(width, height)
-        if (maxSide <= MAX_DECODED_SIDE || width <= 0 || height <= 0) return 1
+        if (maxSide <= maxDecodedSide || width <= 0 || height <= 0 || maxDecodedSide <= 0) return 1
         var sampleSize = 1
-        while (maxSide / sampleSize > MAX_DECODED_SIDE) {
+        while (maxSide / sampleSize > maxDecodedSide) {
             sampleSize *= 2
         }
         return sampleSize

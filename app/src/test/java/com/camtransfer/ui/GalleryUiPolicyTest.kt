@@ -261,7 +261,22 @@ class GalleryUiPolicyTest {
 
     @Test
     fun thumbnailDecodePolicyDownsamplesFullSizeFallbackImages() {
-        assertEquals(8, GalleryThumbnailDecodePolicy.sampleSize(width = 7728, height = 5152))
+        assertEquals(
+            16,
+            GalleryThumbnailDecodePolicy.sampleSize(
+                width = 7728,
+                height = 5152,
+                maxDecodedSide = GalleryThumbnailDecodePolicy.GRID_MAX_DECODED_SIDE,
+            ),
+        )
+        assertEquals(
+            8,
+            GalleryThumbnailDecodePolicy.sampleSize(
+                width = 7728,
+                height = 5152,
+                maxDecodedSide = GalleryThumbnailDecodePolicy.PREVIEW_MAX_DECODED_SIDE,
+            ),
+        )
         assertEquals(1, GalleryThumbnailDecodePolicy.sampleSize(width = 640, height = 480))
         assertEquals(1, GalleryThumbnailDecodePolicy.sampleSize(width = 0, height = 0))
     }

@@ -85,6 +85,7 @@ class BrowseViewModel : ViewModel() {
         if (!GalleryFastInitialLoadPolicy.shouldLoadThumbnail(
                 isLoadingFullObjectInfo = _isLoading.value,
                 hasThumbnail = _files.value.any { it.info.handle == handle && it.thumbnail != null },
+                activeOrPendingThumbnailCount = activeOrPendingThumbnailCount(),
             )
         ) {
             return
@@ -145,6 +146,9 @@ class BrowseViewModel : ViewModel() {
             DiagnosticLog.append(cameraSource.context, TAG, "Thumbnail failed handle=$handle", e)
         }
     }
+
+    private fun activeOrPendingThumbnailCount(): Int =
+        _files.value.count { it.thumbnail != null } + thumbnailQueue.trackedCount
 
     private fun ByteArray.decodedBounds(): ThumbnailDecodedBounds {
         val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -207,6 +211,9 @@ internal class ThumbnailLoadQueue {
     val pendingCount: Int
         @Synchronized get() = handles.size
 
+    val trackedCount: Int
+        @Synchronized get() = pendingHandles.size
+
     @Synchronized
     fun offer(handle: Int): Boolean {
         if (!pendingHandles.add(handle)) return false
@@ -244,11 +251,22 @@ internal object GalleryFileLoadPolicy {
 }
 
 internal object GalleryFastInitialLoadPolicy {
+    const val MAX_INITIAL_THUMBNAIL_REQUESTS = 8
+
     fun shouldPublishInitialFiles(currentFiles: List<CameraFile>, initialFiles: List<CameraFile>): Boolean =
         currentFiles.isEmpty() && initialFiles.isNotEmpty()
 
-    fun shouldLoadThumbnail(isLoadingFullObjectInfo: Boolean, hasThumbnail: Boolean): Boolean =
-        !hasThumbnail
+    fun shouldLoadThumbnail(
+        isLoadingFullObjectInfo: Boolean,
+        hasThumbnail: Boolean,
+        activeOrPendingThumbnailCount: Int,
+    ): Boolean {
+        if (hasThumbnail) return false
+        if (isLoadingFullObjectInfo && activeOrPendingThumbnailCount >= MAX_INITIAL_THUMBNAIL_REQUESTS) {
+            return false
+        }
+        return true
+    }
 
     fun mergeWithExistingThumbnails(
         currentFiles: List<CameraFile>,

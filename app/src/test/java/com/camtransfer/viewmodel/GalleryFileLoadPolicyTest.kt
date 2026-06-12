@@ -107,23 +107,33 @@ class GalleryFileLoadPolicyTest {
     }
 
     @Test
-    fun allowsVisibleThumbnailRequestsWhileFullObjectInfoIsStillLoading() {
+    fun limitsInitialThumbnailRequestsWhileFullObjectInfoIsStillLoading() {
         assertTrue(
             GalleryFastInitialLoadPolicy.shouldLoadThumbnail(
                 isLoadingFullObjectInfo = true,
                 hasThumbnail = false,
+                activeOrPendingThumbnailCount = GalleryFastInitialLoadPolicy.MAX_INITIAL_THUMBNAIL_REQUESTS - 1,
+            )
+        )
+        assertFalse(
+            GalleryFastInitialLoadPolicy.shouldLoadThumbnail(
+                isLoadingFullObjectInfo = true,
+                hasThumbnail = false,
+                activeOrPendingThumbnailCount = GalleryFastInitialLoadPolicy.MAX_INITIAL_THUMBNAIL_REQUESTS,
             )
         )
         assertTrue(
             GalleryFastInitialLoadPolicy.shouldLoadThumbnail(
                 isLoadingFullObjectInfo = false,
                 hasThumbnail = false,
+                activeOrPendingThumbnailCount = 200,
             )
         )
         assertFalse(
             GalleryFastInitialLoadPolicy.shouldLoadThumbnail(
                 isLoadingFullObjectInfo = false,
                 hasThumbnail = true,
+                activeOrPendingThumbnailCount = 0,
             )
         )
     }

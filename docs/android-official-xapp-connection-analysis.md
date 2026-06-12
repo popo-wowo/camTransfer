@@ -199,6 +199,17 @@ UI 侧也同步调整: 已配对状态下如果还挂着进入相册阶段的问
 - 缩略图 worker 回到 1 个，避免和 metadata/相机状态命令抢 PTP。
 - 缩略图 bitmap 解码最大边长采样到 1024，避免 fallback 大图直接进入网格 UI。
 
+## 2026-06-12 大图库首屏缩略图节流
+
+实机日志显示，最新相机样本在 `specifiedHandles=999`、首批 `initialHandles=200` 时，占位网格能立即显示，但如果完整 `ObjectInfo` 仍在后台枚举时连续读取几十张缩略图，会让同一条 PTP 通道在 metadata 和 thumbnail 之间反复切换。本次样本中 `Gallery discovery vendorInfos=200` 耗时约 15.9s，同时每个 167936 字节的 JPEG preview 在 Android 解码边界上报告为 `7728x5152`，如果在 Compose UI 线程解码会造成筛选页卡顿或看起来图片不显示。
+
+当前规则:
+
+- 进入筛选页后仍先发布首批占位 `CameraFile`，保证列表不被完整 `ObjectInfo` 阻塞。
+- 完整 `ObjectInfo` 加载期间，只允许最多 8 个已加载/排队缩略图请求，用于首屏感知；超过预算的可见项等完整 metadata 完成后再请求。
+- 缩略图 worker 保持 1 个，避免压垮相机 PTP。
+- 网格缩略图解码放到后台线程，最大边长采样到 512；预览弹层仍按 1024 采样，避免影响大图预览质量。
+
 ## 2026-06-04 MIUI WiFi 短失败重试修正
 
 实机日志显示，同一个相机 WiFi、同一组 SSID/passphrase 下，首次进入相册阶段连续 3 次 `requestNetwork` 会被 MIUI 很快返回 `onUnavailable`:

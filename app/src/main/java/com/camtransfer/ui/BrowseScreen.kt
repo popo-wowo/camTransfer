@@ -65,6 +65,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -90,6 +91,8 @@ import com.camtransfer.model.TransferItem
 import com.camtransfer.model.TransferState
 import com.camtransfer.service.CameraFileSource
 import com.camtransfer.viewmodel.BrowseViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
@@ -924,10 +927,18 @@ private fun GalleryGridItem(
     ) {
         val thumb = file.thumbnail
         if (thumb != null) {
-            val bitmap = remember(thumb) { decodeThumbnailBitmap(thumb) }
-            if (bitmap != null) {
+            val bitmap by produceState<Bitmap?>(initialValue = null, thumb) {
+                value = withContext(Dispatchers.Default) {
+                    decodeThumbnailBitmap(
+                        data = thumb,
+                        maxDecodedSide = GalleryThumbnailDecodePolicy.GRID_MAX_DECODED_SIDE,
+                    )
+                }
+            }
+            val currentBitmap = bitmap
+            if (currentBitmap != null) {
                 Image(
-                    bitmap = bitmap.asImageBitmap(),
+                    bitmap = currentBitmap.asImageBitmap(),
                     contentDescription = file.info.filename,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
@@ -1274,7 +1285,14 @@ private fun ZoomablePreviewImage(
         label = "previewImageAlpha",
     )
     val thumb = file.thumbnail
-    val bitmap = remember(thumb) { thumb?.let { decodeThumbnailBitmap(it) } }
+    val bitmap = remember(thumb) {
+        thumb?.let {
+            decodeThumbnailBitmap(
+                data = it,
+                maxDecodedSide = GalleryThumbnailDecodePolicy.PREVIEW_MAX_DECODED_SIDE,
+            )
+        }
+    }
     val autoRotationDegrees = remember(file.info, thumb, bitmap) {
         if (bitmap == null) {
             0
@@ -1480,7 +1498,10 @@ private fun EmptyGalleryMessage(text: String) {
     }
 }
 
-private fun decodeThumbnailBitmap(data: ByteArray) =
+private fun decodeThumbnailBitmap(
+    data: ByteArray,
+    maxDecodedSide: Int = GalleryThumbnailDecodePolicy.PREVIEW_MAX_DECODED_SIDE,
+) =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
         runCatching {
             ImageDecoder.decodeBitmap(ImageDecoder.createSource(ByteBuffer.wrap(data))) { decoder, info, _ ->
@@ -1488,22 +1509,24 @@ private fun decodeThumbnailBitmap(data: ByteArray) =
                 val sampleSize = GalleryThumbnailDecodePolicy.sampleSize(
                     width = info.size.width,
                     height = info.size.height,
+                    maxDecodedSide = maxDecodedSide,
                 )
                 if (sampleSize > 1) {
                     decoder.setTargetSampleSize(sampleSize)
                 }
             }
-        }.getOrNull() ?: decodeThumbnailBitmapLegacy(data)
+        }.getOrNull() ?: decodeThumbnailBitmapLegacy(data, maxDecodedSide)
     } else {
-        decodeThumbnailBitmapLegacy(data)
+        decodeThumbnailBitmapLegacy(data, maxDecodedSide)
     }
 
-private fun decodeThumbnailBitmapLegacy(data: ByteArray): Bitmap? {
+private fun decodeThumbnailBitmapLegacy(data: ByteArray, maxDecodedSide: Int): Bitmap? {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
     val sampleSize = GalleryThumbnailDecodePolicy.sampleSize(
         width = bounds.outWidth,
         height = bounds.outHeight,
+        maxDecodedSide = maxDecodedSide,
     )
     return BitmapFactory.decodeByteArray(
         data,

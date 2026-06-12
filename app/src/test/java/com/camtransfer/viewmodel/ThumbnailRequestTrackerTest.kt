@@ -11,6 +11,7 @@ class ThumbnailRequestTrackerTest {
 
         assertTrue(queue.offer(42))
         assertFalse(queue.offer(42))
+        assertTrue(queue.trackedCount == 1)
     }
 
     @Test
@@ -21,6 +22,7 @@ class ThumbnailRequestTrackerTest {
         queue.finish(42)
 
         assertTrue(queue.offer(42))
+        assertTrue(queue.trackedCount == 1)
     }
 
     @Test
