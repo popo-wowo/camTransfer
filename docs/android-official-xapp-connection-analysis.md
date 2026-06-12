@@ -233,3 +233,5 @@ UI 侧也同步调整: 已配对状态下如果还挂着进入相册阶段的问
 5. 等待 `AP_STATE` 返回 `0x8001` 或 `0x8003`
 
 只有 AP ready 后才主动断开 BLE 并进入 WiFi handoff。诊断日志会记录每次 `AP_STATE` 值和耗时，例如 `ReferenceApp AP ready elapsedMs=...`。如果 6 秒内没有 ready，流程会停止并提示相机 WiFi 未启动，避免手机提前 requestNetwork 后长时间等待。
+
+实机 X-T5 日志补充: 写入 `FunctionLaunchRequest=0300` 后，相机屏幕已经进入 WiFi 等待界面，但 BLE `AP_STATE` 可能持续返回 `0x8000`，随后复用同一 SSID/BSSID 可以成功完成 WiFi handoff 和 PTP。Android 侧因此把 `0x8000` 视为“AP 启动中 / launch accepted”状态: 它不会立即判 ready，但如果等待窗口结束时最后状态仍是 `0x8000`，继续进入 WiFi handoff，并在诊断日志中标记 `fallbackFromLaunchingState=0x8000`。没有读到任何 AP state 时仍然失败，不盲目进入 WiFi。

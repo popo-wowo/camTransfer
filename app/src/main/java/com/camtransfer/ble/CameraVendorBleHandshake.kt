@@ -619,6 +619,7 @@ class CameraVendorBleHandshake(private val context: Context) {
     private suspend fun waitForReferenceAppApReady() {
         val startedMs = SystemClock.elapsedRealtime()
         var attempt = 0
+        var lastState: ByteArray? = null
         while (SystemClock.elapsedRealtime() - startedMs < CameraVendorBleTransferActivationPolicy.AP_READY_TIMEOUT_MS) {
             attempt += 1
             val state = observedCharacteristicValues[CameraVendorBleProfile.AP_STATE_CHAR]
@@ -628,14 +629,15 @@ class CameraVendorBleHandshake(private val context: Context) {
                         timeoutMs = CameraVendorBleTransferActivationPolicy.AP_READY_READ_TIMEOUT_MS,
                     )
                 }.getOrNull()
+            if (state != null) lastState = state
             if (state != null && state.size >= 2) {
-                val value = (state[0].toInt() and 0xFF) or ((state[1].toInt() and 0xFF) shl 8)
+                val value = CameraVendorBleTransferActivationPolicy.apStateHex(state)
                 val elapsedMs = SystemClock.elapsedRealtime() - startedMs
-                Log.d(TAG, "AP state attempt=$attempt: 0x${value.toString(16)} elapsedMs=$elapsedMs")
+                Log.d(TAG, "AP state attempt=$attempt: $value elapsedMs=$elapsedMs")
                 DiagnosticLog.append(
                     context,
                     TAG,
-                    "ReferenceApp AP state attempt=$attempt value=0x${value.toString(16)} elapsedMs=$elapsedMs",
+                    "ReferenceApp AP state attempt=$attempt value=$value elapsedMs=$elapsedMs",
                 )
                 if (CameraVendorBleTransferActivationPolicy.isReadyToJoinWifi(state)) {
                     DiagnosticLog.append(context, TAG, "ReferenceApp AP ready elapsedMs=$elapsedMs")
@@ -644,10 +646,21 @@ class CameraVendorBleHandshake(private val context: Context) {
             }
             delay(CameraVendorBleTransferActivationPolicy.AP_READY_POLL_INTERVAL_MS)
         }
+        if (CameraVendorBleTransferActivationPolicy.shouldProceedToWifiAfterReadyWait(lastState)) {
+            DiagnosticLog.append(
+                context,
+                TAG,
+                "ReferenceApp AP ready wait ended with launching state; proceeding to WiFi " +
+                    "fallbackFromLaunchingState=${CameraVendorBleTransferActivationPolicy.apStateHex(lastState)} " +
+                    "timeoutMs=${CameraVendorBleTransferActivationPolicy.AP_READY_TIMEOUT_MS}",
+            )
+            return
+        }
         DiagnosticLog.append(
             context,
             TAG,
-            "ReferenceApp AP ready timed out timeoutMs=${CameraVendorBleTransferActivationPolicy.AP_READY_TIMEOUT_MS}",
+            "ReferenceApp AP ready timed out lastState=${CameraVendorBleTransferActivationPolicy.apStateHex(lastState)} " +
+                "timeoutMs=${CameraVendorBleTransferActivationPolicy.AP_READY_TIMEOUT_MS}",
         )
         throw Exception("相机尚未确认配对或 WiFi 未启动，已停止连接 WiFi。请等相机显示配对成功后再继续")
     }

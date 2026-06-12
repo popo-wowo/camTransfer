@@ -44,6 +44,24 @@ class CameraVendorBleTransferActivationPolicyTest {
     }
 
     @Test
+    fun launchingApStateAllowsWifiHandoffAfterWaitWindow() {
+        val launching = byteArrayOf(0x00.toByte(), 0x80.toByte())
+
+        assertFalse(CameraVendorBleTransferActivationPolicy.isReadyToJoinWifi(launching))
+        assertTrue(CameraVendorBleTransferActivationPolicy.isApLaunchInProgress(launching))
+        assertTrue(
+            CameraVendorBleTransferActivationPolicy.shouldProceedToWifiAfterReadyWait(
+                lastApState = launching,
+            )
+        )
+        assertFalse(
+            CameraVendorBleTransferActivationPolicy.shouldProceedToWifiAfterReadyWait(
+                lastApState = null,
+            )
+        )
+    }
+
+    @Test
     fun officialImportImageWaitsForApReadyBeforeWifiHandoff() {
         assertFalse(CameraVendorBleTransferActivationPolicy.shouldFastHandoffAfterCommandWrites())
         assertEquals(6_000L, CameraVendorBleTransferActivationPolicy.AP_READY_TIMEOUT_MS)

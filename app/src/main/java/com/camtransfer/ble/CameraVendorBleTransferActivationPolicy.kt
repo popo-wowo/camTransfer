@@ -5,9 +5,22 @@ object CameraVendorBleTransferActivationPolicy {
     private val ResizeEnabledPayload = byteArrayOf(0x01)
 
     fun isReadyToJoinWifi(apState: ByteArray?): Boolean {
-        if (apState == null || apState.size < 2) return false
-        val value = (apState[0].toInt() and 0xFF) or ((apState[1].toInt() and 0xFF) shl 8)
+        val value = apStateValue(apState) ?: return false
         return value == 0x8001 || value == 0x8003
+    }
+
+    fun isApLaunchInProgress(apState: ByteArray?): Boolean =
+        apStateValue(apState) == 0x8000
+
+    fun shouldProceedToWifiAfterReadyWait(lastApState: ByteArray?): Boolean =
+        isApLaunchInProgress(lastApState)
+
+    fun apStateHex(apState: ByteArray?): String =
+        apStateValue(apState)?.let { "0x${it.toString(16)}" } ?: "none"
+
+    private fun apStateValue(apState: ByteArray?): Int? {
+        if (apState == null || apState.size < 2) return null
+        return (apState[0].toInt() and 0xFF) or ((apState[1].toInt() and 0xFF) shl 8)
     }
 
     fun defaultPreferCompressedDownloads(): Boolean = true
