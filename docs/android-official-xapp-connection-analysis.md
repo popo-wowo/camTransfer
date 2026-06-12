@@ -210,6 +210,16 @@ UI 侧也同步调整: 已配对状态下如果还挂着进入相册阶段的问
 - 缩略图 worker 保持 1 个，避免压垮相机 PTP。
 - 网格缩略图解码放到后台线程，最大边长采样到 512；预览弹层仍按 1024 采样，避免影响大图预览质量。
 
+## 2026-06-12 标准缩略图优先修正
+
+后续实机截图确认，图库已经显示 `200 / 200`，但 tile 全部停留在 `JPG` 占位。日志显示相机返回的 `ObjectInfo` 已带 `thumbInfo=640x480`，但读取策略仍因为 `compressedSize=167936` 直接走 `GET_PARTIAL_OBJECT`，返回 `reason=smallPreviewObject` 的 167936 字节 JPG 对象，Android 解码边界为 `7728x5152`，不是适合列表展示的标准缩略图。
+
+当前规则:
+
+- 如果 `ObjectInfo.thumbFormat == JPEG` 且 `thumbPixWidth/thumbPixHeight > 0`，缩略图必须先走标准 `GET_THUMB`。
+- `GET_PARTIAL_OBJECT` 只在没有标准缩略图信息，或标准 `GET_THUMB` 失败/不可用时作为 fallback。
+- 这样列表优先拿相机提供的 640x480 缩略图，避免把整张小 JPG/partial 对象当作缩略图显示。
+
 ## 2026-06-04 MIUI WiFi 短失败重试修正
 
 实机日志显示，同一个相机 WiFi、同一组 SSID/passphrase 下，首次进入相册阶段连续 3 次 `requestNetwork` 会被 MIUI 很快返回 `onUnavailable`:

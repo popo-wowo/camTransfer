@@ -394,9 +394,15 @@ internal object CameraVendorThumbnailReadPolicy {
 
     fun shouldReadPartialPreviewBeforeStandardThumbnail(objectInfo: ObjectInfo?): Boolean {
         if (objectInfo == null) return false
+        if (hasStandardThumbnailInfo(objectInfo)) return false
         return (objectInfo.isJpeg || objectInfo.isHeif) &&
             objectInfo.compressedSize in 1..CameraVendorReferenceApp.PARTIAL_PREVIEW_READ_SIZE
     }
+
+    private fun hasStandardThumbnailInfo(objectInfo: ObjectInfo): Boolean =
+        objectInfo.thumbFormat == PtpObjectFormat.JPEG &&
+            objectInfo.thumbPixWidth > 0 &&
+            objectInfo.thumbPixHeight > 0
 }
 
 internal object CameraVendorPartialObjectReadPolicy {

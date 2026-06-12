@@ -27,6 +27,20 @@ class CameraVendorThumbnailReadPolicyTest {
     }
 
     @Test
+    fun smallJpegObjectsWithStandardThumbnailInfoUseGetThumbFirst() {
+        assertFalse(
+            CameraVendorThumbnailReadPolicy.shouldReadPartialPreviewBeforeStandardThumbnail(
+                objectInfo(
+                    format = PtpObjectFormat.JPEG,
+                    compressedSize = 167_936,
+                    thumbPixWidth = 640,
+                    thumbPixHeight = 480,
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun rawObjectsKeepStandardThumbnailFirst() {
         assertFalse(
             CameraVendorThumbnailReadPolicy.shouldReadPartialPreviewBeforeStandardThumbnail(
@@ -35,15 +49,20 @@ class CameraVendorThumbnailReadPolicyTest {
         )
     }
 
-    private fun objectInfo(format: Int, compressedSize: Int): ObjectInfo = ObjectInfo(
+    private fun objectInfo(
+        format: Int,
+        compressedSize: Int,
+        thumbPixWidth: Int = 0,
+        thumbPixHeight: Int = 0,
+    ): ObjectInfo = ObjectInfo(
         handle = 1,
         storageId = 0,
         format = format,
         compressedSize = compressedSize,
         thumbFormat = PtpObjectFormat.JPEG,
         thumbCompressedSize = 0,
-        thumbPixWidth = 0,
-        thumbPixHeight = 0,
+        thumbPixWidth = thumbPixWidth,
+        thumbPixHeight = thumbPixHeight,
         imagePixWidth = 0,
         imagePixHeight = 0,
         parentObject = 0,
