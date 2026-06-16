@@ -90,6 +90,15 @@ object GalleryDateMetadataPolicy {
         files.isNotEmpty() && files.none { GalleryUiPolicy.captureDate(it) != null }
 }
 
+object GalleryDateDialogPolicy {
+    fun emptyMessage(isLoadingMetadata: Boolean): String =
+        if (isLoadingMetadata) {
+            "正在读取相机照片日期..."
+        } else {
+            "相机文件里没有可识别日期"
+        }
+}
+
 object GallerySortPolicy {
     fun sortedFiles(
         files: List<CameraFile>,

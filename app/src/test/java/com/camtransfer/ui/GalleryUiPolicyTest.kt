@@ -256,6 +256,18 @@ class GalleryUiPolicyTest {
     }
 
     @Test
+    fun dateDialogPolicyDistinguishesLoadingMetadataFromNoRecognizedDates() {
+        assertEquals(
+            "正在读取相机照片日期...",
+            GalleryDateDialogPolicy.emptyMessage(isLoadingMetadata = true),
+        )
+        assertEquals(
+            "相机文件里没有可识别日期",
+            GalleryDateDialogPolicy.emptyMessage(isLoadingMetadata = false),
+        )
+    }
+
+    @Test
     fun activeAndSavedDownloadsAreNotSelectableAgain() {
         assertTrue(GalleryDownloadUiPolicy.canSelect(TransferState.ERROR))
         assertTrue(GalleryDownloadUiPolicy.canSelect(null))

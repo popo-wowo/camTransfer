@@ -202,6 +202,7 @@ fun BrowseScreen(
     if (showsDatePicker) {
         DatePickerDialog(
             days = captureDays,
+            isLoadingMetadata = isLoading && GalleryDateMetadataPolicy.shouldLoadMetadataForDatePicker(files),
             onDismiss = { showsDatePicker = false },
             onSelect = { day ->
                 filterState = filterState.copy(date = GalleryDateFilter.SpecificDay(day))
@@ -213,6 +214,7 @@ fun BrowseScreen(
         DateRangePickerDialog(
             days = captureDays,
             initialRange = filterState.date as? GalleryDateFilter.Range,
+            isLoadingMetadata = isLoading && GalleryDateMetadataPolicy.shouldLoadMetadataForDatePicker(files),
             onDismiss = { showsDateRangePicker = false },
             onSelect = { start, end ->
                 filterState = filterState.copy(date = GalleryDateFilter.Range(start, end))
@@ -1399,6 +1401,7 @@ private fun ZoomablePreviewImage(
 @Composable
 private fun DatePickerDialog(
     days: List<LocalDate>,
+    isLoadingMetadata: Boolean,
     onDismiss: () -> Unit,
     onSelect: (LocalDate) -> Unit,
 ) {
@@ -1411,7 +1414,17 @@ private fun DatePickerDialog(
         title = { Text("选择日期") },
         text = {
             if (days.isEmpty()) {
-                Text("相机文件里没有可识别日期")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (isLoadingMetadata) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = CamTransferColors.Accent,
+                        )
+                        Spacer(Modifier.width(10.dp))
+                    }
+                    Text(GalleryDateDialogPolicy.emptyMessage(isLoadingMetadata))
+                }
             } else {
                 LazyColumn(modifier = Modifier.height(280.dp)) {
                     items(days) { day ->
@@ -1435,6 +1448,7 @@ private fun DatePickerDialog(
 private fun DateRangePickerDialog(
     days: List<LocalDate>,
     initialRange: GalleryDateFilter.Range?,
+    isLoadingMetadata: Boolean,
     onDismiss: () -> Unit,
     onSelect: (LocalDate, LocalDate) -> Unit,
 ) {
@@ -1470,7 +1484,17 @@ private fun DateRangePickerDialog(
         title = { Text("选择时间范围") },
         text = {
             if (days.isEmpty()) {
-                Text("相机文件里没有可识别日期")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (isLoadingMetadata) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = CamTransferColors.Accent,
+                        )
+                        Spacer(Modifier.width(10.dp))
+                    }
+                    Text(GalleryDateDialogPolicy.emptyMessage(isLoadingMetadata))
+                }
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
