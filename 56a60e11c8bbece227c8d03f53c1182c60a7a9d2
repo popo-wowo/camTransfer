@@ -1,0 +1,21 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "56a60e11c8bbece227c8d03f53c1182c60a7a9d2",
+  "prompts": {
+    "56574f5cdf111385": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ecb83-289f-7222-8395-f1b2a94df29e",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 378,
+      "overriden_lines": 0
+    }
+  }
+}
