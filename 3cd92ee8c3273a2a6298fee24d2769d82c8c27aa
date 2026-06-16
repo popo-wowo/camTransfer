@@ -1,0 +1,179 @@
+app/src/test/java/com/camtransfer/ble/CameraVendorBleReconnectPolicyTest.kt
+  983e931dae46869e 19-22,26-27,36-54,58
+app/src/test/java/com/camtransfer/protocol/CameraVendorGalleryDiscoveryPolicyTest.kt
+  983e931dae46869e 67,69
+app/src/test/java/com/camtransfer/protocol/CameraVendorPtpConnectionStartupPolicyTest.kt
+  983e931dae46869e 8-9,11-13
+app/src/main/java/com/camtransfer/model/CameraFile.kt
+  983e931dae46869e 19
+app/src/test/java/com/camtransfer/protocol/CameraVendorPtpDataParserImageTest.kt
+  983e931dae46869e 10-29,47-57
+docs/android-official-xapp-connection-analysis.md
+  983e931dae46869e 3,82,138-156,171,173,179,189,203,207,242-293,296-297,304,329-386,388-392
+app/src/test/java/com/camtransfer/ble/CameraVendorBleNotificationSubscriptionPolicyTest.kt
+  983e931dae46869e 1-29
+app/src/test/java/com/camtransfer/ble/CameraVendorHandshakeIdentityPolicyTest.kt
+  983e931dae46869e 9,11,17,19,23
+app/src/main/java/com/camtransfer/ble/CameraVendorBleReconnectPolicy.kt
+  983e931dae46869e 15-32
+app/src/test/java/com/camtransfer/service/TransferDownloadFilePolicyTest.kt
+  983e931dae46869e 1-78
+app/src/main/java/com/camtransfer/ui/BrowseScreen.kt
+  983e931dae46869e 150,154-156,186-195,242-244,378,938,940-941,1100,1117-1125,1508-1522,1526-1527,1540,1542
+app/src/test/java/com/camtransfer/service/TransferHistoryPolicyTest.kt
+  983e931dae46869e 1-70
+app/build.gradle.kts
+  983e931dae46869e 42-44
+app/src/test/java/com/camtransfer/ble/CameraVendorBleHandshakeModePolicyTest.kt
+  983e931dae46869e 1-13
+app/src/main/java/com/camtransfer/viewmodel/BrowseViewModel.kt
+  983e931dae46869e 13,36,38,40-41,69-85,92,106-125,128,141-172,191,205-207,218,220-224,233,264,267,269,277-292,311,326-332,339-362,388-389,394-399,401,406,417,419,421-438,443-454
+app/src/main/java/com/camtransfer/service/CameraVendorPairedCameraStorePolicy.kt
+  983e931dae46869e 1-114
+app/src/main/java/com/camtransfer/service/CameraService.kt
+  983e931dae46869e 11,16,20,68-72,76-88,98,136-139,144,150-173,176-188,192-204,208-225,234,244-256,341,344-358,360-381,384-388,394,425,461,481-503,524-528,534-544,546,548-550,591-596,610-625
+app/src/test/java/com/camtransfer/ble/CameraVendorBleTransferActivationPolicyTest.kt
+  983e931dae46869e 47,52,67
+app/src/main/java/com/camtransfer/viewmodel/CameraConnectionUiPolicy.kt
+  983e931dae46869e 21
+app/src/main/java/com/camtransfer/protocol/PtpConnection.kt
+  983e931dae46869e 4,43-46,53-99,104-111,191,198-200,203,206-208
+app/src/test/java/com/camtransfer/viewmodel/ThumbnailRequestTrackerTest.kt
+  983e931dae46869e 4,40-84,93-103
+app/src/main/java/com/camtransfer/service/CameraFileSource.kt
+  983e931dae46869e 15-19,24-28
+app/src/main/java/com/camtransfer/ui/ConnectScreen.kt
+  983e931dae46869e 51,68-69,117-123,274-279,284-356
+app/src/main/java/com/camtransfer/ble/CameraVendorBleTransferActivationPolicy.kt
+  983e931dae46869e 15,41
+app/src/main/java/com/camtransfer/protocol/CameraVendorGalleryDiscoveryPolicy.kt
+  983e931dae46869e 17
+app/src/main/java/com/camtransfer/service/CameraVendorPairedCameraStore.kt
+  983e931dae46869e 11-12,26,31-38,42-57,65,69-72,75-77,82,144-146,151
+app/src/test/java/com/camtransfer/protocol/CameraVendorThumbnailReadPolicyTest.kt
+  983e931dae46869e 21-22,30-40,62-82
+app/src/main/java/com/camtransfer/ble/CameraVendorBleHandshake.kt
+  983e931dae46869e 125,142,150,158,168,207-215,238,265-280,295-302,331-362,371,379-382,385,387,424-433,436,443,447,501-510,669-675,859-863,957-961
+app/src/test/java/com/camtransfer/service/CameraVendorCameraIdentityPolicyTest.kt
+  983e931dae46869e 1-82
+app/src/main/java/com/camtransfer/service/CameraConnectionFlow.kt
+  983e931dae46869e 3,32,319-377
+app/src/test/java/com/camtransfer/protocol/PtpConnectionInitFallbackTest.kt
+  983e931dae46869e 1-96
+app/src/test/java/com/camtransfer/ui/GalleryUiPolicyTest.kt
+  983e931dae46869e 216-220,302-328,416-458,483,502,519
+app/src/main/java/com/camtransfer/ble/CameraVendorCameraPairingConfirmationPolicy.kt
+  983e931dae46869e 5-7,46,48-59
+app/src/main/java/com/camtransfer/protocol/CameraVendorPtpIdentityPolicy.kt
+  983e931dae46869e 1-13
+app/src/test/java/com/camtransfer/protocol/CameraVendorOfficialGalleryStartupPolicyTest.kt
+  983e931dae46869e 1-28
+app/src/test/java/com/camtransfer/ble/CameraVendorBlePairingPolicyTest.kt
+  983e931dae46869e 79-86
+app/src/main/java/com/camtransfer/service/CameraVendorOfficialCameraOpenAdapter.kt
+  983e931dae46869e 1-44
+app/src/main/java/com/camtransfer/ble/CameraVendorBleHandshakeMode.kt
+  983e931dae46869e 1-8
+app/src/main/java/com/camtransfer/viewmodel/ConnectionViewModel.kt
+  983e931dae46869e 12,62-67,72,194,230,267-270,307,344,363,365-370,377-392,465-467,470,490-492,495-496,507-518,522-524
+app/src/test/java/com/camtransfer/protocol/CameraVendorPtpIdentityPolicyTest.kt
+  983e931dae46869e 1-30
+app/src/main/java/com/camtransfer/viewmodel/TransferViewModel.kt
+  983e931dae46869e 23
+app/src/test/java/com/camtransfer/ui/ConnectionPairedCameraSelectorPolicyTest.kt
+  983e931dae46869e 1-42
+app/src/test/java/com/camtransfer/service/CameraVendorPairedCameraStorePolicyTest.kt
+  983e931dae46869e 1-87
+app/src/main/java/com/camtransfer/protocol/CameraVendorPtpConnectionStartupPolicy.kt
+  983e931dae46869e 4-8,10-11
+app/src/test/java/com/camtransfer/service/CameraVendorOfficialCameraOpenAdapterTest.kt
+  983e931dae46869e 1-33
+app/src/main/java/com/camtransfer/protocol/CameraVendorPtpDataParser.kt
+  983e931dae46869e 58,62,142-157
+app/src/test/java/com/camtransfer/protocol/CameraVendorOfficialCameraOpenPolicyTest.kt
+  983e931dae46869e 1-21
+app/src/test/java/com/camtransfer/ble/CameraVendorBleSessionReusePolicyTest.kt
+  983e931dae46869e 1-67
+app/src/test/java/com/camtransfer/protocol/CameraVendorPtpInitPolicyTest.kt
+  983e931dae46869e 1-31
+app/src/main/java/com/camtransfer/ui/TransferScreen.kt
+  983e931dae46869e 6,49,52,63,65-72,87,95,107,147,187,263-273,275-276,287,289,306-311
+app/src/test/java/com/camtransfer/service/CameraConnectionFlowTest.kt
+  983e931dae46869e 6-7,11-66
+app/src/main/java/com/camtransfer/service/TransferService.kt
+  983e931dae46869e 27-32,61,63-72,94-101,104-105,110-111,114,118,123,126,130,133-135,138,145,149,170,186-232
+app/src/main/java/com/camtransfer/service/DownloadedFileStore.kt
+  983e931dae46869e 6,12,22-31,37,53-58,110-161
+app/src/test/java/com/camtransfer/viewmodel/GalleryFileLoadPolicyTest.kt
+  983e931dae46869e 110-178
+app/src/test/java/com/camtransfer/service/DownloadedFileStoreTest.kt
+  983e931dae46869e 33-43
+app/src/main/java/com/camtransfer/service/DiagnosticLog.kt
+  983e931dae46869e 19
+app/src/test/java/com/camtransfer/viewmodel/CameraConnectionStatusPolicyTest.kt
+  983e931dae46869e 47-83,97,104-108
+app/src/main/java/com/camtransfer/service/CameraVendorCameraIdentityPolicy.kt
+  983e931dae46869e 1-54
+app/src/main/java/com/camtransfer/ble/CameraVendorBleNotificationSubscriptionPolicy.kt
+  983e931dae46869e 1-7
+app/src/main/java/com/camtransfer/ble/CameraVendorBleSessionReusePolicy.kt
+  983e931dae46869e 1-16
+app/src/main/java/com/camtransfer/ble/CameraVendorHandshakeIdentityPolicy.kt
+  983e931dae46869e 3,7,9-11,13-18
+app/src/main/java/com/camtransfer/ui/GalleryUiPolicy.kt
+  983e931dae46869e 174-181,237-252,267-270,347-354,398-412,438
+app/src/main/java/com/camtransfer/protocol/CameraVendorOfficialCameraOpenPolicy.kt
+  983e931dae46869e 1-15
+app/src/main/java/com/camtransfer/MainActivity.kt
+  983e931dae46869e 237-241
+app/src/test/java/com/camtransfer/service/CameraVendorTerminalIdentityPolicyTest.kt
+  983e931dae46869e 1-40
+app/src/main/java/com/camtransfer/ble/CameraVendorBlePairingPolicy.kt
+  983e931dae46869e 12-18
+app/src/test/java/com/camtransfer/ble/CameraVendorCameraPairingConfirmationPolicyTest.kt
+  983e931dae46869e 75,81-97,105-133
+docs/camera-vendor-adaptation-protocol.md
+  983e931dae46869e 231-236,238-241
+app/src/main/java/com/camtransfer/service/CameraVendorTerminalIdentityStore.kt
+  983e931dae46869e 1-50
+app/src/main/java/com/camtransfer/protocol/CameraVendorPtpInitPolicy.kt
+  983e931dae46869e 1-26
+app/src/main/java/com/camtransfer/protocol/PtpCommands.kt
+  983e931dae46869e 38-52,56-59,61,117-120,125-133,138-140,153-155,158,185,194-241,248-257,438-442,482-485,491-495,498,502-505,507,510-518
+app/src/main/java/com/camtransfer/protocol/CameraVendorOfficialGalleryStartupPolicy.kt
+  983e931dae46869e 1-30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "3cd92ee8c3273a2a6298fee24d2769d82c8c27aa",
+  "prompts": {
+    "56574f5cdf111385": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ecb83-289f-7222-8395-f1b2a94df29e",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 378,
+      "total_deletions": 0,
+      "accepted_lines": 378,
+      "overriden_lines": 0
+    },
+    "983e931dae46869e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e8daa-1aee-7bb3-9a69-d36426d30591",
+        "model": "gpt-5.5"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 3209,
+      "total_deletions": 348,
+      "accepted_lines": 3156,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/e74fdfa930397425b878ab2e2a56814eb5d5c7d280d511c43eadf45feacf57f4"
+    }
+  }
+}
