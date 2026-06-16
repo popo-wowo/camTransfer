@@ -183,6 +183,11 @@ fun BrowseScreen(
             gridState.scrollToItem(0)
         }
     }
+    LaunchedEffect(filterState.date, files, cameraSource) {
+        if (GalleryDateMetadataPolicy.shouldLoadMetadataForDateFilter(files, filterState.date)) {
+            viewModel.loadFiles(cameraSource)
+        }
+    }
     LaunchedEffect(cameraSource, isTransferring) {
         if (!isTransferring) {
             viewModel.resumeThumbnailLoadingAfterTransfer(cameraSource)
@@ -300,8 +305,18 @@ fun BrowseScreen(
                 onStateChange = { filterState = it },
                 sortMode = sortMode,
                 onSortModeChange = { sortMode = it },
-                onPickDate = { showsDatePicker = true },
-                onPickDateRange = { showsDateRangePicker = true },
+                onPickDate = {
+                    if (GalleryDateMetadataPolicy.shouldLoadMetadataForDatePicker(files)) {
+                        viewModel.loadFiles(cameraSource)
+                    }
+                    showsDatePicker = true
+                },
+                onPickDateRange = {
+                    if (GalleryDateMetadataPolicy.shouldLoadMetadataForDatePicker(files)) {
+                        viewModel.loadFiles(cameraSource)
+                    }
+                    showsDateRangePicker = true
+                },
             )
             GallerySelectionTools(
                 selectedCount = selectedFiles.size,

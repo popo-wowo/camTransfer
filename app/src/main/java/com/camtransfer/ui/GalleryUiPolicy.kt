@@ -53,7 +53,7 @@ object GalleryUiPolicy {
     }
 
     private fun matchesDate(file: CameraFile, date: GalleryDateFilter, today: LocalDate): Boolean {
-        val captureDay = captureDate(file) ?: return true
+        val captureDay = captureDate(file) ?: return date == GalleryDateFilter.All
         return when (date) {
             GalleryDateFilter.All -> true
             GalleryDateFilter.Today -> captureDay == today
@@ -77,6 +77,17 @@ object GalleryUiPolicy {
             }
         }
     }
+}
+
+object GalleryDateMetadataPolicy {
+    fun shouldLoadMetadataForDateFilter(
+        files: List<CameraFile>,
+        dateFilter: GalleryDateFilter,
+    ): Boolean =
+        dateFilter != GalleryDateFilter.All && shouldLoadMetadataForDatePicker(files)
+
+    fun shouldLoadMetadataForDatePicker(files: List<CameraFile>): Boolean =
+        files.isNotEmpty() && files.none { GalleryUiPolicy.captureDate(it) != null }
 }
 
 object GallerySortPolicy {

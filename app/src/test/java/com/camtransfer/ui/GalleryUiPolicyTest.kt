@@ -43,6 +43,37 @@ class GalleryUiPolicyTest {
     }
 
     @Test
+    fun activeDateFilterDoesNotMatchFilesWithUnknownCaptureDate() {
+        val today = LocalDate.of(2026, 5, 29)
+        val files = listOf(
+            file(1, PtpObjectFormat.JPEG, ""),
+            file(2, PtpObjectFormat.JPEG, "20260529T091500"),
+            file(3, PtpObjectFormat.JPEG, "20260528T101500"),
+        )
+
+        assertEquals(
+            listOf(1, 2, 3),
+            GalleryUiPolicy.filteredFiles(files, GalleryFilterState(), today).map { it.info.handle },
+        )
+        assertEquals(
+            listOf(2),
+            GalleryUiPolicy.filteredFiles(
+                files,
+                GalleryFilterState(date = GalleryDateFilter.Today),
+                today,
+            ).map { it.info.handle },
+        )
+        assertEquals(
+            listOf(3),
+            GalleryUiPolicy.filteredFiles(
+                files,
+                GalleryFilterState(date = GalleryDateFilter.SpecificDay(LocalDate.of(2026, 5, 28))),
+                today,
+            ).map { it.info.handle },
+        )
+    }
+
+    @Test
     fun dateRangeFilterIncludesPhotosWithinInclusiveRange() {
         val today = LocalDate.of(2026, 5, 29)
         val state = GalleryFilterState(
@@ -192,6 +223,36 @@ class GalleryUiPolicyTest {
                 sortMode = GallerySortMode.NotDownloadedFirst,
             ),
         )
+    }
+
+    @Test
+    fun dateMetadataPolicyLoadsMetadataWhenDateFilterNeedsRealCaptureDates() {
+        val placeholders = listOf(
+            file(1, PtpObjectFormat.JPEG, ""),
+            file(2, PtpObjectFormat.JPEG, ""),
+        )
+        val filesWithKnownDate = placeholders + file(3, PtpObjectFormat.JPEG, "20260529T101500")
+
+        assertFalse(
+            GalleryDateMetadataPolicy.shouldLoadMetadataForDateFilter(
+                files = placeholders,
+                dateFilter = GalleryDateFilter.All,
+            )
+        )
+        assertTrue(
+            GalleryDateMetadataPolicy.shouldLoadMetadataForDateFilter(
+                files = placeholders,
+                dateFilter = GalleryDateFilter.Today,
+            )
+        )
+        assertTrue(GalleryDateMetadataPolicy.shouldLoadMetadataForDatePicker(placeholders))
+        assertFalse(
+            GalleryDateMetadataPolicy.shouldLoadMetadataForDateFilter(
+                files = filesWithKnownDate,
+                dateFilter = GalleryDateFilter.Today,
+            )
+        )
+        assertFalse(GalleryDateMetadataPolicy.shouldLoadMetadataForDatePicker(filesWithKnownDate))
     }
 
     @Test
