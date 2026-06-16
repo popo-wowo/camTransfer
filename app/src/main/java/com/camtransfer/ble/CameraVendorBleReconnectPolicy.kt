@@ -16,19 +16,12 @@ object CameraVendorBleReconnectPolicy {
         hasRememberedBluetoothAddress: Boolean,
         hasStableCameraIdentity: Boolean = false,
     ): List<CameraVendorBleReconnectStage> =
-        if (hasStableCameraIdentity) {
-            listOf(
-                CameraVendorBleReconnectStage.FastScan,
-                CameraVendorBleReconnectStage.ScanFallback,
-            )
-        } else if (hasRememberedBluetoothAddress) {
+        if (hasRememberedBluetoothAddress) {
             listOf(
                 CameraVendorBleReconnectStage.DirectAddress,
-                CameraVendorBleReconnectStage.FastScan,
-                CameraVendorBleReconnectStage.ScanFallback,
             )
         } else {
-            listOf(CameraVendorBleReconnectStage.ScanFallback)
+            emptyList()
         }
 
     fun retryDelayMs(afterFailedAttempt: Int): Long {
