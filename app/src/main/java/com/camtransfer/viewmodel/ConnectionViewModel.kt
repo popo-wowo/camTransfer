@@ -9,6 +9,7 @@ import com.camtransfer.service.CameraConnectionIssueClassifier
 import com.camtransfer.service.CameraConnectionMode
 import com.camtransfer.service.CameraConnectionStep
 import com.camtransfer.service.CameraService
+import com.camtransfer.service.CameraVendorPairedCameraRecord
 import com.camtransfer.service.DiagnosticLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -58,10 +59,17 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
     private val _preferCompressedDownloads = MutableStateFlow(cameraService.preferCompressedDownloads())
     val preferCompressedDownloads: StateFlow<Boolean> = _preferCompressedDownloads.asStateFlow()
 
+    private val _pairedCameras = MutableStateFlow<List<CameraVendorPairedCameraRecord>>(emptyList())
+    val pairedCameras: StateFlow<List<CameraVendorPairedCameraRecord>> = _pairedCameras.asStateFlow()
+
+    private val _selectedCameraId = MutableStateFlow<String?>(null)
+    val selectedCameraId: StateFlow<String?> = _selectedCameraId.asStateFlow()
+
     private var connectionJob: Job? = null
 
     init {
         DiagnosticLog.append(appContext, "App", "ConnectionViewModel initialized")
+        refreshPairedCameras()
         cameraService.rememberedPairing()?.let { remembered ->
             _state.value = ConnectionState.PAIRED
             _statusText.value = "已配对 ${remembered.deviceName}"
@@ -183,6 +191,7 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 _state.value = ConnectionState.PAIRED
                 _activeStep.value = CameraConnectionStep.SavePairing
+                refreshPairedCameras()
                 val remembered = cameraService.rememberedPairing()
                 _statusText.value = remembered?.let { "已配对 ${it.deviceName}" } ?: "已保存配对"
                 _connectionIssue.value = null
@@ -218,6 +227,7 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
                 _state.value = ConnectionState.CONNECTED
                 _activeStep.value = CameraConnectionStep.LoadGallery
                 _connectionIssue.value = null
+                refreshPairedCameras()
                 DiagnosticLog.append(appContext, "Connection", "Gallery connection established")
                 publishGalleryConnectionEvent()
             } catch (e: Exception) {
@@ -254,9 +264,10 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
                     }
                 }
                 if (directPtpConnected) {
-                    _state.value = ConnectionState.CONNECTED
-                    _connectionIssue.value = null
-                    DiagnosticLog.append(appContext, "Connection", "Gallery connection established after manual WiFi")
+                _state.value = ConnectionState.CONNECTED
+                _connectionIssue.value = null
+                refreshPairedCameras()
+                DiagnosticLog.append(appContext, "Connection", "Gallery connection established after manual WiFi")
                     publishGalleryConnectionEvent()
                 } else {
                     val issue = CameraConnectionIssue.ptpNotReady()
@@ -293,6 +304,7 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
                 _state.value = ConnectionState.CONNECTED
                 _activeStep.value = CameraConnectionStep.LoadGallery
                 _connectionIssue.value = null
+                refreshPairedCameras()
                 DiagnosticLog.append(appContext, "Connection", "Gallery connection established after WiFi retry")
                 publishGalleryConnectionEvent()
             } catch (e: Exception) {
@@ -329,6 +341,7 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
             DiagnosticLog.append(appContext, "Connection", "Disconnect requested")
             cancelConnectionJob()
             cameraService.disconnect()
+            refreshPairedCameras()
             _state.value = ConnectionState.IDLE
             cameraService.rememberedPairing()?.let { remembered ->
                 _state.value = ConnectionState.PAIRED
@@ -347,12 +360,34 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
             DiagnosticLog.append(appContext, "Connection", "Forget pairing requested")
             cancelConnectionJob()
             cameraService.forgetPairing()
+            refreshPairedCameras()
             _state.value = ConnectionState.IDLE
-            _statusText.value = ""
+            cameraService.rememberedPairing()?.let { remembered ->
+                _state.value = ConnectionState.PAIRED
+                _statusText.value = "已配对 ${remembered.deviceName}"
+            } ?: run {
+                _statusText.value = ""
+            }
             _error.value = null
             _connectionIssue.value = null
             _activeStep.value = null
         }
+    }
+
+    fun selectPairedCamera(cameraId: String) {
+        if (_state.value != ConnectionState.PAIRED) return
+        cameraService.selectPairedCamera(cameraId)
+        refreshPairedCameras()
+        val remembered = cameraService.rememberedPairing()
+        _statusText.value = remembered?.let { "已配对 ${it.deviceName}" } ?: "已保存配对"
+        _error.value = null
+        _connectionIssue.value = null
+    }
+
+    private fun refreshPairedCameras() {
+        val cameras = cameraService.pairedCameras()
+        _pairedCameras.value = cameras
+        _selectedCameraId.value = cameraService.selectedCameraId()
     }
 
     private fun publishIssue(step: CameraConnectionStep, error: Throwable) {
@@ -427,8 +462,12 @@ internal object CameraConnectionStatusPolicy {
 
     fun galleryState(status: String, currentState: ConnectionState): ConnectionState =
         when {
+            status.hasTransferAuthorizationText() ||
+                status.hasCameraWifiActivationText() ||
+                status.hasCameraWifiReadyWaitText() -> ConnectionState.CONNECTING_BLE
             status.hasWifiText() -> ConnectionState.CONNECTING_WIFI
             status.hasAlbumChannelText() -> ConnectionState.CONNECTING_PTP
+            status.hasGalleryModeConfirmationText() -> ConnectionState.CONNECTING_PTP
             "已连接" in status -> ConnectionState.CONNECTED
             status.hasRememberedBleReconnectText() ||
                 "蓝牙" in status ||
@@ -448,9 +487,13 @@ internal object CameraConnectionStatusPolicy {
     fun galleryStep(status: String, currentStep: CameraConnectionStep): CameraConnectionStep =
         when {
             status.hasRememberedBleReconnectText() -> CameraConnectionStep.ReconnectPairedBle
-            "恢复" in status || "触发" in status || "传图" in status -> CameraConnectionStep.ActivateCameraWifi
+            status.hasTransferAuthorizationText() -> CameraConnectionStep.TransferAuthorization
+            status.hasCameraWifiActivationText() -> CameraConnectionStep.ActivateCameraWifi
+            status.hasCameraWifiReadyWaitText() -> CameraConnectionStep.WaitCameraWifiReady
             status.hasWifiText() -> CameraConnectionStep.JoinCameraWifi
             status.hasAlbumChannelText() -> CameraConnectionStep.ConnectPtp
+            status.hasGalleryModeConfirmationText() -> CameraConnectionStep.ConfirmGalleryMode
+            "恢复" in status || "触发" in status || "传图" in status -> CameraConnectionStep.ActivateCameraWifi
             "已连接" in status -> CameraConnectionStep.LoadGallery
             else -> currentStep
         }
@@ -461,8 +504,22 @@ internal object CameraConnectionStatusPolicy {
     private fun String.hasAlbumChannelText(): Boolean =
         "PTP" in this || "相册通道" in this
 
+    private fun String.hasTransferAuthorizationText(): Boolean =
+        "确认相机允许" in this
+
+    private fun String.hasCameraWifiActivationText(): Boolean =
+        "让相机打开" in this && hasWifiText()
+
+    private fun String.hasCameraWifiReadyWaitText(): Boolean =
+        "等待相机确认" in this && "准备好" in this && hasWifiText()
+
+    private fun String.hasGalleryModeConfirmationText(): Boolean =
+        "确认相机" in this && "相册模式" in this
+
     private fun String.hasRememberedBleReconnectText(): Boolean =
         "直连已配对相机" in this ||
             "查找已配对相机" in this ||
-            "唤醒已配对相机" in this
+            "唤醒已配对相机" in this ||
+            "复用刚才的相机蓝牙连接" in this ||
+            "这台已配对相机" in this
 }

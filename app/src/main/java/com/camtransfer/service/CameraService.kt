@@ -8,13 +8,16 @@ import android.content.Context
 import android.util.Log
 import com.camtransfer.ble.CameraVendorCameraPairingConfirmationPolicy
 import com.camtransfer.ble.CameraVendorBleHandshake
+import com.camtransfer.ble.CameraVendorBleHandshakeMode
 import com.camtransfer.ble.CameraVendorBleScanner
 import com.camtransfer.ble.CameraVendorBleReconnectPolicy
 import com.camtransfer.ble.CameraVendorBleReconnectStage
 import com.camtransfer.ble.CameraVendorBleTransferActivationPolicy
+import com.camtransfer.ble.CameraVendorHandshakeIdentityPolicy
 import com.camtransfer.model.CameraFile
 import com.camtransfer.model.ObjectInfo
 import com.camtransfer.protocol.CameraVendorGalleryDiscoveryPolicy
+import com.camtransfer.protocol.CameraVendorPtpIdentityPolicy
 import com.camtransfer.protocol.CameraVendorPtpConnectionStartupPolicy
 import com.camtransfer.protocol.PtpCommands
 import com.camtransfer.protocol.PtpConnection
@@ -62,7 +65,25 @@ class CameraService(override val context: Context) : CameraFileSource {
             serialNumber = "",
             wifiConfigurations = emptyList(),
             bluetoothAddress = bondedCamera.address,
+            cameraId = CameraVendorCameraIdentityPolicy.cameraId(
+                serialNumber = "",
+                deviceName = bondedCamera.name,
+                bluetoothAddress = bondedCamera.address,
+            ),
         )
+    }
+
+    fun pairedCameras(): List<CameraVendorPairedCameraRecord> =
+        pairingStore.loadAll().ifEmpty {
+            rememberedPairing()?.let { listOf(it) }.orEmpty()
+        }
+
+    fun selectedCameraId(): String? =
+        rememberedPairing()?.cameraId
+
+    fun selectPairedCamera(cameraId: String) {
+        pairingStore.select(cameraId)
+        handshake = null
     }
 
     suspend fun connectToCamera(onStatus: (String) -> Unit = {}) {
@@ -74,7 +95,7 @@ class CameraService(override val context: Context) : CameraFileSource {
     suspend fun connectExistingCameraWifiToGallery(onStatus: (String) -> Unit = {}): Boolean {
         onStatus("正在检测已连接的相机 WiFi/PTP...")
         return runCatching {
-            connection.connect()
+            connection.connect(clientName = cameraVendorPtpClientName())
             onStatus("已连接")
             Log.d(TAG, "Existing camera PTP connection established")
             DiagnosticLog.append(context, TAG, "Existing camera PTP connection established")
@@ -112,53 +133,96 @@ class CameraService(override val context: Context) : CameraFileSource {
             throw IllegalStateException("相机端还没有完成识别号 ACK，不能确认配对")
         }
 
+        onStatus("正在确认手机蓝牙配对已完成")
+        if (!hs.waitForSystemBondSettled()) {
+            throw IllegalStateException("手机系统蓝牙配对还没有完成，请先确认系统配对弹窗和相机屏幕提示")
+        }
         onStatus("正在向相机确认配对结果")
         hs.confirmCameraPairingSucceeded()
         DiagnosticLog.append(context, TAG, "Camera pairing confirmed")
         pairingStore.save(
-            CameraVendorPairedCameraRecord(
-                deviceName = hs.cameraName(),
-                serialNumber = hs.cameraSerial(),
-                wifiConfigurations = hs.wifiConfigurations(),
-                bluetoothAddress = hs.bluetoothAddress(),
-            )
+            rememberedRecordFor(hs)
         )
         onStatus("配对成功")
     }
 
     suspend fun connectPairedCameraToGallery(onStatus: (String) -> Unit = {}) {
-        val remembered = pairingStore.load()
-        val hs = handshake ?: runCatching {
-            reconnectRememberedCamera(onStatus)
-        }.getOrElse { reconnectError ->
-            if (CameraConnectionCancellationPolicy.shouldPropagate(reconnectError)) throw reconnectError
-            Log.w(TAG, "BLE remembered reconnect failed; not attempting WiFi before camera transfer activation", reconnectError)
-            throw IllegalStateException(
-                "无法唤醒相机进入传图模式。请确认相机蓝牙已开启，然后重新点进入相机相册；不会在未唤醒相机时直接连接 WiFi。",
-                reconnectError,
-            )
+        val adapter = CameraVendorOfficialGalleryConnectionAdapter(
+            onStepStarted = { step ->
+                DiagnosticLog.append(context, TAG, "Official gallery step started step=$step")
+            },
+            onStepConfirmed = { step ->
+                DiagnosticLog.append(context, TAG, "Official gallery step confirmed step=$step")
+            },
+        )
+        val remembered = rememberedPairing()
+        val existingHandshake = handshake
+        val hs = adapter.confirmStep(CameraConnectionStep.ReconnectPairedBle) {
+            if (existingHandshake != null && remembered != null) {
+                ensureRememberedCameraIdentity(existingHandshake, remembered)
+            }
+            existingHandshake ?: runCatching {
+                reconnectRememberedCamera(onStatus)
+            }.getOrElse { reconnectError ->
+                if (CameraConnectionCancellationPolicy.shouldPropagate(reconnectError)) throw reconnectError
+                Log.w(TAG, "BLE remembered reconnect failed; not attempting WiFi before camera transfer activation", reconnectError)
+                throw IllegalStateException(
+                    "无法唤醒相机进入传图模式。请确认相机蓝牙已开启，然后重新点进入相机相册；不会在未唤醒相机时直接连接 WiFi。",
+                    reconnectError,
+                )
+            }
         }
 
-        onStatus("正在用蓝牙唤醒相机的传图模式")
-        val wifiConfigurations = hs.refreshWifiConfigurations().ifEmpty {
-            remembered?.wifiConfigurations.orEmpty()
+        val wifiConfigurations = adapter.confirmStep(CameraConnectionStep.TransferAuthorization) {
+            onStatus("正在确认相机允许这台手机传图")
+            val officialWifiConfiguration = hs.refreshReferenceAppWifiConfiguration()
+            if (officialWifiConfiguration != null) {
+                saveRememberedHandshake(hs)
+            }
+            hs.confirmCameraPairingSucceeded()
+            DiagnosticLog.append(context, TAG, "Gallery transfer authorization replay confirmed")
+            listOfNotNull(officialWifiConfiguration)
+                .ifEmpty { remembered?.wifiConfigurations.orEmpty() }
+                .ifEmpty {
+                    throw IllegalStateException("相机没有返回官方 Wi-Fi 名称和密码，已停止进入相册")
+                }
         }
-
-        onStatus("正在确认相机允许这台手机传图")
-        hs.confirmCameraPairingSucceeded()
 
         val preferCompressedDownloads = preferCompressedDownloads()
-        onStatus("正在让相机打开自己的 Wi-Fi")
-        DiagnosticLog.append(
-            context,
-            TAG,
-            "Transfer size mode=${if (preferCompressedDownloads) "compressed" else "original"}",
-        )
-        hs.prepareTransferActivation(preferCompressedDownloads)
+        adapter.confirmStep(CameraConnectionStep.ActivateCameraWifi) {
+            onStatus("正在让相机打开自己的 Wi-Fi")
+            DiagnosticLog.append(
+                context,
+                TAG,
+                "Transfer size mode=${if (preferCompressedDownloads) "compressed" else "original"}",
+            )
+            hs.writeTransferActivationRequest(preferCompressedDownloads)
+        }
+        adapter.confirmStep(CameraConnectionStep.WaitCameraWifiReady) {
+            onStatus("正在等待相机确认 Wi-Fi 已准备好")
+            hs.waitForTransferWifiReady()
+        }
         hs.disconnectForWifiHandoff()
         delay(CameraVendorBleTransferActivationPolicy.BLUETOOTH_RELEASE_DELAY_MS)
 
-        connectWifiAndPtp(wifiConfigurations, onStatus)
+        adapter.confirmStep(CameraConnectionStep.JoinCameraWifi) {
+            joinCameraWifi(wifiConfigurations, onStatus)
+        }
+        adapter.confirmStep(CameraConnectionStep.ConnectPtp) {
+            connectPtpWithRetry(onStatus, confirmGalleryMode = false)
+        }
+        adapter.confirmStep(CameraConnectionStep.ConfirmGalleryMode) {
+            onStatus("正在确认相机已经进入相册模式")
+            connection.confirmCameraVendorGalleryMode()
+        }
+        adapter.confirmStep(CameraConnectionStep.LoadGallery) {
+            onStatus("正在读取相机照片数量")
+            connection.loadCameraVendorGalleryObjectHandles()
+        }
+
+        onStatus("已连接")
+        Log.d(TAG, "Full connection established")
+        DiagnosticLog.append(context, TAG, "Full connection established")
     }
 
     suspend fun retryCameraWifiToGallery(onStatus: (String) -> Unit = {}) {
@@ -167,7 +231,7 @@ class CameraService(override val context: Context) : CameraFileSource {
             DiagnosticLog.append(context, TAG, "Probing existing PTP before retrying WiFi request")
             if (connectExistingCameraWifiToGallery(onStatus)) return
         }
-        val wifiConfigurations = handshake?.wifiConfigurations().orEmpty()
+        val wifiConfigurations = handshake?.referenceAppWifiConfigurations().orEmpty()
             .ifEmpty { pairingStore.load()?.wifiConfigurations.orEmpty() }
         DiagnosticLog.append(context, TAG, "Retrying camera WiFi/PTP without BLE activation")
         connectWifiAndPtp(wifiConfigurations, onStatus)
@@ -177,6 +241,19 @@ class CameraService(override val context: Context) : CameraFileSource {
         wifiConfigurations: List<CameraVendorWifiNetworkConfiguration>,
         onStatus: (String) -> Unit,
     ) {
+        joinCameraWifi(wifiConfigurations, onStatus)
+        onStatus("手机已连到相机 Wi-Fi，正在打开相机 PTP 通信会话")
+        connectPtpWithRetry(onStatus)
+
+        onStatus("已连接")
+        Log.d(TAG, "Full connection established")
+        DiagnosticLog.append(context, TAG, "Full connection established")
+    }
+
+    private suspend fun joinCameraWifi(
+        wifiConfigurations: List<CameraVendorWifiNetworkConfiguration>,
+        onStatus: (String) -> Unit,
+    ): CameraVendorWifiNetworkConfiguration {
         if (wifiConfigurations.isEmpty()) {
             throw IllegalStateException("没有可用的相机 WiFi 名称候选")
         }
@@ -261,47 +338,60 @@ class CameraService(override val context: Context) : CameraFileSource {
                 lastError,
             )
         }
-
-        onStatus("手机已连到相机 Wi-Fi，正在等待相机打开相册通道")
-        if (CameraVendorPtpConnectionStartupPolicy.STARTUP_DELAY_MS > 0) {
-            delay(CameraVendorPtpConnectionStartupPolicy.STARTUP_DELAY_MS)
-        }
-        connectPtpWithRetry(onStatus)
-
-        onStatus("已连接")
-        Log.d(TAG, "Full connection established")
-        DiagnosticLog.append(context, TAG, "Full connection established")
+        return configuration
     }
 
-    private suspend fun connectPtpWithRetry(onStatus: (String) -> Unit) {
-        var lastError: Throwable? = null
-        for (attempt in 1..CameraVendorPtpConnectionStartupPolicy.MAX_CONNECT_ATTEMPTS) {
-            try {
-                onStatus("正在打开相机相册通道 ($attempt/${CameraVendorPtpConnectionStartupPolicy.MAX_CONNECT_ATTEMPTS})")
-                val socketFactory = wifiConnector.connectedNetwork?.socketFactory
-                DiagnosticLog.append(context, TAG, "PTP connect attempt=$attempt hasNetworkSocketFactory=${socketFactory != null}")
-                connection.connect(socketFactory = socketFactory)
-                return
-            } catch (error: Throwable) {
-                if (CameraConnectionCancellationPolicy.shouldPropagate(error)) throw error
-                lastError = error
+    private suspend fun connectPtpWithRetry(
+        onStatus: (String) -> Unit,
+        confirmGalleryMode: Boolean = true,
+    ) {
+        val ptpClientName = cameraVendorPtpClientName()
+        DiagnosticLog.append(
+            context,
+            TAG,
+            "PTP legacyInitFriendlyName=$ptpClientName",
+        )
+        CameraVendorOfficialCameraOpenAdapter().open(
+            onAttempt = { attempt, total, _ ->
+                onStatus("正在建立 PTP 连接... ($attempt/$total)")
+            },
+            onFailure = { attempt, total, error ->
                 connection.disconnect()
-                Log.w(TAG, "PTP connection failed ($attempt/${CameraVendorPtpConnectionStartupPolicy.MAX_CONNECT_ATTEMPTS}): $error")
-                DiagnosticLog.append(context, TAG, "PTP connection failed attempt=$attempt", error)
-                if (attempt == CameraVendorPtpConnectionStartupPolicy.MAX_CONNECT_ATTEMPTS) break
-                val delayMs = CameraVendorPtpConnectionStartupPolicy.retryDelayMs(attempt)
-                onStatus("相机相册通道还没响应，${delayMs / 1000.0}s 后再试一次")
-                delay(delayMs)
-            }
-        }
-        throw IllegalStateException("相册通道连接失败，请确认相机仍停留在传图/相册模式后重试", lastError)
+                Log.w(TAG, "PTP official cameraOpen failed ($attempt/$total): $error")
+                DiagnosticLog.append(context, TAG, "PTP official cameraOpen failed attempt=$attempt", error)
+            },
+            onWaitingForStartup = {
+                onStatus("等待相机 PTP 服务就绪...")
+            },
+            onWaitingForRetry = { _, delayMs ->
+                onStatus("PTP 暂未就绪，${delayMs / 1000.0}s 后重试")
+            },
+            openOnce = { timeoutMs ->
+                val socketFactory = wifiConnector.connectedNetwork?.socketFactory
+                DiagnosticLog.append(context, TAG, "PTP official cameraOpen hasNetworkSocketFactory=${socketFactory != null}")
+                connection.connect(
+                    socketFactory = socketFactory,
+                    clientName = ptpClientName,
+                    connectTimeoutMs = timeoutMs.toInt(),
+                    initReadTimeoutMs = CameraVendorPtpConnectionStartupPolicy.INIT_ACK_READ_TIMEOUT_MS.toInt(),
+                    commandReadTimeoutMs = CameraVendorPtpConnectionStartupPolicy.COMMAND_READ_TIMEOUT_MS.toInt(),
+                    confirmGalleryMode = confirmGalleryMode,
+                )
+            },
+        )
     }
+
+    private fun cameraVendorPtpClientName(): String =
+        CameraVendorPtpIdentityPolicy.legacyInitFriendlyName(
+            CameraVendorHandshakeIdentityPolicy.currentConnectedDeviceName()
+        )
 
     private suspend fun reconnectRememberedCamera(onStatus: (String) -> Unit): CameraVendorBleHandshake {
         val remembered = rememberedPairing() ?: throw IllegalStateException("请先完成蓝牙配对")
         val addressCandidates = rememberedBluetoothAddressCandidates(remembered)
         val stages = CameraVendorBleReconnectPolicy.reconnectStages(
             hasRememberedBluetoothAddress = addressCandidates.isNotEmpty(),
+            hasStableCameraIdentity = remembered.cameraId.contains("_"),
         )
         DiagnosticLog.append(context, TAG, "Remembered BLE reconnect stages=$stages")
 
@@ -332,7 +422,7 @@ class CameraService(override val context: Context) : CameraFileSource {
                         }
                         val hs = CameraVendorBleHandshake(context)
                         handshake = hs
-                        hs.performHandshake(scanResult)
+                        hs.performHandshake(scanResult, mode = CameraVendorBleHandshakeMode.RememberedGallery)
                         saveRememberedHandshake(hs)
                         DiagnosticLog.append(context, TAG, "Remembered camera fast scan reconnect succeeded")
                         return hs
@@ -368,7 +458,7 @@ class CameraService(override val context: Context) : CameraFileSource {
                 }
                 val hs = CameraVendorBleHandshake(context)
                 handshake = hs
-                hs.performHandshake(scanResult)
+                hs.performHandshake(scanResult, mode = CameraVendorBleHandshakeMode.RememberedGallery)
                 saveRememberedHandshake(hs)
                 return hs
             } catch (error: Throwable) {
@@ -386,6 +476,29 @@ class CameraService(override val context: Context) : CameraFileSource {
             "无法连接已配对相机，请确认相机蓝牙已开启并停留在可传图/配对连接界面后重试",
             lastError,
         )
+    }
+
+    private fun ensureRememberedCameraIdentity(
+        hs: CameraVendorBleHandshake,
+        remembered: CameraVendorPairedCameraRecord,
+    ) {
+        val candidateCameraId = CameraVendorCameraIdentityPolicy.cameraId(
+            serialNumber = hs.cameraSerial(),
+            deviceName = hs.cameraName(),
+            bluetoothAddress = hs.bluetoothAddress(),
+            wifiSsid = hs.referenceAppWifiConfigurations().firstOrNull()?.ssid,
+        )
+        val matches = CameraVendorCameraIdentityPolicy.matches(
+            remembered = remembered,
+            candidateCameraId = candidateCameraId,
+            candidateSerialNumber = hs.cameraSerial(),
+            candidateDeviceName = hs.cameraName(),
+            candidateBluetoothAddress = hs.bluetoothAddress(),
+        )
+        if (!matches) {
+            DiagnosticLog.append(context, TAG, "Remembered camera identity mismatch")
+            throw IllegalStateException("已连接的相机不是当前选中的已配对相机，请重新配对后再进入相册")
+        }
     }
 
     private fun rememberedScanResultMatches(
@@ -408,19 +521,33 @@ class CameraService(override val context: Context) : CameraFileSource {
         val device = manager.adapter.getRemoteDevice(address)
         val hs = CameraVendorBleHandshake(context)
         handshake = hs
-        hs.performHandshake(device, autoConnect = true)
+        hs.performHandshake(
+            device,
+            autoConnect = true,
+            mode = CameraVendorBleHandshakeMode.RememberedGallery,
+        )
         saveRememberedHandshake(hs)
         return hs
     }
 
     private fun saveRememberedHandshake(hs: CameraVendorBleHandshake) {
-        pairingStore.save(
-            CameraVendorPairedCameraRecord(
-                deviceName = hs.cameraName(),
+        pairingStore.save(rememberedRecordFor(hs))
+    }
+
+    private fun rememberedRecordFor(hs: CameraVendorBleHandshake): CameraVendorPairedCameraRecord {
+        val wifiConfigurations = hs.referenceAppWifiConfigurations()
+        return CameraVendorPairedCameraRecord(
+            deviceName = hs.cameraName(),
+            serialNumber = hs.cameraSerial(),
+            wifiConfigurations = wifiConfigurations,
+            bluetoothAddress = hs.bluetoothAddress(),
+            cameraId = CameraVendorCameraIdentityPolicy.cameraId(
                 serialNumber = hs.cameraSerial(),
-                wifiConfigurations = hs.wifiConfigurations(),
+                deviceName = hs.cameraName(),
                 bluetoothAddress = hs.bluetoothAddress(),
-            )
+                wifiSsid = wifiConfigurations.firstOrNull()?.ssid,
+            ),
+            lastConnectedAtMillis = System.currentTimeMillis(),
         )
     }
 
@@ -461,6 +588,12 @@ class CameraService(override val context: Context) : CameraFileSource {
     }
 
     override suspend fun fastInitialFiles(): List<CameraFile> {
+        if (connection.cameraVendorSpecifiedObjectHandles.isEmpty()) {
+            runCatching { connection.loadCameraVendorGalleryObjectHandles() }
+                .onFailure {
+                    DiagnosticLog.append(context, TAG, "Fast gallery handle initialization failed", it)
+                }
+        }
         val handles = CameraVendorGalleryDiscoveryPolicy.initialPlaceholderHandles(
             connection.cameraVendorSpecifiedObjectHandles
         )
@@ -472,6 +605,22 @@ class CameraService(override val context: Context) : CameraFileSource {
     override suspend fun getThumbnail(handle: Int): ByteArray {
         DiagnosticLog.append(context, TAG, "Get thumbnail handle=$handle")
         return commands.getThumb(handle)
+    }
+
+    override suspend fun resolveFile(handle: Int): CameraFile? {
+        DiagnosticLog.append(context, TAG, "Resolve file metadata handle=$handle")
+        return runCatching { CameraFile(commands.getObjectInfo(handle)) }
+            .onSuccess { file ->
+                DiagnosticLog.append(
+                    context,
+                    TAG,
+                    "Resolved file metadata handle=$handle filename=${file.info.filename} expected=${file.info.compressedSize}",
+                )
+            }
+            .onFailure { error ->
+                DiagnosticLog.append(context, TAG, "Resolve file metadata failed handle=$handle", error)
+            }
+            .getOrNull()
     }
 
     override suspend fun getFile(handle: Int): ByteArray {

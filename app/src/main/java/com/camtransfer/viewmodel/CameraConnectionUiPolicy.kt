@@ -18,6 +18,7 @@ internal object CameraConnectionUiPolicy {
             CameraConnectionStep.SavePairing -> ConnectionState.PAIRED
             CameraConnectionStep.ExistingPtpProbe,
             CameraConnectionStep.ConnectPtp,
+            CameraConnectionStep.ConfirmGalleryMode,
             CameraConnectionStep.LoadGallery -> ConnectionState.CONNECTING_PTP
             CameraConnectionStep.JoinCameraWifi -> ConnectionState.CONNECTING_WIFI
         }

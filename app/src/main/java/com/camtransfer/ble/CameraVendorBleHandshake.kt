@@ -122,6 +122,7 @@ class CameraVendorBleHandshake(private val context: Context) {
     suspend fun performHandshake(
         scanResult: ScanResult,
         activateTransfer: Boolean = false,
+        mode: CameraVendorBleHandshakeMode = CameraVendorBleHandshakeMode.Pairing,
     ): CameraVendorBleProfileType {
         val scannedDevice = scanResult.device
         val scannedAddr = scannedDevice.address
@@ -138,6 +139,7 @@ class CameraVendorBleHandshake(private val context: Context) {
             advertisedName = deviceName,
             token = extractToken(scanResult),
             activateTransfer = activateTransfer,
+            mode = mode,
         )
     }
 
@@ -145,6 +147,7 @@ class CameraVendorBleHandshake(private val context: Context) {
         device: BluetoothDevice,
         activateTransfer: Boolean = false,
         autoConnect: Boolean = false,
+        mode: CameraVendorBleHandshakeMode = CameraVendorBleHandshakeMode.Pairing,
     ): CameraVendorBleProfileType {
         return performHandshakeWithDevice(
             device = device,
@@ -152,6 +155,7 @@ class CameraVendorBleHandshake(private val context: Context) {
             token = null,
             activateTransfer = activateTransfer,
             autoConnect = autoConnect,
+            mode = mode,
         )
     }
 
@@ -161,6 +165,7 @@ class CameraVendorBleHandshake(private val context: Context) {
         token: ByteArray?,
         activateTransfer: Boolean,
         autoConnect: Boolean = false,
+        mode: CameraVendorBleHandshakeMode,
     ): CameraVendorBleProfileType {
         connectedDevice = device
         hasWrittenPairingIdentifier = false
@@ -199,7 +204,15 @@ class CameraVendorBleHandshake(private val context: Context) {
 
         val profile: CameraVendorBleProfileType
 
-        if (token != null && hasPairToken) {
+        if (!mode.shouldRunPairingHandshake) {
+            Log.d(TAG, "=== Remembered gallery flow ===")
+            profile = when {
+                hasModernPair && hasSecureStatus -> CameraVendorBleProfileType.MODERN_SECURE
+                hasModernPair -> CameraVendorBleProfileType.MODERN_TOKEN
+                hasLegacyPair -> CameraVendorBleProfileType.LEGACY_BASIC
+                else -> CameraVendorBleProfileType.UNKNOWN
+            }
+        } else if (token != null && hasPairToken) {
             if (!coordinator.canStartHandshake(hasIdentifierCharacteristic = hasIdentifier)) {
                 throw Exception(coordinator.waitReason(false, hasIdentifier, hasConnectedDeviceIdentification = false))
             }
@@ -222,7 +235,7 @@ class CameraVendorBleHandshake(private val context: Context) {
             coordinator.markHandshakeStarted()
             Log.d(TAG, "=== Secure flow ===")
             profile = CameraVendorBleProfileType.MODERN_SECURE
-            performSecureHandshake(pairService, hasIdentifier, device)
+            performSecureHandshake(pairService, hasIdentifier, device, mode)
         } else if (hasIdentifier) {
             if (!coordinator.canStartHandshake(hasIdentifierCharacteristic = true)) {
                 throw Exception(coordinator.waitReason(false, hasIdentifier, hasConnectedDeviceIdentification = false))
@@ -249,7 +262,22 @@ class CameraVendorBleHandshake(private val context: Context) {
     suspend fun prepareTransferActivation(
         preferCompressedDownloads: Boolean = CameraVendorBleTransferActivationPolicy.defaultPreferCompressedDownloads(),
     ) {
-        performReferenceAppTransferActivation(preferCompressedDownloads)
+        writeTransferActivationRequest(preferCompressedDownloads)
+        waitForTransferWifiReady()
+    }
+
+    suspend fun writeTransferActivationRequest(
+        preferCompressedDownloads: Boolean = CameraVendorBleTransferActivationPolicy.defaultPreferCompressedDownloads(),
+    ) {
+        writeReferenceAppTransferActivationRequest(preferCompressedDownloads)
+    }
+
+    suspend fun waitForTransferWifiReady() {
+        if (CameraVendorBleTransferActivationPolicy.shouldFastHandoffAfterCommandWrites()) {
+            Log.d(TAG, "Transfer activation commands written; fast handoff to WiFi/PTP")
+            return
+        }
+        waitForReferenceAppApReady()
     }
 
     fun disconnectForWifiHandoff() {
@@ -263,6 +291,14 @@ class CameraVendorBleHandshake(private val context: Context) {
         refreshReferenceAppNetworkConfig()
         return wifiConfigurations()
     }
+
+    suspend fun refreshReferenceAppWifiConfiguration(): CameraVendorWifiNetworkConfiguration? {
+        refreshReferenceAppNetworkConfig()
+        return preferredWifiNetwork
+    }
+
+    fun referenceAppWifiConfigurations(): List<CameraVendorWifiNetworkConfiguration> =
+        preferredWifiNetwork?.let { listOf(it) }.orEmpty()
 
     fun wifiConfigurations(): List<CameraVendorWifiNetworkConfiguration> {
         return CameraVendorWifiNetworkConfigurationPolicy.configurations(
@@ -292,6 +328,38 @@ class CameraVendorBleHandshake(private val context: Context) {
         )
     }
 
+    fun hasCompletedCameraPairingAck(): Boolean {
+        return hasWrittenPairingIdentifier && hasPendingHandshakeSummary
+    }
+
+    fun currentSystemBondState(): Int {
+        if (!CameraBluetoothPermissionPolicy.canReadSystemBonds(context)) {
+            return CameraVendorCameraPairingConfirmationPolicy.SYSTEM_BOND_NONE
+        }
+        return connectedDevice?.bondState?.toPairingPolicyBondState()
+            ?: CameraVendorCameraPairingConfirmationPolicy.SYSTEM_BOND_NONE
+    }
+
+    suspend fun waitForSystemBondSettled(timeoutMs: Long = 5_000L): Boolean {
+        if (!CameraBluetoothPermissionPolicy.canReadSystemBonds(context)) return true
+        val device = connectedDevice ?: return true
+        val settledState = if (device.bondState == BluetoothDevice.BOND_BONDING) {
+            withTimeoutOrNull(timeoutMs) {
+                while (device.bondState == BluetoothDevice.BOND_BONDING) {
+                    delay(100)
+                }
+                device.bondState
+            } ?: device.bondState
+        } else {
+            device.bondState
+        }
+        Log.d(TAG, "System bond state after pairing confirmation: $settledState")
+        return CameraVendorCameraPairingConfirmationPolicy.canSaveConfirmedPairing(
+            hasCompletedCameraAck = hasCompletedCameraPairingAck(),
+            systemBondState = settledState.toPairingPolicyBondState(),
+        )
+    }
+
     suspend fun confirmCameraPairingSucceeded() {
         if (!canCompletePhonePairingConfirmation()) {
             throw Exception("相机端还没有完成识别号 ACK，不能确认配对")
@@ -300,6 +368,7 @@ class CameraVendorBleHandshake(private val context: Context) {
                 hasWrittenIdentifier = hasWrittenPairingIdentifier,
                 hasPendingHandshakeSummary = hasPendingHandshakeSummary,
                 shouldBypassManualConfirmation = shouldBypassManualPairingConfirmation(),
+                systemBondState = currentSystemBondState(),
             )
         ) {
             confirmCameraSidePairingAfterPhoneConfirmation()
@@ -307,11 +376,15 @@ class CameraVendorBleHandshake(private val context: Context) {
     }
 
     private suspend fun performSecureHandshake(
-        pairService: UUID, hasIdentifier: Boolean, device: BluetoothDevice
+        pairService: UUID,
+        hasIdentifier: Boolean,
+        device: BluetoothDevice,
+        mode: CameraVendorBleHandshakeMode,
     ) {
         var lastError: Exception? = null
+        val maxAttempts = CameraVendorBlePairingPolicy.maxSecureHandshakeAttempts(mode)
 
-        for (attempt in 1..3) {
+        for (attempt in 1..maxAttempts) {
             try {
                 for (step in CameraVendorBlePairingPolicy.secureSteps(hasIdentifier)) {
                     when (step) {
@@ -348,21 +421,30 @@ class CameraVendorBleHandshake(private val context: Context) {
                 return
             } catch (e: Exception) {
                 lastError = e
-                Log.w(TAG, "Secure handshake failed ($attempt/3): $e")
-                if (isInsufficientEncryptionError(e) && attempt < 3) {
+                Log.w(TAG, "Secure handshake failed ($attempt/$maxAttempts): $e")
+                if (mode == CameraVendorBleHandshakeMode.Pairing) {
+                    DiagnosticLog.append(
+                        context,
+                        TAG,
+                        "Fresh secure pairing failed; stop without automatic retry",
+                        e,
+                    )
+                }
+                if (isInsufficientEncryptionError(e) && attempt < maxAttempts) {
                     Log.d(TAG, "Encryption error, reconnecting...")
                     reconnect(device)
-                } else if (attempt < 3) {
+                } else if (attempt < maxAttempts) {
                     delay(4000)
                 }
             }
         }
 
         throw Exception(
-            "安全握手状态读取失败。请确认：\n" +
+            "蓝牙配对没有完成，已停在当前步骤。请确认：\n" +
             "1. 相机处于[配对注册]模式\n" +
             "2. 如果手机弹出蓝牙配对框，请点确认\n" +
             "3. 如果相机屏幕有提示，也请确认\n" +
+            "如果相机没有显示配对成功，请退出相机配对注册后重新进入，再重试。\n" +
             "原始错误: $lastError"
         )
     }
@@ -415,6 +497,16 @@ class CameraVendorBleHandshake(private val context: Context) {
         hasPendingHandshakeSummary = true
         delay(500)
     }
+
+    private fun Int.toPairingPolicyBondState(): Int =
+        when (this) {
+            BluetoothDevice.BOND_BONDED ->
+                CameraVendorCameraPairingConfirmationPolicy.SYSTEM_BOND_BONDED
+            BluetoothDevice.BOND_BONDING ->
+                CameraVendorCameraPairingConfirmationPolicy.SYSTEM_BOND_BONDING
+            else ->
+                CameraVendorCameraPairingConfirmationPolicy.SYSTEM_BOND_NONE
+        }
 
     private fun shouldBypassManualPairingConfirmation(): Boolean {
         return secureIdentificationNumberAlreadyPaired
@@ -575,6 +667,13 @@ class CameraVendorBleHandshake(private val context: Context) {
     private suspend fun performReferenceAppTransferActivation(
         preferCompressedDownloads: Boolean = CameraVendorBleTransferActivationPolicy.defaultPreferCompressedDownloads(),
     ) {
+        writeReferenceAppTransferActivationRequest(preferCompressedDownloads)
+        waitForTransferWifiReady()
+    }
+
+    private suspend fun writeReferenceAppTransferActivationRequest(
+        preferCompressedDownloads: Boolean = CameraVendorBleTransferActivationPolicy.defaultPreferCompressedDownloads(),
+    ) {
         val required = listOf(
             CameraVendorBleProfile.IMAGE_TRANSFER_SETTING_CHAR,
             CameraVendorBleProfile.IMAGE_TRANSFER_SETTING_EX_CHAR,
@@ -607,13 +706,6 @@ class CameraVendorBleHandshake(private val context: Context) {
         delay(500)
         writeCharAny(CameraVendorBleProfile.LAUNCH_REQUEST_CHAR, byteArrayOf(0x03, 0x00))
         DiagnosticLog.append(context, TAG, "ReferenceApp activation write FunctionLaunchRequest=0300")
-
-        if (CameraVendorBleTransferActivationPolicy.shouldFastHandoffAfterCommandWrites()) {
-            Log.d(TAG, "Transfer activation commands written; fast handoff to WiFi/PTP")
-            return
-        }
-
-        waitForReferenceAppApReady()
     }
 
     private suspend fun waitForReferenceAppApReady() {
@@ -764,8 +856,11 @@ class CameraVendorBleHandshake(private val context: Context) {
     ) {
         val targets = services.flatMap { it.characteristics }
             .filter {
-                it.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0 ||
-                    it.properties and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0
+                CameraVendorBleNotificationSubscriptionPolicy.shouldSubscribeDuringHandshake(it.uuid) &&
+                    (
+                        it.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY != 0 ||
+                            it.properties and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0
+                        )
             }
 
         for (characteristic in targets) {
@@ -859,8 +954,11 @@ class CameraVendorBleHandshake(private val context: Context) {
         return "encryption" in text || "133" in text || "5" in text
     }
 
-    private fun appName() = CameraVendorHandshakeIdentityPolicy.currentConnectedDeviceName()
-        .toByteArray(Charsets.UTF_8)
+    private fun appName(): ByteArray {
+        val connectedDeviceName = CameraVendorHandshakeIdentityPolicy.currentConnectedDeviceName()
+        Log.d(TAG, "Connected device name payload: $connectedDeviceName")
+        return connectedDeviceName.toByteArray(Charsets.UTF_8)
+    }
     private fun ByteArray.trimmedUtf8(): String =
         copyOfRange(0, indexOf(0).takeIf { it >= 0 } ?: size)
             .toString(Charsets.UTF_8)

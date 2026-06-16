@@ -234,11 +234,13 @@ fun CamTransferApp(trialDays: Long) {
                 preferCompressedDownloads = preferCompressedDownloads,
                 onFilesLoaded = { files -> transferVM.syncDownloadedFiles(files) },
                 onDownloadSelected = { files ->
-                    transferVM.init(cameraSource)
-                    transferVM.startTransfer(files)
+                    scope.launch {
+                        browseVM.prepareThumbnailLoadingForTransfer(cameraSource)
+                        transferVM.init(cameraSource)
+                        transferVM.startTransfer(files)
+                    }
                 },
                 onOpenDownloads = { currentScreen = Screen.TRANSFER },
-                onClearDownloadCache = { transferVM.clearDownloadedCache() },
                 onDisconnect = {
                     isReturningToConnect = true
                     browseVM.reset()

@@ -107,6 +107,76 @@ class GalleryFileLoadPolicyTest {
     }
 
     @Test
+    fun fullObjectInfoKeepsThumbnailsFromHandleCache() {
+        val cachedThumb = byteArrayOf(0x05, 0x06)
+
+        val merged = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
+            currentFiles = emptyList(),
+            fullFiles = listOf(cameraFile(handle = 12, filename = "DSCF0012.JPG")),
+            thumbnailsByHandle = mapOf(12 to cachedThumb),
+        )
+
+        assertArrayEquals(cachedThumb, merged.single().thumbnail)
+    }
+
+    @Test
+    fun partialFullObjectInfoDoesNotDropPlaceholderHandlesForLargeGallery() {
+        val placeholders = (1..999).map { handle ->
+            cameraFile(handle = handle, filename = "0x%08X.JPG".format(handle))
+        }.sortedByDescending { it.info.handle }
+        val fullInfos = (800..999).map { handle ->
+            cameraFile(handle = handle, filename = "DSCF%04d.JPG".format(handle))
+        }.sortedByDescending { it.info.handle }
+
+        val merged = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
+            currentFiles = placeholders,
+            fullFiles = fullInfos,
+        )
+
+        assertEquals(999, merged.size)
+        assertEquals("DSCF0999.JPG", merged.first().info.filename)
+        assertEquals("0x00000001.JPG", merged.last().info.filename)
+    }
+
+    @Test
+    fun defersFullObjectInfoWhenLargePlaceholderListCanShowFirstScreen() {
+        assertTrue(
+            GalleryFastInitialLoadPolicy.shouldDeferFullObjectInfoUntilAfterThumbnails(
+                initialFileCount = 1000,
+            )
+        )
+        assertFalse(
+            GalleryFastInitialLoadPolicy.shouldDeferFullObjectInfoUntilAfterThumbnails(
+                initialFileCount = 200,
+            )
+        )
+        assertFalse(
+            GalleryFastInitialLoadPolicy.shouldDeferFullObjectInfoUntilAfterThumbnails(
+                initialFileCount = 0,
+            )
+        )
+    }
+
+    @Test
+    fun doesNotStartFullObjectInfoAutomaticallyAfterLargeGalleryPlaceholdersArePublished() {
+        assertFalse(
+            GalleryFastInitialLoadPolicy.shouldContinueFullObjectInfoAfterInitialPlaceholders(
+                initialFileCount = 1000,
+            )
+        )
+        assertTrue(
+            GalleryFastInitialLoadPolicy.shouldContinueFullObjectInfoAfterInitialPlaceholders(
+                initialFileCount = 200,
+            )
+        )
+        assertFalse(
+            GalleryFastInitialLoadPolicy.shouldContinueFullObjectInfoAfterInitialPlaceholders(
+                initialFileCount = 0,
+            )
+        )
+    }
+
+    @Test
     fun limitsInitialThumbnailRequestsWhileFullObjectInfoIsStillLoading() {
         assertTrue(
             GalleryFastInitialLoadPolicy.shouldLoadThumbnail(

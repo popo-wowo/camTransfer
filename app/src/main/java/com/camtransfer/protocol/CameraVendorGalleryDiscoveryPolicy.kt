@@ -14,7 +14,7 @@ object CameraVendorGalleryDiscoveryPolicy {
     }
 
     fun initialPlaceholderHandles(specifiedHandles: List<Int>): List<Int> =
-        initialSpecifiedHandles(specifiedHandles)
+        specifiedHandles.distinct().sortedDescending()
 
     fun isLargeGallery(specifiedHandleCount: Int): Boolean =
         specifiedHandleCount > LARGE_GALLERY_THRESHOLD

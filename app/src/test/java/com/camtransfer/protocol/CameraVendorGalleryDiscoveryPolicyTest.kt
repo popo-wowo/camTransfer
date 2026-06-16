@@ -64,8 +64,8 @@ class CameraVendorGalleryDiscoveryPolicyTest {
 
         val initial = CameraVendorGalleryDiscoveryPolicy.initialPlaceholderHandles(handles)
 
-        assertEquals(CameraVendorGalleryDiscoveryPolicy.INITIAL_LARGE_GALLERY_HANDLE_LIMIT, initial.size)
+        assertEquals(600, initial.size)
         assertEquals(600, initial.first())
-        assertEquals(401, initial.last())
+        assertEquals(1, initial.last())
     }
 }

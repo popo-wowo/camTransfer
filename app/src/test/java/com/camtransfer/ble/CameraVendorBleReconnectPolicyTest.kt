@@ -16,7 +16,27 @@ class CameraVendorBleReconnectPolicyTest {
 
     @Test
     fun rememberedBluetoothAddressUsesDirectConnectBeforeScanning() {
-        val stages = CameraVendorBleReconnectPolicy.reconnectStages(hasRememberedBluetoothAddress = true)
+        val stages = CameraVendorBleReconnectPolicy.reconnectStages(
+            hasRememberedBluetoothAddress = true,
+            hasStableCameraIdentity = false,
+        )
+
+        assertEquals(
+            listOf(
+                CameraVendorBleReconnectStage.DirectAddress,
+                CameraVendorBleReconnectStage.FastScan,
+                CameraVendorBleReconnectStage.ScanFallback,
+            ),
+            stages,
+        )
+    }
+
+    @Test
+    fun missingRememberedBluetoothAddressStartsWithScan() {
+        val stages = CameraVendorBleReconnectPolicy.reconnectStages(
+            hasRememberedBluetoothAddress = false,
+            hasStableCameraIdentity = false,
+        )
 
         assertEquals(
             listOf(
@@ -27,11 +47,15 @@ class CameraVendorBleReconnectPolicyTest {
     }
 
     @Test
-    fun missingRememberedBluetoothAddressStartsWithScan() {
-        val stages = CameraVendorBleReconnectPolicy.reconnectStages(hasRememberedBluetoothAddress = false)
+    fun stableCameraIdentitySkipsStaleRandomBleAddressDirectConnect() {
+        val stages = CameraVendorBleReconnectPolicy.reconnectStages(
+            hasRememberedBluetoothAddress = true,
+            hasStableCameraIdentity = true,
+        )
 
         assertEquals(
             listOf(
+                CameraVendorBleReconnectStage.FastScan,
                 CameraVendorBleReconnectStage.ScanFallback,
             ),
             stages,

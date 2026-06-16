@@ -55,9 +55,11 @@ object CameraVendorPtpDataParser {
         val filename = ptpString(data, filenameOffset)
         val captureDateOffset = filenameOffset + ptpStringByteLength(data, filenameOffset)
         val captureDate = ptpString(data, captureDateOffset)
+        val orientationOffset = captureDateOffset + ptpStringByteLength(data, captureDateOffset)
         return info.copy(
             filename = filename.ifBlank { info.filename },
             captureDate = captureDate.ifBlank { info.captureDate },
+            orientation = cameraVendorOrientation(data, orientationOffset),
         )
     }
 
@@ -135,6 +137,24 @@ object CameraVendorPtpDataParser {
         if (offset >= data.size) return 1
         val numChars = data[offset].toInt() and 0xFF
         return 1 + numChars * 2
+    }
+
+    private fun cameraVendorOrientation(data: ByteArray, offset: Int): Int? {
+        var currentOffset = offset
+        repeat(8) {
+            if (currentOffset >= data.size) return null
+            val value = ptpString(data, currentOffset)
+            orientationFromMetadataString(value)?.let { return it }
+            val length = ptpStringByteLength(data, currentOffset)
+            if (length <= 1) return null
+            currentOffset += length
+        }
+        return null
+    }
+
+    private fun orientationFromMetadataString(value: String): Int? {
+        val match = Regex("""(?i)\borientation\s*:\s*([1-4])\b""").find(value) ?: return null
+        return match.groupValues[1].toIntOrNull()
     }
 
     private fun uint16OrZero(data: ByteArray, offset: Int): Int =

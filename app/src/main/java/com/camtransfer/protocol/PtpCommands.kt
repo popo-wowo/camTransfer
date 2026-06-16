@@ -35,11 +35,30 @@ class PtpCommands(
         return CameraVendorPtpDataParser.objectInfo(handle, data)
     }
 
+    suspend fun getCameraVendorObjectInfo(handle: Int): ObjectInfo {
+        val data = connection.sendCommandGetData(
+            PtpOpCode.CAMERA_VENDOR_GET_LATEST_OBJECT_INFO,
+            listOf(handle),
+        )
+        val info = CameraVendorPtpDataParser.cameraVendorObjectInfo(handle, data)
+        if (info.orientation == null) {
+            diagnostic(
+                "Vendor ObjectInfo orientation missing handle=$handle " +
+                    "bytes=${data.size} tail=${data.tailHex()}",
+            )
+        }
+        return info
+    }
+
     suspend fun galleryObjectInfos(): List<ObjectInfo> {
         val startedMs = SystemClock.elapsedRealtime()
         resetCameraVendorCompressionMode()
+        if (connection.cameraVendorSpecifiedObjectHandles.isEmpty()) {
+            runCatching { connection.loadCameraVendorGalleryObjectHandles() }
+                .onFailure { diagnostic("Gallery handle initialization failed: ${it.message}") }
+        }
         val specifiedHandles = connection.cameraVendorSpecifiedObjectHandles
-        diagnostic("Gallery discovery specifiedHandles=${specifiedHandles.size}")
+        diagnostic("Gallery discovery ${specifiedHandles.summaryLabel("specifiedHandles")}")
         if (specifiedHandles.isNotEmpty()) {
             val initialHandles = CameraVendorGalleryDiscoveryPolicy.initialSpecifiedHandles(specifiedHandles)
             if (initialHandles.size < specifiedHandles.size) {
@@ -95,16 +114,30 @@ class PtpCommands(
         return standardInfos
     }
 
-    suspend fun getThumb(handle: Int): ByteArray {
+    suspend fun getThumb(handle: Int): ByteArray =
+        getThumbWithInfo(handle).data
+
+    suspend fun getThumbWithInfo(handle: Int): PtpThumbnailData {
         val startedMs = SystemClock.elapsedRealtime()
         var objectInfo: ObjectInfo? = null
         if (CameraVendorThumbnailReadPolicy.shouldPrimeObjectContextBeforeStandardThumbnail()) {
             val primeStartedMs = SystemClock.elapsedRealtime()
-            runCatching { getObjectInfo(handle) }
+            runCatching { getCameraVendorObjectInfo(handle) }
+                .recoverCatching { vendorError ->
+                    diagnostic(
+                        "Thumbnail vendor context prime failed handle=$handle " +
+                            "elapsedMs=${SystemClock.elapsedRealtime() - primeStartedMs} " +
+                            "error=${vendorError.message}",
+                    )
+                    getObjectInfo(handle)
+                }
                 .onSuccess {
                     objectInfo = it
                     diagnostic(
                         "Thumbnail context primed handle=$handle " +
+                            "format=0x${it.format.toString(16)} " +
+                            "thumb=${it.thumbPixWidth}x${it.thumbPixHeight} " +
+                            "orientation=${it.orientation?.toString() ?: "unknown"} " +
                             "elapsedMs=${SystemClock.elapsedRealtime() - primeStartedMs}",
                     )
                 }
@@ -117,10 +150,12 @@ class PtpCommands(
         }
         if (CameraVendorThumbnailReadPolicy.shouldReadPartialPreviewBeforeStandardThumbnail(objectInfo)) {
             runCatching {
-                return readPartialPreviewThumbnail(handle, startedMs, reason = "smallPreviewObject")
+                readPartialPreviewThumbnail(handle, startedMs, reason = "small-jpeg-preview")
+            }.onSuccess { partial ->
+                return PtpThumbnailData(data = partial, objectInfo = objectInfo)
             }.onFailure { error ->
                 diagnostic(
-                    "Thumbnail partial first failed handle=$handle " +
+                    "Thumbnail partial-first failed handle=$handle " +
                         "totalElapsedMs=${SystemClock.elapsedRealtime() - startedMs} error=${error.message}",
                 )
             }
@@ -147,7 +182,7 @@ class PtpCommands(
                     "totalElapsedMs=${SystemClock.elapsedRealtime() - startedMs}"
                 Log.d(TAG, message)
                 diagnostic(message)
-                return normalized
+                return PtpThumbnailData(data = normalized, objectInfo = objectInfo)
             }
             val message = "Thumbnail standard unusable handle=$handle rawBytes=${standard.size} " +
                 "imageBytes=${normalized.size} head=${normalized.headHex()} " +
@@ -156,13 +191,70 @@ class PtpCommands(
             diagnostic(message)
         }
 
-        return readPartialPreviewThumbnail(handle, startedMs, reason = "fallback")
+        if (CameraVendorThumbnailReadPolicy.shouldPrimeObjectContextBeforePartialFallback()) {
+            val primeStartedMs = SystemClock.elapsedRealtime()
+            runCatching { getCameraVendorObjectInfo(handle) }
+                .recoverCatching { getObjectInfo(handle) }
+                .onSuccess {
+                    objectInfo = it
+                    diagnostic(
+                        "Thumbnail fallback context primed handle=$handle " +
+                            "format=0x${it.format.toString(16)} " +
+                            "orientation=${it.orientation?.toString() ?: "unknown"} " +
+                            "elapsedMs=${SystemClock.elapsedRealtime() - primeStartedMs}",
+                    )
+                }
+                .onFailure { error ->
+                    diagnostic(
+                        "Thumbnail fallback context prime failed handle=$handle " +
+                            "elapsedMs=${SystemClock.elapsedRealtime() - primeStartedMs} error=${error.message}",
+                    )
+                }
+        }
+
+        return PtpThumbnailData(
+            data = readPartialPreviewThumbnail(handle, startedMs, reason = "fallback"),
+            objectInfo = objectInfo,
+        )
+    }
+
+    private suspend fun readVendorExtensionThumbnail(handle: Int, startedMs: Long): ByteArray {
+        val vendorStartedMs = SystemClock.elapsedRealtime()
+        val data = connection.sendCommandGetData(
+            PtpOpCode.CAMERA_VENDOR_GET_EXTENSION_THUMB,
+            listOf(handle),
+            readTimeoutMs = CameraVendorThumbnailReadPolicy.VENDOR_EXTENSION_THUMB_TIMEOUT_MS,
+        )
+        val normalized = CameraVendorPtpDataParser.imageData(data)
+        if (!CameraVendorPtpDataParser.isLikelyImageData(normalized)) {
+            throw IllegalStateException(
+                "Vendor extension thumbnail is not image data: rawBytes=${data.size} " +
+                    "imageBytes=${normalized.size} head=${normalized.headHex()}",
+            )
+        }
+        val message = "Thumbnail vendorExtension handle=$handle rawBytes=${data.size} " +
+            "imageBytes=${normalized.size} head=${normalized.headHex()} " +
+            "elapsedMs=${SystemClock.elapsedRealtime() - vendorStartedMs} " +
+            "totalElapsedMs=${SystemClock.elapsedRealtime() - startedMs}"
+        Log.d(TAG, message)
+        diagnostic(message)
+        return normalized
     }
 
     private suspend fun readPartialPreviewThumbnail(handle: Int, startedMs: Long, reason: String): ByteArray {
         val partialStartedMs = SystemClock.elapsedRealtime()
         val preview = getPartialObject(handle, 0, CameraVendorReferenceApp.PARTIAL_PREVIEW_READ_SIZE)
         val normalizedPreview = CameraVendorPtpDataParser.imageData(preview)
+        if (CameraVendorThumbnailReadPolicy.shouldRejectIncompletePartialPreview(normalizedPreview)) {
+            val message = "Thumbnail partial incomplete handle=$handle reason=$reason " +
+                "rawBytes=${preview.size} imageBytes=${normalizedPreview.size} " +
+                "head=${normalizedPreview.headHex()} " +
+                "partialElapsedMs=${SystemClock.elapsedRealtime() - partialStartedMs} " +
+                "totalElapsedMs=${SystemClock.elapsedRealtime() - startedMs}"
+            Log.d(TAG, message)
+            diagnostic(message)
+            throw IllegalStateException("Partial thumbnail is incomplete JPEG")
+        }
         val message = "Thumbnail partial handle=$handle reason=$reason rawBytes=${preview.size} " +
             "imageBytes=${normalizedPreview.size} head=${normalizedPreview.headHex()} " +
             "partialElapsedMs=${SystemClock.elapsedRealtime() - partialStartedMs} " +
@@ -343,6 +435,11 @@ class PtpCommands(
     private fun mergeInfos(infos: List<ObjectInfo>): List<ObjectInfo> =
         infos.associateBy { it.handle }.values.sortedByDescending { it.handle }
 
+    private fun List<Int>.summaryLabel(name: String): String {
+        if (isEmpty()) return "$name=0"
+        return "$name=$size min=${minOrNull()} max=${maxOrNull()}"
+    }
+
     private fun flatten(chunks: List<ByteArray>): ByteArray {
         val total = chunks.sumOf { it.size }
         val out = ByteArray(total)
@@ -382,27 +479,43 @@ class PtpCommands(
         return take(byteCount).joinToString("") { "%02x".format(it) }
     }
 
+    private fun ByteArray.tailHex(byteCount: Int = 96): String {
+        return takeLast(byteCount).joinToString("") { "%02x".format(it) }
+    }
+
     private fun diagnostic(message: String) {
         diagnosticContext?.let { DiagnosticLog.append(it, TAG, message) }
     }
 }
 
+data class PtpThumbnailData(
+    val data: ByteArray,
+    val objectInfo: ObjectInfo? = null,
+)
+
 internal object CameraVendorThumbnailReadPolicy {
     const val STANDARD_THUMB_TIMEOUT_MS = 3_000
+    const val VENDOR_EXTENSION_THUMB_TIMEOUT_MS = 3_000
 
     fun shouldPrimeObjectContextBeforeStandardThumbnail(): Boolean = true
 
+    fun shouldPrimeObjectContextBeforePartialFallback(): Boolean = true
+
+    fun shouldTryVendorExtensionThumbnailFirst(): Boolean = false
+
     fun shouldReadPartialPreviewBeforeStandardThumbnail(objectInfo: ObjectInfo?): Boolean {
-        if (objectInfo == null) return false
-        if (hasStandardThumbnailInfo(objectInfo)) return false
-        return (objectInfo.isJpeg || objectInfo.isHeif) &&
-            objectInfo.compressedSize in 1..CameraVendorReferenceApp.PARTIAL_PREVIEW_READ_SIZE
+        return false
     }
 
-    private fun hasStandardThumbnailInfo(objectInfo: ObjectInfo): Boolean =
-        objectInfo.thumbFormat == PtpObjectFormat.JPEG &&
-            objectInfo.thumbPixWidth > 0 &&
-            objectInfo.thumbPixHeight > 0
+    fun shouldRejectIncompletePartialPreview(data: ByteArray): Boolean =
+        isJpeg(data) && !hasJpegEndMarker(data)
+
+    private fun isJpeg(data: ByteArray): Boolean =
+        data.size >= 2 && data[0] == 0xFF.toByte() && data[1] == 0xD8.toByte()
+
+    private fun hasJpegEndMarker(data: ByteArray): Boolean =
+        data.size >= 2 && data[data.lastIndex - 1] == 0xFF.toByte() && data[data.lastIndex] == 0xD9.toByte()
+
 }
 
 internal object CameraVendorPartialObjectReadPolicy {

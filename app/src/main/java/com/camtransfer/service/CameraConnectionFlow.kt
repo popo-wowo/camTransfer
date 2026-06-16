@@ -1,5 +1,6 @@
 package com.camtransfer.service
 
+import com.camtransfer.protocol.CameraVendorPtpConnectionStartupPolicy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 
@@ -28,6 +29,7 @@ enum class CameraConnectionStep(val phase: CameraConnectionPhase) {
     WaitCameraWifiReady(CameraConnectionPhase.ENTER_GALLERY),
     JoinCameraWifi(CameraConnectionPhase.ENTER_GALLERY),
     ConnectPtp(CameraConnectionPhase.ENTER_GALLERY),
+    ConfirmGalleryMode(CameraConnectionPhase.ENTER_GALLERY),
     LoadGallery(CameraConnectionPhase.ENTER_GALLERY),
 }
 
@@ -313,4 +315,64 @@ object CameraWifiJoinStatusPolicy {
     ): String =
         "正在等待手机加入相机 Wi-Fi：$ssid ($attempt/$total)\n" +
             "慢的时候通常是手机系统在切换网络；如果弹出连接确认，请点连接。"
+}
+
+object CameraVendorOfficialGalleryConnectionPolicy {
+    val RequiredSteps = listOf(
+        CameraConnectionStep.ReconnectPairedBle,
+        CameraConnectionStep.TransferAuthorization,
+        CameraConnectionStep.ActivateCameraWifi,
+        CameraConnectionStep.WaitCameraWifiReady,
+        CameraConnectionStep.JoinCameraWifi,
+        CameraConnectionStep.ConnectPtp,
+        CameraConnectionStep.ConfirmGalleryMode,
+        CameraConnectionStep.LoadGallery,
+    )
+
+    fun nextStep(completedSteps: List<CameraConnectionStep>): CameraConnectionStep? {
+        require(isConfirmedPrefix(completedSteps)) {
+            "Official gallery connection steps are out of order: $completedSteps"
+        }
+        return RequiredSteps.getOrNull(completedSteps.size)
+    }
+
+    fun canRunStep(
+        step: CameraConnectionStep,
+        completedSteps: List<CameraConnectionStep>,
+    ): Boolean = nextStep(completedSteps) == step
+
+    fun isComplete(completedSteps: List<CameraConnectionStep>): Boolean =
+        completedSteps == RequiredSteps
+
+    fun delayBeforeStepMs(step: CameraConnectionStep): Long =
+        when (step) {
+            CameraConnectionStep.ConnectPtp -> CameraVendorPtpConnectionStartupPolicy.STARTUP_DELAY_MS
+            else -> 0L
+        }
+
+    private fun isConfirmedPrefix(completedSteps: List<CameraConnectionStep>): Boolean =
+        completedSteps == RequiredSteps.take(completedSteps.size)
+}
+
+class CameraVendorOfficialGalleryConnectionAdapter(
+    private val onStepStarted: (CameraConnectionStep) -> Unit = {},
+    private val onStepConfirmed: (CameraConnectionStep) -> Unit = {},
+) {
+    private val completedSteps = mutableListOf<CameraConnectionStep>()
+
+    suspend fun <T> confirmStep(
+        step: CameraConnectionStep,
+        action: suspend () -> T,
+    ): T {
+        check(CameraVendorOfficialGalleryConnectionPolicy.canRunStep(step, completedSteps)) {
+            "Cannot run $step before ${CameraVendorOfficialGalleryConnectionPolicy.nextStep(completedSteps)}"
+        }
+        onStepStarted(step)
+        val result = action()
+        completedSteps += step
+        onStepConfirmed(step)
+        return result
+    }
+
+    fun confirmedSteps(): List<CameraConnectionStep> = completedSteps.toList()
 }

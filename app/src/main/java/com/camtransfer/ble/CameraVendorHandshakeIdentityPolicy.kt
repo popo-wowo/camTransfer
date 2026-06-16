@@ -1,25 +1,20 @@
 package com.camtransfer.ble
 
-import android.os.Build
+import java.util.Locale
 
 object CameraVendorHandshakeIdentityPolicy {
     private const val FALLBACK_CONNECTED_DEVICE_NAME = "CamTransfer"
+    private const val REFERENCE_APP_GENERIC_PHONE_PREFIX = "iPhone"
 
-    fun currentConnectedDeviceName(): String {
-        val model = Build.MODEL?.trim().orEmpty()
-        val manufacturer = Build.MANUFACTURER?.trim().orEmpty()
-        val preferred = when {
-            model.isNotEmpty() && manufacturer.isNotEmpty() &&
-                !model.startsWith(manufacturer, ignoreCase = true) -> "$manufacturer $model"
-            model.isNotEmpty() -> model
-            manufacturer.isNotEmpty() -> manufacturer
-            else -> FALLBACK_CONNECTED_DEVICE_NAME
-        }
-        return connectedDeviceName(preferred)
-    }
+    fun currentConnectedDeviceName(): String = referenceAppStyleGenericPhoneName()
 
-    fun connectedDeviceName(preferredDeviceName: String?): String {
-        val trimmed = preferredDeviceName?.trim().orEmpty()
-        return trimmed.ifEmpty { FALLBACK_CONNECTED_DEVICE_NAME }
+    fun connectedDeviceName(preferredDeviceName: String?): String = referenceAppStyleGenericPhoneName()
+
+    private fun referenceAppStyleGenericPhoneName(): String {
+        val suffix = FALLBACK_CONNECTED_DEVICE_NAME.toByteArray(Charsets.UTF_8)
+            .fold(0) { partial, byte ->
+                (partial * 31 + (byte.toInt() and 0xFF)) % 10_000
+            }
+        return String.format(Locale.US, "%s-%04d", REFERENCE_APP_GENERIC_PHONE_PREFIX, suffix)
     }
 }

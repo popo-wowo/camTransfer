@@ -1,6 +1,7 @@
 package com.camtransfer.protocol
 
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -39,43 +40,75 @@ class PtpConnection {
         host: String = CameraVendorConst.DEFAULT_CAMERA_IP,
         clientName: String = "CamTransfer",
         socketFactory: SocketFactory? = null,
+        connectTimeoutMs: Int = CameraVendorPtpConnectionStartupPolicy.OPEN_ATTEMPT_TIMEOUT_MS.toInt(),
+        initReadTimeoutMs: Int = CameraVendorPtpConnectionStartupPolicy.INIT_ACK_READ_TIMEOUT_MS.toInt(),
+        commandReadTimeoutMs: Int = CameraVendorPtpConnectionStartupPolicy.COMMAND_READ_TIMEOUT_MS.toInt(),
+        confirmGalleryMode: Boolean = true,
     ) {
         disconnect()
         transactionId = 0
         specifiedObjectHandles = emptyList()
 
         withContext(Dispatchers.IO) {
-            val cmd = PtpConnectionSocketPolicy.createSocket(socketFactory)
-            cmd.tcpNoDelay = true
-            cmd.receiveBufferSize = 2 * 1024 * 1024
-            cmd.sendBufferSize = 2 * 1024 * 1024
-            cmd.connect(InetSocketAddress(host, CameraVendorConst.COMMAND_PORT), 1_500)
-            cmd.soTimeout = 15_000
-            cmdSocket = cmd
+            var lastError: Throwable? = null
+            for (variant in CameraVendorPtpInitPolicy.legacyInitVariants()) {
+                val cmd = PtpConnectionSocketPolicy.createSocket(socketFactory)
+                try {
+                    cmd.tcpNoDelay = true
+                    cmd.receiveBufferSize = 2 * 1024 * 1024
+                    cmd.sendBufferSize = 2 * 1024 * 1024
+                    cmd.connect(InetSocketAddress(host, CameraVendorConst.COMMAND_PORT), connectTimeoutMs)
+                    cmd.soTimeout = initReadTimeoutMs
+                    cmdSocket = cmd
 
-            val clientIp = cmd.localAddress?.hostAddress
-            val initPacket = PtpPacketBuilder.buildCameraVendorLegacyInitCommandRequest(
-                friendlyName = clientName,
-                clientIp = clientIp,
-            )
-            Log.d(TAG, "Sending CameraVendor legacy INIT clientIp=$clientIp bytes=${initPacket.size}")
-            cmd.getOutputStream().write(initPacket)
-            cmd.getOutputStream().flush()
-            delay(50)
+                    val socketLocalIp = cmd.localAddress?.hostAddress
+                    val initClientIp = CameraVendorPtpInitPolicy.clientIpForVariant(variant, socketLocalIp)
+                    val initPacket = PtpPacketBuilder.buildCameraVendorLegacyInitCommandRequest(
+                        friendlyName = clientName,
+                        clientIp = initClientIp,
+                    )
+                    Log.d(
+                        TAG,
+                        "Sending ${variant.label} INIT socketLocalIp=$socketLocalIp clientIp=$initClientIp bytes=${initPacket.size}",
+                    )
+                    cmd.getOutputStream().write(initPacket)
+                    cmd.getOutputStream().flush()
+                    delay(50)
 
-            val ack = readStandardPacket(cmd.getInputStream())
-            if (ack.type == PtpPacketType.INIT_COMMAND_ACK && ack.payload.size >= 4) {
-                val connectionNumber = ByteBuffer.wrap(ack.payload, 0, 4)
-                    .order(ByteOrder.LITTLE_ENDIAN)
-                    .int
-                Log.d(TAG, "INIT ack connectionNumber=$connectionNumber")
-            } else {
-                throw IllegalStateException("PTP INIT failed: packetType=0x${ack.type.toString(16)}")
+                    val ack = readStandardPacket(cmd.getInputStream())
+                    if (ack.type == PtpPacketType.INIT_COMMAND_ACK && ack.payload.size >= 4) {
+                        val connectionNumber = ByteBuffer.wrap(ack.payload, 0, 4)
+                            .order(ByteOrder.LITTLE_ENDIAN)
+                            .int
+                        Log.d(TAG, "INIT ack connectionNumber=$connectionNumber variant=${variant.label}")
+                        cmd.soTimeout = commandReadTimeoutMs
+                        lastError = null
+                        break
+                    } else {
+                        throw IllegalStateException("PTP INIT failed: packetType=0x${ack.type.toString(16)}")
+                    }
+                } catch (error: Throwable) {
+                    if (error is CancellationException) throw error
+                    lastError = error
+                    Log.w(TAG, "PTP INIT variant failed: ${variant.label}: $error")
+                    runCatching { cmd.close() }
+                    if (cmdSocket === cmd) cmdSocket = null
+                }
+            }
+            if (lastError != null || cmdSocket == null) {
+                throw lastError ?: IllegalStateException("PTP INIT failed")
             }
         }
 
         sendCommand(PtpOpCode.OPEN_SESSION, listOf(1))
-        performCameraVendorLegacyGalleryHandshake()
+        if (confirmGalleryMode) {
+            confirmCameraVendorGalleryMode()
+        }
+        sessionOpen = true
+    }
+
+    suspend fun confirmCameraVendorGalleryMode() {
+        performOfficialImageViewModeSetup()
         sessionOpen = true
     }
 
@@ -155,19 +188,24 @@ class PtpConnection {
         specifiedObjectHandles = emptyList()
     }
 
-    private suspend fun performCameraVendorLegacyGalleryHandshake() {
-        readDeviceProperty(CameraVendorDevicePropCode.REFERENCE_APP_GALLERY_OBJECT_CONTEXT)
+    private suspend fun performOfficialImageViewModeSetup() {
         readDeviceProperty(CameraVendorDevicePropCode.INIT_SEQUENCE)
         setDevicePropertyUInt16(
             CameraVendorDevicePropCode.INIT_SEQUENCE,
             CameraVendorReferenceApp.REMOTE_IMAGE_VIEWER_CLIENT_STATE,
         )
         readDeviceProperty(CameraVendorDevicePropCode.REFERENCE_APP_IMAGE_HOST)
+        val functionVersion = CameraVendorOfficialGalleryStartupPolicy.functionVersion(
+            readDeviceProperty(CameraVendorDevicePropCode.REFERENCE_APP_IMAGE_HOST)
+        )
         setDevicePropertyUInt32(
             CameraVendorDevicePropCode.REFERENCE_APP_IMAGE_HOST,
-            CameraVendorReferenceApp.IMAGE_HOST_VERSION,
+            functionVersion,
         )
         readDeviceProperty(CameraVendorDevicePropCode.REFERENCE_APP_GALLERY_ACCESS_STATE)
+    }
+
+    suspend fun loadCameraVendorGalleryObjectHandles() {
         readDeviceProperty(CameraVendorDevicePropCode.REFERENCE_APP_GALLERY_OBJECT_CONTEXT)
         readDeviceProperty(CameraVendorDevicePropCode.REFERENCE_APP_GALLERY_ACCESS_STATE)
         runCatching {

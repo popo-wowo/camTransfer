@@ -213,6 +213,12 @@ class GalleryUiPolicyTest {
     }
 
     @Test
+    fun downloadRecordCleanupLivesInDownloadCenterNotGalleryHeader() {
+        assertFalse(GalleryHeaderActionPolicy.shouldShowClearDownloadRecords)
+        assertEquals("清理记录", DownloadCenterActionPolicy.clearDownloadRecordsLabel)
+    }
+
+    @Test
     fun dragSelectionAddsOrRemovesOnlySelectableHandles() {
         assertTrue(GalleryDragSelectionPolicy.shouldSelectForDrag(startHandleSelected = false))
         assertFalse(GalleryDragSelectionPolicy.shouldSelectForDrag(startHandleSelected = true))
@@ -291,6 +297,33 @@ class GalleryUiPolicyTest {
 
         assertEquals(1, GalleryPreviewNavigationPolicy.initialPage(files, selectedHandle = 20))
         assertEquals(0, GalleryPreviewNavigationPolicy.initialPage(files, selectedHandle = 99))
+    }
+
+    @Test
+    fun previewThumbnailPolicyRequestsCurrentPageAndNeighborsOnly() {
+        val files = listOf(
+            file(10, PtpObjectFormat.JPEG, "20260529T081500"),
+            file(20, PtpObjectFormat.JPEG, "20260529T091500"),
+            file(30, PtpObjectFormat.JPEG, "20260529T101500"),
+            file(40, PtpObjectFormat.JPEG, "20260529T111500"),
+        )
+
+        assertEquals(
+            listOf(20, 30, 40),
+            GalleryPreviewThumbnailPolicy.handlesToRequest(files, currentPage = 2),
+        )
+        assertEquals(
+            listOf(10, 20),
+            GalleryPreviewThumbnailPolicy.handlesToRequest(files, currentPage = 0),
+        )
+        assertEquals(
+            listOf(30, 40),
+            GalleryPreviewThumbnailPolicy.handlesToRequest(files, currentPage = 3),
+        )
+        assertEquals(
+            emptyList<Int>(),
+            GalleryPreviewThumbnailPolicy.handlesToRequest(files, currentPage = 99),
+        )
     }
 
     @Test
@@ -381,6 +414,49 @@ class GalleryUiPolicyTest {
     }
 
     @Test
+    fun previewRotationPolicyUsesCameraVendorOrientationBeforeDimensionFallback() {
+        val portraitWithLandscapePixelMetadata = file(
+            handle = 72,
+            format = PtpObjectFormat.JPEG,
+            captureDate = "20260529T111500",
+            imageWidth = 4000,
+            imageHeight = 3000,
+            orientation = 2,
+        )
+
+        assertEquals(
+            90,
+            GalleryPreviewRotationPolicy.autoRotationDegrees(
+                file = portraitWithLandscapePixelMetadata,
+                decodedWidth = 160,
+                decodedHeight = 120,
+                imageData = ByteArray(0),
+            ),
+        )
+    }
+
+    @Test
+    fun thumbnailDisplayRotationPolicyMatchesPreviewAutoRotation() {
+        val portrait = file(
+            handle = 75,
+            format = PtpObjectFormat.JPEG,
+            captureDate = "20260529T111500",
+            imageWidth = 4000,
+            imageHeight = 3000,
+        )
+
+        assertEquals(
+            90,
+            GalleryThumbnailDisplayPolicy.rotationDegrees(
+                file = portrait,
+                decodedWidth = 160,
+                decodedHeight = 120,
+                thumbnail = jpegWithExifOrientation(6),
+            ),
+        )
+    }
+
+    @Test
     fun previewRotationPolicyCyclesManualClockwiseRotation() {
         assertEquals(90, GalleryPreviewRotationPolicy.nextManualRotationDegrees(0))
         assertEquals(180, GalleryPreviewRotationPolicy.nextManualRotationDegrees(90))
@@ -404,6 +480,7 @@ class GalleryUiPolicyTest {
         assertTrue(summary.contains("decoded=160x120"))
         assertTrue(summary.contains("object=4000x3000"))
         assertTrue(summary.contains("thumbInfo=160x120"))
+        assertTrue(summary.contains("objectOrientation=unknown"))
         assertTrue(summary.contains("autoRotation=90"))
     }
 
@@ -422,6 +499,7 @@ class GalleryUiPolicyTest {
         captureDate: String,
         imageWidth: Int,
         imageHeight: Int,
+        orientation: Int? = null,
     ): CameraFile =
         CameraFile(
             ObjectInfo(
@@ -438,6 +516,7 @@ class GalleryUiPolicyTest {
                 parentObject = 0,
                 filename = "DSCF%04d.JPG".format(handle),
                 captureDate = captureDate,
+                orientation = orientation,
             )
         )
 

@@ -48,6 +48,7 @@ import com.camtransfer.service.CameraConnectionIssue
 import com.camtransfer.service.CameraConnectionPhase
 import com.camtransfer.service.CameraConnectionStep
 import com.camtransfer.service.CameraPairingGuidance
+import com.camtransfer.service.CameraVendorPairedCameraRecord
 import com.camtransfer.viewmodel.ConnectionState
 import com.camtransfer.viewmodel.ConnectionViewModel
 
@@ -64,6 +65,8 @@ fun ConnectScreen(
     val connectionIssue by viewModel.connectionIssue.collectAsState()
     val activeStep by viewModel.activeStep.collectAsState()
     val preferCompressedDownloads by viewModel.preferCompressedDownloads.collectAsState()
+    val pairedCameras by viewModel.pairedCameras.collectAsState()
+    val selectedCameraId by viewModel.selectedCameraId.collectAsState()
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
 
@@ -109,6 +112,13 @@ fun ConnectScreen(
                     statusText = statusText,
                     error = error,
                     issue = connectionIssue,
+                )
+            }
+            if (ConnectionUiLayoutPolicy.shouldShowPairedCameraSelector(state, pairedCameras)) {
+                PairedCameraSelector(
+                    cameras = pairedCameras,
+                    selectedCameraId = selectedCameraId,
+                    onSelectCamera = viewModel::selectPairedCamera,
                 )
             }
             connectionIssue?.let { issue ->
@@ -261,8 +271,89 @@ internal object ConnectionUiLayoutPolicy {
     fun shouldShowTransferSizeSelector(state: ConnectionState): Boolean =
         state == ConnectionState.PAIRED
 
+    fun shouldShowPairedCameraSelector(
+        state: ConnectionState,
+        pairedCameras: List<CameraVendorPairedCameraRecord>,
+    ): Boolean =
+        state == ConnectionState.PAIRED && pairedCameras.size > 1
+
     fun shouldShowManualWifiCredentials(issue: CameraConnectionIssue): Boolean =
         !issue.wifiSsid.isNullOrBlank() || !issue.wifiPassphrase.isNullOrBlank()
+}
+
+@Composable
+private fun PairedCameraSelector(
+    cameras: List<CameraVendorPairedCameraRecord>,
+    selectedCameraId: String?,
+    onSelectCamera: (String) -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = CamTransferColors.Card,
+        border = BorderStroke(1.dp, CamTransferColors.Hairline),
+    ) {
+        Column(
+            modifier = Modifier.padding(13.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                "已配对相机",
+                color = CamTransferColors.Ink,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Black,
+            )
+            cameras.forEach { camera ->
+                val selected = camera.cameraId == selectedCameraId
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onSelectCamera(camera.cameraId) },
+                    shape = RoundedCornerShape(10.dp),
+                    color = if (selected) CamTransferColors.Accent.copy(alpha = 0.10f) else CamTransferColors.Background,
+                    border = BorderStroke(
+                        1.dp,
+                        if (selected) CamTransferColors.Accent.copy(alpha = 0.35f) else CamTransferColors.Hairline,
+                    ),
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            Text(
+                                camera.deviceName,
+                                color = CamTransferColors.Ink,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Black,
+                            )
+                            val detail = camera.serialNumber.takeIf { it.isNotBlank() }
+                                ?: camera.wifiConfigurations.firstOrNull()?.ssid
+                                ?: camera.bluetoothAddress.orEmpty()
+                            if (detail.isNotBlank()) {
+                                Text(
+                                    detail,
+                                    color = CamTransferColors.SecondaryInk,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            }
+                        }
+                        Text(
+                            if (selected) "当前" else "选择",
+                            color = if (selected) CamTransferColors.Accent else CamTransferColors.SecondaryInk,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Black,
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 private fun connectionActionLabel(action: CameraConnectionAction): String =

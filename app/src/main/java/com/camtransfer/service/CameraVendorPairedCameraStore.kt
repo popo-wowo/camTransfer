@@ -8,6 +8,8 @@ data class CameraVendorPairedCameraRecord(
     val serialNumber: String,
     val wifiConfigurations: List<CameraVendorWifiNetworkConfiguration>,
     val bluetoothAddress: String? = null,
+    val cameraId: String = "",
+    val lastConnectedAtMillis: Long = 0L,
 )
 
 class CameraVendorPairedCameraStore(context: Context) {
@@ -21,12 +23,36 @@ class CameraVendorPairedCameraStore(context: Context) {
             ?.split("\n")
             ?.mapNotNull { decodeWifiConfiguration(it) }
             .orEmpty()
+        val bluetoothAddress = prefs.getString(KEY_BLUETOOTH_ADDRESS, null)?.takeIf { it.isNotBlank() }
         return CameraVendorPairedCameraRecord(
             deviceName = deviceName,
             serialNumber = serialNumber,
             wifiConfigurations = wifiConfigurations,
-            bluetoothAddress = prefs.getString(KEY_BLUETOOTH_ADDRESS, null)?.takeIf { it.isNotBlank() },
+            bluetoothAddress = bluetoothAddress,
+            cameraId = prefs.getString(KEY_CAMERA_ID, null)?.takeIf { it.isNotBlank() }
+                ?: CameraVendorCameraIdentityPolicy.cameraId(
+                    serialNumber = serialNumber,
+                    deviceName = deviceName,
+                    bluetoothAddress = bluetoothAddress,
+                    wifiSsid = wifiConfigurations.firstOrNull()?.ssid,
+                ),
         )
+    }
+
+    fun load(cameraId: String): CameraVendorPairedCameraRecord? =
+        load()?.takeIf { it.cameraId == cameraId || cameraId.isBlank() }
+
+    fun loadAll(): List<CameraVendorPairedCameraRecord> =
+        load()?.let { listOf(it) }.orEmpty()
+
+    fun selectedCameraId(): String? =
+        load()?.cameraId
+
+    fun select(cameraId: String) {
+        val current = load() ?: return
+        if (current.cameraId == cameraId) {
+            prefs.edit().putString(KEY_CAMERA_ID, cameraId).apply()
+        }
     }
 
     fun save(record: CameraVendorPairedCameraRecord) {
@@ -36,15 +62,24 @@ class CameraVendorPairedCameraStore(context: Context) {
             .putString(KEY_SERIAL_NUMBER, record.serialNumber)
             .putString(KEY_WIFI_CONFIGURATIONS, record.wifiConfigurations.joinToString("\n", transform = ::encodeWifiConfiguration))
             .putString(KEY_BLUETOOTH_ADDRESS, record.bluetoothAddress)
+            .putString(KEY_CAMERA_ID, record.cameraId)
             .apply()
+    }
+
+    fun remove(cameraId: String) {
+        if (load()?.cameraId == cameraId) clear()
     }
 
     fun clear() {
         prefs.edit()
+            .remove(KEY_CAMERA_RECORDS)
+            .remove(KEY_SELECTED_CAMERA_ID)
+            .remove(KEY_MULTI_CAMERA_MIGRATED)
             .remove(KEY_DEVICE_NAME)
             .remove(KEY_SERIAL_NUMBER)
             .remove(KEY_WIFI_CONFIGURATIONS)
             .remove(KEY_BLUETOOTH_ADDRESS)
+            .remove(KEY_CAMERA_ID)
             .apply()
     }
 
@@ -106,10 +141,14 @@ class CameraVendorPairedCameraStore(context: Context) {
     }
 
     private companion object {
+        const val KEY_CAMERA_RECORDS = "camera_records"
+        const val KEY_SELECTED_CAMERA_ID = "selected_camera_id"
+        const val KEY_MULTI_CAMERA_MIGRATED = "multi_camera_migrated"
         const val KEY_DEVICE_NAME = "device_name"
         const val KEY_SERIAL_NUMBER = "serial_number"
         const val KEY_WIFI_CONFIGURATIONS = "wifi_configurations"
         const val KEY_BLUETOOTH_ADDRESS = "bluetooth_address"
+        const val KEY_CAMERA_ID = "camera_id"
         const val KEY_DELETED_BLUETOOTH_ADDRESSES = "deleted_bluetooth_addresses"
     }
 }

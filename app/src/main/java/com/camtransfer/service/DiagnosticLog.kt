@@ -16,7 +16,7 @@ object DiagnosticLog {
     private const val DirectoryName = "diagnostics"
     private const val FileName = "camtransfer-diagnostic-log.txt"
     private const val ExportFileName = "camtransfer-diagnostic-export.txt"
-    private const val MaxBytes = 512 * 1024
+    private const val MaxBytes = 2 * 1024 * 1024
     private const val ExportWindowMillis = 60 * 60 * 1000L
     private val timestampFormat = SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US)
 

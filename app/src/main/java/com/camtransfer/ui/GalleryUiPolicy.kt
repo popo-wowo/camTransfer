@@ -171,6 +171,14 @@ object GalleryDownloadUiPolicy {
         }
 }
 
+object GalleryHeaderActionPolicy {
+    const val shouldShowClearDownloadRecords = false
+}
+
+object DownloadCenterActionPolicy {
+    const val clearDownloadRecordsLabel = "清理记录"
+}
+
 object GalleryDisconnectPolicy {
     const val confirmTitle = "确认断开相机连接？"
     const val confirmMessage = "当前会保持在照片筛选页面，并且不会断开相机通讯。只有确认断开后，才会返回首页并断开相机连接。"
@@ -226,6 +234,22 @@ object GalleryPreviewNavigationPolicy {
     }
 }
 
+object GalleryPreviewThumbnailPolicy {
+    private const val NEIGHBOR_RADIUS = 1
+
+    fun handlesToRequest(
+        files: List<CameraFile>,
+        currentPage: Int,
+        radius: Int = NEIGHBOR_RADIUS,
+    ): List<Int> {
+        if (currentPage !in files.indices) return emptyList()
+        val safeRadius = radius.coerceAtLeast(0)
+        val start = (currentPage - safeRadius).coerceAtLeast(0)
+        val end = (currentPage + safeRadius).coerceAtMost(files.lastIndex)
+        return (start..end).map { index -> files[index].info.handle }
+    }
+}
+
 object GalleryPreviewRotationPolicy {
     fun nextManualRotationDegrees(currentDegrees: Int): Int =
         normalizedDegrees(currentDegrees + 90)
@@ -239,6 +263,10 @@ object GalleryPreviewRotationPolicy {
         exifRotationDegrees(imageData)?.let { exifDegrees ->
             if (exifRotationAlreadyApplied(exifDegrees, decodedWidth, decodedHeight)) return 0
             return exifDegrees
+        }
+        cameraVendorOrientationRotationDegrees(file.info.orientation)?.let { metadataDegrees ->
+            if (exifRotationAlreadyApplied(metadataDegrees, decodedWidth, decodedHeight)) return 0
+            return metadataDegrees
         }
         if (decodedWidth <= 0 || decodedHeight <= 0) return 0
         val expectedWidth = firstPositive(file.info.imagePixWidth, file.info.thumbPixWidth)
@@ -316,6 +344,14 @@ object GalleryPreviewRotationPolicy {
             else -> null
         }
 
+    fun cameraVendorOrientationRotationDegrees(orientation: Int?): Int? =
+        when (orientation) {
+            2 -> 90
+            3 -> 180
+            4 -> 270
+            else -> null
+        }
+
     private fun normalizedDegrees(degrees: Int): Int =
         ((degrees % 360) + 360) % 360
 
@@ -359,6 +395,21 @@ object GalleryPreviewRotationPolicy {
     private const val SHORT_TYPE = 3
 }
 
+object GalleryThumbnailDisplayPolicy {
+    fun rotationDegrees(
+        file: CameraFile,
+        decodedWidth: Int,
+        decodedHeight: Int,
+        thumbnail: ByteArray,
+    ): Int =
+        GalleryPreviewRotationPolicy.autoRotationDegrees(
+            file = file,
+            decodedWidth = decodedWidth,
+            decodedHeight = decodedHeight,
+            imageData = thumbnail,
+        )
+}
+
 object GalleryThumbnailDiagnosticPolicy {
     fun summary(
         handle: Int,
@@ -384,6 +435,7 @@ object GalleryThumbnailDiagnosticPolicy {
             "decoded=${dimensionLabel(decodedWidth, decodedHeight)} " +
             "object=${dimensionLabel(info?.imagePixWidth, info?.imagePixHeight)} " +
             "thumbInfo=${dimensionLabel(info?.thumbPixWidth, info?.thumbPixHeight)} " +
+            "objectOrientation=${info?.orientation?.toString() ?: "unknown"} " +
             "autoRotation=${autoRotation?.toString() ?: "unknown"}"
     }
 

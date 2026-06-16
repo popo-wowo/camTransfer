@@ -76,4 +76,12 @@ class CameraVendorBlePairingPolicyTest {
     fun secureIdentificationReadWaitsLongEnoughForSystemNumericComparison() {
         assertTrue(CameraVendorBlePairingPolicy.SECURE_IDENTIFICATION_READ_TIMEOUT_MS >= 35_000L)
     }
+
+    @Test
+    fun freshSecurePairingDoesNotRetryAfterAnUnconfirmedFailure() {
+        assertEquals(
+            1,
+            CameraVendorBlePairingPolicy.maxSecureHandshakeAttempts(CameraVendorBleHandshakeMode.Pairing),
+        )
+    }
 }

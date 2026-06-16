@@ -110,7 +110,6 @@ fun BrowseScreen(
     onFilesLoaded: (List<CameraFile>) -> Unit,
     onDownloadSelected: (List<CameraFile>) -> Unit,
     onOpenDownloads: () -> Unit,
-    onClearDownloadCache: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -148,9 +147,12 @@ fun BrowseScreen(
     val visibleGridHandles by remember {
         derivedStateOf {
             gridState.layoutInfo.visibleItemsInfo
+                .sortedBy { it.index }
                 .mapNotNull { it.key as? Int }
-                .toSet()
         }
+    }
+    val visibleGridHandleSet by remember {
+        derivedStateOf { visibleGridHandles.toSet() }
     }
     val selectableFilteredHandles = remember(sortedFiles, downloadStates) {
         sortedFiles
@@ -179,6 +181,16 @@ fun BrowseScreen(
     LaunchedEffect(filterState, sortMode) {
         if (GalleryScrollResetPolicy.shouldScrollToTopAfterFilterOrSortChange()) {
             gridState.scrollToItem(0)
+        }
+    }
+    LaunchedEffect(cameraSource, isTransferring) {
+        if (!isTransferring) {
+            viewModel.resumeThumbnailLoadingAfterTransfer(cameraSource)
+        }
+    }
+    LaunchedEffect(cameraSource, visibleGridHandles, isTransferring) {
+        if (!isTransferring) {
+            viewModel.loadVisibleThumbnails(cameraSource, visibleGridHandles)
         }
     }
 
@@ -227,6 +239,9 @@ fun BrowseScreen(
             selectedHandles = selectedHandles,
             preferCompressedDownloads = preferCompressedDownloads,
             onDismiss = { previewFile = null },
+            onPreviewVisible = { handles ->
+                viewModel.loadPreviewThumbnails(cameraSource, handles)
+            },
             onToggleSelection = { currentFile ->
                 if (GalleryDownloadUiPolicy.canSelect(downloadStates[currentFile.info.handle])) {
                     viewModel.toggleSelection(currentFile.info.handle)
@@ -277,7 +292,6 @@ fun BrowseScreen(
                 isTransferring = isTransferring,
                 onBack = { showsDisconnectConfirm = true },
                 onOpenDownloads = onOpenDownloads,
-                onClearDownloadCache = onClearDownloadCache,
             )
             GalleryFilterPanel(
                 expanded = filtersExpanded,
@@ -361,7 +375,7 @@ fun BrowseScreen(
                                     isSelected = file.info.handle in selectedHandles,
                                     downloadState = state,
                                     isLoadingFullObjectInfo = isLoading,
-                                    isItemVisible = file.info.handle in visibleGridHandles,
+                                    isItemVisible = file.info.handle in visibleGridHandleSet,
                                     onOpen = { previewFile = file },
                                     onToggleSelection = {
                                         if (GalleryDownloadUiPolicy.canSelect(state)) {
@@ -391,7 +405,6 @@ private fun GalleryHeader(
     isTransferring: Boolean,
     onBack: () -> Unit,
     onOpenDownloads: () -> Unit,
-    onClearDownloadCache: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -411,11 +424,6 @@ private fun GalleryHeader(
             GalleryHeaderButton(
                 label = "下载中心",
                 onClick = onOpenDownloads,
-            )
-            Spacer(Modifier.width(6.dp))
-            GalleryHeaderTextAction(
-                label = "清缓存",
-                onClick = onClearDownloadCache,
             )
         }
         Text(
@@ -927,9 +935,10 @@ private fun GalleryGridItem(
     ) {
         val thumb = file.thumbnail
         if (thumb != null) {
-            val bitmap by produceState<Bitmap?>(initialValue = null, thumb) {
+            val bitmap by produceState<Bitmap?>(initialValue = null, thumb, file.info) {
                 value = withContext(Dispatchers.Default) {
-                    decodeThumbnailBitmap(
+                    decodeThumbnailBitmapForDisplay(
+                        file = file,
                         data = thumb,
                         maxDecodedSide = GalleryThumbnailDecodePolicy.GRID_MAX_DECODED_SIDE,
                     )
@@ -971,7 +980,6 @@ private fun GalleryGridItem(
         }
 
         DownloadStateBadge(downloadState, modifier = Modifier.align(Alignment.TopEnd))
-        FormatBadge(file.info.formatLabel, modifier = Modifier.align(Alignment.BottomEnd))
     }
 }
 
@@ -1016,17 +1024,6 @@ private fun DownloadStateBadge(state: TransferState?, modifier: Modifier = Modif
         TransferState.ERROR -> SmallBadge("失败", modifier, background = MaterialTheme.colorScheme.error)
         null -> Unit
     }
-}
-
-@Composable
-private fun FormatBadge(label: String, modifier: Modifier = Modifier) {
-    SmallBadge(
-        label = label.uppercase(),
-        modifier = modifier,
-        background = Color.White.copy(alpha = 0.84f),
-        foreground = CamTransferColors.Ink,
-        fontSize = 7.sp,
-    )
 }
 
 @Composable
@@ -1100,6 +1097,7 @@ private fun PhotoPreviewDialog(
     selectedHandles: Set<Int>,
     preferCompressedDownloads: Boolean,
     onDismiss: () -> Unit,
+    onPreviewVisible: (List<Int>) -> Unit,
     onToggleSelection: (CameraFile) -> Unit,
     onDownload: (CameraFile) -> Unit,
 ) {
@@ -1115,6 +1113,15 @@ private fun PhotoPreviewDialog(
     var previewVisible by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         previewVisible = true
+    }
+    val previewThumbnailHandles = remember(files, pagerState.currentPage) {
+        GalleryPreviewThumbnailPolicy.handlesToRequest(
+            files = files,
+            currentPage = pagerState.currentPage,
+        )
+    }
+    LaunchedEffect(previewThumbnailHandles) {
+        onPreviewVisible(previewThumbnailHandles)
     }
     val previewAlpha by animateFloatAsState(
         targetValue = if (previewVisible) 1f else 0f,
@@ -1498,11 +1505,26 @@ private fun EmptyGalleryMessage(text: String) {
     }
 }
 
+private fun decodeThumbnailBitmapForDisplay(
+    file: CameraFile,
+    data: ByteArray,
+    maxDecodedSide: Int,
+): Bitmap? {
+    val bitmap = decodeThumbnailBitmap(data, maxDecodedSide) ?: return null
+    val rotationDegrees = GalleryThumbnailDisplayPolicy.rotationDegrees(
+        file = file,
+        decodedWidth = bitmap.width,
+        decodedHeight = bitmap.height,
+        thumbnail = data,
+    )
+    return rotateBitmapForDisplay(bitmap, rotationDegrees)
+}
+
 private fun decodeThumbnailBitmap(
     data: ByteArray,
     maxDecodedSide: Int = GalleryThumbnailDecodePolicy.PREVIEW_MAX_DECODED_SIDE,
-) =
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+) = decodeThumbnailBitmapLegacy(data, maxDecodedSide)
+    ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
         runCatching {
             ImageDecoder.decodeBitmap(ImageDecoder.createSource(ByteBuffer.wrap(data))) { decoder, info, _ ->
                 decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
@@ -1515,9 +1537,9 @@ private fun decodeThumbnailBitmap(
                     decoder.setTargetSampleSize(sampleSize)
                 }
             }
-        }.getOrNull() ?: decodeThumbnailBitmapLegacy(data, maxDecodedSide)
+        }.getOrNull()
     } else {
-        decodeThumbnailBitmapLegacy(data, maxDecodedSide)
+        null
     }
 
 private fun decodeThumbnailBitmapLegacy(data: ByteArray, maxDecodedSide: Int): Bitmap? {

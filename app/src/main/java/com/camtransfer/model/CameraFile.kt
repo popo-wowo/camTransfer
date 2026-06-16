@@ -16,6 +16,7 @@ data class ObjectInfo(
     val parentObject: Int,
     val filename: String,
     val captureDate: String,
+    val orientation: Int? = null,
 ) {
     val isJpeg: Boolean get() = format == PtpObjectFormat.JPEG
     val isHeif: Boolean get() = format == PtpObjectFormat.HEIF ||

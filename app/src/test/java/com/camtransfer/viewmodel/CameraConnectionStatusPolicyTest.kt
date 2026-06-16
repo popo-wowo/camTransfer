@@ -44,6 +44,44 @@ class CameraConnectionStatusPolicyTest {
     }
 
     @Test
+    fun galleryStatusRecognizesOfficialAuthorizationStepBeforeActivation() {
+        val step = CameraConnectionStatusPolicy.galleryStep(
+            status = "正在确认相机允许这台手机传图",
+            currentStep = CameraConnectionStep.ReconnectPairedBle,
+        )
+
+        assertEquals(CameraConnectionStep.TransferAuthorization, step)
+    }
+
+    @Test
+    fun galleryStatusDoesNotTreatCameraWifiActivationAsPhoneWifiJoin() {
+        val step = CameraConnectionStatusPolicy.galleryStep(
+            status = "正在让相机打开自己的 Wi-Fi",
+            currentStep = CameraConnectionStep.TransferAuthorization,
+        )
+
+        assertEquals(CameraConnectionStep.ActivateCameraWifi, step)
+    }
+
+    @Test
+    fun galleryStatusRecognizesApReadyWaitAndGalleryModeConfirmation() {
+        assertEquals(
+            CameraConnectionStep.WaitCameraWifiReady,
+            CameraConnectionStatusPolicy.galleryStep(
+                status = "正在等待相机确认 Wi-Fi 已准备好",
+                currentStep = CameraConnectionStep.ActivateCameraWifi,
+            ),
+        )
+        assertEquals(
+            CameraConnectionStep.ConfirmGalleryMode,
+            CameraConnectionStatusPolicy.galleryStep(
+                status = "正在确认相机已经进入相册模式",
+                currentStep = CameraConnectionStep.ConnectPtp,
+            ),
+        )
+    }
+
+    @Test
     fun rememberedBleReconnectStatusLeavesPairedIdleStateImmediately() {
         val state = CameraConnectionStatusPolicy.galleryState(
             status = "正在直连已配对相机: X-T5",
@@ -56,8 +94,18 @@ class CameraConnectionStatusPolicyTest {
     @Test
     fun rememberedBleReconnectStatusMapsToReconnectStep() {
         val step = CameraConnectionStatusPolicy.galleryStep(
-            status = "正在用蓝牙查找已配对相机: X-T5",
+            status = "未直接连上，正在重新发现这台已配对相机: X-T5",
             currentStep = CameraConnectionStep.ReconnectPairedBle,
+        )
+
+        assertEquals(CameraConnectionStep.ReconnectPairedBle, step)
+    }
+
+    @Test
+    fun cachedBleReuseStatusMapsToReconnectStep() {
+        val step = CameraConnectionStatusPolicy.galleryStep(
+            status = "正在复用刚才的相机蓝牙连接: X-T5",
+            currentStep = CameraConnectionStep.ActivateCameraWifi,
         )
 
         assertEquals(CameraConnectionStep.ReconnectPairedBle, step)

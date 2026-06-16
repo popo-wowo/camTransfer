@@ -228,13 +228,17 @@ Thumbnail path:
 
 Original photo download path:
 
-1. Do not use standard `GetObject` by default.
-2. Set `D227 ImageCompressionRealInfo` to `1` before getting a fresh object
+1. Treat original download as an exclusive PTP operation. Pause thumbnail and
+   background metadata requests before starting it.
+2. Resolve the selected handle to fresh `ObjectInfo` before saving, because a
+   large-gallery UI item may still carry placeholder metadata.
+3. Do not use standard `GetObject` by default.
+4. Set `D227 ImageCompressionRealInfo` to `1` before getting a fresh object
    size.
-3. Re-read `ObjectInfo`.
-4. Read chunks with `GetPartialObject(0x101B)`.
-5. Stop at expected size or JPEG EOI marker.
-6. Reset `D227` to `0`.
+5. Re-read `ObjectInfo`.
+6. Read chunks with `GetPartialObject(0x101B)`.
+7. Stop at expected size or JPEG EOI marker.
+8. Reset `D227` to `0`.
 
 Video original download remains intentionally blocked until the file path is
 tested separately.

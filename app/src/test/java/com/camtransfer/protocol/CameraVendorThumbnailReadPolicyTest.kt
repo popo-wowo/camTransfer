@@ -18,8 +18,8 @@ class CameraVendorThumbnailReadPolicyTest {
     }
 
     @Test
-    fun smallJpegPreviewObjectsUsePartialPreviewBeforeStandardThumbnail() {
-        assertTrue(
+    fun smallCameraVendorJpegPreviewDoesNotBypassStandardThumbnail() {
+        assertFalse(
             CameraVendorThumbnailReadPolicy.shouldReadPartialPreviewBeforeStandardThumbnail(
                 objectInfo(format = PtpObjectFormat.JPEG, compressedSize = 167_936),
             ),
@@ -27,7 +27,17 @@ class CameraVendorThumbnailReadPolicyTest {
     }
 
     @Test
-    fun smallJpegObjectsWithStandardThumbnailInfoUseGetThumbFirst() {
+    fun vendorExtensionThumbnailIsNotPreferredForListedGalleryHandles() {
+        assertFalse(CameraVendorThumbnailReadPolicy.shouldTryVendorExtensionThumbnailFirst())
+    }
+
+    @Test
+    fun primesObjectContextBeforePartialFallbackOnly() {
+        assertTrue(CameraVendorThumbnailReadPolicy.shouldPrimeObjectContextBeforePartialFallback())
+    }
+
+    @Test
+    fun smallJpegObjectsWithStandardThumbnailInfoUseStandardThumbnailFirst() {
         assertFalse(
             CameraVendorThumbnailReadPolicy.shouldReadPartialPreviewBeforeStandardThumbnail(
                 objectInfo(
@@ -46,6 +56,30 @@ class CameraVendorThumbnailReadPolicyTest {
             CameraVendorThumbnailReadPolicy.shouldReadPartialPreviewBeforeStandardThumbnail(
                 objectInfo(format = PtpObjectFormat.CAMERA_VENDOR_RAF_ALT, compressedSize = 84_658_176),
             ),
+        )
+    }
+
+    @Test
+    fun rejectsIncompleteJpegPartialPreviewData() {
+        assertTrue(
+            CameraVendorThumbnailReadPolicy.shouldRejectIncompletePartialPreview(
+                byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01, 0x02),
+            )
+        )
+        assertFalse(
+            CameraVendorThumbnailReadPolicy.shouldRejectIncompletePartialPreview(
+                byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01, 0x02, 0xFF.toByte(), 0xD9.toByte()),
+            )
+        )
+        assertFalse(
+            CameraVendorThumbnailReadPolicy.shouldRejectIncompletePartialPreview(
+                byteArrayOf(0x00, 0x01, 0x02),
+            )
+        )
+        assertTrue(
+            CameraVendorThumbnailReadPolicy.shouldRejectIncompletePartialPreview(
+                byteArrayOf(0xFF.toByte(), 0xD8.toByte()) + ByteArray(128 * 1024) { 0x01 },
+            )
         )
     }
 

@@ -6,21 +6,21 @@ import org.junit.Test
 class CameraVendorHandshakeIdentityPolicyTest {
 
     @Test
-    fun connectedDeviceNamePrefersTrimmedDeviceName() {
+    fun connectedDeviceNameUsesReferenceAppStyleName() {
         assertEquals(
-            "Xiaomi 14",
+            "iPhone-6970",
             CameraVendorHandshakeIdentityPolicy.connectedDeviceName("  Xiaomi 14  "),
         )
     }
 
     @Test
-    fun connectedDeviceNameFallsBackToAppName() {
+    fun connectedDeviceNameUsesReferenceAppStyleNameWhenInputIsEmpty() {
         assertEquals(
-            "CamTransfer",
+            "iPhone-6970",
             CameraVendorHandshakeIdentityPolicy.connectedDeviceName("   "),
         )
         assertEquals(
-            "CamTransfer",
+            "iPhone-6970",
             CameraVendorHandshakeIdentityPolicy.connectedDeviceName(null),
         )
     }

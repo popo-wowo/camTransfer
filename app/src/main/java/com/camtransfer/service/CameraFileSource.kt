@@ -12,7 +12,17 @@ interface CameraFileSource {
 
     suspend fun getThumbnail(handle: Int): ByteArray
 
+    suspend fun getThumbnailWithInfo(handle: Int): CameraThumbnail =
+        CameraThumbnail(data = getThumbnail(handle))
+
+    suspend fun resolveFile(handle: Int): CameraFile? = null
+
     suspend fun getFile(handle: Int): ByteArray
 
     suspend fun disconnect()
 }
+
+data class CameraThumbnail(
+    val data: ByteArray,
+    val file: CameraFile? = null,
+)

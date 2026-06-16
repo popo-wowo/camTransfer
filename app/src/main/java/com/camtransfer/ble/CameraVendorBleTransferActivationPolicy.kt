@@ -12,8 +12,7 @@ object CameraVendorBleTransferActivationPolicy {
     fun isApLaunchInProgress(apState: ByteArray?): Boolean =
         apStateValue(apState) == 0x8000
 
-    fun shouldProceedToWifiAfterReadyWait(lastApState: ByteArray?): Boolean =
-        isApLaunchInProgress(lastApState)
+    fun shouldProceedToWifiAfterReadyWait(lastApState: ByteArray?): Boolean = false
 
     fun apStateHex(apState: ByteArray?): String =
         apStateValue(apState)?.let { "0x${it.toString(16)}" } ?: "none"
@@ -39,7 +38,7 @@ object CameraVendorBleTransferActivationPolicy {
 
     fun shouldActivelyDisconnectBluetoothBeforeWifi(): Boolean = true
 
-    const val AP_READY_TIMEOUT_MS = 6_000L
+    const val AP_READY_TIMEOUT_MS = 12_000L
     const val AP_READY_POLL_INTERVAL_MS = 250L
     const val AP_READY_READ_TIMEOUT_MS = 1_000L
     const val BLUETOOTH_RELEASE_DELAY_MS = 500L

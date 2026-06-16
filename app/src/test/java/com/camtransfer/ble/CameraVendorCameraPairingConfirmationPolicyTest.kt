@@ -72,12 +72,29 @@ class CameraVendorCameraPairingConfirmationPolicyTest {
     }
 
     @Test
-    fun phoneConfirmationTriggersCameraSideReconnectForNewPairing() {
+    fun phoneConfirmationReplaysAckOnlyAfterSystemBondIsConfirmed() {
         assertTrue(
             CameraVendorCameraPairingConfirmationPolicy.shouldReconnectAfterPhoneConfirmation(
                 hasWrittenIdentifier = true,
                 hasPendingHandshakeSummary = true,
                 shouldBypassManualConfirmation = false,
+                systemBondState = CameraVendorCameraPairingConfirmationPolicy.SYSTEM_BOND_BONDED,
+            )
+        )
+        assertFalse(
+            CameraVendorCameraPairingConfirmationPolicy.shouldReconnectAfterPhoneConfirmation(
+                hasWrittenIdentifier = true,
+                hasPendingHandshakeSummary = true,
+                shouldBypassManualConfirmation = false,
+                systemBondState = CameraVendorCameraPairingConfirmationPolicy.SYSTEM_BOND_BONDING,
+            )
+        )
+        assertFalse(
+            CameraVendorCameraPairingConfirmationPolicy.shouldReconnectAfterPhoneConfirmation(
+                hasWrittenIdentifier = true,
+                hasPendingHandshakeSummary = true,
+                shouldBypassManualConfirmation = false,
+                systemBondState = CameraVendorCameraPairingConfirmationPolicy.SYSTEM_BOND_NONE,
             )
         )
         assertFalse(
@@ -85,6 +102,35 @@ class CameraVendorCameraPairingConfirmationPolicyTest {
                 hasWrittenIdentifier = true,
                 hasPendingHandshakeSummary = true,
                 shouldBypassManualConfirmation = true,
+                systemBondState = CameraVendorCameraPairingConfirmationPolicy.SYSTEM_BOND_BONDED,
+            )
+        )
+    }
+
+    @Test
+    fun pairingCanBeSavedOnlyAfterSystemBondIsSettled() {
+        assertFalse(
+            CameraVendorCameraPairingConfirmationPolicy.canSaveConfirmedPairing(
+                hasCompletedCameraAck = true,
+                systemBondState = CameraVendorCameraPairingConfirmationPolicy.SYSTEM_BOND_BONDING,
+            )
+        )
+        assertTrue(
+            CameraVendorCameraPairingConfirmationPolicy.canSaveConfirmedPairing(
+                hasCompletedCameraAck = true,
+                systemBondState = CameraVendorCameraPairingConfirmationPolicy.SYSTEM_BOND_BONDED,
+            )
+        )
+        assertTrue(
+            CameraVendorCameraPairingConfirmationPolicy.canSaveConfirmedPairing(
+                hasCompletedCameraAck = true,
+                systemBondState = CameraVendorCameraPairingConfirmationPolicy.SYSTEM_BOND_NONE,
+            )
+        )
+        assertFalse(
+            CameraVendorCameraPairingConfirmationPolicy.canSaveConfirmedPairing(
+                hasCompletedCameraAck = false,
+                systemBondState = CameraVendorCameraPairingConfirmationPolicy.SYSTEM_BOND_BONDED,
             )
         )
     }

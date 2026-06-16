@@ -3,11 +3,13 @@ package com.camtransfer.service
 import android.content.Context
 import android.provider.MediaStore
 import com.camtransfer.model.CameraFile
+import com.camtransfer.model.ObjectInfo
 import java.nio.charset.StandardCharsets
 import java.util.Base64
 
 private const val DOWNLOADED_PREFS = "camtransfer.downloaded_files"
 private const val DOWNLOADED_KEYS = "downloaded_keys"
+private const val DOWNLOADED_RECORDS = "downloaded_records"
 private const val INCLUDE_SAVED_MEDIA_NAMES = "include_saved_media_names"
 
 class DownloadedFileStore(context: Context) {
@@ -17,12 +19,22 @@ class DownloadedFileStore(context: Context) {
     fun markDownloaded(file: CameraFile) {
         val keys = prefs.getStringSet(DOWNLOADED_KEYS, emptySet()).orEmpty().toMutableSet()
         keys.add(DownloadedFileIdentity.key(file))
-        prefs.edit().putStringSet(DOWNLOADED_KEYS, keys).apply()
+        val records = prefs.getStringSet(DOWNLOADED_RECORDS, emptySet()).orEmpty().toMutableSet()
+        records.removeAll { record ->
+            runCatching { DownloadedFileRecordCodec.decode(record).info.handle == file.info.handle }
+                .getOrDefault(false)
+        }
+        records.add(DownloadedFileRecordCodec.encode(file))
+        prefs.edit()
+            .putStringSet(DOWNLOADED_KEYS, keys)
+            .putStringSet(DOWNLOADED_RECORDS, records)
+            .apply()
     }
 
     fun clear() {
         prefs.edit()
             .putStringSet(DOWNLOADED_KEYS, emptySet())
+            .putStringSet(DOWNLOADED_RECORDS, emptySet())
             .putBoolean(INCLUDE_SAVED_MEDIA_NAMES, false)
             .apply()
     }
@@ -37,6 +49,12 @@ class DownloadedFileStore(context: Context) {
             DownloadedFileIdentity.key(file) in downloadedKeys || file.info.filename in savedNames
         }
     }
+
+    fun downloadedHistory(): List<CameraFile> =
+        prefs.getStringSet(DOWNLOADED_RECORDS, emptySet())
+            .orEmpty()
+            .mapNotNull { record -> runCatching { DownloadedFileRecordCodec.decode(record) }.getOrNull() }
+            .sortedWith(compareByDescending<CameraFile> { it.info.captureDate }.thenByDescending { it.info.handle })
 
     private fun downloadedKeys(): Set<String> =
         prefs.getStringSet(DOWNLOADED_KEYS, emptySet()).orEmpty()
@@ -88,4 +106,57 @@ object DownloadedFileIdentity {
         Base64.getUrlEncoder()
             .withoutPadding()
             .encodeToString(value.toByteArray(StandardCharsets.UTF_8))
+}
+
+object DownloadedFileRecordCodec {
+    fun encode(file: CameraFile): String {
+        val info = file.info
+        return listOf(
+            info.handle.toString(),
+            info.storageId.toString(),
+            info.format.toString(),
+            info.compressedSize.toString(),
+            info.thumbFormat.toString(),
+            info.thumbCompressedSize.toString(),
+            info.thumbPixWidth.toString(),
+            info.thumbPixHeight.toString(),
+            info.imagePixWidth.toString(),
+            info.imagePixHeight.toString(),
+            info.parentObject.toString(),
+            encodeText(info.filename),
+            encodeText(info.captureDate),
+            info.orientation?.toString().orEmpty(),
+        ).joinToString("|")
+    }
+
+    fun decode(record: String): CameraFile {
+        val parts = record.split("|")
+        require(parts.size >= 14) { "Invalid downloaded record" }
+        return CameraFile(
+            ObjectInfo(
+                handle = parts[0].toInt(),
+                storageId = parts[1].toInt(),
+                format = parts[2].toInt(),
+                compressedSize = parts[3].toInt(),
+                thumbFormat = parts[4].toInt(),
+                thumbCompressedSize = parts[5].toInt(),
+                thumbPixWidth = parts[6].toInt(),
+                thumbPixHeight = parts[7].toInt(),
+                imagePixWidth = parts[8].toInt(),
+                imagePixHeight = parts[9].toInt(),
+                parentObject = parts[10].toInt(),
+                filename = decodeText(parts[11]),
+                captureDate = decodeText(parts[12]),
+                orientation = parts[13].takeIf { it.isNotBlank() }?.toInt(),
+            )
+        )
+    }
+
+    private fun encodeText(value: String): String =
+        Base64.getUrlEncoder()
+            .withoutPadding()
+            .encodeToString(value.toByteArray(StandardCharsets.UTF_8))
+
+    private fun decodeText(value: String): String =
+        String(Base64.getUrlDecoder().decode(value), StandardCharsets.UTF_8)
 }

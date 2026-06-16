@@ -30,6 +30,17 @@ class DownloadedFileStoreTest {
         assertEquals(DownloadedFileIdentity.key(first), DownloadedFileIdentity.key(second))
     }
 
+    @Test
+    fun downloadedRecordRoundTripsFullFileMetadata() {
+        val original = file(handle = 18, filename = "DSCF0018.JPG", size = 3_456_789, captureDate = "20260616T220000")
+
+        val restored = DownloadedFileRecordCodec.decode(
+            DownloadedFileRecordCodec.encode(original)
+        )
+
+        assertEquals(original.info, restored.info)
+    }
+
     private fun file(
         handle: Int,
         filename: String,

@@ -20,6 +20,7 @@ class TransferViewModel(app: Application) : AndroidViewModel(app) {
 
     val items: StateFlow<List<TransferItem>> get() = transferService?.items ?: emptyItems
     val downloadedItems: StateFlow<List<TransferItem>> get() = transferService?.downloadedItems ?: emptyItems
+    val historyItems: StateFlow<List<TransferItem>> get() = transferService?.historyItems ?: emptyItems
     val isTransferring: StateFlow<Boolean> get() = transferService?.isTransferring ?: idleTransferring
 
     fun init(cameraSource: CameraFileSource) {

@@ -24,6 +24,12 @@ class TransferService(
     private val _downloadedItems = MutableStateFlow<List<TransferItem>>(emptyList())
     val downloadedItems: StateFlow<List<TransferItem>> = _downloadedItems.asStateFlow()
 
+    private val _historyItems = MutableStateFlow(
+        downloadedFileStore.downloadedHistory()
+            .map { TransferItem(file = it, state = TransferState.DONE, progress = 1f) }
+    )
+    val historyItems: StateFlow<List<TransferItem>> = _historyItems.asStateFlow()
+
     private val _isTransferring = MutableStateFlow(false)
     val isTransferring: StateFlow<Boolean> = _isTransferring.asStateFlow()
 
@@ -52,20 +58,18 @@ class TransferService(
 
     fun syncDownloadedFiles(files: List<CameraFile>) {
         val currentFilesByHandle = files.associateBy { it.info.handle }
-        _downloadedItems.value = downloadedFileStore.downloadedFiles(files)
+        val downloadedFromGallery = downloadedFileStore.downloadedFiles(files)
             .map { TransferItem(file = it, state = TransferState.DONE, progress = 1f) }
-
-        _items.value = _items.value.mapNotNull { item ->
-            val currentFile = currentFilesByHandle[item.file.info.handle]
-            when {
-                currentFile == null -> item
-                downloadedFileStore.isDownloaded(currentFile) -> {
-                    item.copy(file = currentFile, state = TransferState.DONE, progress = 1f, error = null)
-                }
-                item.state == TransferState.DONE && !downloadedFileStore.isDownloaded(currentFile) -> null
-                else -> item.copy(file = currentFile)
-            }
-        }
+        _downloadedItems.value = downloadedFromGallery
+        _historyItems.value = TransferHistoryPolicy.downloadCenterItems(
+            historyItems = _historyItems.value,
+            queueItems = downloadedFromGallery,
+        )
+        _items.value = TransferHistoryPolicy.syncQueueWithGalleryFiles(
+            currentItems = _items.value,
+            currentFilesByHandle = currentFilesByHandle,
+            isDownloaded = downloadedFileStore::isDownloaded,
+        )
     }
 
     suspend fun startTransfer() {
@@ -87,52 +91,62 @@ class TransferService(
             _items.value = current.toList()
 
             try {
+                val transferFile = withContext(Dispatchers.IO) {
+                    TransferDownloadFilePolicy.fileForSaveAndDownload(
+                        queuedFile = item.file,
+                        resolvedFile = cameraSource.resolveFile(item.file.info.handle),
+                    )
+                }
+                current[i] = item.copy(file = transferFile, state = TransferState.DOWNLOADING, progress = 0f)
+                _items.value = current.toList()
                 Log.d(
                     TAG,
-                    "Download start handle=${item.file.info.handle} " +
-                        "filename=${item.file.info.filename} expected=${item.file.info.compressedSize}",
+                    "Download start handle=${transferFile.info.handle} " +
+                        "filename=${transferFile.info.filename} expected=${transferFile.info.compressedSize}",
                 )
                 DiagnosticLog.append(
                     galleryService.context,
                     TAG,
-                    "Download start handle=${item.file.info.handle} " +
-                        "format=${item.file.info.formatLabel} expected=${item.file.info.compressedSize}",
+                    "Download start handle=${transferFile.info.handle} " +
+                        "format=${transferFile.info.formatLabel} expected=${transferFile.info.compressedSize}",
                 )
                 val data = withContext(Dispatchers.IO) {
-                    cameraSource.getFile(item.file.info.handle)
+                    cameraSource.getFile(transferFile.info.handle)
                 }
                 Log.d(
                     TAG,
-                    "Download finished handle=${item.file.info.handle} bytes=${data.size}",
+                    "Download finished handle=${transferFile.info.handle} bytes=${data.size}",
                 )
                 DiagnosticLog.append(
                     galleryService.context,
                     TAG,
-                    "Download finished handle=${item.file.info.handle} bytes=${data.size}",
+                    "Download finished handle=${transferFile.info.handle} bytes=${data.size}",
                 )
 
-                current[i] = item.copy(state = TransferState.SAVING, progress = 0.9f)
+                current[i] = item.copy(file = transferFile, state = TransferState.SAVING, progress = 0.9f)
                 _items.value = current.toList()
 
                 val saved = withContext(Dispatchers.IO) {
-                    galleryService.saveToGallery(item.file.info, data)
+                    galleryService.saveToGallery(transferFile.info, data)
                 }
                 if (saved) {
-                    downloadedFileStore.markDownloaded(item.file)
-                    markDownloadedInGalleryState(item.file)
+                    downloadedFileStore.markDownloaded(transferFile)
+                    markDownloadedInGalleryState(transferFile)
+                    markDownloadedInHistoryState(transferFile)
                 }
                 current[i] = item.copy(
+                    file = transferFile,
                     state = if (saved) TransferState.DONE else TransferState.ERROR,
                     progress = if (saved) 1f else 0.9f,
                     error = if (!saved) "保存失败" else null
                 )
                 _items.value = current.toList()
 
-                Log.d(TAG, "${item.file.info.filename}: ${if (saved) "done" else "save failed"}")
+                Log.d(TAG, "${transferFile.info.filename}: ${if (saved) "done" else "save failed"}")
                 DiagnosticLog.append(
                     galleryService.context,
                     TAG,
-                    "Save result handle=${item.file.info.handle} result=${if (saved) "done" else "failed"}",
+                    "Save result handle=${transferFile.info.handle} result=${if (saved) "done" else "failed"}",
                 )
             } catch (e: Exception) {
                 current[i] = item.copy(state = TransferState.ERROR, error = e.message)
@@ -153,6 +167,7 @@ class TransferService(
     fun clearDownloadedCache() {
         downloadedFileStore.clear()
         _downloadedItems.value = emptyList()
+        _historyItems.value = emptyList()
         _items.value = _items.value.filter { it.state != TransferState.DONE }
         DiagnosticLog.append(galleryService.context, TAG, "Downloaded cache cleared")
     }
@@ -168,4 +183,51 @@ class TransferService(
             current + updatedItem
         }
     }
+
+    private fun markDownloadedInHistoryState(file: CameraFile) {
+        val current = _historyItems.value
+        val updatedItem = TransferItem(file = file, state = TransferState.DONE, progress = 1f)
+        _historyItems.value = TransferHistoryPolicy.downloadCenterItems(
+            historyItems = listOf(updatedItem),
+            queueItems = current,
+        )
+    }
+}
+
+internal object TransferDownloadFilePolicy {
+    fun fileForSaveAndDownload(
+        queuedFile: CameraFile,
+        resolvedFile: CameraFile?,
+    ): CameraFile {
+        if (resolvedFile == null) return queuedFile
+        return resolvedFile.copy(
+            thumbnail = queuedFile.thumbnail ?: resolvedFile.thumbnail,
+        )
+    }
+}
+
+internal object TransferHistoryPolicy {
+    fun downloadCenterItems(
+        historyItems: List<TransferItem>,
+        queueItems: List<TransferItem>,
+    ): List<TransferItem> =
+        (queueItems + historyItems)
+            .distinctBy { it.file.info.handle }
+
+    fun syncQueueWithGalleryFiles(
+        currentItems: List<TransferItem>,
+        currentFilesByHandle: Map<Int, CameraFile>,
+        isDownloaded: (CameraFile) -> Boolean,
+    ): List<TransferItem> =
+        currentItems.map { item ->
+            val currentFile = currentFilesByHandle[item.file.info.handle]
+            when {
+                currentFile == null -> item
+                isDownloaded(currentFile) -> {
+                    item.copy(file = currentFile, state = TransferState.DONE, progress = 1f, error = null)
+                }
+                item.state == TransferState.DONE -> item
+                else -> item.copy(file = currentFile)
+            }
+        }
 }

@@ -9,6 +9,13 @@ enum class CameraVendorBleSecurePairingStep {
 object CameraVendorBlePairingPolicy {
     const val SECURE_IDENTIFICATION_READ_TIMEOUT_MS = 40_000L
 
+    fun maxSecureHandshakeAttempts(mode: CameraVendorBleHandshakeMode): Int {
+        return when (mode) {
+            CameraVendorBleHandshakeMode.Pairing -> 1
+            CameraVendorBleHandshakeMode.RememberedGallery -> 1
+        }
+    }
+
     fun secureSteps(hasConnectedDeviceNameCharacteristic: Boolean): List<CameraVendorBleSecurePairingStep> {
         val steps = mutableListOf<CameraVendorBleSecurePairingStep>()
         if (hasConnectedDeviceNameCharacteristic) {

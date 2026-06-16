@@ -3,6 +3,7 @@ package com.camtransfer.ui
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
+import android.graphics.Matrix
 import android.os.Build
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -45,8 +46,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.camtransfer.model.CameraFile
 import com.camtransfer.model.TransferItem
 import com.camtransfer.model.TransferState
+import com.camtransfer.service.TransferHistoryPolicy
 import com.camtransfer.viewmodel.TransferViewModel
 import java.nio.ByteBuffer
 
@@ -57,9 +60,16 @@ fun TransferScreen(
     onClearDownloadCache: () -> Unit,
 ) {
     val items by viewModel.items.collectAsState()
+    val historyItems by viewModel.historyItems.collectAsState()
     val isTransferring by viewModel.isTransferring.collectAsState()
-    val doneCount = items.count { it.state == TransferState.DONE }
-    val activeCount = items.count {
+    val visibleItems = remember(historyItems, items) {
+        TransferHistoryPolicy.downloadCenterItems(
+            historyItems = historyItems,
+            queueItems = items,
+        )
+    }
+    val doneCount = visibleItems.count { it.state == TransferState.DONE }
+    val activeCount = visibleItems.count {
         it.state == TransferState.PENDING ||
             it.state == TransferState.DOWNLOADING ||
             it.state == TransferState.SAVING
@@ -74,7 +84,7 @@ fun TransferScreen(
                 .statusBarsPadding(),
         ) {
             DownloadHeader(
-                totalCount = items.size,
+                totalCount = visibleItems.size,
                 doneCount = doneCount,
                 activeCount = activeCount,
                 isTransferring = isTransferring,
@@ -82,7 +92,7 @@ fun TransferScreen(
                 onClearCompleted = { viewModel.clearCompleted() },
                 onClearDownloadCache = onClearDownloadCache,
             )
-            if (items.isEmpty()) {
+            if (visibleItems.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text("下载中心为空", color = CamTransferColors.SecondaryInk)
                 }
@@ -94,7 +104,7 @@ fun TransferScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    items(items, key = { it.file.info.handle }) { item ->
+                    items(visibleItems, key = { it.file.info.handle }) { item ->
                         DownloadGridItem(item)
                     }
                 }
@@ -134,7 +144,7 @@ private fun DownloadHeader(
                     onClick = onClearDownloadCache,
                     colors = ButtonDefaults.textButtonColors(contentColor = CamTransferColors.Ink),
                 ) {
-                    Text("清缓存")
+                    Text(DownloadCenterActionPolicy.clearDownloadRecordsLabel)
                 }
             }
         }
@@ -174,7 +184,7 @@ private fun DownloadGridItem(item: TransferItem) {
     ) {
         val thumb = item.file.thumbnail
         if (thumb != null) {
-            val bitmap = remember(thumb) { decodeThumbnailBitmap(thumb) }
+            val bitmap = remember(thumb, item.file.info) { decodeThumbnailBitmapForDisplay(item.file, thumb) }
             if (bitmap != null) {
                 Image(
                     bitmap = bitmap.asImageBitmap(),
@@ -250,8 +260,20 @@ private fun StatusChip(state: TransferState, modifier: Modifier = Modifier) {
     }
 }
 
+private fun decodeThumbnailBitmapForDisplay(file: CameraFile, data: ByteArray): Bitmap? {
+    val bitmap = decodeThumbnailBitmap(data) ?: return null
+    val rotationDegrees = GalleryThumbnailDisplayPolicy.rotationDegrees(
+        file = file,
+        decodedWidth = bitmap.width,
+        decodedHeight = bitmap.height,
+        thumbnail = data,
+    )
+    return rotateBitmapForDisplay(bitmap, rotationDegrees)
+}
+
 private fun decodeThumbnailBitmap(data: ByteArray) =
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+    decodeThumbnailBitmapLegacy(data)
+        ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
         runCatching {
             ImageDecoder.decodeBitmap(ImageDecoder.createSource(ByteBuffer.wrap(data))) { decoder, info, _ ->
                 val sampleSize = GalleryThumbnailDecodePolicy.sampleSize(
@@ -262,9 +284,9 @@ private fun decodeThumbnailBitmap(data: ByteArray) =
                     decoder.setTargetSampleSize(sampleSize)
                 }
             }
-        }.getOrNull() ?: decodeThumbnailBitmapLegacy(data)
+        }.getOrNull()
     } else {
-        decodeThumbnailBitmapLegacy(data)
+        null
     }
 
 private fun decodeThumbnailBitmapLegacy(data: ByteArray): Bitmap? {
@@ -280,4 +302,11 @@ private fun decodeThumbnailBitmapLegacy(data: ByteArray): Bitmap? {
         data.size,
         BitmapFactory.Options().apply { inSampleSize = sampleSize },
     )
+}
+
+private fun rotateBitmapForDisplay(bitmap: Bitmap, degrees: Int): Bitmap {
+    val normalizedDegrees = ((degrees % 360) + 360) % 360
+    if (normalizedDegrees == 0) return bitmap
+    val matrix = Matrix().apply { postRotate(normalizedDegrees.toFloat()) }
+    return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
 }

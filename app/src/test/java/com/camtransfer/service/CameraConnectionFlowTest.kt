@@ -3,9 +3,67 @@ package com.camtransfer.service
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import com.camtransfer.protocol.CameraVendorPtpConnectionStartupPolicy
+import kotlinx.coroutines.runBlocking
 import org.junit.Test
 
 class CameraConnectionFlowTest {
+    @Test
+    fun officialGalleryConnectionStepsFollowConfirmedProtocolOrder() {
+        assertEquals(
+            listOf(
+                CameraConnectionStep.ReconnectPairedBle,
+                CameraConnectionStep.TransferAuthorization,
+                CameraConnectionStep.ActivateCameraWifi,
+                CameraConnectionStep.WaitCameraWifiReady,
+                CameraConnectionStep.JoinCameraWifi,
+                CameraConnectionStep.ConnectPtp,
+                CameraConnectionStep.ConfirmGalleryMode,
+                CameraConnectionStep.LoadGallery,
+            ),
+            CameraVendorOfficialGalleryConnectionPolicy.RequiredSteps,
+        )
+    }
+
+    @Test
+    fun officialGalleryConnectionCannotSkipRequiredConfirmedSteps() {
+        val completed = listOf(CameraConnectionStep.ReconnectPairedBle)
+
+        assertTrue(
+            CameraVendorOfficialGalleryConnectionPolicy.canRunStep(
+                CameraConnectionStep.TransferAuthorization,
+                completed,
+            )
+        )
+        assertFalse(
+            CameraVendorOfficialGalleryConnectionPolicy.canRunStep(
+                CameraConnectionStep.JoinCameraWifi,
+                completed,
+            )
+        )
+    }
+
+    @Test
+    fun officialGalleryConnectionWaitsForPtpServiceBeforeOpeningAlbumChannel() {
+        assertEquals(
+            CameraVendorPtpConnectionStartupPolicy.STARTUP_DELAY_MS,
+            CameraVendorOfficialGalleryConnectionPolicy.delayBeforeStepMs(CameraConnectionStep.ConnectPtp),
+        )
+        assertEquals(0L, CameraVendorOfficialGalleryConnectionPolicy.delayBeforeStepMs(CameraConnectionStep.JoinCameraWifi))
+    }
+
+    @Test
+    fun officialGalleryConnectionAdapterRecordsOnlySuccessfulSteps() = runBlocking {
+        val adapter = CameraVendorOfficialGalleryConnectionAdapter()
+        adapter.confirmStep(CameraConnectionStep.ReconnectPairedBle) { "ble" }
+
+        runCatching {
+            adapter.confirmStep(CameraConnectionStep.ActivateCameraWifi) { "wifi" }
+        }
+
+        assertEquals(listOf(CameraConnectionStep.ReconnectPairedBle), adapter.confirmedSteps())
+    }
+
     @Test
     fun pairingAckIssueBlocksGalleryEntry() {
         val issue = CameraConnectionIssue.pairingAckPending()
