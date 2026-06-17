@@ -74,7 +74,7 @@ fun ConnectScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(CamTransferColors.Background),
-        contentAlignment = Alignment.Center,
+        contentAlignment = Alignment.TopCenter,
     ) {
         Column(
             modifier = Modifier

@@ -3,8 +3,10 @@ package com.camtransfer.service
 import com.camtransfer.model.CameraFile
 import com.camtransfer.model.ObjectInfo
 import com.camtransfer.protocol.PtpObjectFormat
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class DownloadedFileStoreTest {
@@ -41,11 +43,45 @@ class DownloadedFileStoreTest {
         assertEquals(original.info, restored.info)
     }
 
+    @Test
+    fun downloadedRecordRoundTripsThumbnailBytes() {
+        val thumbnail = byteArrayOf(0x01, 0x23, 0x45, 0x67)
+        val original = file(
+            handle = 18,
+            filename = "DSCF0018.JPG",
+            size = 3_456_789,
+            captureDate = "20260616T220000",
+            thumbnail = thumbnail,
+        )
+
+        val restored = DownloadedFileRecordCodec.decode(
+            DownloadedFileRecordCodec.encode(original)
+        )
+
+        assertEquals(original.info, restored.info)
+        assertArrayEquals(thumbnail, restored.thumbnail)
+    }
+
+    @Test
+    fun downloadedRecordKeepsOldRecordsWithoutThumbnailCompatible() {
+        val original = file(handle = 18, filename = "DSCF0018.JPG", size = 3_456_789, captureDate = "20260616T220000")
+        val oldRecord = DownloadedFileRecordCodec.encode(original)
+            .split("|")
+            .take(14)
+            .joinToString("|")
+
+        val restored = DownloadedFileRecordCodec.decode(oldRecord)
+
+        assertEquals(original.info, restored.info)
+        assertNull(restored.thumbnail)
+    }
+
     private fun file(
         handle: Int,
         filename: String,
         size: Int,
         captureDate: String,
+        thumbnail: ByteArray? = null,
     ): CameraFile =
         CameraFile(
             ObjectInfo(
@@ -62,6 +98,7 @@ class DownloadedFileStoreTest {
                 parentObject = 0,
                 filename = filename,
                 captureDate = captureDate,
-            )
+            ),
+            thumbnail = thumbnail,
         )
 }

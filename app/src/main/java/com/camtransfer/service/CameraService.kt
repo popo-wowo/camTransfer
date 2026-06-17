@@ -5,6 +5,7 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanResult
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import com.camtransfer.ble.CameraVendorCameraPairingConfirmationPolicy
 import com.camtransfer.ble.CameraVendorBleHandshake
@@ -12,6 +13,7 @@ import com.camtransfer.ble.CameraVendorBleHandshakeMode
 import com.camtransfer.ble.CameraVendorBleScanner
 import com.camtransfer.ble.CameraVendorBleReconnectPolicy
 import com.camtransfer.ble.CameraVendorBleReconnectStage
+import com.camtransfer.ble.CameraVendorBleSessionReusePolicy
 import com.camtransfer.ble.CameraVendorBleTransferActivationPolicy
 import com.camtransfer.ble.CameraVendorHandshakeIdentityPolicy
 import com.camtransfer.model.CameraFile
@@ -36,6 +38,7 @@ class CameraService(override val context: Context) : CameraFileSource {
 
     private val scanner = CameraVendorBleScanner(context)
     private var handshake: CameraVendorBleHandshake? = null
+    private var handshakeUpdatedAtMs: Long = 0L
     private val wifiConnector = WifiConnector(context)
     private val pairingStore = CameraVendorPairedCameraStore(context)
     private val transferPrefs = context.getSharedPreferences("camtransfer.transfer", Context.MODE_PRIVATE)
@@ -83,7 +86,7 @@ class CameraService(override val context: Context) : CameraFileSource {
 
     fun selectPairedCamera(cameraId: String) {
         pairingStore.select(cameraId)
-        handshake = null
+        clearHandshake()
     }
 
     suspend fun connectToCamera(onStatus: (String) -> Unit = {}) {
@@ -121,8 +124,13 @@ class CameraService(override val context: Context) : CameraFileSource {
 
         onStatus(CameraPairingGuidance.BLE_PAIRING_STATUS)
         val hs = CameraVendorBleHandshake(context)
-        handshake = hs
-        hs.performHandshake(scanResult)
+        try {
+            hs.performHandshake(scanResult)
+            publishHandshake(hs)
+        } catch (error: Throwable) {
+            hs.disconnect()
+            throw error
+        }
         DiagnosticLog.append(context, TAG, "BLE handshake completed")
         onStatus(CameraVendorCameraPairingConfirmationPolicy.WAITING_FOR_PHONE_CONFIRMATION_STATUS)
     }
@@ -158,10 +166,7 @@ class CameraService(override val context: Context) : CameraFileSource {
         val remembered = rememberedPairing()
         val existingHandshake = handshake
         val hs = adapter.confirmStep(CameraConnectionStep.ReconnectPairedBle) {
-            if (existingHandshake != null && remembered != null) {
-                ensureRememberedCameraIdentity(existingHandshake, remembered)
-            }
-            existingHandshake ?: runCatching {
+            reusableRememberedHandshake(existingHandshake, remembered) ?: runCatching {
                 reconnectRememberedCamera(onStatus)
             }.getOrElse { reconnectError ->
                 if (CameraConnectionCancellationPolicy.shouldPropagate(reconnectError)) throw reconnectError
@@ -421,17 +426,21 @@ class CameraService(override val context: Context) : CameraFileSource {
                             }
                         }
                         val hs = CameraVendorBleHandshake(context)
-                        handshake = hs
-                        hs.performHandshake(scanResult, mode = CameraVendorBleHandshakeMode.RememberedGallery)
-                        saveRememberedHandshake(hs)
-                        DiagnosticLog.append(context, TAG, "Remembered camera fast scan reconnect succeeded")
-                        return hs
+                        try {
+                            hs.performHandshake(scanResult, mode = CameraVendorBleHandshakeMode.RememberedGallery)
+                            publishHandshake(hs)
+                            saveRememberedHandshake(hs)
+                            DiagnosticLog.append(context, TAG, "Remembered camera fast scan reconnect succeeded")
+                            return hs
+                        } catch (error: Throwable) {
+                            hs.disconnect()
+                            throw error
+                        }
                     }.onFailure { error ->
                         if (CameraConnectionCancellationPolicy.shouldPropagate(error)) throw error
                         DiagnosticLog.append(context, TAG, "Remembered camera fast scan reconnect skipped", error)
                         Log.w(TAG, "Remembered camera fast scan reconnect failed: $error")
-                        handshake?.disconnect()
-                        handshake = null
+                        clearHandshake()
                     }
                 }
                 CameraVendorBleReconnectStage.ScanFallback -> {
@@ -457,16 +466,20 @@ class CameraService(override val context: Context) : CameraFileSource {
                     }
                 }
                 val hs = CameraVendorBleHandshake(context)
-                handshake = hs
-                hs.performHandshake(scanResult, mode = CameraVendorBleHandshakeMode.RememberedGallery)
-                saveRememberedHandshake(hs)
-                return hs
+                try {
+                    hs.performHandshake(scanResult, mode = CameraVendorBleHandshakeMode.RememberedGallery)
+                    publishHandshake(hs)
+                    saveRememberedHandshake(hs)
+                    return hs
+                } catch (error: Throwable) {
+                    hs.disconnect()
+                    throw error
+                }
             } catch (error: Throwable) {
                 if (CameraConnectionCancellationPolicy.shouldPropagate(error)) throw error
                 lastError = error
                 Log.w(TAG, "Remembered camera reconnect failed ($attempt/${CameraVendorBleReconnectPolicy.MAX_REMEMBERED_RECONNECT_ATTEMPTS}): $error")
-                handshake?.disconnect()
-                handshake = null
+                clearHandshake()
                 if (error is TimeoutCancellationException) break
                 if (attempt == CameraVendorBleReconnectPolicy.MAX_REMEMBERED_RECONNECT_ATTEMPTS) break
                 delay(CameraVendorBleReconnectPolicy.retryDelayMs(attempt))
@@ -520,14 +533,60 @@ class CameraService(override val context: Context) : CameraFileSource {
         val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
         val device = manager.adapter.getRemoteDevice(address)
         val hs = CameraVendorBleHandshake(context)
-        handshake = hs
-        hs.performHandshake(
-            device,
-            autoConnect = true,
-            mode = CameraVendorBleHandshakeMode.RememberedGallery,
+        try {
+            hs.performHandshake(
+                device,
+                autoConnect = true,
+                mode = CameraVendorBleHandshakeMode.RememberedGallery,
+            )
+            publishHandshake(hs)
+            saveRememberedHandshake(hs)
+            return hs
+        } catch (error: Throwable) {
+            hs.disconnect()
+            throw error
+        }
+    }
+
+    private fun reusableRememberedHandshake(
+        existingHandshake: CameraVendorBleHandshake?,
+        remembered: CameraVendorPairedCameraRecord?,
+    ): CameraVendorBleHandshake? {
+        val hs = existingHandshake ?: return null
+        val matches = remembered?.let {
+            runCatching {
+                ensureRememberedCameraIdentity(hs, it)
+                true
+            }.getOrElse { error ->
+                DiagnosticLog.append(context, TAG, "Cached remembered BLE handshake rejected: identity mismatch", error)
+                false
+            }
+        } ?: false
+        val canReuse = CameraVendorBleSessionReusePolicy.canReuseForTransferActivation(
+            hasLiveGatt = hs.hasLiveGattConnection(),
+            hasRequiredTransferCharacteristics = hs.hasRequiredTransferActivationCharacteristics(),
+            rememberedCameraMatches = matches,
+            hasCompletedCameraAck = hs.hasCompletedCameraPairingAck(),
+            ageMs = SystemClock.elapsedRealtime() - handshakeUpdatedAtMs,
         )
-        saveRememberedHandshake(hs)
-        return hs
+        if (canReuse) {
+            DiagnosticLog.append(context, TAG, "Reusing validated remembered BLE handshake")
+            return hs
+        }
+        DiagnosticLog.append(context, TAG, "Cached remembered BLE handshake rejected; direct reconnect required")
+        hs.disconnect()
+        clearHandshake()
+        return null
+    }
+
+    private fun publishHandshake(hs: CameraVendorBleHandshake) {
+        handshake = hs
+        handshakeUpdatedAtMs = SystemClock.elapsedRealtime()
+    }
+
+    private fun clearHandshake() {
+        handshake = null
+        handshakeUpdatedAtMs = 0L
     }
 
     private fun saveRememberedHandshake(hs: CameraVendorBleHandshake) {
@@ -555,26 +614,32 @@ class CameraService(override val context: Context) : CameraFileSource {
     private fun rememberedBluetoothAddressCandidates(
         remembered: CameraVendorPairedCameraRecord,
     ): List<String> {
-        val candidates = linkedSetOf<String>()
-        if (CameraBluetoothPermissionPolicy.canReadSystemBonds(context)) {
+        val systemBonds = if (CameraBluetoothPermissionPolicy.canReadSystemBonds(context)) {
             val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
             manager.adapter.bondedDevices
-                ?.filter { device ->
-                    val name = device.name.orEmpty()
-                    name.isNotBlank() && (
-                        name == remembered.deviceName ||
-                            name.contains(remembered.deviceName, ignoreCase = true) ||
-                            remembered.deviceName.contains(name, ignoreCase = true)
-                        )
+                ?.map { device ->
+                    CameraVendorBleEndpointPolicy.SystemBond(
+                        name = device.name.orEmpty(),
+                        address = device.address.orEmpty(),
+                    )
                 }
-                ?.forEach { candidates.add(it.address) }
+                .orEmpty()
         } else {
-            DiagnosticLog.append(context, TAG, "Skipped system BLE address candidates: missing BLUETOOTH_CONNECT")
+            DiagnosticLog.append(context, TAG, "Skipped system BLE endpoint candidates: missing BLUETOOTH_CONNECT")
+            emptyList()
         }
-        remembered.bluetoothAddress?.let { candidates.add(it) }
-        Log.d(TAG, "Remembered BLE address candidates for ${remembered.deviceName}: $candidates")
+        val candidates = CameraVendorBleEndpointPolicy.identityVerifiedCandidates(
+            remembered = remembered,
+            systemBonds = systemBonds,
+        )
+        Log.d(
+            TAG,
+            "Remembered BLE endpoint candidates for ${remembered.cameraId}: ${
+                candidates.joinToString { "${it.address}/${it.source}" }
+            }",
+        )
         DiagnosticLog.append(context, TAG, "Remembered BLE address candidates count=${candidates.size}")
-        return candidates.toList()
+        return candidates.map { it.address }
     }
 
     override suspend fun listFiles(): List<CameraFile> {
@@ -673,7 +738,7 @@ class CameraService(override val context: Context) : CameraFileSource {
         connection.disconnect()
         wifiConnector.disconnect()
         handshake?.disconnect()
-        handshake = null
+        clearHandshake()
     }
 
     suspend fun forgetPairing() {

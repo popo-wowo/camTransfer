@@ -70,6 +70,20 @@ class CameraVendorPairedCameraStorePolicyTest {
         assertEquals(records, decoded)
     }
 
+    @Test
+    fun savingRecordUpsertsAndSelectsThatCameraId() {
+        val first = record("111_X-T5", "X-T5", lastConnectedAtMillis = 100)
+        val second = record("222_X100VI", "X100VI", lastConnectedAtMillis = 200)
+
+        val update = CameraVendorPairedCameraStorePolicy.saveAndSelect(
+            records = listOf(first),
+            record = second,
+        )
+
+        assertEquals(listOf(first, second), update.records)
+        assertEquals("222_X100VI", update.selectedCameraId)
+    }
+
     private fun record(
         cameraId: String,
         deviceName: String,

@@ -7,7 +7,7 @@ class CameraVendorBleReconnectPolicyTest {
     @Test
     fun retriesRememberedCameraGattReconnects() {
         assertEquals(3, CameraVendorBleReconnectPolicy.MAX_REMEMBERED_RECONNECT_ATTEMPTS)
-        assertEquals(6_000L, CameraVendorBleReconnectPolicy.REMEMBERED_DIRECT_CONNECT_TIMEOUT_MS)
+        assertEquals(15_000L, CameraVendorBleReconnectPolicy.REMEMBERED_DIRECT_CONNECT_TIMEOUT_MS)
         assertEquals(4_000L, CameraVendorBleReconnectPolicy.REMEMBERED_FAST_SCAN_TIMEOUT_MS)
         assertEquals(12_000L, CameraVendorBleReconnectPolicy.REMEMBERED_SCAN_TIMEOUT_MS)
         assertEquals(500L, CameraVendorBleReconnectPolicy.retryDelayMs(afterFailedAttempt = 1))

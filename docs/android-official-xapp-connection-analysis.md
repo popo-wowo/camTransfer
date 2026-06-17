@@ -1,8 +1,10 @@
 # Android Official XApp Connection Analysis
 
-更新日期: 2026-06-14
+更新日期: 2026-06-17
 
 本文记录从已安装官方 FUJIFILM XApp Android 包中读到的连接逻辑。后续 Android 改造以这里的证据作为对照，避免靠猜测等待或串行试探。
+
+当前 Android 实现的完整执行规则见 `docs/android-current-execution-logic.md`。本文继续作为官方 XApp 行为对照和协议证据记录。
 
 ## 样本来源
 
@@ -377,7 +379,28 @@ Android 侧同步补齐身份层:
 - 复用只跳过 BLE reconnect / scan，不跳过 `TransferAuthorization`、`ActivateCameraWifi`、`WaitCameraWifiReady` 等官方步骤。
 - 如果缓存会话断开、缺特征、身份不匹配或过期，立即丢弃缓存并回到已配对地址直连；直连失败就停止在 `ReconnectPairedBle`。
 - `AP_STATE` 不做缓存。每次进入相册都必须重新等待相机返回 `0x8001` 或 `0x8003` 后才允许 Wi-Fi handoff。
-- 已配对地址直连的 GATT 连接超时使用 6 秒；超时后直接暴露为已配对 BLE 直连失败，提示用户重试或重新配对。
+- 已配对地址直连的 GATT 连接超时使用 15 秒；超时后直接暴露为已配对 BLE 直连失败，提示用户重试或重新配对。
+
+## 2026-06-16 已配对身份与 BLE endpoint
+
+当前 Android 侧按官方 `cameraID` 模型收敛为:
+
+- `cameraID` 是配对记录主键，优先使用 `serialNumber_productName`。本地仓库按 `cameraID` 保存多台相机记录，并保留旧单相机字段迁移读取能力。
+- BLE GATT 不能直接用 `cameraID` 发起连接；Android 连接入口仍是 `BluetoothDevice` 地址。因此 `cameraID` 用于选择和校验相机身份，BLE 地址只是该身份下的连接 endpoint。
+- 进入相册时，先从当前 `cameraID` 记录和系统已配对 bond 构造同一相机的 BLE endpoint 候选；不扫描附近设备，不按名称兜底选择未配对设备。
+- 每次 GATT 连上后必须读取相机序列号/设备名，并与当前 `cameraID` 匹配。身份不匹配时停止在 `ReconnectPairedBle`，不能继续 Wi-Fi 或 PTP。
+- 已配对 direct GATT 超时调整为 15 秒。实机日志显示 Android BLE 地址解析有时超过 6 秒才完成连接，6 秒会把可成功的已配对连接误判失败。
+
+## 2026-06-17 Android 执行规则同步
+
+本轮 Android 侧把连接、图库和下载中心的当前实现写入 `docs/android-current-execution-logic.md`，作为后续开发的主执行文档。要点:
+
+- 已配对进入相册继续按 `cameraID` 身份模型执行。BLE address 只是 endpoint；GATT 连上后必须确认身份再进入 Wi-Fi/PTP。
+- BLE session 复用只允许在 GATT 仍活着、transfer activation 特征齐全、当前 `cameraID` 匹配、相机配对确认 ACK 已完成且未过 TTL 时使用。`AP_STATE` 每次仍重新等待。
+- 相册日期选择不再依赖照片日期去重，也不为了打开日期弹窗触发全量 metadata 加载；用户可以直接选择最近约 5 年内日期。
+- 列表和下载中心缩略图共用展示前处理: 旋转后裁剪边缘大面积黑色 letterbox，再交给网格裁切。
+- 下载历史记录开始持久化缩略图 bytes；旧记录仍兼容读取，但旧记录可能没有缩略图。
+- 下载中心右上角清理入口使用文字 `清理记录`，表示只清理 App 下载记录，不删除照片。
 
 ## 2026-06-14 AP launching 阶段 Wi-Fi 预热
 

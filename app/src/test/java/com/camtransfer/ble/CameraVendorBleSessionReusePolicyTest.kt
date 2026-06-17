@@ -12,6 +12,7 @@ class CameraVendorBleSessionReusePolicyTest {
                 hasLiveGatt = true,
                 hasRequiredTransferCharacteristics = true,
                 rememberedCameraMatches = true,
+                hasCompletedCameraAck = true,
                 ageMs = 30_000,
             ),
         )
@@ -24,6 +25,7 @@ class CameraVendorBleSessionReusePolicyTest {
                 hasLiveGatt = false,
                 hasRequiredTransferCharacteristics = true,
                 rememberedCameraMatches = true,
+                hasCompletedCameraAck = true,
                 ageMs = 30_000,
             ),
         )
@@ -36,6 +38,7 @@ class CameraVendorBleSessionReusePolicyTest {
                 hasLiveGatt = true,
                 hasRequiredTransferCharacteristics = false,
                 rememberedCameraMatches = true,
+                hasCompletedCameraAck = true,
                 ageMs = 30_000,
             ),
         )
@@ -48,6 +51,20 @@ class CameraVendorBleSessionReusePolicyTest {
                 hasLiveGatt = true,
                 hasRequiredTransferCharacteristics = true,
                 rememberedCameraMatches = false,
+                hasCompletedCameraAck = true,
+                ageMs = 30_000,
+            ),
+        )
+    }
+
+    @Test
+    fun pendingCameraAckCannotBeReusedForTransferActivation() {
+        assertFalse(
+            CameraVendorBleSessionReusePolicy.canReuseForTransferActivation(
+                hasLiveGatt = true,
+                hasRequiredTransferCharacteristics = true,
+                rememberedCameraMatches = true,
+                hasCompletedCameraAck = false,
                 ageMs = 30_000,
             ),
         )
@@ -60,6 +77,7 @@ class CameraVendorBleSessionReusePolicyTest {
                 hasLiveGatt = true,
                 hasRequiredTransferCharacteristics = true,
                 rememberedCameraMatches = true,
+                hasCompletedCameraAck = true,
                 ageMs = CameraVendorBleSessionReusePolicy.REUSE_TTL_MS + 1,
             ),
         )

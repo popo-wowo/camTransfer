@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
@@ -52,9 +53,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -74,12 +73,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -98,6 +102,8 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import kotlin.math.hypot
 
+private val GalleryActionColor = Color(0xFF177C6D)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BrowseScreen(
@@ -108,6 +114,7 @@ fun BrowseScreen(
     isTransferring: Boolean,
     preferCompressedDownloads: Boolean,
     onFilesLoaded: (List<CameraFile>) -> Unit,
+    onPreferenceChanged: (Boolean) -> Unit,
     onDownloadSelected: (List<CameraFile>) -> Unit,
     onOpenDownloads: () -> Unit,
     onDisconnect: () -> Unit,
@@ -166,8 +173,8 @@ fun BrowseScreen(
                 GalleryDownloadUiPolicy.canSelect(downloadStates[it.info.handle])
         }
     }
-    val captureDays = remember(files) {
-        files.mapNotNull { GalleryUiPolicy.captureDate(it) }.distinct().sortedDescending()
+    val selectableDateDays = remember(today) {
+        GalleryDatePickerPolicy.selectableDays(today)
     }
 
     LaunchedEffect(cameraSource) {
@@ -201,8 +208,7 @@ fun BrowseScreen(
 
     if (showsDatePicker) {
         DatePickerDialog(
-            days = captureDays,
-            isLoadingMetadata = isLoading && GalleryDateMetadataPolicy.shouldLoadMetadataForDatePicker(files),
+            days = selectableDateDays,
             onDismiss = { showsDatePicker = false },
             onSelect = { day ->
                 filterState = filterState.copy(date = GalleryDateFilter.SpecificDay(day))
@@ -212,9 +218,8 @@ fun BrowseScreen(
     }
     if (showsDateRangePicker) {
         DateRangePickerDialog(
-            days = captureDays,
+            days = selectableDateDays,
             initialRange = filterState.date as? GalleryDateFilter.Range,
-            isLoadingMetadata = isLoading && GalleryDateMetadataPolicy.shouldLoadMetadataForDatePicker(files),
             onDismiss = { showsDateRangePicker = false },
             onSelect = { start, end ->
                 filterState = filterState.copy(date = GalleryDateFilter.Range(start, end))
@@ -266,35 +271,44 @@ fun BrowseScreen(
     Scaffold(
         containerColor = CamTransferColors.Background,
         bottomBar = {
-            if (selectedFiles.isNotEmpty()) {
-                GalleryDownloadBar(
-                    selectedCount = selectedFiles.size,
-                    onDownload = {
+            val allFilteredSelected = selectedHandles.containsAll(selectableFilteredHandles) &&
+                selectableFilteredHandles.isNotEmpty()
+            GalleryDownloadBar(
+                selectedCount = selectedFiles.size,
+                totalCount = selectableFilteredHandles.size,
+                allFilteredSelected = allFilteredSelected,
+                canToggleSelectAll = selectableFilteredHandles.isNotEmpty(),
+                preferCompressedDownloads = preferCompressedDownloads,
+                canDownload = selectedFiles.isNotEmpty(),
+                onToggleSelectAll = {
+                    if (allFilteredSelected) {
+                        viewModel.clearSelection()
+                    } else {
+                        viewModel.selectHandles(selectableFilteredHandles)
+                    }
+                },
+                onPreferenceChanged = onPreferenceChanged,
+                onDownload = {
+                    if (selectedFiles.isNotEmpty()) {
                         onDownloadSelected(selectedFiles)
                         viewModel.clearSelection()
-                    },
-                )
-            }
+                    }
+                },
+            )
         },
     ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .background(CamTransferColors.Background)
-                .statusBarsPadding(),
+                .background(CamTransferColors.Background),
         ) {
             GalleryHeader(
-                fileCount = filteredFiles.size,
-                totalCount = files.size,
-                selectedCount = selectedFiles.size,
-                columnCount = columnCount,
                 activeDownloadCount = transferItems.count {
                     it.state == TransferState.PENDING ||
                         it.state == TransferState.DOWNLOADING ||
                         it.state == TransferState.SAVING
                 },
-                preferCompressedDownloads = preferCompressedDownloads,
                 isLoading = isLoading,
                 isTransferring = isTransferring,
                 onBack = { showsDisconnectConfirm = true },
@@ -307,31 +321,8 @@ fun BrowseScreen(
                 onStateChange = { filterState = it },
                 sortMode = sortMode,
                 onSortModeChange = { sortMode = it },
-                onPickDate = {
-                    if (GalleryDateMetadataPolicy.shouldLoadMetadataForDatePicker(files)) {
-                        viewModel.loadFiles(cameraSource)
-                    }
-                    showsDatePicker = true
-                },
-                onPickDateRange = {
-                    if (GalleryDateMetadataPolicy.shouldLoadMetadataForDatePicker(files)) {
-                        viewModel.loadFiles(cameraSource)
-                    }
-                    showsDateRangePicker = true
-                },
-            )
-            GallerySelectionTools(
-                selectedCount = selectedFiles.size,
-                selectableCount = selectableFilteredHandles.size,
-                allFilteredSelected = selectedHandles.containsAll(selectableFilteredHandles) &&
-                    selectableFilteredHandles.isNotEmpty(),
-                onSelectAll = {
-                    if (selectedHandles.containsAll(selectableFilteredHandles) && selectableFilteredHandles.isNotEmpty()) {
-                        viewModel.clearSelection()
-                    } else {
-                        viewModel.selectHandles(selectableFilteredHandles)
-                    }
-                },
+                onPickDate = { showsDatePicker = true },
+                onPickDateRange = { showsDateRangePicker = true },
             )
             Box(Modifier.fillMaxSize()) {
                 when {
@@ -412,12 +403,7 @@ fun BrowseScreen(
 
 @Composable
 private fun GalleryHeader(
-    fileCount: Int,
-    totalCount: Int,
-    selectedCount: Int,
-    columnCount: Int,
     activeDownloadCount: Int,
-    preferCompressedDownloads: Boolean,
     isLoading: Boolean,
     isTransferring: Boolean,
     onBack: () -> Unit,
@@ -426,91 +412,133 @@ private fun GalleryHeader(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 18.dp, top = 10.dp, end = 18.dp, bottom = 8.dp),
+            .padding(start = 18.dp, top = 6.dp, end = 18.dp, bottom = 8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            GalleryHeaderTextAction(
-                label = "返回",
+            GalleryIconButton(
+                icon = GalleryHeaderIcon.Back,
+                contentDescription = "返回",
                 onClick = onBack,
             )
             Spacer(Modifier.weight(1f))
-            GalleryHeaderButton(
-                label = "下载中心",
+            Text(
+                "CAMERA GALLERY",
+                color = CamTransferColors.Ink,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Black,
+            )
+            Spacer(Modifier.weight(1f))
+            GalleryIconButton(
+                icon = GalleryHeaderIcon.Downloads,
+                contentDescription = "下载中心",
                 onClick = onOpenDownloads,
             )
         }
-        Text(
-            "相机照片",
-            color = CamTransferColors.Ink,
-            fontSize = 30.sp,
-            lineHeight = 34.sp,
-            fontWeight = FontWeight.Black,
-        )
-        Text(
-            "CAMERA GALLERY",
-            color = CamTransferColors.Accent,
-            fontSize = 10.sp,
-            fontWeight = FontWeight.Black,
-            letterSpacing = 2.2.sp,
-        )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (isLoading || isTransferring) {
+        if (isLoading || isTransferring || activeDownloadCount > 0) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(16.dp),
                     strokeWidth = 2.dp,
                     color = CamTransferColors.Accent,
                 )
                 Spacer(Modifier.width(8.dp))
+                Text(
+                    when {
+                        activeDownloadCount > 0 -> "下载中 $activeDownloadCount"
+                        isTransferring -> "正在下载"
+                        else -> "正在读取相机照片"
+                    },
+                    color = CamTransferColors.SecondaryInk,
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
-            val statusText = when {
-                activeDownloadCount > 0 -> "$fileCount 张 · 每行 $columnCount 张 · 下载中 $activeDownloadCount · 已选 $selectedCount"
-                totalCount == 0 -> "准备加载图库"
-                else -> "$fileCount / $totalCount 张 · 每行 $columnCount 张 · 已选 $selectedCount"
-            } + " · 当前模式：${downloadModeLabel(preferCompressedDownloads)}"
-            Text(
-                statusText,
-                color = CamTransferColors.SecondaryInk,
-                style = MaterialTheme.typography.bodySmall,
-            )
         }
     }
 }
 
-@Composable
-private fun GalleryHeaderButton(
-    label: String,
-    onClick: () -> Unit,
-) {
-    OutlinedButton(
-        onClick = onClick,
-        modifier = Modifier.height(38.dp),
-        shape = RoundedCornerShape(19.dp),
-        contentPadding = PaddingValues(horizontal = 14.dp),
-        colors = ButtonDefaults.outlinedButtonColors(
-            contentColor = CamTransferColors.Ink,
-        ),
-        border = BorderStroke(1.dp, CamTransferColors.Hairline),
-    ) {
-        Text(label, fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
-    }
+private enum class GalleryHeaderIcon {
+    Back,
+    Downloads,
 }
 
 @Composable
-private fun GalleryHeaderTextAction(
-    label: String,
+private fun GalleryIconButton(
+    icon: GalleryHeaderIcon,
+    contentDescription: String,
     onClick: () -> Unit,
 ) {
-    TextButton(
-        onClick = onClick,
-        modifier = Modifier.height(38.dp),
-        contentPadding = PaddingValues(horizontal = 6.dp),
-        colors = ButtonDefaults.textButtonColors(contentColor = CamTransferColors.Ink),
+    Surface(
+        modifier = Modifier
+            .size(42.dp)
+            .clip(CircleShape)
+            .semantics { this.contentDescription = contentDescription }
+            .clickable(onClick = onClick),
+        shape = CircleShape,
+        color = CamTransferColors.WarmFill,
+        border = BorderStroke(1.dp, CamTransferColors.Hairline),
+        shadowElevation = 2.dp,
     ) {
-        Text(label, fontWeight = FontWeight.Bold, fontSize = 14.sp, maxLines = 1)
+        Box(contentAlignment = Alignment.Center) {
+            androidx.compose.foundation.Canvas(
+                modifier = Modifier.size(22.dp),
+            ) {
+                val stroke = Stroke(width = 2.2.dp.toPx(), cap = StrokeCap.Round)
+                when (icon) {
+                    GalleryHeaderIcon.Back -> {
+                        drawLine(
+                            color = CamTransferColors.Ink,
+                            start = Offset(size.width * 0.58f, size.height * 0.20f),
+                            end = Offset(size.width * 0.28f, size.height * 0.50f),
+                            strokeWidth = stroke.width,
+                            cap = StrokeCap.Round,
+                        )
+                        drawLine(
+                            color = CamTransferColors.Ink,
+                            start = Offset(size.width * 0.28f, size.height * 0.50f),
+                            end = Offset(size.width * 0.58f, size.height * 0.80f),
+                            strokeWidth = stroke.width,
+                            cap = StrokeCap.Round,
+                        )
+                    }
+                    GalleryHeaderIcon.Downloads -> {
+                        drawLine(
+                            color = CamTransferColors.Ink,
+                            start = Offset(size.width * 0.50f, size.height * 0.12f),
+                            end = Offset(size.width * 0.50f, size.height * 0.54f),
+                            strokeWidth = stroke.width,
+                            cap = StrokeCap.Round,
+                        )
+                        drawLine(
+                            color = CamTransferColors.Ink,
+                            start = Offset(size.width * 0.32f, size.height * 0.38f),
+                            end = Offset(size.width * 0.50f, size.height * 0.56f),
+                            strokeWidth = stroke.width,
+                            cap = StrokeCap.Round,
+                        )
+                        drawLine(
+                            color = CamTransferColors.Ink,
+                            start = Offset(size.width * 0.68f, size.height * 0.38f),
+                            end = Offset(size.width * 0.50f, size.height * 0.56f),
+                            strokeWidth = stroke.width,
+                            cap = StrokeCap.Round,
+                        )
+                        drawArc(
+                            color = CamTransferColors.Ink,
+                            startAngle = 0f,
+                            sweepAngle = 180f,
+                            useCenter = false,
+                            topLeft = Offset(size.width * 0.20f, size.height * 0.52f),
+                            size = Size(size.width * 0.60f, size.height * 0.42f),
+                            style = stroke,
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -529,24 +557,26 @@ private fun GalleryFilterPanel(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 22.dp, top = 6.dp, end = 22.dp),
+            .padding(start = 18.dp, top = 6.dp, end = 18.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable { onExpandedChange(!expanded) },
-            shape = RoundedCornerShape(10.dp),
-            color = CamTransferColors.MutedFill,
+            shape = RoundedCornerShape(24.dp),
+            color = CamTransferColors.WarmFill,
             border = BorderStroke(1.dp, CamTransferColors.Hairline),
+            shadowElevation = 2.dp,
         ) {
             Row(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                FilterPanelIcon(expanded = expanded)
                 Text(
-                    "筛选/排序",
+                    "筛选",
                     color = CamTransferColors.Ink,
                     fontWeight = FontWeight.Black,
                     fontSize = 13.sp,
@@ -560,30 +590,33 @@ private fun GalleryFilterPanel(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Text(
-                    if (expanded) "收起" else "展开",
-                    color = CamTransferColors.Ink,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp,
-                    maxLines = 1,
-                )
+                FilterPanelChevron(expanded = expanded)
             }
         }
         if (expanded) {
-            CompactFilterChips(
-                state = state,
-                onStateChange = onStateChange,
-                sortMode = sortMode,
-                onSortModeChange = onSortModeChange,
-                onPickDate = onPickDate,
-                onPickDateRange = onPickDateRange,
-            )
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                color = CamTransferColors.WarmFill,
+                border = BorderStroke(1.dp, CamTransferColors.Hairline),
+            ) {
+                CompactFilterChips(
+                    modifier = Modifier.padding(10.dp),
+                    state = state,
+                    onStateChange = onStateChange,
+                    sortMode = sortMode,
+                    onSortModeChange = onSortModeChange,
+                    onPickDate = onPickDate,
+                    onPickDateRange = onPickDateRange,
+                )
+            }
         }
     }
 }
 
 @Composable
 private fun CompactFilterChips(
+    modifier: Modifier = Modifier,
     state: GalleryFilterState,
     onStateChange: (GalleryFilterState) -> Unit,
     sortMode: GallerySortMode,
@@ -591,7 +624,10 @@ private fun CompactFilterChips(
     onPickDate: () -> Unit,
     onPickDateRange: () -> Unit,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
         FilterChipRow {
             LuxuryFilterChip(
                 selected = state.date == GalleryDateFilter.All,
@@ -636,52 +672,6 @@ private fun CompactFilterChips(
 }
 
 @Composable
-private fun GallerySelectionTools(
-    selectedCount: Int,
-    selectableCount: Int,
-    allFilteredSelected: Boolean,
-    onSelectAll: () -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 22.dp, top = 8.dp, end = 22.dp, bottom = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Text(
-            "可选 $selectableCount 张 · 已选 $selectedCount",
-            modifier = Modifier.weight(1f),
-            color = CamTransferColors.SecondaryInk,
-            style = MaterialTheme.typography.bodySmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Button(
-            onClick = onSelectAll,
-            enabled = selectableCount > 0,
-            modifier = Modifier.height(38.dp),
-            shape = RoundedCornerShape(10.dp),
-            contentPadding = PaddingValues(horizontal = 14.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = CamTransferColors.Ink,
-                contentColor = CamTransferColors.Card,
-                disabledContainerColor = CamTransferColors.MutedFill,
-                disabledContentColor = CamTransferColors.SecondaryInk,
-            ),
-            elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp, pressedElevation = 0.dp),
-        ) {
-            Text(
-                if (allFilteredSelected) "取消全选" else "全选当前筛选",
-                fontWeight = FontWeight.Bold,
-                fontSize = 13.sp,
-                maxLines = 1,
-            )
-        }
-    }
-}
-
-@Composable
 private fun FilterChipRow(content: @Composable () -> Unit) {
     Row(
         modifier = Modifier.horizontalScroll(rememberScrollState()),
@@ -698,7 +688,6 @@ private fun rangeLabel(start: LocalDate, end: LocalDate): String {
     return "${first.format(formatter)}~${last.format(formatter)}"
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun FormatChip(
     label: String,
@@ -717,7 +706,6 @@ private fun FormatChip(
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SortChip(
     label: String,
@@ -732,21 +720,96 @@ private fun SortChip(
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LuxuryFilterChip(selected: Boolean, label: String, onClick: () -> Unit) {
-    FilterChip(
-        selected = selected,
-        onClick = onClick,
-        label = { Text(label, fontWeight = FontWeight.SemiBold) },
+    Surface(
+        modifier = Modifier
+            .height(32.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(16.dp),
+        color = if (selected) CamTransferColors.Ink else CamTransferColors.Card,
         border = BorderStroke(1.dp, if (selected) CamTransferColors.Ink else CamTransferColors.Hairline),
-        colors = androidx.compose.material3.FilterChipDefaults.filterChipColors(
-            selectedContainerColor = CamTransferColors.Ink,
-            selectedLabelColor = CamTransferColors.Card,
-            containerColor = CamTransferColors.MutedFill,
-            labelColor = CamTransferColors.Ink,
-        ),
-    )
+    ) {
+        Box(
+            modifier = Modifier.padding(horizontal = 12.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                label,
+                color = if (selected) CamTransferColors.Card else CamTransferColors.Ink,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Black,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+@Composable
+private fun FilterPanelIcon(expanded: Boolean) {
+    Box(
+        modifier = Modifier
+            .size(30.dp)
+            .clip(CircleShape)
+            .background(if (expanded) CamTransferColors.Ink else CamTransferColors.MutedFill),
+        contentAlignment = Alignment.Center,
+    ) {
+        androidx.compose.foundation.Canvas(modifier = Modifier.size(16.dp)) {
+            val color = if (expanded) CamTransferColors.Card else CamTransferColors.Ink
+            val strokeWidth = 1.8.dp.toPx()
+            val rows = listOf(0.28f, 0.50f, 0.72f)
+            rows.forEachIndexed { index, yFactor ->
+                val knobX = when (index) {
+                    0 -> 0.68f
+                    1 -> 0.34f
+                    else -> 0.56f
+                }
+                drawLine(
+                    color = color,
+                    start = Offset(size.width * 0.18f, size.height * yFactor),
+                    end = Offset(size.width * 0.82f, size.height * yFactor),
+                    strokeWidth = strokeWidth,
+                    cap = StrokeCap.Round,
+                )
+                drawCircle(
+                    color = color,
+                    radius = 2.2.dp.toPx(),
+                    center = Offset(size.width * knobX, size.height * yFactor),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FilterPanelChevron(expanded: Boolean) {
+    Box(
+        modifier = Modifier
+            .size(28.dp)
+            .clip(CircleShape)
+            .background(CamTransferColors.MutedFill),
+        contentAlignment = Alignment.Center,
+    ) {
+        androidx.compose.foundation.Canvas(modifier = Modifier.size(14.dp)) {
+            val yStart = if (expanded) 0.60f else 0.40f
+            val yEnd = if (expanded) 0.40f else 0.60f
+            drawLine(
+                color = CamTransferColors.Ink,
+                start = Offset(size.width * 0.22f, size.height * yStart),
+                end = Offset(size.width * 0.50f, size.height * yEnd),
+                strokeWidth = 2.dp.toPx(),
+                cap = StrokeCap.Round,
+            )
+            drawLine(
+                color = CamTransferColors.Ink,
+                start = Offset(size.width * 0.78f, size.height * yStart),
+                end = Offset(size.width * 0.50f, size.height * yEnd),
+                strokeWidth = 2.dp.toPx(),
+                cap = StrokeCap.Round,
+            )
+        }
+    }
 }
 
 @Composable
@@ -1065,43 +1128,151 @@ private fun SmallBadge(
 @Composable
 private fun GalleryDownloadBar(
     selectedCount: Int,
+    totalCount: Int,
+    allFilteredSelected: Boolean,
+    canToggleSelectAll: Boolean,
+    preferCompressedDownloads: Boolean,
+    canDownload: Boolean,
+    onToggleSelectAll: () -> Unit,
+    onPreferenceChanged: (Boolean) -> Unit,
     onDownload: () -> Unit,
 ) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(horizontal = 18.dp, vertical = 14.dp),
-        shape = RoundedCornerShape(28.dp),
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        shape = RoundedCornerShape(30.dp),
         color = CamTransferColors.WarmFill,
         border = BorderStroke(1.dp, CamTransferColors.Hairline),
-        shadowElevation = 12.dp,
+        shadowElevation = 14.dp,
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(56.dp)
-                .padding(start = 18.dp, end = 10.dp),
+                .height(60.dp)
+                .padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            SelectAllBox(
+                checked = allFilteredSelected,
+                enabled = canToggleSelectAll,
+                onClick = onToggleSelectAll,
+            )
+            Spacer(Modifier.width(9.dp))
             Text(
-                "已选 $selectedCount 张",
+                "已选 $selectedCount / 共 $totalCount 张",
+                modifier = Modifier.weight(1f),
                 color = CamTransferColors.Ink,
                 fontWeight = FontWeight.SemiBold,
+                fontSize = 13.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
-            Spacer(Modifier.weight(1f))
+            TransferModeCapsule(
+                preferCompressedDownloads = preferCompressedDownloads,
+                onPreferenceChanged = onPreferenceChanged,
+            )
+            Spacer(Modifier.width(9.dp))
             Button(
                 onClick = onDownload,
+                enabled = canDownload,
+                modifier = Modifier
+                    .height(38.dp)
+                    .requiredWidth(76.dp),
+                shape = RoundedCornerShape(21.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = CamTransferColors.Ink,
+                    containerColor = GalleryActionColor,
                     contentColor = CamTransferColors.Card,
+                    disabledContainerColor = CamTransferColors.MutedFill,
+                    disabledContentColor = CamTransferColors.SecondaryInk,
                 ),
+                contentPadding = PaddingValues(horizontal = 0.dp),
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp, pressedElevation = 0.dp),
             ) {
                 Text(
                     "下载",
+                    fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun TransferModeCapsule(
+    preferCompressedDownloads: Boolean,
+    onPreferenceChanged: (Boolean) -> Unit,
+) {
+    val borderColor = if (preferCompressedDownloads) {
+        GalleryActionColor.copy(alpha = 0.54f)
+    } else {
+        CamTransferColors.Hairline
+    }
+    val textColor = if (preferCompressedDownloads) {
+        GalleryActionColor
+    } else {
+        CamTransferColors.SecondaryInk
+    }
+    Surface(
+        modifier = Modifier
+            .height(32.dp)
+            .requiredWidth(52.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .clickable { onPreferenceChanged(!preferCompressedDownloads) },
+        shape = RoundedCornerShape(16.dp),
+        color = if (preferCompressedDownloads) GalleryActionColor.copy(alpha = 0.10f) else CamTransferColors.Card,
+        border = BorderStroke(1.dp, borderColor),
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(
+                "压缩",
+                color = textColor,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Black,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SelectAllBox(
+    checked: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(30.dp)
+            .clip(CircleShape)
+            .background(
+                when {
+                    checked -> GalleryActionColor
+                    enabled -> Color.White.copy(alpha = 0.72f)
+                    else -> CamTransferColors.MutedFill.copy(alpha = 0.55f)
+                }
+            )
+            .border(
+                width = 1.5.dp,
+                color = when {
+                    checked -> GalleryActionColor
+                    enabled -> Color.White.copy(alpha = 0.82f)
+                    else -> CamTransferColors.Hairline.copy(alpha = 0.55f)
+                },
+                shape = CircleShape,
+            )
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (checked) {
+            Text(
+                "✓",
+                color = CamTransferColors.Card,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Black,
+            )
         }
     }
 }
@@ -1401,7 +1572,6 @@ private fun ZoomablePreviewImage(
 @Composable
 private fun DatePickerDialog(
     days: List<LocalDate>,
-    isLoadingMetadata: Boolean,
     onDismiss: () -> Unit,
     onSelect: (LocalDate) -> Unit,
 ) {
@@ -1413,31 +1583,17 @@ private fun DatePickerDialog(
         },
         title = { Text("选择日期") },
         text = {
-            if (days.isEmpty()) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (isLoadingMetadata) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                            color = CamTransferColors.Accent,
-                        )
-                        Spacer(Modifier.width(10.dp))
-                    }
-                    Text(GalleryDateDialogPolicy.emptyMessage(isLoadingMetadata))
-                }
-            } else {
-                LazyColumn(modifier = Modifier.height(280.dp)) {
-                    items(days) { day ->
-                        Text(
-                            day.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onSelect(day) }
-                                .padding(vertical = 14.dp),
-                            color = CamTransferColors.Ink,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                    }
+            LazyColumn(modifier = Modifier.height(280.dp)) {
+                items(days) { day ->
+                    Text(
+                        day.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelect(day) }
+                            .padding(vertical = 14.dp),
+                        color = CamTransferColors.Ink,
+                        fontWeight = FontWeight.SemiBold,
+                    )
                 }
             }
         },
@@ -1448,7 +1604,6 @@ private fun DatePickerDialog(
 private fun DateRangePickerDialog(
     days: List<LocalDate>,
     initialRange: GalleryDateFilter.Range?,
-    isLoadingMetadata: Boolean,
     onDismiss: () -> Unit,
     onSelect: (LocalDate, LocalDate) -> Unit,
 ) {
@@ -1483,58 +1638,51 @@ private fun DateRangePickerDialog(
         },
         title = { Text("选择时间范围") },
         text = {
-            if (days.isEmpty()) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (isLoadingMetadata) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp,
-                            color = CamTransferColors.Accent,
-                        )
-                        Spacer(Modifier.width(10.dp))
-                    }
-                    Text(GalleryDateDialogPolicy.emptyMessage(isLoadingMetadata))
-                }
-            } else {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        when {
-                            startDay == null -> "先选开始日期"
-                            endDay == null -> "再选结束日期；只选一天也可以确定"
-                            else -> "已选 ${rangeLabel(startDay!!, endDay!!)}"
-                        },
-                        color = CamTransferColors.SecondaryInk,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    LazyColumn(modifier = Modifier.height(280.dp)) {
-                        items(days) { day ->
-                            val selected = normalizedStart != null &&
-                                normalizedEnd != null &&
-                                day in normalizedStart..normalizedEnd
-                            Text(
-                                day.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (selected) CamTransferColors.MutedFill else Color.Transparent)
-                                    .clickable {
-                                        if (startDay == null || endDay != null) {
-                                            startDay = day
-                                            endDay = null
-                                        } else {
-                                            endDay = day
-                                        }
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    when {
+                        startDay == null -> "先选开始日期"
+                        endDay == null -> "再选结束日期；只选一天也可以确定"
+                        else -> "已选 ${rangeLabel(startDay!!, endDay!!)}"
+                    },
+                    color = CamTransferColors.SecondaryInk,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                LazyColumn(modifier = Modifier.height(280.dp)) {
+                    items(days) { day ->
+                        val selected = normalizedStart != null &&
+                            normalizedEnd != null &&
+                            day in normalizedStart..normalizedEnd
+                        Text(
+                            day.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (selected) CamTransferColors.MutedFill else Color.Transparent)
+                                .clickable {
+                                    if (startDay == null || endDay != null) {
+                                        startDay = day
+                                        endDay = null
+                                    } else {
+                                        endDay = day
                                     }
-                                    .padding(horizontal = 10.dp, vertical = 14.dp),
-                                color = CamTransferColors.Ink,
-                                fontWeight = if (selected) FontWeight.Black else FontWeight.SemiBold,
-                            )
-                        }
+                                }
+                                .padding(horizontal = 10.dp, vertical = 14.dp),
+                            color = CamTransferColors.Ink,
+                            fontWeight = if (selected) FontWeight.Black else FontWeight.SemiBold,
+                        )
                     }
                 }
             }
         },
     )
+}
+
+private object GalleryDatePickerPolicy {
+    fun selectableDays(today: LocalDate): List<LocalDate> =
+        generateSequence(today) { it.minusDays(1) }
+            .take(365 * 5 + 2)
+            .toList()
 }
 
 @Composable
@@ -1556,7 +1704,7 @@ private fun decodeThumbnailBitmapForDisplay(
         decodedHeight = bitmap.height,
         thumbnail = data,
     )
-    return rotateBitmapForDisplay(bitmap, rotationDegrees)
+    return GalleryThumbnailLetterboxCropper.crop(rotateBitmapForDisplay(bitmap, rotationDegrees))
 }
 
 private fun decodeThumbnailBitmap(

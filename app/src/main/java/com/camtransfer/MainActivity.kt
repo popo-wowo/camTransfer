@@ -233,6 +233,7 @@ fun CamTransferApp(trialDays: Long) {
                 isTransferring = isTransferring,
                 preferCompressedDownloads = preferCompressedDownloads,
                 onFilesLoaded = { files -> transferVM.syncDownloadedFiles(files) },
+                onPreferenceChanged = connectionVM::setPreferCompressedDownloads,
                 onDownloadSelected = { files ->
                     scope.launch {
                         browseVM.prepareThumbnailLoadingForTransfer(cameraSource)

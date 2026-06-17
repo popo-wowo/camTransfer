@@ -2,6 +2,11 @@ package com.camtransfer.service
 
 import com.camtransfer.wifi.CameraVendorWifiNetworkConfiguration
 
+data class CameraVendorPairedCameraStoreUpdate(
+    val records: List<CameraVendorPairedCameraRecord>,
+    val selectedCameraId: String,
+)
+
 object CameraVendorPairedCameraStorePolicy {
     fun upsert(
         records: List<CameraVendorPairedCameraRecord>,
@@ -23,6 +28,15 @@ object CameraVendorPairedCameraStorePolicy {
         cameraId: String,
     ): List<CameraVendorPairedCameraRecord> =
         records.filterNot { it.cameraId == cameraId }
+
+    fun saveAndSelect(
+        records: List<CameraVendorPairedCameraRecord>,
+        record: CameraVendorPairedCameraRecord,
+    ): CameraVendorPairedCameraStoreUpdate =
+        CameraVendorPairedCameraStoreUpdate(
+            records = upsert(records, record),
+            selectedCameraId = record.cameraId,
+        )
 
     fun selectedRecord(
         records: List<CameraVendorPairedCameraRecord>,

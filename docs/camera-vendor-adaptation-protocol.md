@@ -11,9 +11,10 @@
 - Product and field notes:
   - `docs/cameraVendor-camera-flow-and-product-notes.md`
   - `docs/camtransfer-product-implementation-v2.md`
-- Android implementation status: Android has a standard PTP/IP baseline and
-  CameraVendor BLE discovery/handshake helpers, but it does not yet implement the
-  verified iOS CameraVendor legacy ReferenceApp gallery path.
+- Android implementation status: Android now has a strict official-XApp-style
+  protocol adaptation path for paired-camera reconnect, Wi-Fi handoff, and
+  gallery entry. Current Android execution rules are maintained in
+  `docs/android-current-execution-logic.md`.
 
 ## Protocol Layers
 

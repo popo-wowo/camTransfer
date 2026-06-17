@@ -332,6 +332,21 @@ class CameraVendorBleHandshake(private val context: Context) {
         return hasWrittenPairingIdentifier && hasPendingHandshakeSummary
     }
 
+    fun hasLiveGattConnection(): Boolean {
+        return gatt != null && connectedDevice != null
+    }
+
+    fun hasRequiredTransferActivationCharacteristics(): Boolean {
+        val required = listOf(
+            CameraVendorBleProfile.IMAGE_TRANSFER_SETTING_CHAR,
+            CameraVendorBleProfile.IMAGE_TRANSFER_SETTING_EX_CHAR,
+            CameraVendorBleProfile.IMAGE_RESIZE_SETTING_CHAR,
+            CameraVendorBleProfile.LAUNCH_REQUEST_CHAR,
+            CameraVendorBleProfile.AP_STATE_CHAR,
+        )
+        return hasLiveGattConnection() && required.all { findCharacteristic(it) != null }
+    }
+
     fun currentSystemBondState(): Int {
         if (!CameraBluetoothPermissionPolicy.canReadSystemBonds(context)) {
             return CameraVendorCameraPairingConfirmationPolicy.SYSTEM_BOND_NONE

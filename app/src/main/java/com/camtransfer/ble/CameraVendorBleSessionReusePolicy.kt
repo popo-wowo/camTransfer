@@ -7,10 +7,12 @@ object CameraVendorBleSessionReusePolicy {
         hasLiveGatt: Boolean,
         hasRequiredTransferCharacteristics: Boolean,
         rememberedCameraMatches: Boolean,
+        hasCompletedCameraAck: Boolean,
         ageMs: Long,
     ): Boolean =
         hasLiveGatt &&
             hasRequiredTransferCharacteristics &&
             rememberedCameraMatches &&
+            hasCompletedCameraAck &&
             ageMs in 0..REUSE_TTL_MS
 }

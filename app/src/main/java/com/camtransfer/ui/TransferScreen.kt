@@ -5,8 +5,11 @@ import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
 import android.graphics.Matrix
 import android.os.Build
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,19 +22,17 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -39,10 +40,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -80,8 +86,7 @@ fun TransferScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .background(CamTransferColors.Background)
-                .statusBarsPadding(),
+                .background(CamTransferColors.Background),
         ) {
             DownloadHeader(
                 totalCount = visibleItems.size,
@@ -89,7 +94,6 @@ fun TransferScreen(
                 activeCount = activeCount,
                 isTransferring = isTransferring,
                 onBack = onBack,
-                onClearCompleted = { viewModel.clearCompleted() },
                 onClearDownloadCache = onClearDownloadCache,
             )
             if (visibleItems.isEmpty()) {
@@ -120,42 +124,38 @@ private fun DownloadHeader(
     activeCount: Int,
     isTransferring: Boolean,
     onBack: () -> Unit,
-    onClearCompleted: () -> Unit,
     onClearDownloadCache: () -> Unit,
 ) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 22.dp, top = 12.dp, end = 18.dp, bottom = 8.dp),
+            .padding(start = 18.dp, top = 6.dp, end = 18.dp, bottom = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack) { Text("返回") }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            DownloadHeaderIconButton(
+                icon = DownloadHeaderIcon.Back,
+                contentDescription = "返回",
+                enabled = true,
+                onClick = onBack,
+            )
             Spacer(Modifier.weight(1f))
-            if (doneCount > 0 && !isTransferring) {
-                TextButton(
-                    onClick = onClearCompleted,
-                    colors = ButtonDefaults.textButtonColors(contentColor = CamTransferColors.Ink),
-                ) {
-                    Text("清除已完成")
-                }
-            }
-            if (!isTransferring) {
-                TextButton(
-                    onClick = onClearDownloadCache,
-                    colors = ButtonDefaults.textButtonColors(contentColor = CamTransferColors.Ink),
-                ) {
-                    Text(DownloadCenterActionPolicy.clearDownloadRecordsLabel)
-                }
-            }
+            Text(
+                "DOWNLOADS",
+                color = CamTransferColors.Ink,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Black,
+            )
+            Spacer(Modifier.weight(1f))
+            DownloadHeaderTextButton(
+                label = DownloadCenterActionPolicy.clearDownloadRecordsLabel,
+                enabled = totalCount > 0 && !isTransferring,
+                onClick = onClearDownloadCache,
+            )
         }
-        Text(
-            "DOWNLOADS",
-            color = CamTransferColors.Accent,
-            fontSize = 10.sp,
-            fontWeight = FontWeight.Black,
-            letterSpacing = 2.2.sp,
-        )
-        Spacer(Modifier.height(6.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (isTransferring) {
                 CircularProgressIndicator(
@@ -170,6 +170,87 @@ private fun DownloadHeader(
                 color = CamTransferColors.SecondaryInk,
                 style = MaterialTheme.typography.bodySmall,
             )
+        }
+    }
+}
+
+private enum class DownloadHeaderIcon {
+    Back,
+}
+
+@Composable
+private fun DownloadHeaderTextButton(
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .height(34.dp)
+            .clip(RoundedCornerShape(17.dp))
+            .semantics { this.contentDescription = label }
+            .clickable(enabled = enabled, onClick = onClick),
+        shape = RoundedCornerShape(17.dp),
+        color = if (enabled) CamTransferColors.WarmFill else CamTransferColors.MutedFill.copy(alpha = 0.58f),
+        border = BorderStroke(1.dp, CamTransferColors.Hairline),
+        shadowElevation = if (enabled) 1.dp else 0.dp,
+    ) {
+        Box(
+            modifier = Modifier.padding(horizontal = 12.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                label,
+                color = if (enabled) CamTransferColors.Ink else CamTransferColors.SecondaryInk.copy(alpha = 0.46f),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Black,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DownloadHeaderIconButton(
+    icon: DownloadHeaderIcon,
+    contentDescription: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val iconColor = if (enabled) CamTransferColors.Ink else CamTransferColors.SecondaryInk.copy(alpha = 0.46f)
+    Surface(
+        modifier = Modifier
+            .size(42.dp)
+            .clip(CircleShape)
+            .semantics { this.contentDescription = contentDescription }
+            .clickable(enabled = enabled, onClick = onClick),
+        shape = CircleShape,
+        color = if (enabled) CamTransferColors.WarmFill else CamTransferColors.MutedFill.copy(alpha = 0.58f),
+        border = BorderStroke(1.dp, CamTransferColors.Hairline),
+        shadowElevation = if (enabled) 2.dp else 0.dp,
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Canvas(modifier = Modifier.size(22.dp)) {
+                val stroke = Stroke(width = 2.2.dp.toPx(), cap = StrokeCap.Round)
+                when (icon) {
+                    DownloadHeaderIcon.Back -> {
+                        drawLine(
+                            color = iconColor,
+                            start = Offset(size.width * 0.58f, size.height * 0.20f),
+                            end = Offset(size.width * 0.28f, size.height * 0.50f),
+                            strokeWidth = stroke.width,
+                            cap = StrokeCap.Round,
+                        )
+                        drawLine(
+                            color = iconColor,
+                            start = Offset(size.width * 0.28f, size.height * 0.50f),
+                            end = Offset(size.width * 0.58f, size.height * 0.80f),
+                            strokeWidth = stroke.width,
+                            cap = StrokeCap.Round,
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -268,7 +349,7 @@ private fun decodeThumbnailBitmapForDisplay(file: CameraFile, data: ByteArray): 
         decodedHeight = bitmap.height,
         thumbnail = data,
     )
-    return rotateBitmapForDisplay(bitmap, rotationDegrees)
+    return GalleryThumbnailLetterboxCropper.crop(rotateBitmapForDisplay(bitmap, rotationDegrees))
 }
 
 private fun decodeThumbnailBitmap(data: ByteArray) =
@@ -276,6 +357,7 @@ private fun decodeThumbnailBitmap(data: ByteArray) =
         ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
         runCatching {
             ImageDecoder.decodeBitmap(ImageDecoder.createSource(ByteBuffer.wrap(data))) { decoder, info, _ ->
+                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
                 val sampleSize = GalleryThumbnailDecodePolicy.sampleSize(
                     width = info.size.width,
                     height = info.size.height,
