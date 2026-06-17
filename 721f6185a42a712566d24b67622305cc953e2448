@@ -1,0 +1,118 @@
+.gitignore
+  983e931dae46869e 31-32
+app/src/main/java/com/camtransfer/service/DownloadedFileStore.kt
+  983e931dae46869e 129,152-155,166-173
+app/src/test/java/com/camtransfer/ble/CameraVendorBleSessionReusePolicyTest.kt
+  983e931dae46869e 15,28,41,54-67,80
+docs/camera-vendor-adaptation-protocol.md
+  61b59cdd23c5b46d 14-17
+app/src/main/java/com/camtransfer/ble/CameraVendorBleSessionReusePolicy.kt
+  983e931dae46869e 10,16
+app/src/main/java/com/camtransfer/ble/CameraVendorBleReconnectPolicy.kt
+  983e931dae46869e 11
+app/src/main/java/com/camtransfer/service/CameraVendorPairedCameraStore.kt
+  983e931dae46869e 18-24,30,49-53,56-59,65-66,70,72,74-76,79-82,89-102
+app/src/test/java/com/camtransfer/service/CameraVendorBleEndpointPolicyTest.kt
+  983e931dae46869e 1-72
+app/src/main/java/com/camtransfer/MainActivity.kt
+  983e931dae46869e 236
+app/src/main/java/com/camtransfer/ble/CameraVendorBleHandshake.kt
+  983e931dae46869e 335-349
+docs/android-official-xapp-connection-analysis.md
+  61b59cdd23c5b46d 3,7-8,382-403
+app/src/main/java/com/camtransfer/service/CameraService.kt
+  983e931dae46869e 8,16,41,89,127-133,169,429-438,443,469-477,482,536-570,572-589,617,620-624,626,628-629,631-640,642,741
+app/src/main/java/com/camtransfer/service/CameraVendorPairedCameraStorePolicy.kt
+  983e931dae46869e 5-9,32-39
+app/src/main/java/com/camtransfer/ui/BrowseScreen.kt
+  983e931dae46869e 35,76,79-80,85-86,105-106,117,176-177,211,221,274-292,295-297,304,324-325,415,422-424,428-437,441-442,449-457,463-465,469-471,474-483,485-541,560,567-568,570,573,577,579,593,597-612,619,627-630,725-731,733-812,1131-1137,1144-1145,1148,1153-1154,1157-1162,1164-1165,1168-1170,1172-1176,1179-1183,1185,1187-1188,1190-1191,1195,1203-1279,1586-1596,1641-1667,1669-1673,1681-1687,1707
+app/src/main/java/com/camtransfer/ui/GalleryThumbnailBitmapDisplay.kt
+  983e931dae46869e 1-103
+app/src/main/java/com/camtransfer/ui/TransferScreen.kt
+  983e931dae46869e 8-9,12,34,43,46,48,50-51,89,132-133,135-144,146-157,177-257,352,360
+app/src/test/java/com/camtransfer/ble/CameraVendorBleReconnectPolicyTest.kt
+  983e931dae46869e 10
+app/src/test/java/com/camtransfer/service/DownloadedFileStoreTest.kt
+  983e931dae46869e 6,9,46-78,84,101-102
+app/src/main/java/com/camtransfer/service/CameraVendorBleEndpointPolicy.kt
+  983e931dae46869e 1-64
+app/src/main/java/com/camtransfer/ui/ConnectScreen.kt
+  983e931dae46869e 77
+docs/android-current-execution-logic.md
+  61b59cdd23c5b46d 1-136
+app/src/test/java/com/camtransfer/service/CameraVendorPairedCameraStorePolicyTest.kt
+  983e931dae46869e 73-86
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "721f6185a42a712566d24b67622305cc953e2448",
+  "prompts": {
+    "519978fb2d014061": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ed116-db04-7d53-b4d9-e96cf991ff77",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 386,
+      "total_deletions": 0,
+      "accepted_lines": 358,
+      "overriden_lines": 0
+    },
+    "56574f5cdf111385": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ecb83-289f-7222-8395-f1b2a94df29e",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 378,
+      "overriden_lines": 0
+    },
+    "61b59cdd23c5b46d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ed35c-8d88-70e2-9bd0-5334996b5185",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 577,
+      "total_deletions": 246,
+      "accepted_lines": 577,
+      "overriden_lines": 0
+    },
+    "9316a319ecdc4b72": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ed101-c432-7600-80a5-e35e39c70560",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 1608,
+      "total_deletions": 0,
+      "accepted_lines": 1395,
+      "overriden_lines": 0
+    },
+    "983e931dae46869e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e8daa-1aee-7bb3-9a69-d36426d30591",
+        "model": "gpt-5.5"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 1044,
+      "total_deletions": 392,
+      "accepted_lines": 1044,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/008cd05f0033d49f72428c02cfab349196a92a243730651cf003e51df89dffe5"
+    }
+  }
+}
