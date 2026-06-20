@@ -84,6 +84,35 @@ class CameraVendorPairedCameraStorePolicyTest {
     }
 
     @Test
+    fun encodedRecordsRoundTripLocalDisplayName() {
+        val record = record("111_X-T5", "X-T5").copy(
+            localDisplayName = "旅行机",
+        )
+
+        val decoded = CameraVendorPairedCameraStorePolicy.decodeRecords(
+            CameraVendorPairedCameraStorePolicy.encodeRecords(listOf(record)),
+        )
+
+        assertEquals(listOf(record), decoded)
+    }
+
+    @Test
+    fun renameLocalDisplayNameUpdatesOnlyTargetCamera() {
+        val first = record("111_X-T5", "X-T5")
+        val second = record("222_X100VI", "X100VI")
+
+        val records = CameraVendorPairedCameraStorePolicy.renameLocalDisplayName(
+            records = listOf(first, second),
+            cameraId = "111_X-T5",
+            localDisplayName = "主力相机",
+        )
+
+        assertEquals("主力相机", records[0].localDisplayName)
+        assertEquals("X-T5", records[0].deviceName)
+        assertEquals(null, records[1].localDisplayName)
+    }
+
+    @Test
     fun savingRecordUpsertsAndSelectsThatCameraId() {
         val first = record("111_X-T5", "X-T5", lastConnectedAtMillis = 100)
         val second = record("222_X100VI", "X100VI", lastConnectedAtMillis = 200)

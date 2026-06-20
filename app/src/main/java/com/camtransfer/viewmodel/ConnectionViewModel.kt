@@ -425,6 +425,15 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
         _connectionIssue.value = null
     }
 
+    fun renamePairedCamera(cameraId: String, localDisplayName: String) {
+        cameraService.renamePairedCamera(cameraId, localDisplayName)
+        refreshPairedCameras()
+        val remembered = cameraService.rememberedPairing()
+        if (_state.value == ConnectionState.PAIRED && remembered != null) {
+            _statusText.value = "已配对 ${remembered.localDisplayName ?: remembered.deviceName}"
+        }
+    }
+
     private fun refreshPairedCameras() {
         val cameras = cameraService.pairedCameras()
         _pairedCameras.value = cameras

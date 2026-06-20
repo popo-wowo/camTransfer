@@ -3,6 +3,8 @@ package com.camtransfer.ui
 import com.camtransfer.service.CameraConnectionAction
 import com.camtransfer.service.CameraConnectionIssue
 import com.camtransfer.service.CameraConnectionStep
+import com.camtransfer.service.CameraVendorPairedCameraRecord
+import com.camtransfer.wifi.CameraVendorWifiNetworkConfiguration
 import com.camtransfer.viewmodel.ConnectionState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -169,4 +171,50 @@ class ConnectionLiveGuidancePolicyTest {
         assertFalse(ConnectionUiLayoutPolicy.shouldShowTransferSizeSelector(ConnectionState.WAITING_CAMERA_CONFIRMATION))
         assertTrue(ConnectionUiLayoutPolicy.shouldShowTransferSizeSelector(ConnectionState.PAIRED))
     }
+
+    @Test
+    fun cameraIdentityUsesLocalDisplayNameWithoutChangingModelInitials() {
+        val content = ConnectionCameraIdentityPolicy.content(
+            camera = pairedCamera().copy(localDisplayName = "旅行机"),
+            state = ConnectionState.PAIRED,
+            statusText = "已配对 X-T5",
+            activeStep = CameraConnectionStep.SavePairing,
+        )
+
+        assertEquals("旅行机", content.displayName)
+        assertEquals("X-T5", content.modelName)
+        assertEquals("X-T5", content.avatarText)
+        assertEquals(CameraIdentityRingState.Neutral, content.ringState)
+    }
+
+    @Test
+    fun cameraIdentityRingTracksBleConnectionState() {
+        assertEquals(
+            CameraIdentityRingState.Connecting,
+            ConnectionCameraIdentityPolicy.content(
+                camera = pairedCamera(),
+                state = ConnectionState.CONNECTING_BLE,
+                statusText = "正在直连已配对相机",
+                activeStep = CameraConnectionStep.ReconnectPairedBle,
+            ).ringState,
+        )
+        assertEquals(
+            CameraIdentityRingState.BleOnline,
+            ConnectionCameraIdentityPolicy.content(
+                camera = pairedCamera(),
+                state = ConnectionState.PAIRED,
+                statusText = "相机在线: X-T5",
+                activeStep = CameraConnectionStep.SavePairing,
+            ).ringState,
+        )
+    }
+
+    private fun pairedCamera(): CameraVendorPairedCameraRecord =
+        CameraVendorPairedCameraRecord(
+            deviceName = "X-T5",
+            serialNumber = "123456",
+            wifiConfigurations = listOf(CameraVendorWifiNetworkConfiguration("FUJIFILM-X-T5-0001", "12345678", false)),
+            bluetoothAddress = "AA:BB:CC:DD:EE:FF",
+            cameraId = "123456_X-T5",
+        )
 }

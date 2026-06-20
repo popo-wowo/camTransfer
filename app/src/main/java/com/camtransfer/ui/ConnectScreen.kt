@@ -3,6 +3,7 @@ package com.camtransfer.ui
 import android.content.Intent
 import android.provider.Settings
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -20,19 +21,25 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -85,7 +92,18 @@ fun ConnectScreen(
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
             val actionsBeforeGuidance = ConnectionUiLayoutPolicy.actionsBeforeGuidance(state)
+            val selectedCamera = pairedCameras.firstOrNull { it.cameraId == selectedCameraId }
+                ?: pairedCameras.firstOrNull()
             ConnectHeader(state)
+            selectedCamera?.let { camera ->
+                CameraIdentityCard(
+                    camera = camera,
+                    state = state,
+                    statusText = statusText,
+                    activeStep = activeStep,
+                    onRename = viewModel::renamePairedCamera,
+                )
+            }
             if (actionsBeforeGuidance) {
                 ConnectionActions(
                     state = state,
@@ -284,6 +302,209 @@ internal object ConnectionUiLayoutPolicy {
         !issue.wifiSsid.isNullOrBlank() || !issue.wifiPassphrase.isNullOrBlank()
 }
 
+enum class CameraIdentityRingState {
+    Neutral,
+    Connecting,
+    BleOnline,
+}
+
+internal data class ConnectionCameraIdentityContent(
+    val displayName: String,
+    val modelName: String,
+    val avatarText: String,
+    val detail: String,
+    val ringState: CameraIdentityRingState,
+)
+
+internal object ConnectionCameraIdentityPolicy {
+    fun content(
+        camera: CameraVendorPairedCameraRecord,
+        state: ConnectionState,
+        statusText: String,
+        activeStep: CameraConnectionStep?,
+    ): ConnectionCameraIdentityContent {
+        val modelName = camera.deviceName.ifBlank { "CAMERA" }
+        return ConnectionCameraIdentityContent(
+            displayName = camera.localDisplayName?.takeIf { it.isNotBlank() } ?: modelName,
+            modelName = modelName,
+            avatarText = avatarText(modelName),
+            detail = camera.serialNumber.takeIf { it.isNotBlank() }
+                ?: camera.wifiConfigurations.firstOrNull()?.ssid
+                ?: camera.bluetoothAddress.orEmpty(),
+            ringState = ringState(state, statusText, activeStep),
+        )
+    }
+
+    private fun avatarText(modelName: String): String {
+        val normalized = modelName.trim().ifBlank { "CAM" }
+        if (normalized.length <= 6) return normalized
+        val cameraModel = Regex("""[A-Za-z]+[- ]?[A-Za-z0-9]+""")
+            .find(normalized)
+            ?.value
+            ?.replace(" ", "-")
+            .orEmpty()
+        return cameraModel.takeIf { it.length in 2..6 } ?: normalized.take(6)
+    }
+
+    private fun ringState(
+        state: ConnectionState,
+        statusText: String,
+        activeStep: CameraConnectionStep?,
+    ): CameraIdentityRingState =
+        when {
+            state == ConnectionState.SCANNING ||
+                state == ConnectionState.CONNECTING_BLE ||
+                activeStep == CameraConnectionStep.BleScan ||
+                activeStep == CameraConnectionStep.BleHandshake ||
+                activeStep == CameraConnectionStep.ReconnectPairedBle ||
+                activeStep == CameraConnectionStep.TransferAuthorization -> CameraIdentityRingState.Connecting
+            statusText.startsWith("相机在线") ||
+                state == ConnectionState.CONNECTING_WIFI ||
+                state == ConnectionState.CONNECTING_PTP ||
+                state == ConnectionState.CONNECTED -> CameraIdentityRingState.BleOnline
+            else -> CameraIdentityRingState.Neutral
+        }
+}
+
+@Composable
+private fun CameraIdentityCard(
+    camera: CameraVendorPairedCameraRecord,
+    state: ConnectionState,
+    statusText: String,
+    activeStep: CameraConnectionStep?,
+    onRename: (String, String) -> Unit,
+) {
+    val content = ConnectionCameraIdentityPolicy.content(
+        camera = camera,
+        state = state,
+        statusText = statusText,
+        activeStep = activeStep,
+    )
+    var editing by remember(camera.cameraId) { mutableStateOf(false) }
+    var draftName by remember(camera.cameraId, content.displayName) { mutableStateOf(content.displayName) }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        color = CamTransferColors.Card,
+        border = BorderStroke(1.dp, identityRingColor(content.ringState).copy(alpha = 0.26f)),
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            CameraIdentityAvatar(content)
+            Spacer(Modifier.width(14.dp))
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    content.displayName,
+                    color = CamTransferColors.Ink,
+                    fontSize = 20.sp,
+                    lineHeight = 24.sp,
+                    fontWeight = FontWeight.Black,
+                    maxLines = 1,
+                )
+                Text(
+                    content.modelName,
+                    color = CamTransferColors.SecondaryInk,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                )
+                if (content.detail.isNotBlank()) {
+                    Text(
+                        content.detail,
+                        color = CamTransferColors.SecondaryInk.copy(alpha = 0.78f),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                    )
+                }
+            }
+            TextButton(onClick = { editing = true }) {
+                Text("编辑", fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+
+    if (editing) {
+        AlertDialog(
+            onDismissRequest = { editing = false },
+            title = { Text("相机昵称") },
+            text = {
+                OutlinedTextField(
+                    value = draftName,
+                    onValueChange = { draftName = it.take(24) },
+                    singleLine = true,
+                    label = { Text("本地显示名称") },
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onRename(camera.cameraId, draftName)
+                        editing = false
+                    },
+                ) {
+                    Text("保存")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { editing = false }) {
+                    Text("取消")
+                }
+            },
+        )
+    }
+}
+
+@Composable
+private fun CameraIdentityAvatar(content: ConnectionCameraIdentityContent) {
+    val ringColor = identityRingColor(content.ringState)
+    val ringWidth by animateDpAsState(
+        targetValue = if (content.ringState == CameraIdentityRingState.Neutral) 1.dp else 2.dp,
+        label = "camera-avatar-ring-width",
+    )
+    Box(
+        modifier = Modifier.size(70.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Surface(
+            modifier = Modifier.size(62.dp),
+            shape = CircleShape,
+            color = CamTransferColors.WarmFill,
+            border = BorderStroke(ringWidth, ringColor),
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Text(
+                    content.avatarText,
+                    color = CamTransferColors.Ink,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Black,
+                    maxLines = 1,
+                )
+            }
+        }
+        if (content.ringState == CameraIdentityRingState.Connecting) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(70.dp),
+                strokeWidth = 2.dp,
+                color = ringColor,
+            )
+        }
+    }
+}
+
+private fun identityRingColor(state: CameraIdentityRingState): Color =
+    when (state) {
+        CameraIdentityRingState.Neutral -> CamTransferColors.Hairline
+        CameraIdentityRingState.Connecting -> CamTransferColors.Accent
+        CameraIdentityRingState.BleOnline -> Color(0xFF2E6FBA)
+    }
+
 @Composable
 private fun PairedCameraSelector(
     cameras: List<CameraVendorPairedCameraRecord>,
@@ -329,7 +550,7 @@ private fun PairedCameraSelector(
                             verticalArrangement = Arrangement.spacedBy(2.dp),
                         ) {
                             Text(
-                                camera.deviceName,
+                                camera.localDisplayName?.takeIf { it.isNotBlank() } ?: camera.deviceName,
                                 color = CamTransferColors.Ink,
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.Black,

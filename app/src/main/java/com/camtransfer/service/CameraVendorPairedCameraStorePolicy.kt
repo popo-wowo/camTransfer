@@ -38,6 +38,19 @@ object CameraVendorPairedCameraStorePolicy {
             selectedCameraId = record.cameraId,
         )
 
+    fun renameLocalDisplayName(
+        records: List<CameraVendorPairedCameraRecord>,
+        cameraId: String,
+        localDisplayName: String?,
+    ): List<CameraVendorPairedCameraRecord> =
+        records.map { record ->
+            if (record.cameraId == cameraId) {
+                record.copy(localDisplayName = localDisplayName?.trim()?.takeIf { it.isNotBlank() })
+            } else {
+                record
+            }
+        }
+
     fun selectedRecord(
         records: List<CameraVendorPairedCameraRecord>,
         selectedCameraId: String?,
@@ -90,6 +103,7 @@ object CameraVendorPairedCameraStorePolicy {
             record.lastConnectedAtMillis.toString(),
             wifi,
             record.registeredTerminalName.orEmpty().encodeField(),
+            record.localDisplayName.orEmpty().encodeField(),
         ).joinToString("|")
     }
 
@@ -111,6 +125,7 @@ object CameraVendorPairedCameraStorePolicy {
             lastConnectedAtMillis = parts[4].toLongOrNull() ?: 0L,
             wifiConfigurations = wifiConfigurations,
             registeredTerminalName = parts.getOrNull(6)?.decodeField()?.takeIf { it.isNotBlank() },
+            localDisplayName = parts.getOrNull(7)?.decodeField()?.takeIf { it.isNotBlank() },
         )
     }
 

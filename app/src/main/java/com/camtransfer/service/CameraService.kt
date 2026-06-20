@@ -77,6 +77,10 @@ class CameraService(override val context: Context) : CameraFileSource {
         clearHandshake()
     }
 
+    fun renamePairedCamera(cameraId: String, localDisplayName: String?) {
+        pairingStore.renameLocalDisplayName(cameraId, localDisplayName)
+    }
+
     fun registrationConsistencyIssue(): CameraConnectionIssue? {
         val canReadSystemBonds = CameraBluetoothPermissionPolicy.canReadSystemBonds(context)
         if (!canReadSystemBonds) {

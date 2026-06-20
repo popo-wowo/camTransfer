@@ -10,6 +10,7 @@ data class CameraVendorPairedCameraRecord(
     val bluetoothAddress: String? = null,
     val cameraId: String = "",
     val registeredTerminalName: String? = null,
+    val localDisplayName: String? = null,
     val lastConnectedAtMillis: Long = 0L,
 )
 
@@ -101,6 +102,19 @@ class CameraVendorPairedCameraStore(context: Context) {
         prefs.edit()
             .putString(KEY_CAMERA_RECORDS, CameraVendorPairedCameraStorePolicy.encodeRecords(updated))
             .putString(KEY_SELECTED_CAMERA_ID, selected?.cameraId.orEmpty())
+            .putBoolean(KEY_MULTI_CAMERA_MIGRATED, true)
+            .apply()
+    }
+
+    fun renameLocalDisplayName(cameraId: String, localDisplayName: String?) {
+        val normalizedName = localDisplayName?.trim()?.takeIf { it.isNotBlank() }
+        val updated = CameraVendorPairedCameraStorePolicy.renameLocalDisplayName(
+            records = loadAll(),
+            cameraId = cameraId,
+            localDisplayName = normalizedName,
+        )
+        prefs.edit()
+            .putString(KEY_CAMERA_RECORDS, CameraVendorPairedCameraStorePolicy.encodeRecords(updated))
             .putBoolean(KEY_MULTI_CAMERA_MIGRATED, true)
             .apply()
     }
