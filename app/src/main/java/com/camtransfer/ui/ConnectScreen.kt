@@ -4,8 +4,14 @@ import android.content.Intent
 import android.provider.Settings
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
@@ -43,7 +49,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -95,12 +103,16 @@ fun ConnectScreen(
             val selectedCamera = pairedCameras.firstOrNull { it.cameraId == selectedCameraId }
                 ?: pairedCameras.firstOrNull()
             ConnectHeader(state)
-            selectedCamera?.let { camera ->
-                CameraIdentityCard(
-                    camera = camera,
+            val showLiveGuidance = ConnectionUiLayoutPolicy.shouldShowLiveGuidance(state, error, connectionIssue)
+            if (selectedCamera != null) {
+                CameraConnectionOverviewPanel(
+                    camera = selectedCamera,
                     state = state,
                     statusText = statusText,
+                    error = error,
+                    issue = connectionIssue,
                     activeStep = activeStep,
+                    showLiveGuidance = showLiveGuidance,
                     onRename = viewModel::renamePairedCamera,
                 )
             }
@@ -124,7 +136,7 @@ fun ConnectScreen(
             if (ConnectionUiLayoutPolicy.shouldShowBluetoothPairingSteps(activeStep)) {
                 BluetoothPairingStepCards()
             }
-            if (ConnectionUiLayoutPolicy.shouldShowLiveGuidance(state, error, connectionIssue)) {
+            if (showLiveGuidance && selectedCamera == null) {
                 ConnectionLiveGuidancePanel(
                     state = state,
                     statusText = statusText,
@@ -367,11 +379,14 @@ internal object ConnectionCameraIdentityPolicy {
 }
 
 @Composable
-private fun CameraIdentityCard(
+private fun CameraConnectionOverviewPanel(
     camera: CameraVendorPairedCameraRecord,
     state: ConnectionState,
     statusText: String,
+    error: String?,
+    issue: CameraConnectionIssue?,
     activeStep: CameraConnectionStep?,
+    showLiveGuidance: Boolean,
     onRename: (String, String) -> Unit,
 ) {
     val content = ConnectionCameraIdentityPolicy.content(
@@ -382,50 +397,78 @@ private fun CameraIdentityCard(
     )
     var editing by remember(camera.cameraId) { mutableStateOf(false) }
     var draftName by remember(camera.cameraId, content.displayName) { mutableStateOf(content.displayName) }
+    val guidance = if (showLiveGuidance) {
+        ConnectionLiveGuidancePolicy.content(
+            state = state,
+            statusText = statusText,
+            error = error,
+            issue = issue,
+        )
+    } else {
+        null
+    }
+    val accentColor = guidance?.let(::liveGuidanceAccentColor) ?: identityRingColor(content.ringState)
 
     Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = if (guidance == null) 94.dp else 154.dp),
+        shape = RoundedCornerShape(18.dp),
         color = CamTransferColors.Card,
-        border = BorderStroke(1.dp, identityRingColor(content.ringState).copy(alpha = 0.26f)),
+        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.22f)),
     ) {
-        Row(
+        Column(
             modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            CameraIdentityAvatar(content)
-            Spacer(Modifier.width(14.dp))
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    content.displayName,
-                    color = CamTransferColors.Ink,
-                    fontSize = 20.sp,
-                    lineHeight = 24.sp,
-                    fontWeight = FontWeight.Black,
-                    maxLines = 1,
-                )
-                Text(
-                    content.modelName,
-                    color = CamTransferColors.SecondaryInk,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                )
-                if (content.detail.isNotBlank()) {
+                CameraIdentityAvatar(content)
+                Spacer(Modifier.width(14.dp))
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            content.displayName,
+                            color = CamTransferColors.Ink,
+                            fontSize = 20.sp,
+                            lineHeight = 24.sp,
+                            fontWeight = FontWeight.Black,
+                            maxLines = 1,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        PencilEditButton(onClick = { editing = true })
+                    }
                     Text(
-                        content.detail,
-                        color = CamTransferColors.SecondaryInk.copy(alpha = 0.78f),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
+                        content.modelName,
+                        color = CamTransferColors.SecondaryInk,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
                         maxLines = 1,
                     )
+                    if (content.detail.isNotBlank()) {
+                        Text(
+                            content.detail,
+                            color = CamTransferColors.SecondaryInk.copy(alpha = 0.78f),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                        )
+                    }
                 }
             }
-            TextButton(onClick = { editing = true }) {
-                Text("编辑", fontWeight = FontWeight.Bold)
+            guidance?.let { content ->
+                CameraOverviewGuidanceRow(
+                    state = state,
+                    content = content,
+                    accentColor = accentColor,
+                )
             }
         }
     }
@@ -462,16 +505,95 @@ private fun CameraIdentityCard(
 }
 
 @Composable
+private fun CameraOverviewGuidanceRow(
+    state: ConnectionState,
+    content: ConnectionLiveGuidanceContent,
+    accentColor: Color,
+) {
+    Row(
+        verticalAlignment = Alignment.Top,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(34.dp)
+                .clip(RoundedCornerShape(17.dp))
+                .background(accentColor.copy(alpha = 0.14f)),
+            contentAlignment = Alignment.Center,
+        ) {
+            StatusIndicator(
+                state = state,
+                hasError = content.isError,
+                hasBleOnline = content.isBleOnline,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                content.stepLabel,
+                color = accentColor,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Black,
+            )
+            Text(
+                content.title,
+                color = CamTransferColors.Ink,
+                fontSize = 18.sp,
+                lineHeight = 22.sp,
+                fontWeight = FontWeight.Black,
+            )
+            Text(
+                content.message,
+                color = CamTransferColors.SecondaryInk,
+                fontSize = 13.sp,
+                lineHeight = 18.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+    }
+}
+
+@Composable
 private fun CameraIdentityAvatar(content: ConnectionCameraIdentityContent) {
     val ringColor = identityRingColor(content.ringState)
     val ringWidth by animateDpAsState(
         targetValue = if (content.ringState == CameraIdentityRingState.Neutral) 1.dp else 2.dp,
         label = "camera-avatar-ring-width",
     )
+    val infiniteTransition = rememberInfiniteTransition(label = "camera-avatar-ring")
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 0.86f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "camera-avatar-ring-pulse-scale",
+    )
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.18f,
+        targetValue = 0.42f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "camera-avatar-ring-pulse-alpha",
+    )
     Box(
         modifier = Modifier.size(70.dp),
         contentAlignment = Alignment.Center,
     ) {
+        if (content.ringState == CameraIdentityRingState.Connecting) {
+            Canvas(modifier = Modifier.size(70.dp)) {
+                drawCircle(
+                    color = ringColor.copy(alpha = pulseAlpha),
+                    radius = size.minDimension * 0.5f * pulseScale,
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx()),
+                )
+            }
+        }
         Surface(
             modifier = Modifier.size(62.dp),
             shape = CircleShape,
@@ -493,6 +615,43 @@ private fun CameraIdentityAvatar(content: ConnectionCameraIdentityContent) {
                 modifier = Modifier.size(70.dp),
                 strokeWidth = 2.dp,
                 color = ringColor,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PencilEditButton(onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(24.dp)
+            .clip(CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(modifier = Modifier.size(14.dp)) {
+            val strokeWidth = 1.7.dp.toPx()
+            val color = CamTransferColors.SecondaryInk
+            drawLine(
+                color = color,
+                start = Offset(size.width * 0.26f, size.height * 0.74f),
+                end = Offset(size.width * 0.74f, size.height * 0.26f),
+                strokeWidth = strokeWidth,
+                cap = StrokeCap.Round,
+            )
+            drawLine(
+                color = color,
+                start = Offset(size.width * 0.62f, size.height * 0.18f),
+                end = Offset(size.width * 0.82f, size.height * 0.38f),
+                strokeWidth = strokeWidth,
+                cap = StrokeCap.Round,
+            )
+            drawLine(
+                color = color,
+                start = Offset(size.width * 0.22f, size.height * 0.82f),
+                end = Offset(size.width * 0.42f, size.height * 0.76f),
+                strokeWidth = strokeWidth,
+                cap = StrokeCap.Round,
             )
         }
     }
