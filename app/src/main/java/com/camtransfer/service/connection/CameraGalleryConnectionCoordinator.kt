@@ -404,11 +404,7 @@ class CameraGalleryConnectionCoordinator(
         val name = result.device.name ?: result.scanRecord?.deviceName ?: ""
         val address = result.device.address
         return address == remembered.bluetoothAddress ||
-            name.isNotBlank() && (
-                name == remembered.deviceName ||
-                    name.contains(remembered.deviceName, ignoreCase = true) ||
-                    remembered.deviceName.contains(name, ignoreCase = true)
-                )
+            name.isNotBlank() && name == remembered.deviceName
     }
 
     private fun reusableRememberedHandshake(

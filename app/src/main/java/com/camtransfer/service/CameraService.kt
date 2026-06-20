@@ -18,7 +18,6 @@ import com.camtransfer.service.connection.CameraGalleryConnectionCoordinator
 import com.camtransfer.service.gallery.PtpCameraGallerySource
 import com.camtransfer.service.pairing.CameraPairingService
 import com.camtransfer.wifi.CameraVendorWifiJoinPolicy
-import com.camtransfer.wifi.CameraVendorWifiNetworkConfigurationPolicy
 import com.camtransfer.wifi.WifiConnector
 
 private const val TAG = "CameraService"
@@ -197,14 +196,8 @@ class CameraService(override val context: Context) : CameraFileSource {
                 if (connectExistingCameraWifiToGallery(onStatus)) return
             }
             val wifiConfigurations = handshake?.wifiConfigurations().orEmpty()
-                .ifEmpty {
-                    pairingStore.load()?.wifiConfigurations.orEmpty().flatMap { configuration ->
-                        CameraVendorWifiNetworkConfigurationPolicy.configurations(
-                            deviceName = null,
-                            serialNumber = null,
-                            preferredWifiNetwork = configuration,
-                        )
-                    }
+            if (wifiConfigurations.isEmpty()) {
+                throw IllegalStateException("本次相机蓝牙授权没有返回 Wi-Fi 配置，请重新点进入相机相册走完整连接流程。")
             }
             DiagnosticLog.append(context, TAG, "Retrying camera WiFi/PTP without BLE activation")
             galleryConnectionCoordinator.connectWifiAndPtp(wifiConfigurations, onStatus)

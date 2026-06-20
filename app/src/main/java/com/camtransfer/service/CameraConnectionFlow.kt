@@ -271,12 +271,7 @@ object CameraConnectionIssueClassifier {
             fullMessage.contains("还保留着") && fullMessage.contains("蓝牙配对记录") ->
                 CameraConnectionFailure.StaleSystemBond
             fullMessage.contains("不是当前选中的已配对相机") ||
-                fullMessage.contains("注册记录") && fullMessage.contains("不一致") ||
-                step == CameraConnectionStep.ReconnectPairedBle &&
-                    (
-                        fullMessage.contains("无法连接已配对相机") ||
-                            fullMessage.contains("无法唤醒相机进入传图模式")
-                    ) ->
+                fullMessage.contains("注册记录") && fullMessage.contains("不一致") ->
                 CameraConnectionFailure.PairingRegistrationOutOfSync
             fullMessage.contains("相机端还没有完成识别号 ACK") ||
                 fullMessage.contains("请先完成蓝牙配对") ->

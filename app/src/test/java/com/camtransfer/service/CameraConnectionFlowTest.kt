@@ -207,10 +207,22 @@ class CameraConnectionFlowTest {
     }
 
     @Test
-    fun rememberedBleReconnectFailureRequiresConnectionReset() {
+    fun rememberedBleReconnectFailureStaysAtBleReconnectStep() {
         val issue = CameraConnectionIssueClassifier.fromThrowable(
             step = CameraConnectionStep.ReconnectPairedBle,
             throwable = IllegalStateException("无法连接已配对相机，请确认相机蓝牙已开启并停留在可传图/配对连接界面后重试"),
+        )
+
+        assertEquals(CameraConnectionFailure.Unknown, issue.failure)
+        assertEquals(CameraConnectionStep.ReconnectPairedBle, issue.step)
+        assertEquals(CameraConnectionAction.RetryStep, issue.primaryAction)
+    }
+
+    @Test
+    fun rememberedBleIdentityMismatchRequiresConnectionReset() {
+        val issue = CameraConnectionIssueClassifier.fromThrowable(
+            step = CameraConnectionStep.ReconnectPairedBle,
+            throwable = IllegalStateException("已连接的相机不是当前选中的已配对相机，请重新配对后再进入相册"),
         )
 
         assertEquals(CameraConnectionFailure.PairingRegistrationOutOfSync, issue.failure)

@@ -248,6 +248,33 @@ class CameraSessionKeepAliveArchitectureTest {
     }
 
     @Test
+    fun wifiRetryDoesNotFallBackToStoredPairingWifiCredentials() {
+        val source = sourceFile("service/CameraService.kt").readText()
+        val method = source.substring(
+            source.indexOf("suspend fun retryCameraWifiToGallery"),
+            source.indexOf("private fun cameraVendorPtpClientName"),
+        )
+
+        assertTrue(method.contains("handshake?.wifiConfigurations().orEmpty()"))
+        assertTrue(!method.contains("pairingStore.load()?.wifiConfigurations"))
+        assertTrue(!method.contains("CameraVendorWifiNetworkConfigurationPolicy.configurations"))
+    }
+
+    @Test
+    fun rememberedReconnectScanDoesNotUseFuzzyNameContainsMatching() {
+        val source = sourceFile("service/connection/CameraGalleryConnectionCoordinator.kt").readText()
+        val method = source.substring(
+            source.indexOf("private fun rememberedScanResultMatches"),
+            source.indexOf("private fun reusableRememberedHandshake"),
+        )
+
+        assertTrue(method.contains("address == remembered.bluetoothAddress"))
+        assertTrue(method.contains("name == remembered.deviceName"))
+        assertTrue(!method.contains("name.contains"))
+        assertTrue(!method.contains("remembered.deviceName.contains"))
+    }
+
+    @Test
     fun connectionViewModelExposesResetConnectionAction() {
         val source = sourceFile("viewmodel/ConnectionViewModel.kt").readText()
         val method = source.substring(
