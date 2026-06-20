@@ -325,6 +325,7 @@ internal data class ConnectionCameraIdentityContent(
     val modelName: String,
     val avatarText: String,
     val detail: String,
+    val statusLabel: String,
     val ringState: CameraIdentityRingState,
 )
 
@@ -333,9 +334,12 @@ internal object ConnectionCameraIdentityPolicy {
         camera: CameraVendorPairedCameraRecord,
         state: ConnectionState,
         statusText: String,
+        error: String?,
+        issue: CameraConnectionIssue?,
         activeStep: CameraConnectionStep?,
     ): ConnectionCameraIdentityContent {
         val modelName = camera.deviceName.ifBlank { "CAMERA" }
+        val ringState = ringState(state, statusText, activeStep)
         return ConnectionCameraIdentityContent(
             displayName = camera.localDisplayName?.takeIf { it.isNotBlank() } ?: modelName,
             modelName = modelName,
@@ -343,7 +347,8 @@ internal object ConnectionCameraIdentityPolicy {
             detail = camera.serialNumber.takeIf { it.isNotBlank() }
                 ?: camera.wifiConfigurations.firstOrNull()?.ssid
                 ?: camera.bluetoothAddress.orEmpty(),
-            ringState = ringState(state, statusText, activeStep),
+            statusLabel = statusLabel(state, statusText, error, issue, ringState),
+            ringState = ringState,
         )
     }
 
@@ -376,6 +381,23 @@ internal object ConnectionCameraIdentityPolicy {
                 state == ConnectionState.CONNECTED -> CameraIdentityRingState.BleOnline
             else -> CameraIdentityRingState.Neutral
         }
+
+    private fun statusLabel(
+        state: ConnectionState,
+        statusText: String,
+        error: String?,
+        issue: CameraConnectionIssue?,
+        ringState: CameraIdentityRingState,
+    ): String =
+        when {
+            issue != null -> issue.title
+            error != null -> "需要处理"
+            ringState == CameraIdentityRingState.Connecting -> "连接中"
+            ringState == CameraIdentityRingState.BleOnline -> if (state == ConnectionState.CONNECTED) "已连接" else "蓝牙在线"
+            state == ConnectionState.PAIRED -> if (statusText.startsWith("已保存配对")) "已保存配对" else "已配对"
+            state == ConnectionState.IDLE -> "准备配对"
+            else -> connectionModeLabel(state)
+        }
 }
 
 @Composable
@@ -393,82 +415,72 @@ private fun CameraConnectionOverviewPanel(
         camera = camera,
         state = state,
         statusText = statusText,
+        error = error,
+        issue = issue,
         activeStep = activeStep,
     )
     var editing by remember(camera.cameraId) { mutableStateOf(false) }
     var draftName by remember(camera.cameraId, content.displayName) { mutableStateOf(content.displayName) }
-    val guidance = if (showLiveGuidance) {
-        ConnectionLiveGuidancePolicy.content(
-            state = state,
-            statusText = statusText,
-            error = error,
-            issue = issue,
-        )
-    } else {
-        null
+    val accentColor = when {
+        issue != null || error != null -> Color(0xFFB6472D)
+        showLiveGuidance -> identityRingColor(content.ringState)
+        else -> identityRingColor(content.ringState)
     }
-    val accentColor = guidance?.let(::liveGuidanceAccentColor) ?: identityRingColor(content.ringState)
 
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = if (guidance == null) 94.dp else 154.dp),
+            .heightIn(min = 108.dp),
         shape = RoundedCornerShape(18.dp),
         color = CamTransferColors.Card,
         border = BorderStroke(1.dp, accentColor.copy(alpha = 0.22f)),
     ) {
-        Column(
+        Row(
             modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
+            CameraIdentityAvatar(content)
+            Spacer(Modifier.width(14.dp))
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(7.dp),
             ) {
-                CameraIdentityAvatar(content)
-                Spacer(Modifier.width(14.dp))
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                Text(
+                    content.modelName,
+                    color = CamTransferColors.SecondaryInk,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Black,
+                    maxLines = 1,
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            content.displayName,
-                            color = CamTransferColors.Ink,
-                            fontSize = 20.sp,
-                            lineHeight = 24.sp,
-                            fontWeight = FontWeight.Black,
-                            maxLines = 1,
-                            modifier = Modifier.weight(1f, fill = false),
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        PencilEditButton(onClick = { editing = true })
-                    }
                     Text(
-                        content.modelName,
-                        color = CamTransferColors.SecondaryInk,
+                        content.displayName,
+                        color = CamTransferColors.Ink,
+                        fontSize = 22.sp,
+                        lineHeight = 26.sp,
+                        fontWeight = FontWeight.Black,
+                        maxLines = 1,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    PencilEditButton(onClick = { editing = true })
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    StatusDot(color = accentColor)
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        content.statusLabel,
+                        color = accentColor,
                         fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold,
+                        lineHeight = 17.sp,
+                        fontWeight = FontWeight.Black,
                         maxLines = 1,
                     )
-                    if (content.detail.isNotBlank()) {
-                        Text(
-                            content.detail,
-                            color = CamTransferColors.SecondaryInk.copy(alpha = 0.78f),
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                        )
-                    }
                 }
-            }
-            guidance?.let { content ->
-                CameraOverviewGuidanceRow(
-                    state = state,
-                    content = content,
-                    accentColor = accentColor,
-                )
             }
         }
     }
@@ -505,54 +517,13 @@ private fun CameraConnectionOverviewPanel(
 }
 
 @Composable
-private fun CameraOverviewGuidanceRow(
-    state: ConnectionState,
-    content: ConnectionLiveGuidanceContent,
-    accentColor: Color,
-) {
-    Row(
-        verticalAlignment = Alignment.Top,
-    ) {
-        Box(
-            modifier = Modifier
-                .size(34.dp)
-                .clip(RoundedCornerShape(17.dp))
-                .background(accentColor.copy(alpha = 0.14f)),
-            contentAlignment = Alignment.Center,
-        ) {
-            StatusIndicator(
-                state = state,
-                hasError = content.isError,
-                hasBleOnline = content.isBleOnline,
-            )
-        }
-        Spacer(Modifier.width(12.dp))
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Text(
-                content.stepLabel,
-                color = accentColor,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Black,
-            )
-            Text(
-                content.title,
-                color = CamTransferColors.Ink,
-                fontSize = 18.sp,
-                lineHeight = 22.sp,
-                fontWeight = FontWeight.Black,
-            )
-            Text(
-                content.message,
-                color = CamTransferColors.SecondaryInk,
-                fontSize = 13.sp,
-                lineHeight = 18.sp,
-                fontWeight = FontWeight.SemiBold,
-            )
-        }
-    }
+private fun StatusDot(color: Color) {
+    Box(
+        modifier = Modifier
+            .size(8.dp)
+            .clip(CircleShape)
+            .background(color),
+    )
 }
 
 @Composable

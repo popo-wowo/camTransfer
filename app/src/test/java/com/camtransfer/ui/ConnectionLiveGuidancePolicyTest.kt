@@ -178,12 +178,15 @@ class ConnectionLiveGuidancePolicyTest {
             camera = pairedCamera().copy(localDisplayName = "旅行机"),
             state = ConnectionState.PAIRED,
             statusText = "已配对 X-T5",
+            error = null,
+            issue = null,
             activeStep = CameraConnectionStep.SavePairing,
         )
 
         assertEquals("旅行机", content.displayName)
         assertEquals("X-T5", content.modelName)
         assertEquals("X-T5", content.avatarText)
+        assertEquals("已配对", content.statusLabel)
         assertEquals(CameraIdentityRingState.Neutral, content.ringState)
     }
 
@@ -195,8 +198,13 @@ class ConnectionLiveGuidancePolicyTest {
                 camera = pairedCamera(),
                 state = ConnectionState.CONNECTING_BLE,
                 statusText = "正在直连已配对相机",
+                error = null,
+                issue = null,
                 activeStep = CameraConnectionStep.ReconnectPairedBle,
-            ).ringState,
+            ).let { content ->
+                assertEquals("连接中", content.statusLabel)
+                content.ringState
+            },
         )
         assertEquals(
             CameraIdentityRingState.BleOnline,
@@ -204,8 +212,13 @@ class ConnectionLiveGuidancePolicyTest {
                 camera = pairedCamera(),
                 state = ConnectionState.PAIRED,
                 statusText = "相机在线: X-T5",
+                error = null,
+                issue = null,
                 activeStep = CameraConnectionStep.SavePairing,
-            ).ringState,
+            ).let { content ->
+                assertEquals("蓝牙在线", content.statusLabel)
+                content.ringState
+            },
         )
     }
 
