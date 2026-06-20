@@ -172,15 +172,16 @@ class CameraConnectionFlowTest {
     }
 
     @Test
-    fun ptpTimeoutStaysInGalleryPhaseAndDoesNotRestartPairing() {
+    fun ptpTimeoutOffersConnectionResetForFreshPairing() {
         val issue = CameraConnectionIssue.ptpNotReady()
 
         assertEquals(CameraConnectionPhase.ENTER_GALLERY, issue.phase)
         assertEquals(CameraConnectionStep.ConnectPtp, issue.step)
-        assertFalse(issue.allowedActions.contains(CameraConnectionAction.RestartPairing))
-        assertTrue(issue.allowedActions.contains(CameraConnectionAction.RetryStep))
-        assertTrue(issue.detail.contains("不是重新配对能解决的问题"))
-        assertTrue(issue.detail.contains("重启相机"))
+        assertEquals(CameraConnectionAction.ResetConnection, issue.primaryAction)
+        assertTrue(issue.allowedActions.contains(CameraConnectionAction.ResetConnection))
+        assertTrue(issue.allowedActions.contains(CameraConnectionAction.ExportDiagnosticLog))
+        assertTrue(issue.detail.contains("原厂 App"))
+        assertTrue(issue.detail.contains("重置连接"))
     }
 
     @Test
@@ -203,6 +204,19 @@ class CameraConnectionFlowTest {
 
         assertEquals(CameraConnectionFailure.WifiJoinTimeout, issue.failure)
         assertEquals(CameraConnectionStep.JoinCameraWifi, issue.step)
+    }
+
+    @Test
+    fun rememberedBleReconnectFailureRequiresConnectionReset() {
+        val issue = CameraConnectionIssueClassifier.fromThrowable(
+            step = CameraConnectionStep.ReconnectPairedBle,
+            throwable = IllegalStateException("无法连接已配对相机，请确认相机蓝牙已开启并停留在可传图/配对连接界面后重试"),
+        )
+
+        assertEquals(CameraConnectionFailure.PairingRegistrationOutOfSync, issue.failure)
+        assertEquals(CameraConnectionStep.RegistrationConsistencyCheck, issue.step)
+        assertEquals(CameraConnectionAction.ResetConnection, issue.primaryAction)
+        assertTrue(issue.detail.contains("重置连接"))
     }
 
     @Test

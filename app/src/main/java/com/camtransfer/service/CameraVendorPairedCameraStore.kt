@@ -9,6 +9,7 @@ data class CameraVendorPairedCameraRecord(
     val wifiConfigurations: List<CameraVendorWifiNetworkConfiguration>,
     val bluetoothAddress: String? = null,
     val cameraId: String = "",
+    val registeredTerminalName: String? = null,
     val lastConnectedAtMillis: Long = 0L,
 )
 
@@ -42,6 +43,7 @@ class CameraVendorPairedCameraStore(context: Context) {
                     bluetoothAddress = bluetoothAddress,
                     wifiSsid = wifiConfigurations.firstOrNull()?.ssid,
                 ),
+            registeredTerminalName = prefs.getString(KEY_REGISTERED_TERMINAL_NAME, null)?.takeIf { it.isNotBlank() },
         )
     }
 
@@ -82,6 +84,7 @@ class CameraVendorPairedCameraStore(context: Context) {
             )
             .putString(KEY_BLUETOOTH_ADDRESS, record.bluetoothAddress)
             .putString(KEY_CAMERA_ID, record.cameraId)
+            .putString(KEY_REGISTERED_TERMINAL_NAME, record.registeredTerminalName)
             .apply()
     }
 
@@ -112,6 +115,7 @@ class CameraVendorPairedCameraStore(context: Context) {
             .remove(KEY_WIFI_CONFIGURATIONS)
             .remove(KEY_BLUETOOTH_ADDRESS)
             .remove(KEY_CAMERA_ID)
+            .remove(KEY_REGISTERED_TERMINAL_NAME)
             .apply()
     }
 
@@ -152,6 +156,7 @@ class CameraVendorPairedCameraStore(context: Context) {
         const val KEY_WIFI_CONFIGURATIONS = "wifi_configurations"
         const val KEY_BLUETOOTH_ADDRESS = "bluetooth_address"
         const val KEY_CAMERA_ID = "camera_id"
+        const val KEY_REGISTERED_TERMINAL_NAME = "registered_terminal_name"
         const val KEY_DELETED_BLUETOOTH_ADDRESSES = "deleted_bluetooth_addresses"
     }
 }

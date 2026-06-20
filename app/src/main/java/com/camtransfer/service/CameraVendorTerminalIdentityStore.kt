@@ -44,7 +44,12 @@ class CameraVendorTerminalIdentityStore(context: Context) {
         return resolved
     }
 
+    fun clearRegisteredTerminalName() {
+        prefs.edit().remove(KEY_REGISTERED_TERMINAL_NAME).apply()
+    }
+
     private companion object {
         const val KEY_TERMINAL_USER_ID = "terminal_user_id"
+        const val KEY_REGISTERED_TERMINAL_NAME = "registered_terminal_name"
     }
 }

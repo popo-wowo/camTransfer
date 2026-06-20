@@ -48,6 +48,32 @@ class CameraGalleryConnectionCoordinator(
     private val preferCompressedDownloads: () -> Boolean,
     private val ptpClientName: () -> String,
 ) {
+    suspend fun refreshRememberedCameraBleOnlineStatus(onStatus: (String) -> Unit = {}): Boolean {
+        val remembered = rememberedPairing() ?: return false
+        val startedAtMs = SystemClock.elapsedRealtime()
+        DiagnosticLog.append(context, TAG, "Remembered BLE online refresh started cameraId=${remembered.cameraId}")
+        onStatus("正在更新相机连接状态: ${remembered.deviceName}")
+
+        val existingHandshake = currentHandshake()
+        return runCatching {
+            val refreshedHandshake = reusableRememberedHandshake(existingHandshake, remembered)
+                ?: reconnectRememberedCamera(onStatus)
+            val elapsedMs = SystemClock.elapsedRealtime() - startedAtMs
+            DiagnosticLog.append(context, TAG, "Remembered BLE online refresh confirmed elapsedMs=$elapsedMs")
+            if (existingHandshake == null) {
+                DiagnosticLog.append(context, TAG, "Keeping startup BLE online refresh handshake for gallery flow")
+            }
+            onStatus("相机在线: ${remembered.deviceName}")
+            true
+        }.getOrElse { error ->
+            if (CameraConnectionCancellationPolicy.shouldPropagate(error)) throw error
+            val elapsedMs = SystemClock.elapsedRealtime() - startedAtMs
+            DiagnosticLog.append(context, TAG, "Remembered BLE online refresh failed elapsedMs=$elapsedMs", error)
+            onStatus("已配对 ${remembered.deviceName}")
+            false
+        }
+    }
+
     suspend fun connectToGallery(onStatus: (String) -> Unit = {}) {
         var connectedHandshake: CameraVendorBleHandshake? = null
         var wifiConfigurations: List<CameraVendorWifiNetworkConfiguration> = emptyList()
@@ -56,8 +82,8 @@ class CameraGalleryConnectionCoordinator(
             onStepStarted = { step ->
                 DiagnosticLog.append(context, TAG, "Official gallery step started step=$step")
             },
-            onStepConfirmed = { step ->
-                DiagnosticLog.append(context, TAG, "Official gallery step confirmed step=$step")
+            onStepConfirmed = { step, elapsedMs ->
+                DiagnosticLog.append(context, TAG, "Official gallery step confirmed step=$step elapsedMs=$elapsedMs")
             },
         ).connect(
             reconnectPairedBle = ReconnectPairedBleStep {
@@ -78,11 +104,7 @@ class CameraGalleryConnectionCoordinator(
                 val hs = connectedHandshake ?: throw IllegalStateException("请先完成已配对相机 BLE 重连")
                 onStatus("正在确认相机允许这台手机传图")
                 val officialWifiConfiguration = hs.refreshReferenceAppWifiConfiguration()
-                if (officialWifiConfiguration != null) {
-                    saveRememberedHandshake(hs)
-                }
-                hs.confirmCameraPairingSucceeded()
-                DiagnosticLog.append(context, TAG, "Gallery transfer authorization replay confirmed")
+                DiagnosticLog.append(context, TAG, "Gallery transfer authorization confirmed from validated BLE handshake")
                 wifiConfigurations = CameraVendorOfficialGalleryConnectionPolicy.officialWifiConfigurations(officialWifiConfiguration)
             },
             activateCameraWifi = ActivateCameraWifiStep {
@@ -250,10 +272,20 @@ class CameraGalleryConnectionCoordinator(
                     initReadTimeoutMs = CameraVendorPtpConnectionStartupPolicy.INIT_ACK_READ_TIMEOUT_MS.toInt(),
                     commandReadTimeoutMs = CameraVendorPtpConnectionStartupPolicy.COMMAND_READ_TIMEOUT_MS.toInt(),
                     confirmGalleryMode = confirmGalleryMode,
+                    onInitPacket = { label, socketLocalIp, clientIp, packet ->
+                        DiagnosticLog.append(
+                            context,
+                            TAG,
+                            "PTP INIT packet label=$label socketLocalIp=$socketLocalIp clientIp=$clientIp bytes=${packet.size} hex=${packet.hex()}",
+                        )
+                    },
                 )
             },
         )
     }
+
+    private fun ByteArray.hex(): String =
+        joinToString("") { "%02x".format(it) }
 
     private suspend fun reconnectRememberedCamera(onStatus: (String) -> Unit): CameraVendorBleHandshake {
         val remembered = rememberedPairing() ?: throw IllegalStateException("请先完成蓝牙配对")
@@ -338,7 +370,6 @@ class CameraGalleryConnectionCoordinator(
             )
             ensureRememberedCameraIdentity(hs, remembered)
             publishHandshake(hs)
-            saveRememberedHandshake(hs)
             return hs
         } catch (error: Throwable) {
             hs.disconnect()
@@ -359,7 +390,6 @@ class CameraGalleryConnectionCoordinator(
             hs.performHandshake(scanResult, mode = CameraVendorBleHandshakeMode.RememberedGallery)
             ensureRememberedCameraIdentity(hs, remembered)
             publishHandshake(hs)
-            saveRememberedHandshake(hs)
             return hs
         } catch (error: Throwable) {
             hs.disconnect()
@@ -410,10 +440,6 @@ class CameraGalleryConnectionCoordinator(
         hs.disconnect()
         clearHandshake()
         return null
-    }
-
-    private fun saveRememberedHandshake(hs: CameraVendorBleHandshake) {
-        pairingStore.save(rememberedRecordFor(hs))
     }
 
     @SuppressLint("MissingPermission")

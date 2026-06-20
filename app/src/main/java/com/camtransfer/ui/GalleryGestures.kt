@@ -245,7 +245,6 @@ private fun LazyGridState.hitAt(position: Offset, files: List<CameraFile>): Gall
             position.y >= item.offset.y &&
             position.y < item.offset.y + item.size.height
     } ?: return null
-    val handle = files.getOrNull(item.index)?.info?.handle ?: return null
+    val handle = item.key as? Int ?: return null
     return GalleryGridHit(handle = handle)
 }
-

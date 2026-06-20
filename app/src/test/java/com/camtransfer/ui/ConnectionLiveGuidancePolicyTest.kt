@@ -72,19 +72,63 @@ class ConnectionLiveGuidancePolicyTest {
     }
 
     @Test
-    fun failureActionUsesRestartPairingForPairingPhase() {
+    fun pairedStateWithoutOnlineHandshakeStaysSavedNotConnected() {
+        val content = ConnectionLiveGuidancePolicy.content(
+            state = ConnectionState.PAIRED,
+            statusText = "已保存配对，未连接相机: X-T5",
+            error = null,
+            issue = null,
+        )
+
+        assertEquals("已保存配对", content.title)
+        assertEquals("已保存配对，未连接相机: X-T5", content.message)
+        assertFalse(content.isBleOnline)
+    }
+
+    @Test
+    fun pairedStateWithOnlineHandshakeShowsBluetoothConnected() {
+        val content = ConnectionLiveGuidancePolicy.content(
+            state = ConnectionState.PAIRED,
+            statusText = "相机在线: X-T5",
+            error = null,
+            issue = null,
+        )
+
+        assertEquals("蓝牙已连接", content.title)
+        assertEquals("蓝牙在线", content.stepLabel)
+        assertTrue(content.isBleOnline)
+    }
+
+    @Test
+    fun failureActionUsesResetForStaleSystemBond() {
         val issue = CameraConnectionIssue.staleSystemBond("X-T5")
+
+        assertEquals(CameraConnectionAction.ResetConnection, ConnectionFailureActionPolicy.primaryAction(issue))
+        assertEquals("重置连接", ConnectionFailureActionPolicy.primaryLabel(issue))
+    }
+
+    @Test
+    fun failureActionUsesRestartPairingForNormalPairingGate() {
+        val issue = CameraConnectionIssue.cameraPairingModeRequired()
 
         assertEquals(CameraConnectionAction.RestartPairing, ConnectionFailureActionPolicy.primaryAction(issue))
         assertEquals("重新配对", ConnectionFailureActionPolicy.primaryLabel(issue))
     }
 
     @Test
-    fun failureActionUsesRetryForGalleryPhase() {
+    fun failureActionUsesConnectionResetForPtpConflict() {
         val issue = CameraConnectionIssue.ptpNotReady()
 
-        assertEquals(CameraConnectionAction.RetryStep, ConnectionFailureActionPolicy.primaryAction(issue))
-        assertEquals("重试", ConnectionFailureActionPolicy.primaryLabel(issue))
+        assertEquals(CameraConnectionAction.ResetConnection, ConnectionFailureActionPolicy.primaryAction(issue))
+        assertEquals("重置连接", ConnectionFailureActionPolicy.primaryLabel(issue))
+    }
+
+    @Test
+    fun pairedPtpIssueUsesConnectionResetAsPrimaryAction() {
+        val issue = CameraConnectionIssue.ptpNotReady()
+
+        assertEquals(CameraConnectionAction.ResetConnection, ConnectionPairedPrimaryActionPolicy.primaryAction(issue))
+        assertEquals("重置连接", ConnectionPairedPrimaryActionPolicy.primaryLabel(issue))
     }
 
     @Test

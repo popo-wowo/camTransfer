@@ -27,6 +27,12 @@ class CameraConnectionStatusPolicyTest {
     }
 
     @Test
+    fun staleRegistrationGatesDoNotShowScanningState() {
+        assertEquals(ConnectionState.IDLE, CameraConnectionUiPolicy.stateForStep(CameraConnectionStep.StaleBondCheck))
+        assertEquals(ConnectionState.IDLE, CameraConnectionUiPolicy.stateForStep(CameraConnectionStep.RegistrationConsistencyCheck))
+    }
+
+    @Test
     fun ptpStepMapsToPtpState() {
         val state = CameraConnectionUiPolicy.stateForStep(CameraConnectionStep.ConnectPtp)
 
@@ -129,9 +135,9 @@ class CameraConnectionStatusPolicyTest {
     }
 
     @Test
-    fun ptpFailureRetriesPtpWithoutBleActivation() {
+    fun ptpFailureRequiresFreshRegistrationReset() {
         val target = CameraConnectionRetryPolicy.targetForStep(CameraConnectionStep.ConnectPtp)
 
-        assertEquals(CameraConnectionRetryTarget.ExistingPtpProbe, target)
+        assertEquals(CameraConnectionRetryTarget.ResetConnection, target)
     }
 }

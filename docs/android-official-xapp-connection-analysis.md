@@ -1,6 +1,6 @@
 # Android Official XApp Connection Analysis
 
-更新日期: 2026-06-19
+更新日期: 2026-06-20
 
 本文记录从已安装官方 FUJIFILM XApp Android 包中读到的连接逻辑。后续 Android 改造以这里的证据作为对照，避免靠猜测等待或串行试探。
 
@@ -38,6 +38,260 @@
 2. 进入相册阶段: 通过 BLE 让相机启动 WiFi/AP，然后手机用保存的 SSID、密码、MAC 发起系统 WiFi handover，最后通过 PTP/IP 和原生 SDK 进入图片列表与传输。
 
 这里的核心结论是: 官方 App 并不是靠猜测相机 WiFi 名称，也不是按 FUJ 前缀串行试很多网络。它在配对时就读取了精确的 SSID、WiFi 密码和 MAC，后面进入相册时直接使用这些值。
+
+## 2026-06-20 Android 原厂 XApp 实机日志结论
+
+本节记录 Android 原厂 FUJIFILM XApp `2.7.3(1)` 在同一台 Android 手机上运行时的系统日志和状态采样。样本只能证明 Android 平台层行为、Activity 跳转、蓝牙 bond/GATT、Wi-Fi request、socket 端口和图片解码尺寸；它不是 payload 级 PTP 抓包，因此不能单独证明 `D226`、`GET_OBJECT_INFO`、`GET_PARTIAL_OBJECT` 等 PTP opcode。高清预览和导入协议仍以 2026-06-19 iPhone RVI payload 抓包为准。
+
+样本:
+
+- 目录: `.analysis/android-official-captures/20260620-152929-xapp-android/`
+- 文件: `logcat.txt`、`state-samples.txt`
+- 官方包名: `com.fujifilm.xapp`
+- 官方版本: `2.7.3(1)`
+- 采集方式: `adb logcat` + 周期性系统状态采样；PcapDroid 尚未完成 payload pcap 导出。
+
+实机时间线:
+
+1. `15:30:29` 官方 XApp 启动到 `AppMainActivity`。
+2. `15:30:38` 进入 `PairingActivity`。
+3. `15:30:51` 官方 App 触发旧 bond 删除，系统记录 `Remove bond xx:xx:xx:xx:c7:81` 和 bond state 变为 none。
+4. `15:30:54` 官方 XApp 打开 BLE GATT，ACL holder 是 `com.fujifilm.xapp`。
+5. `15:30:58 -> 15:31:08` 新设备进入 bonding 并完成 bonded。
+6. `15:31:41` 官方 App 又删除刚才的 `xx:xx:xx:xx:09:03` bond，随后重新进入下一轮注册。
+7. `15:31:51 -> 15:31:58` 官方 XApp 对新地址 `xx:xx:xx:xx:82:06` 打开 GATT 并完成 bonding/bonded。
+8. `15:32:29` 官方 XApp 发起 `WifiNetworkSpecifier` request，精确 SSID 为 `FUJIFILM-X-T5-003B`，BSSID 为 `04:7b:cb:83:e3:a6`，RequestorPkg 为 `com.fujifilm.xapp`。
+9. `15:32:31` Android 注册相机 Wi-Fi network agent，随后状态采样显示手机连到 `"FUJIFILM-X-T5-003B"`，手机 IP 为 `192.168.0.138`，网关/服务端为 `192.168.0.1`，网络归属包仍是 `com.fujifilm.xapp`。
+10. `15:32:52` 开始出现大量 `SkJpegCodec` 解码，尺寸为 `640x480`，这是官方相册列表缩略图层的实机证据。
+11. 同期 `ss -tnp` 看到 `192.168.0.138 -> 192.168.0.1:55740` 的 ESTABLISHED 和多个关闭中的 TCP 连接，证明 Android 原厂普通相册同样使用 `55740`。
+
+本次 Android 实机新增结论:
+
+- 原厂 Android App 确实会主动清理旧蓝牙注册/bond，并不是只提示用户手动删除。我们的 App 必须有“一键重置连接/删除注册并重新配对”能力，否则和原厂 App、系统蓝牙、相机端注册任一方状态不一致时会卡死在配对或 PTP open。
+- 原厂 Android Wi-Fi handover 是 `WifiNetworkSpecifier` 的精确请求: literal SSID + exact BSSID + passphrase；没有看到基于名称前缀的候选枚举。
+- 原厂 Android 相册列表阶段解码的是 `640x480` JPEG 缩略图。这个证据不能说明单图高清预览尺寸，因为没有 payload pcap，也没有看到更高尺寸 decode 的可归因日志。
+- Android 原厂和 iPhone 原厂都指向同一个普通相册主端口 `55740`；`55741/55742` 仍不应进入普通相册 open 主链路。
+- 本次日志中官方 App 多次触发系统 Wi-Fi scan，但核心连接动作仍是 `requestNetwork` 精确请求；scan 只能作为系统发现辅助，不应替代 BLE/AP ready 和精确 Wi-Fi 配置。
+
+对我们当前实现的决策:
+
+- 保留注册一致性检查和一键重置。官方实机日志证明原厂存在主动删除旧注册的行为，这不是我们臆测的兜底。
+- 保留“只使用 BLE 读取到的官方 SSID/passphrase/BSSID”的主链路。没有官方 Wi-Fi 配置时停止，不再猜 FUJIFILM 前缀候选。
+- 保留等待 AP ready 后再 Wi-Fi handover。此前的并行预热/快切 Wi-Fi 没有原厂实机证据，且已经造成连接顺序风险。
+- Wi-Fi request 的主路径应继续尽量贴近官方: 一个精确候选、目标 network 保存、PTP socket 使用该 network 的 socketFactory。
+- 高清预览、原图导入压缩模式、预览缓存仍需 payload 级 Android pcap 或沿用 iPhone payload 证据实现，不能只靠这份 logcat 修改协议。
+
+## 2026-06-20 Android 原厂 XApp 注册冲突检测机制
+
+本节记录“我们的 App 重新配对后，再打开原厂 XApp，原厂立即提示删除注册/重新配对”的静态反编译结论。这个结论来自 Android 原厂 XApp APK，不依赖 Wi-Fi/PTP 抓包。
+
+关键反编译证据:
+
+- `PairingViewModel.startPairing()` 会发送 `QueueRequestId.START_PAIRING`。
+- `BTCameraService.execRequest()` 收到 `START_PAIRING` 后调用 `BTManager.startScanLeDevice(PairingMode.PAIRING, "")`。
+- `BTManager$leScanCallback$1$onScanResult$1.invokeSuspend()` 在 BLE 扫描结果里解析相机广告包。
+- 当扫描结果属于 RED/新协议相机的 `SERVICE_FF_CAMERA_INFORMATION_RED` 时，官方代码在 `PairingMode.PAIRING` 下调用 `BTCameraModel.isBondedCamera(btCamera.deviceAddress)`。
+- `BTCameraModel.isBondedCamera(deviceAddress)` 只读取 Android 系统蓝牙 `BluetoothAdapter.getBondedDevices()`，把 bonded device address 列表和扫描到的 `deviceAddress` 比较。
+- 如果系统 bonded devices 已包含扫描到的相机 BLE address，`BTManager.notifyBondedCamera()` 会停止扫描，并把 `(deviceAddress, deviceName)` 写入 `BTEntryCameraRepository.detectCameraBondingInfo`。
+- `PairingActivity` 监听 `detectCameraBondingInfo`，收到非空 `(address, name)` 后显示 `showBluetoothDeletionDialog(deviceName)`，对应弹框文案 `10-09AN`。
+
+官方 `10-09AN` 文案含义:
+
+- 标题 `_A10_09AN_001`: 这台相机之前已经作为本手机的已配对设备注册，重新配对前需要删除本手机上的注册。
+- 正文 `_A10_09AN_002/_003`: 要求用户从 Android 设置的已连接设备里删除对应设备，否则之后不能与这台相机配对。
+- 设备名 `_A10_09AN_004`: 只用于展示 `- %s`，不是判断条件。
+
+确定结论:
+
+1. 原厂 XApp 的这条检测发生在配对 BLE 扫描阶段，不发生在 Wi-Fi、PTP 或相册阶段。
+2. 原厂不需要先完成 GATT 连接；扫描到相机广告包后，只要系统 bonded devices 已有同一 BLE address，就可以立即弹删除注册提示。
+3. 判断主条件是 Android 系统蓝牙 bond address 是否包含扫描到的相机 BLE address。相机名只用于弹框展示，不是身份判断依据。
+4. RED/新协议相机路径主要按 BLE address 匹配本地注册和系统 bond；非 RED 旧路径还会涉及 serial/pairingKey，但本次问题的弹框主因是系统 bond address 冲突。
+5. 这条检测不需要 Wi-Fi 抓包证明。若要做运行时复核，抓 `adb logcat` 即可，过滤 `START_PAIRING`、`onScanResult`、`Bonding detected, registered camera`、`Bonding information detected`、`Bonding info detected`。
+
+对我们当前实现的决策:
+
+- 需要把“系统 bond 冲突检测”作为配对前/重新配对前的独立预检模块，而不是塞进 Wi-Fi/PTP 主链路。
+- 预检模块只能读本地配对记录、BLE 扫描结果和 Android 系统 bonded devices，并输出“可继续 / 需要清理系统蓝牙记录 / 可执行一键重置”的结果。
+- 预检模块不能启动相机 Wi-Fi，不能连接 PTP，不能写 `FunctionLaunchRequest`，不能提前启动保活。
+- 这个模块可以在进入配对页或用户点击重新配对时运行；发现同 BLE address 的系统 bond 冲突时，应先提示删除/一键清理，再允许进入正式配对。
+- 已配对进入相册主链路仍然按当前 `cameraID -> BLE endpoint -> GATT 身份校验 -> Wi-Fi -> PTP` 执行，不能因为这个预检模块绕过主链路身份校验。
+
+## 2026-06-20 Android 原厂 terminalName 规则
+
+本节记录 Android 原厂 XApp 写给相机的手机名规则。这个值会出现在 BLE 配对/握手写入和 PTP/IP INIT friendly name 中，但它不是相机身份主键。
+
+关键反编译证据:
+
+- `AppSettingRepository.getDefaultTerminalName()` 使用 Android `Build.MODEL` 作为默认机型名。
+- 原厂会把不在 `[A-Za-z0-9*,-./:=_]` 范围内的字符替换为 `-`。
+- 清洗后的机型名超过 21 字符时，取前 19 字符再加 `..`。
+- 格式字符串 `_50_01A_009` 是 `%1$s-%2$04d`。
+- 四位 suffix 来自 `(System.currentTimeMillis() / 1000) % 10000`。
+
+确定结论:
+
+1. Android 原厂默认不会固定写 `iPhone-xxxx`，也不会写一个永久固定的 `iPhone-6970`。
+2. 正常 Android 机型名应类似 `23127PN0CC-1234`、`Xiaomi-14-1234`，具体前缀取决于手机 `Build.MODEL`。
+3. 这条规则只决定“相机屏幕上显示的手机名”和 PTP legacy INIT 里的 friendly name；是否允许连接仍要看注册一致性、BLE/GATT 授权、Wi-Fi handover 和 PTP ACK。
+4. 后续如果日志里继续出现 `source=reference_app_compatibility_name` 或 `iPhone-6970`，说明手机上运行的不是当前官方 Android 命名版本，不能用那次实机结果判断新规则是否有效。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant User as 用户
+    participant XApp as 原厂 XApp
+    participant BLEScan as BLE 扫描
+    participant AndroidBT as Android 蓝牙系统
+    participant Repo as BTEntryCameraRepository
+    participant UI as PairingActivity
+
+    User->>XApp: 进入配对/重新配对
+    XApp->>BLEScan: startScanLeDevice(PAIRING)
+    BLEScan-->>XApp: ScanResult(deviceAddress, deviceName, services)
+    XApp->>AndroidBT: getBondedDevices()
+    AndroidBT-->>XApp: bonded device addresses
+    alt bondedDevices contains deviceAddress
+        XApp->>BLEScan: stop scan
+        XApp->>Repo: detectCameraBondingInfo = (deviceAddress, deviceName)
+        Repo-->>UI: flow emit
+        UI-->>User: 显示 10-09AN 删除系统蓝牙注册提示
+    else no system bond conflict
+        XApp->>XApp: 继续正式 BLE/GATT 配对流程
+    end
+```
+
+## 原厂 App 完整执行时序图
+
+这张图把目前证据能确认的原厂行为合在一起:
+
+- Android APK 静态分析和 Android 实机日志证明: 配对、注册清理、BLE/GATT、Wi-Fi handover、`55740` socket。
+- iPhone RVI payload 抓包证明: 普通相册、缩略图、高清预览、放大、导入的 PTP opcode 和数据形态。
+- 缓存只画到“页面内持有高清预览”这个确定层级；是否有磁盘缓存、跨启动缓存、相邻预取，目前没有证据。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant User as 用户
+    participant XApp as 原厂 XApp
+    participant Store as 注册/配对记录
+    participant AndroidBT as Android 蓝牙系统
+    participant BLE as BLE/GATT
+    participant Camera as 相机
+    participant AndroidWiFi as Android Connectivity
+    participant PTP as PTP/IP 55740
+    participant Cache as 页面/图片缓存
+
+    rect rgb(240, 248, 255)
+        User->>XApp: 打开 App / 进入配对
+        XApp->>Store: 检查已有注册记录
+        alt 旧注册或系统 bond 冲突
+            XApp->>AndroidBT: removeBond(old camera bond)
+            AndroidBT-->>XApp: bond_state = none
+        end
+        XApp->>BLE: connectGatt + discoverServices
+        BLE->>Camera: read deviceName / serial / cameraId inputs
+        BLE->>Camera: read Wi-Fi SSID / passphrase / MAC
+        Camera-->>BLE: exact SSID + passphrase + BSSID
+        XApp->>BLE: write pairing key / connected phone name
+        XApp->>Store: save cameraId + BLE address + SSID + passphrase + BSSID
+    end
+
+    rect rgb(245, 255, 245)
+        User->>XApp: 进入相册/导入
+        XApp->>Store: load exact camera registration
+        Store-->>XApp: cameraId + BLE endpoint + Wi-Fi credentials
+        XApp->>BLE: reconnect paired camera
+        BLE-->>XApp: GATT ready
+        XApp->>BLE: write ImageTransferSetting=00
+        XApp->>BLE: write ImageTransferSettingEx=01
+        XApp->>BLE: write ImageResizeSetting=00/01
+        XApp->>BLE: write FunctionLaunchRequest=0300
+        loop wait AP ready
+            XApp->>BLE: read/notify AP_STATE
+            BLE-->>XApp: 0x8000 / 0x8001 / 0x8003
+        end
+        alt AP ready
+            XApp->>BLE: release/disconnect for Wi-Fi handoff
+            XApp->>AndroidWiFi: requestNetwork(exact SSID + passphrase + BSSID)
+            AndroidWiFi-->>XApp: onAvailable(target Network)
+            XApp->>AndroidWiFi: bind/save target Network
+        else AP timeout
+            XApp-->>User: 停在 Wi-Fi/AP 启动失败
+        end
+    end
+
+    rect rgb(255, 250, 240)
+        XApp->>PTP: socket connect 192.168.0.1:55740
+        XApp->>PTP: PTP/IP init/open
+        XApp->>PTP: SET D226=0
+        XApp->>PTP: GET_LATEST_OBJECT_INFO / object handles
+        XApp->>PTP: GET_THUMB / vendor thumb
+        PTP-->>XApp: 640x480 JPEG thumbnails
+        XApp->>Cache: cache list thumbnails
+        XApp-->>User: 显示相册网格
+    end
+
+    rect rgb(255, 245, 245)
+        User->>XApp: 打开单张图
+        XApp->>PTP: SET D226=1
+        XApp->>PTP: GET_OBJECT_INFO(handle)
+        PTP-->>XApp: compressedSize for screen preview
+        XApp->>PTP: GET_PARTIAL_OBJECT(handle, 0, compressedSize)
+        PTP-->>XApp: 完整高清预览 JPEG
+        XApp->>PTP: SET D226=0
+        XApp->>Cache: hold high-res preview for current page
+        XApp-->>User: 显示高清单图
+
+        User->>XApp: 放大/拖动
+        XApp->>Cache: reuse loaded high-res preview
+        XApp-->>User: 本地缩放显示
+    end
+
+    rect rgb(248, 245, 255)
+        User->>XApp: 导入/下载
+        XApp->>PTP: SET D226=2
+        XApp->>PTP: GET_OBJECT_INFO(handle)
+        XApp->>PTP: GET_PARTIAL_OBJECT(handle, offset, length) 分段
+        PTP-->>XApp: 完整导入文件数据
+        XApp->>PTP: SET D226=0
+        XApp-->>User: 保存到手机相册/文件
+    end
+```
+
+## 是否可以直接照官方 App 做
+
+结论: 连接主链路应该尽量照官方做；图片协议可以按已抓包证据对齐；缓存和部分 native SDK 内部行为不能声称照抄，只能按相同语义自研。
+
+可以直接对齐的部分:
+
+1. 注册一致性: 启动、配对前、进相册前检查 App 注册记录和系统蓝牙 bond 是否一致；不一致时提供一键重置。
+2. 配对记录: 必须保存官方身份字段和精确 Wi-Fi 配置，包括 `cameraId`、BLE endpoint、SSID、passphrase、BSSID。
+3. Wi-Fi handover: 只请求一个官方精确网络，用 `WifiNetworkSpecifier` 的 literal SSID、WPA2 passphrase、BSSID；不猜前缀、不扫候选。
+4. 连接顺序: BLE 重连 -> 传图授权 -> 写启动 Wi-Fi 指令 -> 等 AP ready -> Wi-Fi request -> PTP open -> 加载相册。
+5. 普通相册端口: 主链路使用 `192.168.0.1:55740`，不要把 `55741/55742` 加进相册 open 主路径。
+6. 列表缩略图: 缩略图只走标准缩略图/扩展缩略图语义；`GET_PARTIAL_OBJECT` 不作为列表缩略图 fallback。
+
+应该按官方协议实现但要加保护的部分:
+
+1. 高清预览: 按 `D226=1 -> GET_OBJECT_INFO -> GET_PARTIAL_OBJECT(compressedSize) -> D226=0` 做 screen preview。必须串行、限大小、校验完整 JPEG，并在 `finally` 恢复 `D226=0`。
+2. 导入: 用 `D226=2` 路径做 A/B 复核，确认和当前 Android 路径、原厂导入文件在尺寸、EXIF、文件大小、可打开性上一致后再切默认。
+3. PTP 调度: `D226`、缩略图、预览、导入共享同一条 PTP 状态机，必须统一队列串行，不允许后台缩略图和当前预览抢通道。
+4. Wi-Fi retry: 官方有条件重试，不是无限重试。Android 当前已收敛为首次自动连接只发起一次精确 `requestNetwork`；失败后停在 `JoinCameraWifi`，用户点重试时先探测当前 PTP/手动 Wi-Fi 状态。
+
+不能直接照抄、需要自研或继续抓包的部分:
+
+1. 原厂 native SDK 内部 `Java_SDK_Open` 细节看不到，不能逐字照抄，只能按外部 socket、timeout、PTP payload 行为对齐。
+2. 原厂缓存策略没有证据。只能确定单图页内持有高清预览；磁盘缓存大小、key、淘汰、跨启动复用都要我们自己设计。
+3. Android 原厂 payload 还没抓到。若要证明 Android 原厂和 iPhone 原厂在高清预览/导入 opcode 上完全一致，需要 PcapDroid 或 VPN pcap。
+
+当前最值得优化的顺序:
+
+1. P0: 高清预览协议。收益最大，直接解决“单图糊”；风险可通过 PTP 串行、`finally D226=0`、大小上限控制。
+2. P0: 导入模式复核。先 A/B 验证，不直接替换默认路径。
+3. P1: 预览缓存。先做内存 LRU，再考虑磁盘缓存；缓存 key 不只用 handle。
+4. P1: 请求调度器。下载和当前预览优先，首屏缩略图其次，后台 metadata 最后。
+5. P1: 继续用实机日志复核连接耗时。现在每个官方连接步骤都会记录 `elapsedMs`，后续按最大耗时阶段继续优化。
 
 ## 原厂 XApp 配对与连接执行逻辑
 
@@ -488,7 +742,7 @@ UI 侧也同步调整: 已配对状态下如果还挂着进入相册阶段的问
 
 ## 2026-06-04 MIUI WiFi 短失败重试修正
 
-历史记录: 这一轮曾为 MIUI 短 `onUnavailable` 增加同一 WiFi 的内部自动重试。2026-06-14 后，进入相册主链路不再使用这个规则；当前规则是一个官方 SSID/passphrase/BSSID 对应一次系统 `requestNetwork` 等待窗口，失败就停在 `JoinCameraWifi` 并展示 SSID/密码给用户手动处理。
+历史记录: 这一轮曾为 MIUI 短 `onUnavailable` 增加同一 WiFi 的内部自动重试。2026-06-20 后，进入相册主链路不再使用这个规则；当前规则是一个官方 SSID/passphrase/BSSID 对应一次系统 `requestNetwork` 等待窗口，失败就停在 `JoinCameraWifi` 并展示 SSID/密码给用户手动处理。
 
 实机日志显示，同一个相机 WiFi、同一组 SSID/passphrase 下，首次进入相册阶段连续 3 次 `requestNetwork` 会被 MIUI 很快返回 `onUnavailable`:
 
@@ -496,11 +750,7 @@ UI 侧也同步调整: 已配对状态下如果还挂着进入相册阶段的问
 - 第 2/3 次约 1.1s 返回 `onUnavailable`。
 - 用户随后点重试，同一个 WiFi 在 2946ms 内 `onAvailable` 并完成 PTP。
 
-当时推断失败不是凭据错误，而是手机系统短时间内还没完成/允许 WiFi handoff。历史规则曾调整为:
-
-- 同一个精确 WiFi candidate 内部自动尝试 5 次。
-- 失败间隔改为 1500ms、3000ms、4000ms、6000ms。
-- 短 `onUnavailable` 不立即暴露给用户，先继续后台等待并自动重试。
+当时推断失败不是凭据错误，而是手机系统短时间内还没完成/允许 WiFi handoff。历史上曾加入同一个精确 WiFi candidate 内部多次 requestNetwork。2026-06-20 连接提速后撤销这条内部循环，避免一次失败把用户卡在系统 Wi-Fi handoff 内部等待很久。
 
 ## 2026-06-04 对齐官方 WiFi handover 关键点
 
@@ -572,7 +822,7 @@ Android 侧同步补齐身份层:
 - 复用只跳过 BLE reconnect，不跳过 `TransferAuthorization`、`ActivateCameraWifi`、`WaitCameraWifiReady` 等官方步骤。
 - 如果缓存会话断开、缺特征、身份不匹配或过期，立即丢弃缓存并回到已配对地址直连；直连失败后只允许当前 `cameraID` 的官方 `RE_CONNECT` 受限扫描，仍失败就停止在 `ReconnectPairedBle`。
 - `AP_STATE` 不做缓存。每次进入相册都必须重新等待相机返回 `0x8001` 或 `0x8003` 后才允许 Wi-Fi handoff。
-- 已配对地址直连的 GATT 连接超时使用 15 秒；超时后暴露为已配对 BLE 连接失败，提示用户重试或重新配对。
+- 已配对地址直连的 GATT 连接超时使用 5 秒；失败后如当前记录有稳定身份，快速切到官方 reconnect scan，而不是在 direct address 上等满 15 秒。
 
 ## 2026-06-16 已配对身份与 BLE endpoint
 
@@ -582,7 +832,7 @@ Android 侧同步补齐身份层:
 - BLE GATT 不能直接用 `cameraID` 发起连接；Android 连接入口仍是 `BluetoothDevice` 地址。因此 `cameraID` 用于选择和校验相机身份，BLE 地址只是该身份下的连接 endpoint。
 - 进入相册时，先从当前 `cameraID` 记录和系统已配对 bond 构造同一相机的 BLE endpoint 候选；直连失败后才按原厂 `RE_CONNECT` 做受限扫描。扫描命中只是候选，必须在 GATT 身份校验通过后才能进入 Wi-Fi/PTP。
 - 每次 GATT 连上后必须读取相机序列号/设备名，并与当前 `cameraID` 匹配。身份不匹配时停止在 `ReconnectPairedBle`，不能继续 Wi-Fi 或 PTP。
-- 已配对 direct GATT 超时调整为 15 秒。实机日志显示 Android BLE 地址解析有时超过 6 秒才完成连接，6 秒会把可成功的已配对连接误判失败。
+- 2026-06-20 连接提速后，已配对 direct GATT 超时收敛为 5 秒；超过该窗口仍未连上时优先进入官方 reconnect scan。后续用 per-step `elapsedMs` 继续确认是否存在可成功但被 5 秒误判的机型。
 
 ## 2026-06-17 Android 执行规则同步
 

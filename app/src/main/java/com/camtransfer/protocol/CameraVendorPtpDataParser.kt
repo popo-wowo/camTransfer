@@ -5,6 +5,12 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 object CameraVendorPtpDataParser {
+    fun objectCountsByDate(data: ByteArray): List<CameraVendorObjectCountByDate> {
+        if (data.isEmpty()) return emptyList()
+        return parseCountPrefixedPtpStringDateCounts(data)
+            .ifEmpty { parseCountPrefixedAsciiDateCounts(data) }
+    }
+
     fun uint32Array(data: ByteArray): List<Int> {
         if (data.size < 4) return emptyList()
         val count = uint32(data, 0)
@@ -175,4 +181,64 @@ object CameraVendorPtpDataParser {
 
     private fun uint32(data: ByteArray, offset: Int): Int =
         ByteBuffer.wrap(data, offset, 4).order(ByteOrder.LITTLE_ENDIAN).int
+
+    private fun parseCountPrefixedPtpStringDateCounts(data: ByteArray): List<CameraVendorObjectCountByDate> {
+        if (data.size < 4) return emptyList()
+        val count = uint32(data, 0)
+        if (!isPlausibleDateGroupCount(count)) return emptyList()
+        val result = mutableListOf<CameraVendorObjectCountByDate>()
+        var offset = 4
+        repeat(count) {
+            val rawDate = ptpString(data, offset)
+            val normalizedDate = normalizedDateValue(rawDate) ?: return emptyList()
+            offset += ptpStringByteLength(data, offset)
+            if (offset + 4 > data.size) return emptyList()
+            val numberOfImages = uint32(data, offset)
+            if (!isPlausibleImageCount(numberOfImages)) return emptyList()
+            offset += 4
+            result += CameraVendorObjectCountByDate(normalizedDate, numberOfImages)
+        }
+        return result
+    }
+
+    private fun parseCountPrefixedAsciiDateCounts(data: ByteArray): List<CameraVendorObjectCountByDate> {
+        if (data.size < 4) return emptyList()
+        val count = uint32(data, 0)
+        if (!isPlausibleDateGroupCount(count)) return emptyList()
+        val expectedSize = 4 + count * 12
+        if (data.size < expectedSize) return emptyList()
+        val result = mutableListOf<CameraVendorObjectCountByDate>()
+        var offset = 4
+        repeat(count) {
+            val rawDate = data.copyOfRange(offset, offset + 8).toString(Charsets.US_ASCII)
+            val normalizedDate = normalizedDateValue(rawDate) ?: return emptyList()
+            offset += 8
+            val numberOfImages = uint32(data, offset)
+            if (!isPlausibleImageCount(numberOfImages)) return emptyList()
+            offset += 4
+            result += CameraVendorObjectCountByDate(normalizedDate, numberOfImages)
+        }
+        return result
+    }
+
+    private fun normalizedDateValue(value: String): String? {
+        val digits = value.filter(Char::isDigit)
+        if (digits.length < 8) return null
+        val date = digits.take(8)
+        val month = date.substring(4, 6).toIntOrNull() ?: return null
+        val day = date.substring(6, 8).toIntOrNull() ?: return null
+        if (month !in 1..12 || day !in 1..31) return null
+        return date
+    }
+
+    private fun isPlausibleDateGroupCount(count: Int): Boolean =
+        count in 1..10_000
+
+    private fun isPlausibleImageCount(count: Int): Boolean =
+        count in 1..100_000
 }
+
+data class CameraVendorObjectCountByDate(
+    val dateValue: String,
+    val numberOfImages: Int,
+)

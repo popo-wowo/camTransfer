@@ -18,10 +18,14 @@ class CameraGalleryConnectionServiceTest {
     fun connectionServiceRunsIndependentStepsInOfficialOrder() = runBlocking {
         val started = mutableListOf<CameraConnectionStep>()
         val confirmed = mutableListOf<CameraConnectionStep>()
+        val stepElapsed = mutableListOf<Long>()
         val executed = mutableListOf<String>()
         val service = CameraGalleryConnectionService(
             onStepStarted = started::add,
-            onStepConfirmed = confirmed::add,
+            onStepConfirmed = { step, elapsedMs ->
+                confirmed += step
+                stepElapsed += elapsedMs
+            },
         )
 
         service.connect(
@@ -37,9 +41,25 @@ class CameraGalleryConnectionServiceTest {
 
         assertEquals(CameraVendorOfficialGalleryConnectionPolicy.RequiredSteps, started)
         assertEquals(CameraVendorOfficialGalleryConnectionPolicy.RequiredSteps, confirmed)
+        assertEquals(CameraVendorOfficialGalleryConnectionPolicy.RequiredSteps.size, stepElapsed.size)
+        assert(stepElapsed.all { it >= 0L })
         assertEquals(
             listOf("ble", "auth", "activate", "ready", "wifi", "ptp", "mode", "load"),
             executed,
         )
+    }
+
+    @Test
+    fun connectionAdapterReportsPerStepElapsedTime() = runBlocking {
+        val confirmed = mutableListOf<Pair<CameraConnectionStep, Long>>()
+        val clockTicks = ArrayDeque(listOf(100L, 175L))
+        val adapter = CameraVendorOfficialGalleryConnectionAdapter(
+            onStepConfirmed = { step, elapsedMs -> confirmed += step to elapsedMs },
+            elapsedRealtimeMs = { clockTicks.removeFirst() },
+        )
+
+        adapter.confirmStep(CameraConnectionStep.ReconnectPairedBle) { "ble" }
+
+        assertEquals(listOf(CameraConnectionStep.ReconnectPairedBle to 75L), confirmed)
     }
 }

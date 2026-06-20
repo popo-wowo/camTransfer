@@ -6,8 +6,9 @@ internal object CameraConnectionUiPolicy {
     fun stateForStep(step: CameraConnectionStep): ConnectionState =
         when (step) {
             CameraConnectionStep.EnvironmentCheck,
-            CameraConnectionStep.StaleBondCheck,
             CameraConnectionStep.BleScan -> ConnectionState.SCANNING
+            CameraConnectionStep.StaleBondCheck,
+            CameraConnectionStep.RegistrationConsistencyCheck,
             CameraConnectionStep.CameraPairingMode -> ConnectionState.IDLE
             CameraConnectionStep.BleHandshake,
             CameraConnectionStep.ReconnectPairedBle,

@@ -71,6 +71,19 @@ class CameraVendorPairedCameraStorePolicyTest {
     }
 
     @Test
+    fun encodedRecordsRoundTripRegisteredTerminalName() {
+        val record = record("111_X-T5", "X-T5").copy(
+            registeredTerminalName = "23127PN0CC-1234",
+        )
+
+        val decoded = CameraVendorPairedCameraStorePolicy.decodeRecords(
+            CameraVendorPairedCameraStorePolicy.encodeRecords(listOf(record)),
+        )
+
+        assertEquals(listOf(record), decoded)
+    }
+
+    @Test
     fun savingRecordUpsertsAndSelectsThatCameraId() {
         val first = record("111_X-T5", "X-T5", lastConnectedAtMillis = 100)
         val second = record("222_X100VI", "X100VI", lastConnectedAtMillis = 200)

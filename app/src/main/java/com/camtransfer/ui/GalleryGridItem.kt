@@ -107,6 +107,7 @@ private val GalleryActionColor = Color(0xFF177C6D)
 @Composable
 internal fun GalleryGridItem(
     file: CameraFile,
+    modifier: Modifier = Modifier,
     isSelected: Boolean,
     downloadState: TransferState?,
     isLoadingFullObjectInfo: Boolean,
@@ -142,7 +143,7 @@ internal fun GalleryGridItem(
     )
 
     Box(
-        modifier = Modifier
+        modifier = modifier
             .aspectRatio(1f)
             .graphicsLayer {
                 scaleX = tileScale
@@ -205,10 +206,22 @@ internal fun GalleryGridItem(
 
 @Composable
 private fun SelectionDot(isSelected: Boolean, modifier: Modifier = Modifier) {
+    val selectionScale by animateFloatAsState(
+        targetValue = if (isSelected) 1f else 0.92f,
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy,
+            stiffness = Spring.StiffnessMediumLow,
+        ),
+        label = "gallerySelectionScale",
+    )
     Box(
         modifier = modifier
             .padding(7.dp)
             .size(26.dp)
+            .graphicsLayer {
+                scaleX = selectionScale
+                scaleY = selectionScale
+            }
             .clip(CircleShape)
             .background(
                 if (isSelected) {

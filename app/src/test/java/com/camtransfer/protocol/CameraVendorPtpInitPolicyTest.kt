@@ -5,7 +5,7 @@ import org.junit.Test
 
 class CameraVendorPtpInitPolicyTest {
     @Test
-    fun legacyInitVariantsTryClientIpThenPlainLegacy() {
+    fun legacyInitVariantsTryClientIpBeforeOfficialPlainLegacy() {
         val variants = CameraVendorPtpInitPolicy.legacyInitVariants()
 
         assertEquals(2, variants.size)
@@ -16,7 +16,7 @@ class CameraVendorPtpInitPolicyTest {
     }
 
     @Test
-    fun clientIpIsOnlyUsedForTheClientIpGuidVariant() {
+    fun clientIpVariantEmbedsSocketLocalIpThenPlainLegacyDoesNot() {
         val variants = CameraVendorPtpInitPolicy.legacyInitVariants()
 
         assertEquals(

@@ -141,6 +141,89 @@ class GalleryFileLoadPolicyTest {
     }
 
     @Test
+    fun partialFullObjectInfoKeepsSkeletonDateWhenResolvedDateMovesToAnotherDay() {
+        val placeholders = listOf(
+            cameraFile(handle = 10, filename = "0x0000000A.JPG", captureDate = "20260620"),
+            cameraFile(handle = 9, filename = "0x00000009.JPG", captureDate = "20260620"),
+            cameraFile(handle = 8, filename = "0x00000008.JPG", captureDate = "20260619"),
+        )
+        val fullInfos = listOf(
+            cameraFile(handle = 10, filename = "DSCF0010.JPG", captureDate = "20260619T154500"),
+        )
+
+        val merged = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
+            currentFiles = placeholders,
+            fullFiles = fullInfos,
+        )
+
+        assertEquals("DSCF0010.JPG", merged[0].info.filename)
+        assertEquals("20260620", merged[0].info.captureDate)
+        assertEquals("0x00000009.JPG", merged[1].info.filename)
+    }
+
+    @Test
+    fun partialFullObjectInfoAddsResolvedTimeWhenSkeletonAndResolvedDateMatch() {
+        val placeholders = listOf(
+            cameraFile(handle = 10, filename = "0x0000000A.JPG", captureDate = "20260620"),
+            cameraFile(handle = 9, filename = "0x00000009.JPG", captureDate = "20260620"),
+        )
+        val fullInfos = listOf(
+            cameraFile(handle = 10, filename = "DSCF0010.JPG", captureDate = "20260620T154500"),
+        )
+
+        val merged = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
+            currentFiles = placeholders,
+            fullFiles = fullInfos,
+        )
+
+        assertEquals("DSCF0010.JPG", merged[0].info.filename)
+        assertEquals("20260620T154500", merged[0].info.captureDate)
+    }
+
+    @Test
+    fun thumbnailMetadataDoesNotReplaceCaptureDateFromGalleryList() {
+        val existing = cameraFile(
+            handle = 10,
+            filename = "DSCF0010.JPG",
+            captureDate = "20260620T154500",
+        )
+        val thumbnailMetadata = cameraFile(
+            handle = 10,
+            filename = "DSCF0010.JPG",
+            captureDate = "20260620T030000",
+        )
+
+        val merged = GalleryFastInitialLoadPolicy.mergeThumbnailMetadata(
+            existingFile = existing,
+            thumbnailFile = thumbnailMetadata,
+        )
+
+        assertEquals("20260620T154500", merged.info.captureDate)
+    }
+
+    @Test
+    fun thumbnailMetadataDoesNotCreateCaptureDateForInitialPlaceholders() {
+        val placeholder = cameraFile(
+            handle = 10,
+            filename = "0x0000000A.JPG",
+            captureDate = "",
+        )
+        val thumbnailMetadata = cameraFile(
+            handle = 10,
+            filename = "DSCF0010.JPG",
+            captureDate = "20260620T030000",
+        )
+
+        val merged = GalleryFastInitialLoadPolicy.mergeThumbnailMetadata(
+            existingFile = placeholder,
+            thumbnailFile = thumbnailMetadata,
+        )
+
+        assertEquals("", merged.info.captureDate)
+        assertEquals("DSCF0010.JPG", merged.info.filename)
+    }
+
+    @Test
     fun defersFullObjectInfoWhenLargePlaceholderListCanShowFirstScreen() {
         assertTrue(
             GalleryFastInitialLoadPolicy.shouldDeferFullObjectInfoUntilAfterThumbnails(
@@ -160,8 +243,8 @@ class GalleryFileLoadPolicyTest {
     }
 
     @Test
-    fun doesNotStartFullObjectInfoAutomaticallyAfterLargeGalleryPlaceholdersArePublished() {
-        assertFalse(
+    fun continuesFullObjectInfoAfterPlaceholdersSoDateSectionsCanAppearIncrementally() {
+        assertTrue(
             GalleryFastInitialLoadPolicy.shouldContinueFullObjectInfoAfterInitialPlaceholders(
                 initialFileCount = 1000,
             )
@@ -174,6 +257,28 @@ class GalleryFileLoadPolicyTest {
         assertFalse(
             GalleryFastInitialLoadPolicy.shouldContinueFullObjectInfoAfterInitialPlaceholders(
                 initialFileCount = 0,
+            )
+        )
+    }
+
+    @Test
+    fun publishesIncrementalMetadataBatchesBeforeFullGalleryMetadataCompletes() {
+        assertFalse(
+            GalleryFastInitialLoadPolicy.shouldPublishIncrementalMetadataBatch(
+                resolvedCount = GalleryFastInitialLoadPolicy.INCREMENTAL_METADATA_BATCH_SIZE - 1,
+                isFinalBatch = false,
+            )
+        )
+        assertTrue(
+            GalleryFastInitialLoadPolicy.shouldPublishIncrementalMetadataBatch(
+                resolvedCount = GalleryFastInitialLoadPolicy.INCREMENTAL_METADATA_BATCH_SIZE,
+                isFinalBatch = false,
+            )
+        )
+        assertTrue(
+            GalleryFastInitialLoadPolicy.shouldPublishIncrementalMetadataBatch(
+                resolvedCount = 1,
+                isFinalBatch = true,
             )
         )
     }
@@ -213,6 +318,7 @@ class GalleryFileLoadPolicyTest {
     private fun cameraFile(
         handle: Int,
         filename: String = "DSCF%04d.JPG".format(handle),
+        captureDate: String = "20260604T120000",
         thumbnail: ByteArray? = null,
     ): CameraFile = CameraFile(
         info = ObjectInfo(
@@ -228,7 +334,7 @@ class GalleryFileLoadPolicyTest {
             imagePixHeight = 3000,
             parentObject = 0,
             filename = filename,
-            captureDate = "20260604T120000",
+            captureDate = captureDate,
         ),
         thumbnail = thumbnail,
     )

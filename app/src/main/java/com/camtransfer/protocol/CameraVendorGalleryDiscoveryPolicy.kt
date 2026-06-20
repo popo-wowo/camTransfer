@@ -16,6 +16,24 @@ object CameraVendorGalleryDiscoveryPolicy {
     fun initialPlaceholderHandles(specifiedHandles: List<Int>): List<Int> =
         specifiedHandles.distinct().sortedDescending()
 
+    fun captureDatesByHandle(
+        specifiedHandles: List<Int>,
+        countsByDate: List<CameraVendorObjectCountByDate>,
+    ): Map<Int, String> {
+        if (specifiedHandles.isEmpty() || countsByDate.isEmpty()) return emptyMap()
+        val handles = initialPlaceholderHandles(specifiedHandles)
+        val result = mutableMapOf<Int, String>()
+        var handleIndex = 0
+        for (dateCount in countsByDate) {
+            repeat(dateCount.numberOfImages) {
+                val handle = handles.getOrNull(handleIndex) ?: return result
+                result[handle] = dateCount.dateValue
+                handleIndex++
+            }
+        }
+        return result
+    }
+
     fun isLargeGallery(specifiedHandleCount: Int): Boolean =
         specifiedHandleCount > LARGE_GALLERY_THRESHOLD
 }

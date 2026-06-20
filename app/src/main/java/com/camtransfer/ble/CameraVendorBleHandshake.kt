@@ -970,7 +970,7 @@ class CameraVendorBleHandshake(private val context: Context) {
     }
 
     private fun appName(): ByteArray {
-        val decision = CameraVendorHandshakeIdentityPolicy.currentConnectedDeviceNameDecision()
+        val decision = CameraVendorConnectedDeviceNameStore(context).currentDecision()
         val message =
             "Connected device name decision name=${decision.name} source=${decision.source} " +
                 "rawLength=${decision.rawLength} normalizedLength=${decision.normalizedLength}"

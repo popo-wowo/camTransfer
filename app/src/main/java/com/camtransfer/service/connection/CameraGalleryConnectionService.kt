@@ -5,7 +5,7 @@ import com.camtransfer.service.CameraVendorOfficialGalleryConnectionAdapter
 
 class CameraGalleryConnectionService(
     private val onStepStarted: (CameraConnectionStep) -> Unit = {},
-    private val onStepConfirmed: (CameraConnectionStep) -> Unit = {},
+    private val onStepConfirmed: (CameraConnectionStep, elapsedMs: Long) -> Unit = { _, _ -> },
 ) {
     suspend fun connect(
         reconnectPairedBle: ReconnectPairedBleStep,

@@ -32,6 +32,35 @@ enum class GallerySortMode {
 data class GalleryFilterState(
     val date: GalleryDateFilter = GalleryDateFilter.All,
     val formats: Set<GalleryFormatFilter> = emptySet(),
+    val folders: Set<GalleryFolderFilter> = emptySet(),
+)
+
+data class GalleryFolderFilter(
+    val storageId: Int,
+    val parentObject: Int,
+)
+
+data class GalleryFolderCount(
+    val folder: GalleryFolderFilter,
+    val label: String,
+    val count: Int,
+)
+
+data class GalleryFilterStats(
+    val totalCount: Int,
+    val folderCounts: List<GalleryFolderCount>,
+    val formatCounts: Map<GalleryFormatFilter, Int>,
+)
+
+data class GalleryDaySection(
+    val day: LocalDate?,
+    val files: List<CameraFile>,
+    val hourGroups: List<GalleryHourGroup> = emptyList(),
+)
+
+data class GalleryHourGroup(
+    val hour: Int,
+    val files: List<CameraFile>,
 )
 
 object GalleryUiPolicy {
@@ -41,7 +70,9 @@ object GalleryUiPolicy {
         today: LocalDate,
     ): List<CameraFile> =
         files.filter { file ->
-            matchesDate(file, state.date, today) && matchesFormat(file, state.formats)
+            matchesDate(file, state.date, today) &&
+                matchesFormat(file, state.formats) &&
+                matchesFolder(file, state.folders)
         }
 
     fun captureDate(file: CameraFile): LocalDate? {
@@ -77,6 +108,112 @@ object GalleryUiPolicy {
             }
         }
     }
+
+    private fun matchesFolder(file: CameraFile, folders: Set<GalleryFolderFilter>): Boolean {
+        if (folders.isEmpty()) return true
+        return folderFilter(file) in folders
+    }
+
+    fun folderFilter(file: CameraFile): GalleryFolderFilter =
+        GalleryFolderFilter(
+            storageId = file.info.storageId,
+            parentObject = file.info.parentObject,
+        )
+}
+
+object GalleryFilterStatsPolicy {
+    fun stats(files: List<CameraFile>): GalleryFilterStats =
+        GalleryFilterStats(
+            totalCount = files.size,
+            folderCounts = files
+                .groupBy(GalleryUiPolicy::folderFilter)
+                .map { (folder, folderFiles) ->
+                    GalleryFolderCount(
+                        folder = folder,
+                        label = folderLabel(folder),
+                        count = folderFiles.size,
+                    )
+                }
+                .sortedWith(compareByDescending<GalleryFolderCount> { it.count }.thenBy { it.label }),
+            formatCounts = mapOf(
+                GalleryFormatFilter.Jpg to files.count { it.info.isJpeg },
+                GalleryFormatFilter.Heif to files.count { it.info.isHeif },
+                GalleryFormatFilter.Raw to files.count { it.info.isRaw },
+                GalleryFormatFilter.Video to files.count { it.info.isVideo },
+            ),
+        )
+
+    fun folderLabel(folder: GalleryFolderFilter): String =
+        if (folder.parentObject > 0) {
+            "文件夹 ${folder.parentObject}"
+        } else {
+            "存储卡 ${folder.storageId}"
+        }
+}
+
+object GallerySectionPolicy {
+    fun shouldShowDateSections(files: List<CameraFile>): Boolean =
+        files.any { GalleryUiPolicy.captureDate(it) != null }
+
+    fun sections(
+        files: List<CameraFile>,
+        expandedDays: Set<LocalDate>,
+    ): List<GalleryDaySection> =
+        files.groupBy { GalleryUiPolicy.captureDate(it) }
+            .entries
+            .sortedWith(compareByDescending<Map.Entry<LocalDate?, List<CameraFile>>> { it.key ?: LocalDate.MIN })
+            .map { (day, dayFiles) ->
+                GalleryDaySection(
+                    day = day,
+                    files = dayFiles,
+                    hourGroups = if (day != null && day in expandedDays) hourGroups(dayFiles) else emptyList(),
+                )
+            }
+
+    private fun hourGroups(files: List<CameraFile>): List<GalleryHourGroup> =
+        files.groupBy { captureHour(it) }
+            .entries
+            .filter { it.key != null }
+            .sortedByDescending { it.key }
+            .map { (hour, hourFiles) ->
+                GalleryHourGroup(
+                    hour = hour ?: 0,
+                    files = hourFiles,
+                )
+            }
+
+    private fun captureHour(file: CameraFile): Int? {
+        val raw = file.info.captureDate
+        if (raw.length < 11) return null
+        return raw.substring(9, 11).toIntOrNull()?.takeIf { it in 0..23 }
+    }
+}
+
+object GalleryStickySectionPolicy {
+    fun currentStickyDay(
+        sections: List<GalleryDaySection>,
+        visibleKeys: List<Any?>,
+    ): GalleryDaySection? {
+        if (sections.isEmpty() || visibleKeys.isEmpty()) return null
+        val sectionByKey = mutableMapOf<Any, GalleryDaySection>()
+        sections.forEach { section ->
+            sectionByKey[dayKey(section.day)] = section
+            section.files.forEach { file ->
+                sectionByKey[file.info.handle] = section
+            }
+            section.hourGroups.forEach { hourGroup ->
+                sectionByKey[hourKey(section.day, hourGroup.hour)] = section
+                hourGroup.files.forEach { file ->
+                    sectionByKey[file.info.handle] = section
+                }
+            }
+        }
+        return visibleKeys.firstNotNullOfOrNull { key -> sectionByKey[key] }
+    }
+
+    fun dayKey(day: LocalDate?): String = "day-${day ?: "unknown"}"
+
+    fun hourKey(day: LocalDate?, hour: Int): String = "hour-$day-$hour"
 }
 
 object GalleryDateMetadataPolicy {
@@ -137,17 +274,45 @@ object GalleryThumbnailVisibilityPolicy {
         isItemVisible && !hasThumbnail
 }
 
+object GalleryThumbnailRequestWindowPolicy {
+    private const val PREFETCH_ROWS_BEFORE = 1
+    private const val PREFETCH_ROWS_AFTER = 2
+
+    fun handlesToRequest(
+        orderedHandles: List<Int>,
+        visibleHandles: List<Int>,
+        columnCount: Int,
+    ): List<Int> {
+        if (orderedHandles.isEmpty() || visibleHandles.isEmpty()) return emptyList()
+        val indexByHandle = orderedHandles.withIndex().associate { it.value to it.index }
+        val visibleIndexes = visibleHandles.mapNotNull(indexByHandle::get)
+        if (visibleIndexes.isEmpty()) return emptyList()
+
+        val normalizedColumnCount = columnCount.coerceAtLeast(1)
+        val start = (visibleIndexes.minOrNull()!! - normalizedColumnCount * PREFETCH_ROWS_BEFORE).coerceAtLeast(0)
+        val end = (visibleIndexes.maxOrNull()!! + normalizedColumnCount * PREFETCH_ROWS_AFTER)
+            .coerceAtMost(orderedHandles.lastIndex)
+        val visibleSet = visibleHandles.toSet()
+        val visibleOrdered = visibleHandles.filter { it in indexByHandle }.distinct()
+        val nearby = orderedHandles
+            .subList(start, end + 1)
+            .filterNot { it in visibleSet }
+        return visibleOrdered + nearby
+    }
+}
+
 object GalleryFilterPanelPolicy {
     private val shortDateFormatter = DateTimeFormatter.ofPattern("MM-dd")
 
     fun defaultExpanded(): Boolean = false
 
     fun summary(state: GalleryFilterState, sortMode: GallerySortMode): String =
-        listOf(
-            dateLabel(state.date),
-            formatLabel(state.formats),
-            sortLabel(sortMode),
-        ).joinToString(" · ")
+        buildList {
+            add(dateLabel(state.date))
+            folderSummaryLabel(state.folders)?.let(::add)
+            add(formatLabel(state.formats))
+            add(sortLabel(sortMode))
+        }.joinToString(" · ")
 
     private fun dateLabel(date: GalleryDateFilter): String =
         when (date) {
@@ -171,6 +336,13 @@ object GalleryFilterPanelPolicy {
         )
         return ordered.filter { it.first in formats }.joinToString("/") { it.second }
     }
+
+    private fun folderSummaryLabel(folders: Set<GalleryFolderFilter>): String? =
+        when (folders.size) {
+            0 -> null
+            1 -> GalleryFilterStatsPolicy.folderLabel(folders.single())
+            else -> "${folders.size} 个文件夹"
+        }
 
     private fun sortLabel(sortMode: GallerySortMode): String =
         when (sortMode) {
@@ -302,8 +474,8 @@ object GalleryColumnLayoutPolicy {
 }
 
 object GalleryGridSpacingPolicy {
-    const val HORIZONTAL_DP = 5
-    const val VERTICAL_DP = 7
+    const val HORIZONTAL_DP = 2
+    const val VERTICAL_DP = 2
 }
 
 object GalleryPreviewNavigationPolicy {

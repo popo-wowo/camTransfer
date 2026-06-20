@@ -222,28 +222,31 @@ internal object ConnectionStartActionPolicy {
 
 internal object ConnectionFailureActionPolicy {
     fun primaryAction(issue: CameraConnectionIssue?): CameraConnectionAction =
-        if (issue?.phase == CameraConnectionPhase.PAIR_CAMERA) {
-            CameraConnectionAction.RestartPairing
-        } else {
-            CameraConnectionAction.RetryStep
+        when {
+            issue?.primaryAction == CameraConnectionAction.ResetConnection -> CameraConnectionAction.ResetConnection
+            issue?.phase == CameraConnectionPhase.PAIR_CAMERA -> CameraConnectionAction.RestartPairing
+            else -> CameraConnectionAction.RetryStep
         }
 
     fun primaryLabel(issue: CameraConnectionIssue?): String =
         when (primaryAction(issue)) {
             CameraConnectionAction.RestartPairing -> "重新配对"
+            CameraConnectionAction.ResetConnection -> "重置连接"
             else -> "重试"
         }
 }
 
 internal object ConnectionPairedPrimaryActionPolicy {
     fun primaryAction(issue: CameraConnectionIssue?): CameraConnectionAction =
-        when (issue?.phase) {
-            CameraConnectionPhase.ENTER_GALLERY -> CameraConnectionAction.RetryStep
+        when {
+            issue?.primaryAction == CameraConnectionAction.ResetConnection -> CameraConnectionAction.ResetConnection
+            issue?.phase == CameraConnectionPhase.ENTER_GALLERY -> CameraConnectionAction.RetryStep
             else -> CameraConnectionAction.EnterGallery
         }
 
     fun primaryLabel(issue: CameraConnectionIssue?): String =
         when (primaryAction(issue)) {
+            CameraConnectionAction.ResetConnection -> "重置连接"
             CameraConnectionAction.RetryStep -> "重试"
             else -> "进入相机相册"
         }
@@ -360,6 +363,7 @@ private fun connectionActionLabel(action: CameraConnectionAction): String =
     when (action) {
         CameraConnectionAction.RetryStep -> "重试当前步骤"
         CameraConnectionAction.RestartPairing -> "重新配对"
+        CameraConnectionAction.ResetConnection -> "重置连接"
         CameraConnectionAction.EnterGallery -> "进入相册"
         CameraConnectionAction.ConfirmCameraPairingMode -> "我已准备好，开始搜索"
         CameraConnectionAction.ConfirmCameraReady -> "我已在相机上确认，继续"
@@ -416,6 +420,7 @@ internal data class ConnectionLiveGuidanceContent(
     val message: String,
     val isProminent: Boolean,
     val isError: Boolean,
+    val isBleOnline: Boolean = false,
 )
 
 internal object ConnectionLiveGuidancePolicy {
@@ -445,13 +450,15 @@ internal object ConnectionLiveGuidancePolicy {
                 isError = true,
             )
         }
+        val bleOnline = state == ConnectionState.PAIRED && statusText.isBleOnlineText()
         return ConnectionLiveGuidanceContent(
             step = stepForState(state),
-            stepLabel = stepLabelForState(state),
-            title = titleForState(state),
+            stepLabel = if (bleOnline) "蓝牙在线" else stepLabelForState(state),
+            title = if (bleOnline) "蓝牙已连接" else titleForState(state),
             message = messageForState(state, statusText),
             isProminent = true,
             isError = false,
+            isBleOnline = bleOnline,
         )
     }
 
@@ -504,6 +511,9 @@ internal object ConnectionLiveGuidancePolicy {
             ConnectionState.CONNECTED -> CameraConnectionStep.LoadGallery
             ConnectionState.ERROR -> CameraConnectionStep.EnvironmentCheck
         }
+
+    private fun String.isBleOnlineText(): Boolean =
+        startsWith("相机在线")
 }
 
 @Composable
@@ -542,7 +552,11 @@ private fun ConnectionLiveGuidancePanel(
                     .background(accentColor.copy(alpha = 0.14f)),
                 contentAlignment = Alignment.Center,
             ) {
-                StatusIndicator(state, hasError = content.isError)
+                StatusIndicator(
+                    state = state,
+                    hasError = content.isError,
+                    hasBleOnline = content.isBleOnline,
+                )
             }
             Spacer(Modifier.width(13.dp))
             Column(
@@ -575,7 +589,11 @@ private fun ConnectionLiveGuidancePanel(
 }
 
 @Composable
-private fun StatusIndicator(state: ConnectionState, hasError: Boolean) {
+private fun StatusIndicator(
+    state: ConnectionState,
+    hasError: Boolean,
+    hasBleOnline: Boolean,
+) {
     if (state != ConnectionState.IDLE &&
         state != ConnectionState.ERROR &&
         state != ConnectionState.PAIRED &&
@@ -594,21 +612,32 @@ private fun StatusIndicator(state: ConnectionState, hasError: Boolean) {
                 .background(
                     when {
                         hasError -> MaterialTheme.colorScheme.error
-                        state == ConnectionState.PAIRED || state == ConnectionState.CONNECTED -> Color(0xFF2D7D46)
+                        hasBleOnline -> Color(0xFF2E6FBA)
+                        state == ConnectionState.CONNECTED -> Color(0xFF2D7D46)
                         else -> CamTransferColors.Accent
                     }
                 ),
-        )
+            contentAlignment = Alignment.Center,
+        ) {
+            if (hasBleOnline) {
+                Text(
+                    "BT",
+                    color = CamTransferColors.Card,
+                    fontSize = 7.sp,
+                    fontWeight = FontWeight.Black,
+                )
+            }
+        }
     }
 }
 
 private val ConnectionLiveGuidanceContent.isSuccess: Boolean
-    get() = (step == CameraConnectionStep.SavePairing && title == "已保存配对") ||
-        (step == CameraConnectionStep.LoadGallery && title == "已连接")
+    get() = step == CameraConnectionStep.LoadGallery && title == "已连接"
 
 private fun liveGuidanceAccentColor(content: ConnectionLiveGuidanceContent): Color =
     when {
         content.isError -> Color(0xFFB6472D)
+        content.isBleOnline -> Color(0xFF2E6FBA)
         content.isSuccess -> Color(0xFF2D7D46)
         else -> CamTransferColors.Accent
     }
@@ -898,6 +927,7 @@ private fun ConnectionActions(
                     onClick = {
                         when (ConnectionFailureActionPolicy.primaryAction(issue)) {
                             CameraConnectionAction.RestartPairing -> viewModel.forgetPairing()
+                            CameraConnectionAction.ResetConnection -> viewModel.resetConnectionForFreshPairing()
                             else -> viewModel.retryCurrentIssue()
                         }
                     },
@@ -934,6 +964,7 @@ private fun ConnectionActions(
                         contentColor = CamTransferColors.Card,
                         onClick = {
                             when (action) {
+                                CameraConnectionAction.ResetConnection -> viewModel.resetConnectionForFreshPairing()
                                 CameraConnectionAction.RetryStep -> viewModel.retryCurrentIssue()
                                 else -> viewModel.enterCameraAlbum()
                             }

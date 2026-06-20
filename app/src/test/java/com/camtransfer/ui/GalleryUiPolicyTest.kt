@@ -134,6 +134,131 @@ class GalleryUiPolicyTest {
     }
 
     @Test
+    fun folderFilterIncludesFilesFromSelectedCameraFolders() {
+        val today = LocalDate.of(2026, 5, 29)
+        val files = listOf(
+            file(1, PtpObjectFormat.JPEG, "20260529T081500", parentObject = 100),
+            file(2, PtpObjectFormat.JPEG, "20260529T091500", parentObject = 101),
+            file(3, PtpObjectFormat.JPEG, "20260529T101500", parentObject = 100),
+        )
+        val folder = GalleryFolderFilter(storageId = 1, parentObject = 100)
+
+        val filtered = GalleryUiPolicy.filteredFiles(
+            files = files,
+            state = GalleryFilterState(folders = setOf(folder)),
+            today = today,
+        )
+
+        assertEquals(listOf(1, 3), filtered.map { it.info.handle })
+    }
+
+    @Test
+    fun filterStatsCountFoldersAndFormatsFromCurrentFileSet() {
+        val files = listOf(
+            file(1, PtpObjectFormat.JPEG, "20260529T081500", parentObject = 100),
+            file(2, PtpObjectFormat.HEIF, "20260529T091500", parentObject = 101),
+            file(3, PtpObjectFormat.CAMERA_VENDOR_RAF, "20260529T101500", parentObject = 100),
+        )
+
+        val stats = GalleryFilterStatsPolicy.stats(files)
+
+        assertEquals(3, stats.totalCount)
+        assertEquals(
+            listOf(
+                GalleryFolderCount(GalleryFolderFilter(storageId = 1, parentObject = 100), "文件夹 100", 2),
+                GalleryFolderCount(GalleryFolderFilter(storageId = 1, parentObject = 101), "文件夹 101", 1),
+            ),
+            stats.folderCounts,
+        )
+        assertEquals(1, stats.formatCounts[GalleryFormatFilter.Jpg])
+        assertEquals(1, stats.formatCounts[GalleryFormatFilter.Heif])
+        assertEquals(1, stats.formatCounts[GalleryFormatFilter.Raw])
+    }
+
+    @Test
+    fun gallerySectionsGroupFilesByDateAndHourForExpandedDays() {
+        val files = listOf(
+            file(1, PtpObjectFormat.JPEG, "20260520T151500"),
+            file(2, PtpObjectFormat.JPEG, "20260520T153000"),
+            file(3, PtpObjectFormat.JPEG, "20260520T100500"),
+            file(4, PtpObjectFormat.JPEG, "20260519T093000"),
+        )
+
+        val sections = GallerySectionPolicy.sections(
+            files = files,
+            expandedDays = setOf(LocalDate.of(2026, 5, 20)),
+        )
+
+        assertEquals(LocalDate.of(2026, 5, 20), sections[0].day)
+        assertEquals(3, sections[0].files.size)
+        assertEquals(listOf(1, 2), sections[0].hourGroups[0].files.map { it.info.handle })
+        assertEquals(15, sections[0].hourGroups[0].hour)
+        assertEquals(listOf(3), sections[0].hourGroups[1].files.map { it.info.handle })
+        assertEquals(10, sections[0].hourGroups[1].hour)
+        assertEquals(LocalDate.of(2026, 5, 19), sections[1].day)
+        assertEquals(emptyList<GalleryHourGroup>(), sections[1].hourGroups)
+    }
+
+    @Test
+    fun dateSectionsStayDisabledWhileInitialPlaceholdersHaveNoCaptureDates() {
+        val files = listOf(
+            file(3, PtpObjectFormat.JPEG, ""),
+            file(2, PtpObjectFormat.JPEG, ""),
+            file(1, PtpObjectFormat.JPEG, ""),
+        )
+
+        assertFalse(GallerySectionPolicy.shouldShowDateSections(files))
+        assertTrue(
+            GallerySectionPolicy.shouldShowDateSections(
+                files + file(4, PtpObjectFormat.JPEG, "20260520T151500"),
+            )
+        )
+    }
+
+    @Test
+    fun unknownDateSectionSortsAfterRecognizedCaptureDates() {
+        val files = listOf(
+            file(1, PtpObjectFormat.JPEG, ""),
+            file(2, PtpObjectFormat.JPEG, "20260519T093000"),
+            file(3, PtpObjectFormat.JPEG, "20260520T151500"),
+        )
+
+        val sections = GallerySectionPolicy.sections(files = files, expandedDays = emptySet())
+
+        assertEquals(LocalDate.of(2026, 5, 20), sections[0].day)
+        assertEquals(LocalDate.of(2026, 5, 19), sections[1].day)
+        assertEquals(null, sections[2].day)
+        assertEquals(listOf(1), sections[2].files.map { it.info.handle })
+    }
+
+    @Test
+    fun stickyDateHeaderUsesTopVisibleItemSectionUntilNextDateReachesTop() {
+        val sections = GallerySectionPolicy.sections(
+            files = listOf(
+                file(1, PtpObjectFormat.JPEG, "20260520T151500"),
+                file(2, PtpObjectFormat.JPEG, "20260520T101500"),
+                file(3, PtpObjectFormat.JPEG, "20260519T151500"),
+            ),
+            expandedDays = emptySet(),
+        )
+
+        assertEquals(
+            LocalDate.of(2026, 5, 20),
+            GalleryStickySectionPolicy.currentStickyDay(
+                sections = sections,
+                visibleKeys = listOf(2, "day-2026-05-19"),
+            )?.day,
+        )
+        assertEquals(
+            LocalDate.of(2026, 5, 19),
+            GalleryStickySectionPolicy.currentStickyDay(
+                sections = sections,
+                visibleKeys = listOf("day-2026-05-19", 3),
+            )?.day,
+        )
+    }
+
+    @Test
     fun sortModesOrderByNewestOldestAndNotDownloadedFirst() {
         val files = listOf(
             file(1, PtpObjectFormat.JPEG, "20260529T081500"),
@@ -187,6 +312,34 @@ class GalleryUiPolicyTest {
                 isLoadingFullObjectInfo = false,
                 hasThumbnail = true,
             )
+        )
+    }
+
+    @Test
+    fun thumbnailRequestWindowKeepsVisibleHandlesFirstThenNearbyRows() {
+        val allHandles = listOf(10, 9, 8, 7, 6, 5, 4, 3)
+
+        assertEquals(
+            listOf(8, 7, 9, 6, 5),
+            GalleryThumbnailRequestWindowPolicy.handlesToRequest(
+                orderedHandles = allHandles,
+                visibleHandles = listOf(8, 7),
+                columnCount = 1,
+            ),
+        )
+    }
+
+    @Test
+    fun thumbnailRequestWindowUsesColumnCountForRowPrefetch() {
+        val allHandles = listOf(12, 11, 10, 9, 8, 7, 6, 5, 4, 3)
+
+        assertEquals(
+            listOf(9, 8, 11, 10, 7, 6, 5, 4),
+            GalleryThumbnailRequestWindowPolicy.handlesToRequest(
+                orderedHandles = allHandles,
+                visibleHandles = listOf(9, 8),
+                columnCount = 2,
+            ),
         )
     }
 
@@ -422,8 +575,8 @@ class GalleryUiPolicyTest {
 
     @Test
     fun galleryGridSpacingKeepsPhotoGapsCompact() {
-        assertEquals(5, GalleryGridSpacingPolicy.HORIZONTAL_DP)
-        assertEquals(7, GalleryGridSpacingPolicy.VERTICAL_DP)
+        assertEquals(2, GalleryGridSpacingPolicy.HORIZONTAL_DP)
+        assertEquals(2, GalleryGridSpacingPolicy.VERTICAL_DP)
     }
 
     @Test
@@ -725,13 +878,19 @@ class GalleryUiPolicyTest {
         assertTrue(summary.contains("autoRotation=270"))
     }
 
-    private fun file(handle: Int, format: Int, captureDate: String): CameraFile =
+    private fun file(
+        handle: Int,
+        format: Int,
+        captureDate: String,
+        parentObject: Int = 0,
+    ): CameraFile =
         file(
             handle = handle,
             format = format,
             captureDate = captureDate,
             imageWidth = 4000,
             imageHeight = 3000,
+            parentObject = parentObject,
         )
 
     private fun file(
@@ -740,6 +899,7 @@ class GalleryUiPolicyTest {
         captureDate: String,
         imageWidth: Int,
         imageHeight: Int,
+        parentObject: Int = 0,
         orientation: Int? = null,
     ): CameraFile =
         CameraFile(
@@ -754,7 +914,7 @@ class GalleryUiPolicyTest {
                 thumbPixHeight = 120,
                 imagePixWidth = imageWidth,
                 imagePixHeight = imageHeight,
-                parentObject = 0,
+                parentObject = parentObject,
                 filename = "DSCF%04d.JPG".format(handle),
                 captureDate = captureDate,
                 orientation = orientation,

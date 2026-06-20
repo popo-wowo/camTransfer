@@ -6,7 +6,7 @@ import org.junit.Test
 class CameraVendorBleReconnectPolicyTest {
     @Test
     fun rememberedCameraReconnectUsesOnlyDocumentedOfficialStages() {
-        assertEquals(15_000L, CameraVendorBleReconnectPolicy.REMEMBERED_DIRECT_CONNECT_TIMEOUT_MS)
+        assertEquals(5_000L, CameraVendorBleReconnectPolicy.REMEMBERED_DIRECT_CONNECT_TIMEOUT_MS)
         assertEquals(
             setOf(
                 CameraVendorBleReconnectStage.DirectAddress,

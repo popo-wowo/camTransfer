@@ -89,6 +89,7 @@ object CameraVendorPairedCameraStorePolicy {
             record.bluetoothAddress.orEmpty().encodeField(),
             record.lastConnectedAtMillis.toString(),
             wifi,
+            record.registeredTerminalName.orEmpty().encodeField(),
         ).joinToString("|")
     }
 
@@ -109,6 +110,7 @@ object CameraVendorPairedCameraStorePolicy {
             bluetoothAddress = parts[3].decodeField().takeIf { it.isNotBlank() },
             lastConnectedAtMillis = parts[4].toLongOrNull() ?: 0L,
             wifiConfigurations = wifiConfigurations,
+            registeredTerminalName = parts.getOrNull(6)?.decodeField()?.takeIf { it.isNotBlank() },
         )
     }
 

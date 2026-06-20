@@ -3,6 +3,7 @@ package com.camtransfer.service
 import com.camtransfer.protocol.CameraVendorPtpConnectionStartupPolicy
 import com.camtransfer.wifi.CameraVendorWifiNetworkConfiguration
 import com.camtransfer.wifi.CameraVendorWifiNetworkConfigurationPolicy
+import android.os.SystemClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 
@@ -19,6 +20,7 @@ enum class CameraConnectionMode {
 enum class CameraConnectionStep(val phase: CameraConnectionPhase) {
     EnvironmentCheck(CameraConnectionPhase.PAIR_CAMERA),
     StaleBondCheck(CameraConnectionPhase.PAIR_CAMERA),
+    RegistrationConsistencyCheck(CameraConnectionPhase.PAIR_CAMERA),
     CameraPairingMode(CameraConnectionPhase.PAIR_CAMERA),
     BleScan(CameraConnectionPhase.PAIR_CAMERA),
     BleHandshake(CameraConnectionPhase.PAIR_CAMERA),
@@ -38,6 +40,7 @@ enum class CameraConnectionStep(val phase: CameraConnectionPhase) {
 enum class CameraConnectionAction {
     RetryStep,
     RestartPairing,
+    ResetConnection,
     EnterGallery,
     ConfirmCameraPairingMode,
     ConfirmCameraReady,
@@ -49,6 +52,7 @@ enum class CameraConnectionAction {
 enum class CameraConnectionFailure {
     MissingPermission,
     StaleSystemBond,
+    PairingRegistrationOutOfSync,
     CameraNotInPairingMode,
     BleScanTimeout,
     GattDisconnected,
@@ -92,10 +96,24 @@ data class CameraConnectionIssue(
                 failure = CameraConnectionFailure.StaleSystemBond,
                 title = "需要清理旧蓝牙配对",
                 detail = "手机系统里还保留${cameraName?.let { " $it " } ?: "这台相机"}的旧蓝牙配对记录。\n" +
-                    "请到 系统设置 > 蓝牙，找到这台相机，点“取消配对/忽略此设备”。删完后回到 App 继续。",
-                primaryAction = CameraConnectionAction.OpenSystemBluetoothSettings,
-                secondaryAction = CameraConnectionAction.RetryStep,
+                    "请点“重置连接”让 App 尝试删除旧注册；如果系统没有允许删除，再到 系统设置 > 蓝牙 手动取消配对。",
+                primaryAction = CameraConnectionAction.ResetConnection,
+                secondaryAction = CameraConnectionAction.OpenSystemBluetoothSettings,
             )
+
+        fun pairingRegistrationOutOfSync(cameraName: String? = null): CameraConnectionIssue {
+            val name = cameraName?.takeIf { it.isNotBlank() } ?: "这台相机"
+            return CameraConnectionIssue(
+                phase = CameraConnectionPhase.PAIR_CAMERA,
+                step = CameraConnectionStep.RegistrationConsistencyCheck,
+                failure = CameraConnectionFailure.PairingRegistrationOutOfSync,
+                title = "需要删除注册并重新配对",
+                detail = "$name 在 App 里的注册记录和手机系统蓝牙记录已经不一致。\n" +
+                    "这通常发生在原厂 App、系统蓝牙设置或相机端注册记录改动之后。请点“重置连接”删除注册，然后在相机和手机系统蓝牙中确认旧记录已清理，再重新配对。",
+                primaryAction = CameraConnectionAction.ResetConnection,
+                secondaryAction = CameraConnectionAction.OpenSystemBluetoothSettings,
+            )
+        }
 
         fun pairingAckPending(): CameraConnectionIssue =
             CameraConnectionIssue(
@@ -142,8 +160,8 @@ data class CameraConnectionIssue(
                 failure = CameraConnectionFailure.PtpNotReady,
                 title = "相册服务还没准备好",
                 detail = "手机已经完成蓝牙授权并连到相机 Wi-Fi，但相机的 PTP 相册通道没有接受连接。\n" +
-                    "这不是重新配对能解决的问题。请让相机退出并重新进入传图/相册模式；如果仍失败，重启相机后再重试。",
-                primaryAction = CameraConnectionAction.RetryStep,
+                    "如果这台手机也装了原厂 App，可能是原厂 App 或旧配对状态占用了相机传图会话。请先关闭原厂 App，然后点“重置连接”清理本 App 的连接记录，再重新配对。",
+                primaryAction = CameraConnectionAction.ResetConnection,
                 secondaryAction = CameraConnectionAction.ExportDiagnosticLog,
             )
 
@@ -200,6 +218,7 @@ object CameraConnectionFlowPolicy {
     fun issueFor(step: CameraConnectionStep, failure: CameraConnectionFailure): CameraConnectionIssue =
         when (failure) {
             CameraConnectionFailure.StaleSystemBond -> CameraConnectionIssue.staleSystemBond()
+            CameraConnectionFailure.PairingRegistrationOutOfSync -> CameraConnectionIssue.pairingRegistrationOutOfSync()
             CameraConnectionFailure.PairingAckPending -> CameraConnectionIssue.pairingAckPending()
             CameraConnectionFailure.WifiJoinTimeout -> CameraConnectionIssue.wifiJoinTimeout()
             CameraConnectionFailure.PtpNotReady -> CameraConnectionIssue.ptpNotReady()
@@ -229,6 +248,7 @@ object CameraConnectionFlowPolicy {
     private val userActionRequiredFailures = setOf(
         CameraConnectionFailure.MissingPermission,
         CameraConnectionFailure.StaleSystemBond,
+        CameraConnectionFailure.PairingRegistrationOutOfSync,
         CameraConnectionFailure.CameraNotInPairingMode,
         CameraConnectionFailure.PairingAckPending,
         CameraConnectionFailure.WifiJoinTimeout,
@@ -250,6 +270,14 @@ object CameraConnectionIssueClassifier {
         val failure = when {
             fullMessage.contains("还保留着") && fullMessage.contains("蓝牙配对记录") ->
                 CameraConnectionFailure.StaleSystemBond
+            fullMessage.contains("不是当前选中的已配对相机") ||
+                fullMessage.contains("注册记录") && fullMessage.contains("不一致") ||
+                step == CameraConnectionStep.ReconnectPairedBle &&
+                    (
+                        fullMessage.contains("无法连接已配对相机") ||
+                            fullMessage.contains("无法唤醒相机进入传图模式")
+                    ) ->
+                CameraConnectionFailure.PairingRegistrationOutOfSync
             fullMessage.contains("相机端还没有完成识别号 ACK") ||
                 fullMessage.contains("请先完成蓝牙配对") ->
                 CameraConnectionFailure.PairingAckPending
@@ -270,6 +298,7 @@ object CameraConnectionIssueClassifier {
         }
         return when (failure) {
             CameraConnectionFailure.StaleSystemBond -> CameraConnectionIssue.staleSystemBond()
+            CameraConnectionFailure.PairingRegistrationOutOfSync -> CameraConnectionIssue.pairingRegistrationOutOfSync()
             CameraConnectionFailure.PairingAckPending -> CameraConnectionIssue.pairingAckPending()
             CameraConnectionFailure.WifiJoinTimeout -> {
                 val credentials = ManualWifiCredentialParser.parse(fullMessage)
@@ -369,7 +398,8 @@ object CameraVendorOfficialGalleryConnectionPolicy {
 
 class CameraVendorOfficialGalleryConnectionAdapter(
     private val onStepStarted: (CameraConnectionStep) -> Unit = {},
-    private val onStepConfirmed: (CameraConnectionStep) -> Unit = {},
+    private val onStepConfirmed: (CameraConnectionStep, elapsedMs: Long) -> Unit = { _, _ -> },
+    private val elapsedRealtimeMs: () -> Long = { SystemClock.elapsedRealtime() },
 ) {
     private val completedSteps = mutableListOf<CameraConnectionStep>()
 
@@ -380,10 +410,11 @@ class CameraVendorOfficialGalleryConnectionAdapter(
         check(CameraVendorOfficialGalleryConnectionPolicy.canRunStep(step, completedSteps)) {
             "Cannot run $step before ${CameraVendorOfficialGalleryConnectionPolicy.nextStep(completedSteps)}"
         }
+        val startedAtMs = elapsedRealtimeMs()
         onStepStarted(step)
         val result = action()
         completedSteps += step
-        onStepConfirmed(step)
+        onStepConfirmed(step, elapsedRealtimeMs() - startedAtMs)
         return result
     }
 

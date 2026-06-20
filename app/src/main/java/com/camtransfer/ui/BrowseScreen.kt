@@ -129,6 +129,7 @@ fun BrowseScreen(
     var filterState by remember { mutableStateOf(GalleryFilterState()) }
     var sortMode by remember { mutableStateOf(GallerySortMode.NewestFirst) }
     var filtersExpanded by remember { mutableStateOf(GalleryFilterPanelPolicy.defaultExpanded()) }
+    var expandedSectionDays by remember { mutableStateOf<Set<LocalDate>>(emptySet()) }
     var showsDatePicker by remember { mutableStateOf(false) }
     var showsDateRangePicker by remember { mutableStateOf(false) }
     var showsDisconnectConfirm by remember { mutableStateOf(false) }
@@ -147,14 +148,38 @@ fun BrowseScreen(
     val filteredFiles by remember(files, filterState, today) {
         derivedStateOf { GalleryUiPolicy.filteredFiles(files, filterState, today) }
     }
+    val filterStats by remember(files) {
+        derivedStateOf { GalleryFilterStatsPolicy.stats(files) }
+    }
     val sortedFiles by remember(filteredFiles, sortMode, downloadStates) {
         derivedStateOf { GallerySortPolicy.sortedFiles(filteredFiles, sortMode, downloadStates) }
+    }
+    val gallerySections by remember(sortedFiles, expandedSectionDays) {
+        derivedStateOf {
+            if (GallerySectionPolicy.shouldShowDateSections(sortedFiles)) {
+                GallerySectionPolicy.sections(
+                    files = sortedFiles,
+                    expandedDays = expandedSectionDays,
+                )
+            } else {
+                emptyList()
+            }
+        }
     }
     val visibleGridHandles by remember {
         derivedStateOf {
             gridState.layoutInfo.visibleItemsInfo
                 .sortedBy { it.index }
                 .mapNotNull { it.key as? Int }
+        }
+    }
+    val thumbnailRequestHandles by remember {
+        derivedStateOf {
+            GalleryThumbnailRequestWindowPolicy.handlesToRequest(
+                orderedHandles = sortedFiles.map { it.info.handle },
+                visibleHandles = visibleGridHandles,
+                columnCount = columnCount,
+            )
         }
     }
     val visibleGridHandleSet by remember {
@@ -199,9 +224,9 @@ fun BrowseScreen(
             viewModel.resumeThumbnailLoadingAfterTransfer(cameraSource)
         }
     }
-    LaunchedEffect(cameraSource, visibleGridHandles, isTransferring) {
+    LaunchedEffect(cameraSource, thumbnailRequestHandles, isTransferring) {
         if (!isTransferring) {
-            viewModel.loadVisibleThumbnails(cameraSource, visibleGridHandles)
+            viewModel.loadVisibleThumbnails(cameraSource, thumbnailRequestHandles)
         }
     }
 
@@ -321,6 +346,7 @@ fun BrowseScreen(
                 expanded = filtersExpanded,
                 onExpandedChange = { filtersExpanded = it },
                 state = filterState,
+                stats = filterStats,
                 onStateChange = { filterState = it },
                 sortMode = sortMode,
                 onSortModeChange = { sortMode = it },
@@ -358,6 +384,8 @@ fun BrowseScreen(
                     else -> {
                         GalleryGrid(
                             files = sortedFiles,
+                            sections = gallerySections,
+                            today = today,
                             columnCount = columnCount,
                             gridState = gridState,
                             selectedHandles = selectedHandles,
@@ -369,6 +397,27 @@ fun BrowseScreen(
                                 prefs.edit().putInt("columnCount", newCount).apply()
                             },
                             onSelectionChange = viewModel::selectHandles,
+                            onToggleDayHours = { day ->
+                                expandedSectionDays = if (day in expandedSectionDays) {
+                                    expandedSectionDays - day
+                                } else {
+                                    expandedSectionDays + day
+                                }
+                            },
+                            onToggleDaySelection = { dayFiles ->
+                                val dayHandles = dayFiles
+                                    .filter { GalleryDownloadUiPolicy.canSelect(downloadStates[it.info.handle]) }
+                                    .map { it.info.handle }
+                                    .toSet()
+                                if (dayHandles.isNotEmpty()) {
+                                    val nextSelection = if (selectedHandles.containsAll(dayHandles)) {
+                                        selectedHandles - dayHandles
+                                    } else {
+                                        selectedHandles + dayHandles
+                                    }
+                                    viewModel.selectHandles(nextSelection)
+                                }
+                            },
                             onOpenFile = { file -> previewFile = file },
                             onToggleSelection = { file -> viewModel.toggleSelection(file.info.handle) },
                             onVisible = { file -> viewModel.loadThumbnail(cameraSource, file.info.handle) },

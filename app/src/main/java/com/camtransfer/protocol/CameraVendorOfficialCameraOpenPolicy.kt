@@ -1,7 +1,7 @@
 package com.camtransfer.protocol
 
 object CameraVendorOfficialCameraOpenPolicy {
-    const val STARTUP_DELAY_MS = 3_000L
+    const val STARTUP_DELAY_MS = 0L
     const val OPEN_ATTEMPT_TIMEOUT_MS = 1_500L
     const val INIT_ACK_READ_TIMEOUT_MS = 15_000L
     const val COMMAND_READ_TIMEOUT_MS = 15_000L

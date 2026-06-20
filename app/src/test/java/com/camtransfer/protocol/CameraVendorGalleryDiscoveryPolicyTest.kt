@@ -68,4 +68,31 @@ class CameraVendorGalleryDiscoveryPolicyTest {
         assertEquals(600, initial.first())
         assertEquals(1, initial.last())
     }
+
+    @Test
+    fun mapsDateCountsOntoSpecifiedHandlesInNewestOrder() {
+        val handles = listOf(10, 11, 12, 13, 14)
+        val dates = listOf(
+            CameraVendorObjectCountByDate(dateValue = "20260620", numberOfImages = 2),
+            CameraVendorObjectCountByDate(dateValue = "20260619", numberOfImages = 3),
+        )
+
+        val result = CameraVendorGalleryDiscoveryPolicy.captureDatesByHandle(handles, dates)
+
+        assertEquals("20260620", result[14])
+        assertEquals("20260620", result[13])
+        assertEquals("20260619", result[12])
+        assertEquals("20260619", result[11])
+        assertEquals("20260619", result[10])
+    }
+
+    @Test
+    fun stopsDateMappingWhenDateCountsExceedAvailableHandles() {
+        val result = CameraVendorGalleryDiscoveryPolicy.captureDatesByHandle(
+            specifiedHandles = listOf(1, 2),
+            countsByDate = listOf(CameraVendorObjectCountByDate("20260620", 3)),
+        )
+
+        assertEquals(mapOf(2 to "20260620", 1 to "20260620"), result)
+    }
 }

@@ -21,6 +21,14 @@
 3. `Gallery`: 只在连接成功后读取 object handles、ObjectInfo、缩略图、方向、筛选和排序。Gallery 失败只停在相册读取阶段，不能触发重新配对、重新扫描或修改 Wi-Fi 策略。
 4. `Download`: 只在 Gallery 已有对象后执行下载和下载记录管理。Download 不能重启 BLE、不能重新选择 Wi-Fi、不能改变配对记录或连接主链路。
 
+注册一致性预检是独立守卫，不属于 Wi-Fi/PTP 主链路:
+
+- `RegistrationGuard`: 只负责在 App 启动、进入配对页、点击重新配对或进入相册前，检查本地配对记录、Android 系统蓝牙 bond 和扫描到的 BLE address 是否冲突。
+- 该模块可以读取 `BluetoothAdapter.getBondedDevices()`，也可以在用户明确进入配对/重新配对时做短 BLE 扫描来拿到相机 `deviceAddress`。
+- 该模块只输出三种结果: `pass`、`needsSystemBondCleanup`、`needsRePairing`。它不能直接推进 Wi-Fi/PTP，也不能修改 Gallery/Download 行为。
+- 如果发现“扫描到的相机 BLE address 已存在于系统 bonded devices，但当前 App 没有可用的一致注册记录”，必须先提示删除系统蓝牙注册或执行一键重置，再允许正式配对。
+- 如果预检通过，后续仍必须进入正常 `Pairing` 或 `Connection` 主链路，不能跳过 BLE/GATT 身份校验。
+
 配对和连接内部的每一步也必须独立:
 
 - 每一步只有明确输入、官方指令/API、成功条件、失败原因和输出。
@@ -34,11 +42,19 @@
 配对入口负责让相机和手机建立可信记录:
 
 1. 用户先确认相机进入配对注册界面。
-2. 用户确认手机侧旧蓝牙记录已清理，避免系统 bond 干扰。
-3. App 扫描并连接相机 BLE。
-4. BLE handshake 读取相机身份、SSID、Wi-Fi passphrase、MAC/BSSID 等官方连接信息。
-5. 手机确认配对后，需要向相机完成配对确认写入；相机侧必须能显示配对成功。
-6. 本地按 `cameraID` 保存配对记录。
+2. App 先执行 `RegistrationGuard`。如果 BLE 扫描到的相机 `deviceAddress` 已存在于 Android 系统 `bondedDevices`，且当前 App 没有一致的可用注册记录，先提示删除系统蓝牙注册或执行一键重置。
+3. 用户确认手机侧旧蓝牙记录已清理，避免系统 bond 干扰。
+4. App 扫描并连接相机 BLE。
+5. BLE handshake 读取相机身份、SSID、Wi-Fi passphrase、MAC/BSSID 等官方连接信息。
+6. 手机确认配对后，需要向相机完成配对确认写入；相机侧必须能显示配对成功。
+7. 本地按 `cameraID` 保存配对记录。
+
+原厂 XApp 对“需要删除注册”的判断点:
+
+- 官方 Android XApp 在 `PairingMode.PAIRING` 的 BLE 扫描阶段检测系统 bond 冲突。
+- 判断条件是 `BluetoothAdapter.getBondedDevices()` 是否包含扫描到的相机 BLE `deviceAddress`。
+- 弹框设备名只用于展示，不是身份判断条件。
+- 该检测发生在 GATT 连接、Wi-Fi handover 和 PTP open 之前，因此我们的实现也必须作为配对前守卫处理，不能等 PTP 卡住后才提示重新配对。
 
 当前身份模型:
 
@@ -48,15 +64,28 @@
 
 ## 已配对进入相册
 
+已配对相机启动状态:
+
+- 打开 App 后，如果本地存在 remembered pairing 且注册一致性检查通过，可以按原厂 App 行为预连接当前相机 BLE/GATT，并把 UI 更新为“相机在线”。
+- 启动在线预连接只允许建立并保留可复用 BLE 会话；不得写 `FunctionLaunchRequest`，不得启动相机 Wi-Fi，不得加入相机 Wi-Fi，不得连接 PTP，也不得启动 `CameraSessionKeepAlive`。
+- 用户点击进入相册时，如果启动预连接的 BLE 会话仍在 TTL 内且身份匹配，必须复用该会话继续后续主链路，不能再重复 `ReconnectPairedBle`。
+- 如果启动在线预连接仍在进行中，进入相册先等待一个短接管窗口；预连接完成后复用其 GATT，会话仍未完成才取消并执行主链路 BLE 重连。不能在用户点击时立即取消正在进行的在线预连接。
+- 如果会话已断开/过期/身份不匹配，才重新执行已配对 BLE 重连。
+
 已配对相机进入相册的主链路:
 
-1. `ReconnectPairedBle`: 先使用当前 `cameraID` 记录中的保存 BLE endpoint 候选直连。直连失败且当前记录有稳定 `serialNumber_deviceName` 身份时，再执行原厂 `PairingMode.RE_CONNECT` 等价的短扫描，只允许连接与当前记录匹配的候选；GATT 连上后必须重新读取并校验相机身份。无稳定身份时不扫描。
+1. `ReconnectPairedBle`: 先使用当前 `cameraID` 记录中的保存 BLE endpoint 候选直连。直连窗口为 5 秒；失败且当前记录有稳定 `serialNumber_deviceName` 身份时，再执行原厂 `PairingMode.RE_CONNECT` 等价的短扫描，只允许连接与当前记录匹配的候选；GATT 连上后必须重新读取并校验相机身份。无稳定身份时不扫描。
 2. `TransferAuthorization`: GATT 连上后读取/确认相机身份和本次 BLE 返回的官方 Wi-Fi 凭据；身份不匹配或本次缺凭据就停止，不使用旧配对记录里的 Wi-Fi 作为主链路兜底。
 3. `ActivateCameraWifi`: 按官方 BLE 写入顺序让相机启动相册 Wi-Fi/AP。
 4. `WaitCameraWifiReady`: 等待 BLE AP/transfer ready，不靠固定长等待推进。
 5. `JoinCameraWifi`: 使用唯一的精确 `SSID + passphrase + optional BSSID` 调 Android `WifiNetworkSpecifier` / `requestNetwork`。主链路只请求这个官方网络一次，不生成 FUJ 前缀候选，不用默认密码，不在内部循环 requestNetwork。
-6. `ConnectPtp`: 在相机 Wi-Fi 对应 `Network` 上打开 PTP/IP；socket 必须绑定到相机 Wi-Fi Network。官方 XApp native 内有 plain legacy INIT 模板，但当前 X-T5 实机稳定路径必须先发送带本机 `192.168.0.x` 的 legacy INIT 变体，未 ACK 时再发送 plain legacy INIT。Kotlin PTP open 窗口保持单次 socket connect 1.5 秒，最多 5 次，失败间隔 500ms/1000ms/1500ms...；INIT ACK 读取窗口 15 秒。
+6. `ConnectPtp`: 在相机 Wi-Fi 对应 `Network` 上打开 PTP/IP；socket 必须绑定到相机 Wi-Fi Network。Wi-Fi 可用后立即尝试 PTP，不再固定等待 3 秒。X-T5 当前实机稳定路径先发送带本机 `192.168.0.x` 的 CameraVendor legacy INIT 变体；未 ACK 时再 fallback 到官方 XApp native 内置的 plain legacy INIT 模板，plain 模板 GUID 后 4 字节保持 `0`。Kotlin PTP open 窗口保持单次 socket connect 1.5 秒，最多 5 次，失败间隔 500ms/1000ms/1500ms...；INIT ACK 读取窗口 15 秒。
 7. `LoadGallery`: PTP 连通后进入相册列表和缩略图读取。
+
+连接耗时诊断:
+
+- 每个官方连接步骤都会在诊断日志中记录 `Official gallery step confirmed step=... elapsedMs=...`。
+- 如果用户反馈“连接慢”，先按 `ReconnectPairedBle`、`WaitCameraWifiReady`、`JoinCameraWifi`、`ConnectPtp` 四个阶段定位最大耗时，再决定优化点。
 
 连接保活规则:
 

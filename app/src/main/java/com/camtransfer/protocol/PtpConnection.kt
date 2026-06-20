@@ -31,9 +31,11 @@ class PtpConnection {
     private var sessionOpen = false
     private val commandMutex = Mutex()
     private var specifiedObjectHandles: List<Int> = emptyList()
+    private var specifiedObjectCountsByDate: List<CameraVendorObjectCountByDate> = emptyList()
 
     val isConnected: Boolean get() = sessionOpen
     val cameraVendorSpecifiedObjectHandles: List<Int> get() = specifiedObjectHandles
+    val cameraVendorSpecifiedObjectCountsByDate: List<CameraVendorObjectCountByDate> get() = specifiedObjectCountsByDate
     val nextTransactionId: Int get() = ++transactionId
 
     suspend fun connect(
@@ -44,10 +46,12 @@ class PtpConnection {
         initReadTimeoutMs: Int = CameraVendorPtpConnectionStartupPolicy.INIT_ACK_READ_TIMEOUT_MS.toInt(),
         commandReadTimeoutMs: Int = CameraVendorPtpConnectionStartupPolicy.COMMAND_READ_TIMEOUT_MS.toInt(),
         confirmGalleryMode: Boolean = true,
+        onInitPacket: (label: String, socketLocalIp: String?, clientIp: String?, packet: ByteArray) -> Unit = { _, _, _, _ -> },
     ) {
         disconnect()
         transactionId = 0
         specifiedObjectHandles = emptyList()
+        specifiedObjectCountsByDate = emptyList()
 
         withContext(Dispatchers.IO) {
             var lastError: Throwable? = null
@@ -71,6 +75,7 @@ class PtpConnection {
                         TAG,
                         "Sending ${variant.label} INIT socketLocalIp=$socketLocalIp clientIp=$initClientIp bytes=${initPacket.size}",
                     )
+                    onInitPacket(variant.label, socketLocalIp, initClientIp, initPacket)
                     cmd.getOutputStream().write(initPacket)
                     cmd.getOutputStream().flush()
                     delay(50)
@@ -186,6 +191,7 @@ class PtpConnection {
         cmdSocket = null
         transactionId = 0
         specifiedObjectHandles = emptyList()
+        specifiedObjectCountsByDate = emptyList()
     }
 
     private suspend fun performOfficialImageViewModeSetup() {
@@ -222,9 +228,16 @@ class PtpConnection {
         }.onFailure { Log.d(TAG, "Current thumbnail context prime failed: ${it.message}") }
         retrySearchModeDescAll()
         readCurrentObjectHandleSnapshot()
-        sendCommandGetData(
+        val objectCountGroupData = sendCommandGetData(
             PtpOpCode.CAMERA_VENDOR_GET_SPECIFIED_OBJECT_COUNT_GROUP_BY_DATE,
             listOf(0, CameraVendorReferenceApp.SPECIFIED_OBJECT_COUNT_LIMIT),
+        )
+        specifiedObjectCountsByDate = CameraVendorPtpDataParser.objectCountsByDate(objectCountGroupData)
+        Log.d(
+            TAG,
+            "SpecifiedObjectCountsByDate=${specifiedObjectCountsByDate.size} " +
+                "bytes=${objectCountGroupData.size} head=${objectCountGroupData.headHex()} " +
+                "summary=${specifiedObjectCountsByDate.take(6).joinToString { "${it.dateValue}:${it.numberOfImages}" }}",
         )
         readDeviceProperty(CameraVendorDevicePropCode.REFERENCE_APP_GALLERY_OBJECT_CONTEXT)
         readDeviceProperty(CameraVendorDevicePropCode.SPECIFIED_OBJECT_COUNT)
@@ -353,6 +366,9 @@ class PtpConnection {
 
     private fun littleEndianUInt32(value: Int): ByteArray =
         ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(value).array()
+
+    private fun ByteArray.headHex(byteCount: Int = 96): String =
+        take(byteCount).joinToString("") { "%02x".format(it) }
 }
 
 internal object PtpConnectionSocketPolicy {

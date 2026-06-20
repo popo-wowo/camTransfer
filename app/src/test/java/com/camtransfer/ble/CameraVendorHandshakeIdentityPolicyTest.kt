@@ -6,40 +6,52 @@ import org.junit.Test
 class CameraVendorHandshakeIdentityPolicyTest {
 
     @Test
-    fun connectedDeviceNameUsesReferenceAppStyleName() {
+    fun connectedDeviceNameUsesOfficialAndroidTerminalNameFormat() {
         assertEquals(
-            "iPhone-6970",
-            CameraVendorHandshakeIdentityPolicy.connectedDeviceName("  Xiaomi 14  "),
+            "Xiaomi-14-1234",
+            CameraVendorHandshakeIdentityPolicy.connectedDeviceName("  Xiaomi 14  ", suffix = 1234),
         )
     }
 
     @Test
-    fun connectedDeviceNameUsesReferenceAppStyleNameForAnyInput() {
+    fun connectedDeviceNameSanitizesAndTruncatesLikeOfficialAndroidApp() {
         assertEquals(
-            "iPhone-6970",
-            CameraVendorHandshakeIdentityPolicy.connectedDeviceName(" Xiaomi\t14\nPro "),
+            "Xiaomi-14-Pro-0007",
+            CameraVendorHandshakeIdentityPolicy.connectedDeviceName(" Xiaomi\t14\nPro ", suffix = 7),
         )
         assertEquals(
-            "iPhone-6970",
-            CameraVendorHandshakeIdentityPolicy.connectedDeviceName("   "),
+            "Android-0007",
+            CameraVendorHandshakeIdentityPolicy.connectedDeviceName("   ", suffix = 7),
         )
         assertEquals(
-            "iPhone-6970",
-            CameraVendorHandshakeIdentityPolicy.connectedDeviceName(null),
+            "Android-0007",
+            CameraVendorHandshakeIdentityPolicy.connectedDeviceName(null, suffix = 7),
         )
         assertEquals(
-            "iPhone-6970",
-            CameraVendorHandshakeIdentityPolicy.connectedDeviceName("x".repeat(64)),
+            "${"x".repeat(19)}..-0007",
+            CameraVendorHandshakeIdentityPolicy.connectedDeviceName("x".repeat(64), suffix = 7),
         )
     }
 
     @Test
-    fun connectedDeviceNameDecisionRecordsReferenceAppCompatibility() {
-        val decision = CameraVendorHandshakeIdentityPolicy.connectedDeviceNameDecision("x".repeat(64))
+    fun connectedDeviceNameDecisionRecordsOfficialAndroidSource() {
+        val decision = CameraVendorHandshakeIdentityPolicy.connectedDeviceNameDecision("x".repeat(64), suffix = 9876)
 
-        assertEquals("iPhone-6970", decision.name)
-        assertEquals("reference_app_compatibility_name", decision.source)
+        assertEquals("${"x".repeat(19)}..-9876", decision.name)
+        assertEquals("official_android_terminal_name", decision.source)
         assertEquals(64, decision.rawLength)
+    }
+
+    @Test
+    fun connectedDeviceNameReusesSavedRegistrationNameInsteadOfRegeneratingSuffix() {
+        val decision = CameraVendorHandshakeIdentityPolicy.connectedDeviceNameDecision(
+            preferredDeviceName = "23127PN0CC",
+            suffix = 4567,
+            savedRegistrationName = "23127PN0CC-1234",
+        )
+
+        assertEquals("23127PN0CC-1234", decision.name)
+        assertEquals("official_android_terminal_name_saved", decision.source)
     }
 
 }

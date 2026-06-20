@@ -6,6 +6,12 @@ import android.graphics.ImageDecoder
 import android.graphics.Matrix
 import android.os.Build
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -110,6 +116,7 @@ internal fun GalleryFilterPanel(
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
     state: GalleryFilterState,
+    stats: GalleryFilterStats,
     onStateChange: (GalleryFilterState) -> Unit,
     sortMode: GallerySortMode,
     onSortModeChange: (GallerySortMode) -> Unit,
@@ -119,6 +126,7 @@ internal fun GalleryFilterPanel(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .animateContentSize()
             .padding(start = 18.dp, top = 6.dp, end = 18.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -155,23 +163,23 @@ internal fun GalleryFilterPanel(
                 FilterPanelChevron(expanded = expanded)
             }
         }
-        if (expanded) {
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
-                color = CamTransferColors.WarmFill,
-                border = BorderStroke(1.dp, CamTransferColors.Hairline),
-            ) {
-                CompactFilterChips(
-                    modifier = Modifier.padding(10.dp),
-                    state = state,
-                    onStateChange = onStateChange,
-                    sortMode = sortMode,
-                    onSortModeChange = onSortModeChange,
-                    onPickDate = onPickDate,
-                    onPickDateRange = onPickDateRange,
-                )
-            }
+        AnimatedVisibility(
+            visible = expanded,
+            enter = fadeIn(animationSpec = tween(160)) + expandVertically(animationSpec = tween(180)),
+            exit = fadeOut(animationSpec = tween(120)) + shrinkVertically(animationSpec = tween(160)),
+        ) {
+            CompactFilterChips(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 2.dp, top = 1.dp, end = 2.dp, bottom = 2.dp),
+                state = state,
+                stats = stats,
+                onStateChange = onStateChange,
+                sortMode = sortMode,
+                onSortModeChange = onSortModeChange,
+                onPickDate = onPickDate,
+                onPickDateRange = onPickDateRange,
+            )
         }
     }
 }
@@ -180,6 +188,7 @@ internal fun GalleryFilterPanel(
 private fun CompactFilterChips(
     modifier: Modifier = Modifier,
     state: GalleryFilterState,
+    stats: GalleryFilterStats,
     onStateChange: (GalleryFilterState) -> Unit,
     sortMode: GallerySortMode,
     onSortModeChange: (GallerySortMode) -> Unit,
@@ -218,12 +227,26 @@ private fun CompactFilterChips(
             LuxuryFilterChip(
                 selected = state.formats.isEmpty(),
                 label = "全部格式",
+                count = stats.totalCount,
                 onClick = { onStateChange(state.copy(formats = emptySet())) },
             )
-            FormatChip("JPG", GalleryFormatFilter.Jpg, state, onStateChange)
-            FormatChip("HEIF", GalleryFormatFilter.Heif, state, onStateChange)
-            FormatChip("RAW", GalleryFormatFilter.Raw, state, onStateChange)
-            FormatChip("视频", GalleryFormatFilter.Video, state, onStateChange)
+            FormatChip("JPG", GalleryFormatFilter.Jpg, stats, state, onStateChange)
+            FormatChip("HEIF", GalleryFormatFilter.Heif, stats, state, onStateChange)
+            FormatChip("RAW", GalleryFormatFilter.Raw, stats, state, onStateChange)
+            FormatChip("视频", GalleryFormatFilter.Video, stats, state, onStateChange)
+        }
+        if (stats.folderCounts.isNotEmpty()) {
+            FilterChipRow {
+                LuxuryFilterChip(
+                    selected = state.folders.isEmpty(),
+                    label = "全部文件夹",
+                    count = stats.totalCount,
+                    onClick = { onStateChange(state.copy(folders = emptySet())) },
+                )
+                stats.folderCounts.forEach { folderCount ->
+                    FolderChip(folderCount, state, onStateChange)
+                }
+            }
         }
         FilterChipRow {
             SortChip("最新", GallerySortMode.NewestFirst, sortMode, onSortModeChange)
@@ -254,12 +277,14 @@ internal fun rangeLabel(start: LocalDate, end: LocalDate): String {
 private fun FormatChip(
     label: String,
     format: GalleryFormatFilter,
+    stats: GalleryFilterStats,
     state: GalleryFilterState,
     onStateChange: (GalleryFilterState) -> Unit,
 ) {
     LuxuryFilterChip(
         selected = format in state.formats,
         label = label,
+        count = stats.formatCounts[format] ?: 0,
         onClick = {
             val formats = state.formats.toMutableSet()
             if (!formats.add(format)) formats.remove(format)
@@ -283,19 +308,43 @@ private fun SortChip(
 }
 
 @Composable
-private fun LuxuryFilterChip(selected: Boolean, label: String, onClick: () -> Unit) {
+private fun FolderChip(
+    folderCount: GalleryFolderCount,
+    state: GalleryFilterState,
+    onStateChange: (GalleryFilterState) -> Unit,
+) {
+    LuxuryFilterChip(
+        selected = folderCount.folder in state.folders,
+        label = folderCount.label,
+        count = folderCount.count,
+        onClick = {
+            val folders = state.folders.toMutableSet()
+            if (!folders.add(folderCount.folder)) folders.remove(folderCount.folder)
+            onStateChange(state.copy(folders = folders))
+        },
+    )
+}
+
+@Composable
+private fun LuxuryFilterChip(
+    selected: Boolean,
+    label: String,
+    count: Int? = null,
+    onClick: () -> Unit,
+) {
     Surface(
         modifier = Modifier
             .height(32.dp)
             .clip(RoundedCornerShape(16.dp))
             .clickable(onClick = onClick),
         shape = RoundedCornerShape(16.dp),
-        color = if (selected) CamTransferColors.Ink else CamTransferColors.Card,
+        color = if (selected) CamTransferColors.Ink else Color.Transparent,
         border = BorderStroke(1.dp, if (selected) CamTransferColors.Ink else CamTransferColors.Hairline),
     ) {
-        Box(
+        Row(
             modifier = Modifier.padding(horizontal = 12.dp),
-            contentAlignment = Alignment.Center,
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
         ) {
             Text(
                 label,
@@ -304,6 +353,15 @@ private fun LuxuryFilterChip(selected: Boolean, label: String, onClick: () -> Un
                 fontWeight = FontWeight.Black,
                 maxLines = 1,
             )
+            if (count != null) {
+                Text(
+                    count.toString(),
+                    color = if (selected) CamTransferColors.Card.copy(alpha = 0.72f) else CamTransferColors.SecondaryInk,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                )
+            }
         }
     }
 }

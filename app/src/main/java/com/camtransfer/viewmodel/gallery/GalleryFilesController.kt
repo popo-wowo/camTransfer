@@ -11,6 +11,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.yield
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
 
 class GalleryFilesController(
     private val scope: CoroutineScope,
@@ -100,7 +103,10 @@ class GalleryFilesController(
     fun mergeThumbnail(handle: Int, thumbnail: ByteArray, updatedFile: CameraFile?) {
         _files.value = _files.value.map { file ->
             if (file.info.handle == handle) {
-                (updatedFile ?: file).copy(thumbnail = thumbnail)
+                GalleryFastInitialLoadPolicy.mergeThumbnailMetadata(
+                    existingFile = file,
+                    thumbnailFile = updatedFile,
+                ).copy(thumbnail = thumbnail)
             } else {
                 file
             }
@@ -127,20 +133,57 @@ class GalleryFilesController(
             delay(GalleryFastInitialLoadPolicy.FULL_OBJECT_INFO_AFTER_PLACEHOLDERS_DELAY_MS)
             if (loadedSource !== cameraSource) return@launch
             try {
-                DiagnosticLog.append(cameraSource.context, "Gallery", "Loading full object info after initial thumbnails")
-                val fileList = requestScheduler.run(GalleryRequestPriority.BackgroundMetadata) {
-                    cameraSource.listFiles()
+                DiagnosticLog.append(cameraSource.context, "Gallery", "Loading full object info incrementally after initial thumbnails")
+                val handles = _files.value.map { it.info.handle }
+                val batch = mutableListOf<CameraFile>()
+                for (handle in handles) {
+                    if (loadedSource !== cameraSource) return@launch
+                    val file = requestScheduler.run(GalleryRequestPriority.BackgroundMetadata) {
+                        cameraSource.resolveFile(handle)
+                    }
+                    if (file != null && !file.info.isFolder && !file.info.isVideo) {
+                        batch += file
+                    }
+                    if (GalleryFastInitialLoadPolicy.shouldPublishIncrementalMetadataBatch(
+                            resolvedCount = batch.size,
+                            isFinalBatch = false,
+                        )
+                    ) {
+                        publishFullObjectInfoBatch(batch)
+                        DiagnosticLog.append(
+                            cameraSource.context,
+                            "Gallery",
+                            "Published incremental object info batch count=${batch.size}",
+                        )
+                        batch.clear()
+                        yield()
+                    }
                 }
-                DiagnosticLog.appendFileSummary(cameraSource.context, fileList)
-                _files.value = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
-                    currentFiles = _files.value,
-                    fullFiles = fileList,
-                    thumbnailsByHandle = thumbnailCache(),
-                )
+                if (GalleryFastInitialLoadPolicy.shouldPublishIncrementalMetadataBatch(
+                        resolvedCount = batch.size,
+                        isFinalBatch = true,
+                    )
+                ) {
+                    publishFullObjectInfoBatch(batch)
+                    DiagnosticLog.append(
+                        cameraSource.context,
+                        "Gallery",
+                        "Published final object info batch count=${batch.size}",
+                    )
+                }
             } catch (e: Exception) {
                 DiagnosticLog.append(cameraSource.context, "Gallery", "Full object info background load failed", e)
             }
         }
+    }
+
+    private fun publishFullObjectInfoBatch(files: List<CameraFile>) {
+        if (files.isEmpty()) return
+        _files.value = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
+            currentFiles = _files.value,
+            fullFiles = files,
+            thumbnailsByHandle = thumbnailCache(),
+        )
     }
 }
 
@@ -160,6 +203,7 @@ internal object GalleryFileLoadPolicy {
 internal object GalleryFastInitialLoadPolicy {
     const val MAX_INITIAL_THUMBNAIL_REQUESTS = 8
     const val FULL_OBJECT_INFO_AFTER_PLACEHOLDERS_DELAY_MS = 1_000L
+    const val INCREMENTAL_METADATA_BATCH_SIZE = 12
     private const val LARGE_GALLERY_PLACEHOLDER_COUNT = 500
 
     fun shouldPublishInitialFiles(currentFiles: List<CameraFile>, initialFiles: List<CameraFile>): Boolean =
@@ -169,7 +213,13 @@ internal object GalleryFastInitialLoadPolicy {
         initialFileCount >= LARGE_GALLERY_PLACEHOLDER_COUNT
 
     fun shouldContinueFullObjectInfoAfterInitialPlaceholders(initialFileCount: Int): Boolean =
-        initialFileCount in 1 until LARGE_GALLERY_PLACEHOLDER_COUNT
+        initialFileCount > 0
+
+    fun shouldPublishIncrementalMetadataBatch(
+        resolvedCount: Int,
+        isFinalBatch: Boolean,
+    ): Boolean =
+        resolvedCount > 0 && (isFinalBatch || resolvedCount >= INCREMENTAL_METADATA_BATCH_SIZE)
 
     fun shouldLoadThumbnail(
         isTransferPreparingOrActive: Boolean = false,
@@ -193,8 +243,8 @@ internal object GalleryFastInitialLoadPolicy {
         val mergedThumbnailsByHandle = currentFiles.mapNotNull { file ->
             file.thumbnail?.let { file.info.handle to it }
         }.toMap() + thumbnailsByHandle
-        val files = if (currentFiles.size > fullFiles.size) {
-            mergePartialFullObjectInfoIntoPlaceholders(
+        val files = if (currentFiles.isNotEmpty()) {
+            mergeFullObjectInfoIntoExisting(
                 currentFiles = currentFiles,
                 fullFiles = fullFiles,
             )
@@ -215,16 +265,67 @@ internal object GalleryFastInitialLoadPolicy {
         }
     }
 
-    private fun mergePartialFullObjectInfoIntoPlaceholders(
+    fun mergeThumbnailMetadata(
+        existingFile: CameraFile,
+        thumbnailFile: CameraFile?,
+    ): CameraFile {
+        if (thumbnailFile == null) return existingFile
+        return thumbnailFile.copy(
+            info = thumbnailFile.info.copy(
+                captureDate = existingFile.info.captureDate,
+            ),
+            thumbnail = existingFile.thumbnail,
+        )
+    }
+
+    private fun mergeFullObjectInfoIntoExisting(
         currentFiles: List<CameraFile>,
         fullFiles: List<CameraFile>,
     ): List<CameraFile> {
         val fullFilesByHandle = fullFiles.associateBy { it.info.handle }
         val currentHandles = currentFiles.map { it.info.handle }.toSet()
         val mergedCurrent = currentFiles.map { file ->
-            fullFilesByHandle[file.info.handle] ?: file
+            val fullFile = fullFilesByHandle[file.info.handle] ?: return@map file
+            mergeResolvedMetadata(existingFile = file, resolvedFile = fullFile)
         }
         val extraFullFiles = fullFiles.filterNot { it.info.handle in currentHandles }
         return mergedCurrent + extraFullFiles
+    }
+
+    private fun mergeResolvedMetadata(
+        existingFile: CameraFile,
+        resolvedFile: CameraFile,
+    ): CameraFile =
+        resolvedFile.copy(
+            info = resolvedFile.info.copy(
+                captureDate = resolvedCaptureDate(
+                    existingCaptureDate = existingFile.info.captureDate,
+                    resolvedCaptureDate = resolvedFile.info.captureDate,
+                ),
+            ),
+            thumbnail = resolvedFile.thumbnail,
+        )
+
+    private fun resolvedCaptureDate(
+        existingCaptureDate: String,
+        resolvedCaptureDate: String,
+    ): String {
+        val existingDay = captureDayKey(existingCaptureDate)
+        val resolvedDay = captureDayKey(resolvedCaptureDate)
+        return when {
+            existingDay == null -> resolvedCaptureDate
+            resolvedDay == null -> existingCaptureDate
+            existingDay == resolvedDay -> resolvedCaptureDate
+            else -> existingCaptureDate
+        }
+    }
+
+    private fun captureDayKey(captureDate: String): String? {
+        if (captureDate.length < 8) return null
+        val day = captureDate.take(8)
+        return runCatching {
+            LocalDate.parse(day, DateTimeFormatter.BASIC_ISO_DATE)
+            day
+        }.getOrNull()
     }
 }

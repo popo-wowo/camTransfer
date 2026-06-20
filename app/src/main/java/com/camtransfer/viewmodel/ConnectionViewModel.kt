@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.camtransfer.ble.CameraVendorBleTransferActivationPolicy
+import com.camtransfer.service.CameraConnectionFailure
 import com.camtransfer.service.CameraConnectionIssue
 import com.camtransfer.service.CameraConnectionIssueClassifier
 import com.camtransfer.service.CameraConnectionMode
@@ -13,10 +14,14 @@ import com.camtransfer.service.CameraVendorPairedCameraRecord
 import com.camtransfer.service.DiagnosticLog
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+
+private const val ONLINE_REFRESH_GALLERY_HANDOFF_WAIT_MS = 4_000L
 
 enum class ConnectionState {
     IDLE,
@@ -66,14 +71,18 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
     val selectedCameraId: StateFlow<String?> = _selectedCameraId.asStateFlow()
 
     private var connectionJob: Job? = null
+    private var onlineRefreshJob: Job? = null
 
     init {
         DiagnosticLog.append(appContext, "App", "ConnectionViewModel initialized")
         refreshPairedCameras()
-        cameraService.rememberedPairing()?.let { remembered ->
+        if (publishRegistrationConsistencyIssueIfNeeded()) {
+            DiagnosticLog.append(appContext, "Connection", "Registration consistency issue detected at startup")
+        } else cameraService.rememberedPairing()?.let { remembered ->
             _state.value = ConnectionState.PAIRED
             _statusText.value = "已配对 ${remembered.deviceName}"
             DiagnosticLog.append(appContext, "Connection", "Remembered pairing exists")
+            startPairedCameraOnlineRefresh(remembered.deviceName)
         }
     }
 
@@ -94,6 +103,7 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
             _state.value == ConnectionState.WAITING_CAMERA_CONFIRMATION ||
             _state.value == ConnectionState.PAIRED
         ) return
+        if (publishRegistrationConsistencyIssueIfNeeded()) return
         val issue = CameraConnectionIssue.cameraPairingModeRequired()
         _state.value = CameraConnectionUiPolicy.stateForStep(issue.step)
         _error.value = null
@@ -119,8 +129,10 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun startPairingFlow() {
+        if (publishRegistrationConsistencyIssueIfNeeded()) return
         val entryState = _state.value
         cancelConnectionJob()
+        cancelPairedCameraOnlineRefresh()
         _state.value = ConnectionState.SCANNING
         _error.value = null
         _connectionIssue.value = null
@@ -212,6 +224,7 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun enterCameraAlbum(resetBeforeStart: Boolean) {
         if (_state.value != ConnectionState.PAIRED) return
+        if (publishRegistrationConsistencyIssueIfNeeded()) return
         _error.value = null
         _connectionIssue.value = null
         _activeStep.value = CameraConnectionStep.ReconnectPairedBle
@@ -222,7 +235,10 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
             var currentStep = CameraConnectionStep.ReconnectPairedBle
             try {
                 if (resetBeforeStart) {
+                    cancelPairedCameraOnlineRefreshAndWait()
                     cameraService.resetGalleryConnectionBeforeRetry()
+                } else {
+                    awaitPairedCameraOnlineRefreshBeforeGalleryStart()
                 }
                 cameraService.connectPairedCameraToGallery { status ->
                     DiagnosticLog.append(appContext, "ConnectionStatus", status)
@@ -240,11 +256,19 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
                 DiagnosticLog.append(appContext, "Connection", "Enter gallery failed", e)
-                publishIssue(currentStep, e)
-                _state.value = ConnectionState.PAIRED
+                val issue = publishIssue(currentStep, e)
+                _state.value = if (issue.failure == CameraConnectionFailure.PairingRegistrationOutOfSync) {
+                    ConnectionState.ERROR
+                } else {
+                    ConnectionState.PAIRED
+                }
                 val remembered = cameraService.rememberedPairing()
                 _statusText.value = remembered?.let { "已配对 ${it.deviceName}" } ?: "已保存配对"
-                _error.value = e.message ?: "进入相册失败"
+                _error.value = if (issue.failure == CameraConnectionFailure.PairingRegistrationOutOfSync) {
+                    issue.detail
+                } else {
+                    e.message ?: "进入相册失败"
+                }
             }
         }
     }
@@ -255,6 +279,7 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
         _connectionMode.value = CameraConnectionMode.GUIDED
         _activeStep.value = CameraConnectionStep.ConnectPtp
         cancelConnectionJob()
+        cancelPairedCameraOnlineRefresh()
         connectionJob = viewModelScope.launch {
             try {
                 val directPtpConnected = cameraService.connectExistingCameraWifiToGallery { status ->
@@ -298,6 +323,7 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
         _connectionIssue.value = null
         _activeStep.value = CameraConnectionStep.JoinCameraWifi
         cancelConnectionJob()
+        cancelPairedCameraOnlineRefresh()
         connectionJob = viewModelScope.launch {
             var currentStep = CameraConnectionStep.JoinCameraWifi
             try {
@@ -334,6 +360,7 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
             CameraConnectionRetryTarget.PairingScan -> connect()
             CameraConnectionRetryTarget.PairingModeConfirmation -> confirmCameraPairingModeAndStartScan()
             CameraConnectionRetryTarget.GalleryEntryWithBle -> enterCameraAlbum(resetBeforeStart = true)
+            CameraConnectionRetryTarget.ResetConnection -> resetConnectionForFreshPairing()
         }
     }
 
@@ -347,6 +374,7 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             DiagnosticLog.append(appContext, "Connection", "Disconnect requested")
             cancelConnectionJob()
+            cancelPairedCameraOnlineRefreshAndWait()
             cameraService.disconnect()
             refreshPairedCameras()
             _state.value = ConnectionState.IDLE
@@ -363,21 +391,21 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun forgetPairing() {
+        resetConnectionForFreshPairing()
+    }
+
+    fun resetConnectionForFreshPairing() {
         viewModelScope.launch {
-            DiagnosticLog.append(appContext, "Connection", "Forget pairing requested")
+            DiagnosticLog.append(appContext, "Connection", "Reset connection for fresh pairing requested")
             cancelConnectionJob()
-            cameraService.forgetPairing()
+            cancelPairedCameraOnlineRefreshAndWait()
+            cameraService.resetConnectionForFreshPairing()
             refreshPairedCameras()
             _state.value = ConnectionState.IDLE
-            cameraService.rememberedPairing()?.let { remembered ->
-                _state.value = ConnectionState.PAIRED
-                _statusText.value = "已配对 ${remembered.deviceName}"
-            } ?: run {
-                _statusText.value = ""
-            }
+            _statusText.value = "已重置连接，请先关闭原厂 App，并在相机和系统蓝牙中删除旧记录后重新配对。"
             _error.value = null
             _connectionIssue.value = null
-            _activeStep.value = null
+            _activeStep.value = CameraConnectionStep.CameraPairingMode
         }
     }
 
@@ -397,7 +425,34 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
         _selectedCameraId.value = cameraService.selectedCameraId()
     }
 
-    private fun publishIssue(step: CameraConnectionStep, error: Throwable) {
+    private fun startPairedCameraOnlineRefresh(deviceName: String) {
+        cancelPairedCameraOnlineRefresh()
+        onlineRefreshJob = viewModelScope.launch {
+            try {
+                val online = cameraService.refreshPairedCameraOnlineStatus { status ->
+                    DiagnosticLog.append(appContext, "ConnectionStatus", status)
+                    if (_state.value == ConnectionState.PAIRED) {
+                        _statusText.value = status
+                    }
+                }
+                if (_state.value == ConnectionState.PAIRED && online) {
+                    _statusText.value = "相机在线: $deviceName"
+                } else if (_state.value == ConnectionState.PAIRED) {
+                    _statusText.value = "已保存配对，未连接相机: $deviceName"
+                    DiagnosticLog.append(appContext, "Connection", "Startup BLE online refresh did not find camera online")
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                DiagnosticLog.append(appContext, "Connection", "Remembered camera online refresh failed", e)
+                if (_state.value == ConnectionState.PAIRED) {
+                    _statusText.value = "已保存配对，未连接相机: $deviceName"
+                    DiagnosticLog.append(appContext, "Connection", "Startup BLE online refresh failed; keeping paired state")
+                }
+            }
+        }
+    }
+
+    private fun publishIssue(step: CameraConnectionStep, error: Throwable): CameraConnectionIssue {
         val issue = CameraConnectionIssueClassifier.fromThrowable(step, error)
         _connectionIssue.value = issue
         _activeStep.value = issue.step
@@ -406,6 +461,22 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
             "ConnectionIssue",
             "mode=${_connectionMode.value} phase=${issue.phase} step=${issue.step} failure=${issue.failure} action=${issue.primaryAction}",
         )
+        return issue
+    }
+
+    private fun publishRegistrationConsistencyIssueIfNeeded(): Boolean {
+        val issue = cameraService.registrationConsistencyIssue() ?: return false
+        _connectionIssue.value = issue
+        _activeStep.value = issue.step
+        _state.value = ConnectionState.ERROR
+        _statusText.value = issue.detail
+        _error.value = issue.detail
+        DiagnosticLog.append(
+            appContext,
+            "ConnectionIssue",
+            "registrationConsistency phase=${issue.phase} step=${issue.step} failure=${issue.failure} action=${issue.primaryAction}",
+        )
+        return true
     }
 
     private fun publishGalleryConnectionEvent() {
@@ -417,9 +488,49 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
         connectionJob = null
     }
 
+    private fun cancelPairedCameraOnlineRefresh() {
+        onlineRefreshJob?.cancel()
+        onlineRefreshJob = null
+    }
+
+    private suspend fun cancelPairedCameraOnlineRefreshAndWait() {
+        onlineRefreshJob?.cancelAndJoin()
+        onlineRefreshJob = null
+    }
+
+    private suspend fun awaitPairedCameraOnlineRefreshBeforeGalleryStart() {
+        val job = onlineRefreshJob ?: return
+        if (!job.isActive) {
+            onlineRefreshJob = null
+            return
+        }
+        DiagnosticLog.append(
+            appContext,
+            "Connection",
+            "Waiting for startup BLE online refresh before gallery start timeoutMs=$ONLINE_REFRESH_GALLERY_HANDOFF_WAIT_MS",
+        )
+        val completed = withTimeoutOrNull(ONLINE_REFRESH_GALLERY_HANDOFF_WAIT_MS) {
+            job.join()
+            true
+        } == true
+        if (completed) {
+            DiagnosticLog.append(appContext, "Connection", "Startup BLE online refresh completed before gallery start")
+            onlineRefreshJob = null
+        } else {
+            DiagnosticLog.append(
+                appContext,
+                "Connection",
+                "Startup BLE online refresh still running before gallery start; cancelling and restarting gallery BLE",
+            )
+            job.cancelAndJoin()
+            onlineRefreshJob = null
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
         cancelConnectionJob()
+        cancelPairedCameraOnlineRefresh()
     }
 }
 
@@ -430,6 +541,7 @@ enum class CameraConnectionRetryTarget {
     PairingScan,
     PairingModeConfirmation,
     GalleryEntryWithBle,
+    ResetConnection,
 }
 
 internal object CameraConnectionRetryPolicy {
@@ -437,8 +549,9 @@ internal object CameraConnectionRetryPolicy {
         when (step) {
             CameraConnectionStep.PairingConfirmation -> CameraConnectionRetryTarget.PairingConfirmation
             CameraConnectionStep.JoinCameraWifi -> CameraConnectionRetryTarget.WifiHandoffWithoutBle
-            CameraConnectionStep.ConnectPtp,
             CameraConnectionStep.LoadGallery -> CameraConnectionRetryTarget.ExistingPtpProbe
+            CameraConnectionStep.ConnectPtp,
+            CameraConnectionStep.RegistrationConsistencyCheck -> CameraConnectionRetryTarget.ResetConnection
             CameraConnectionStep.StaleBondCheck,
             CameraConnectionStep.BleScan,
             CameraConnectionStep.BleHandshake,

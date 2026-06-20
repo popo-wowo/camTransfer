@@ -10,15 +10,35 @@ import java.io.InputStream
 import java.net.InetAddress
 import java.net.Socket
 import java.net.SocketAddress
-import java.net.SocketTimeoutException
 import javax.net.SocketFactory
 
 class PtpConnectionInitFallbackTest {
     @Test
-    fun connectFallsBackToPlainLegacyInitWhenClientIpGuidDoesNotAck() = runBlocking {
-        val firstSocket = FakeSocket(TimeoutInputStream())
-        val secondSocket = FakeSocket(ByteArrayInputStream(initAck() + openSessionOk()))
-        val factory = QueueSocketFactory(firstSocket, secondSocket)
+    fun connectUsesClientIpInitBeforePlainLegacyFallback() = runBlocking {
+        val socket = FakeSocket(ByteArrayInputStream(initAck() + openSessionOk()))
+        val factory = QueueSocketFactory(socket)
+
+        PtpConnection().connect(
+            host = CameraVendorConst.DEFAULT_CAMERA_IP,
+            socketFactory = factory,
+            connectTimeoutMs = 10,
+            initReadTimeoutMs = 10,
+            commandReadTimeoutMs = 10,
+            confirmGalleryMode = false,
+        )
+
+        assertEquals(1, factory.createdSockets)
+        assertArrayEquals(
+            byteArrayOf(138.toByte(), 0x00, 168.toByte(), 192.toByte()),
+            socket.output.toByteArray().copyOfRange(24, 28),
+        )
+    }
+
+    @Test
+    fun connectFallsBackToPlainLegacyWhenClientIpInitFails() = runBlocking {
+        val clientIpSocket = FakeSocket(ByteArrayInputStream(ByteArray(0)), localAddress = "192.168.0.138")
+        val plainSocket = FakeSocket(ByteArrayInputStream(initAck() + openSessionOk()), localAddress = "192.168.0.138")
+        val factory = QueueSocketFactory(clientIpSocket, plainSocket)
 
         PtpConnection().connect(
             host = CameraVendorConst.DEFAULT_CAMERA_IP,
@@ -31,12 +51,12 @@ class PtpConnectionInitFallbackTest {
 
         assertEquals(2, factory.createdSockets)
         assertArrayEquals(
-            byteArrayOf(0x8A.toByte(), 0x00, 0xA8.toByte(), 0xC0.toByte()),
-            firstSocket.output.toByteArray().copyOfRange(24, 28),
+            byteArrayOf(138.toByte(), 0x00, 168.toByte(), 192.toByte()),
+            clientIpSocket.output.toByteArray().copyOfRange(24, 28),
         )
         assertArrayEquals(
             byteArrayOf(0x00, 0x00, 0x00, 0x00),
-            secondSocket.output.toByteArray().copyOfRange(24, 28),
+            plainSocket.output.toByteArray().copyOfRange(24, 28),
         )
     }
 
@@ -54,7 +74,10 @@ class PtpConnectionInitFallbackTest {
             createSocket()
     }
 
-    private class FakeSocket(private val input: InputStream) : Socket() {
+    private class FakeSocket(
+        private val input: InputStream,
+        private val localAddress: String = "192.168.0.138",
+    ) : Socket() {
         val output = ByteArrayOutputStream()
         var closed: Boolean = false
             private set
@@ -62,7 +85,7 @@ class PtpConnectionInitFallbackTest {
         override fun connect(endpoint: SocketAddress?, timeout: Int) = Unit
         override fun getInputStream(): InputStream = input
         override fun getOutputStream(): ByteArrayOutputStream = output
-        override fun getLocalAddress(): InetAddress = InetAddress.getByName("192.168.0.138")
+        override fun getLocalAddress(): InetAddress = InetAddress.getByName(localAddress)
         override fun close() {
             closed = true
         }
@@ -71,12 +94,6 @@ class PtpConnectionInitFallbackTest {
         override fun setReceiveBufferSize(size: Int) = Unit
         override fun setSendBufferSize(size: Int) = Unit
         override fun setSoTimeout(timeout: Int) = Unit
-    }
-
-    private class TimeoutInputStream : InputStream() {
-        override fun read(): Int = throw SocketTimeoutException("Read timed out")
-        override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
-            throw SocketTimeoutException("Read timed out")
     }
 
     private fun initAck(): ByteArray =

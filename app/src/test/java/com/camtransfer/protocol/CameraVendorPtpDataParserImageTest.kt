@@ -7,6 +7,47 @@ import org.junit.Test
 
 class CameraVendorPtpDataParserImageTest {
     @Test
+    fun parsesCountPrefixedPtpStringDateCounts() {
+        val payload = uint32(2) +
+            ptpString("20260620") + uint32(12) +
+            ptpString("20260619") + uint32(3)
+
+        val result = CameraVendorPtpDataParser.objectCountsByDate(payload)
+
+        assertEquals(
+            listOf(
+                CameraVendorObjectCountByDate("20260620", 12),
+                CameraVendorObjectCountByDate("20260619", 3),
+            ),
+            result,
+        )
+    }
+
+    @Test
+    fun parsesCountPrefixedAsciiDateCounts() {
+        val payload = uint32(2) +
+            "20260620".toByteArray(Charsets.US_ASCII) + uint32(12) +
+            "20260619".toByteArray(Charsets.US_ASCII) + uint32(3)
+
+        val result = CameraVendorPtpDataParser.objectCountsByDate(payload)
+
+        assertEquals(
+            listOf(
+                CameraVendorObjectCountByDate("20260620", 12),
+                CameraVendorObjectCountByDate("20260619", 3),
+            ),
+            result,
+        )
+    }
+
+    @Test
+    fun rejectsImplausibleDateCountPayloads() {
+        val payload = uint32(1) + ptpString("not-a-date") + uint32(12)
+
+        assertEquals(emptyList<CameraVendorObjectCountByDate>(), CameraVendorPtpDataParser.objectCountsByDate(payload))
+    }
+
+    @Test
     fun parsesCameraVendorObjectInfoOrientationMetadata() {
         val payload = byteArrayOf(
             0x01, 0x00, 0x00, 0x10, 0x12, 0x38, 0x00, 0x00,
@@ -110,6 +151,14 @@ class CameraVendorPtpDataParserImageTest {
         bytes.add(0)
         return bytes.toByteArray()
     }
+
+    private fun uint32(value: Int): ByteArray =
+        byteArrayOf(
+            (value and 0xFF).toByte(),
+            ((value ushr 8) and 0xFF).toByte(),
+            ((value ushr 16) and 0xFF).toByte(),
+            ((value ushr 24) and 0xFF).toByte(),
+        )
 
     private fun standardObjectInfoPayload(
         filename: String,

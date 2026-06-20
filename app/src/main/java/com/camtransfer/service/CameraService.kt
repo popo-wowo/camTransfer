@@ -9,7 +9,7 @@ import android.util.Log
 import com.camtransfer.ble.CameraVendorBleHandshake
 import com.camtransfer.ble.CameraVendorBleScanner
 import com.camtransfer.ble.CameraVendorBleTransferActivationPolicy
-import com.camtransfer.ble.CameraVendorHandshakeIdentityPolicy
+import com.camtransfer.ble.CameraVendorConnectedDeviceNameStore
 import com.camtransfer.model.CameraFile
 import com.camtransfer.protocol.CameraVendorPtpIdentityPolicy
 import com.camtransfer.protocol.PtpCommands
@@ -64,39 +64,11 @@ class CameraService(override val context: Context) : CameraFileSource {
 
     @SuppressLint("MissingPermission")
     fun rememberedPairing(): CameraVendorPairedCameraRecord? {
-        pairingStore.load()?.let { return it }
-        if (!CameraBluetoothPermissionPolicy.canReadSystemBonds(context)) {
-            DiagnosticLog.append(context, TAG, "Skipped system BLE bonds fallback: missing BLUETOOTH_CONNECT")
-            return null
-        }
-        val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-        val bondedCamera = manager.adapter.bondedDevices
-            ?.firstOrNull { device ->
-                val name = device.name.orEmpty().uppercase()
-                val isCamera = name.startsWith("X-") || name.startsWith("FUJIFILM") || name.startsWith("GFX")
-                isCamera && CameraVendorPairingForgetPolicy.canUseSystemBondAsRememberedPairing(
-                    bluetoothAddress = device.address,
-                    deletedBluetoothAddresses = pairingStore.deletedBluetoothAddresses(),
-                )
-            }
-            ?: return null
-        return CameraVendorPairedCameraRecord(
-            deviceName = bondedCamera.name ?: "CAMERA_VENDOR",
-            serialNumber = "",
-            wifiConfigurations = emptyList(),
-            bluetoothAddress = bondedCamera.address,
-            cameraId = CameraVendorCameraIdentityPolicy.cameraId(
-                serialNumber = "",
-                deviceName = bondedCamera.name,
-                bluetoothAddress = bondedCamera.address,
-            ),
-        )
+        return pairingStore.load()
     }
 
     fun pairedCameras(): List<CameraVendorPairedCameraRecord> =
-        pairingStore.loadAll().ifEmpty {
-            rememberedPairing()?.let { listOf(it) }.orEmpty()
-        }
+        pairingStore.loadAll()
 
     fun selectedCameraId(): String? =
         rememberedPairing()?.cameraId
@@ -104,6 +76,62 @@ class CameraService(override val context: Context) : CameraFileSource {
     fun selectPairedCamera(cameraId: String) {
         pairingStore.select(cameraId)
         clearHandshake()
+    }
+
+    fun registrationConsistencyIssue(): CameraConnectionIssue? {
+        val canReadSystemBonds = CameraBluetoothPermissionPolicy.canReadSystemBonds(context)
+        if (!canReadSystemBonds) {
+            DiagnosticLog.append(context, TAG, "Skipped registration consistency check: missing BLUETOOTH_CONNECT")
+        }
+        val savedRegistration = pairingStore.load()
+        val systemBonds = systemBluetoothBonds()
+        DiagnosticLog.append(
+            context,
+            TAG,
+            "Registration consistency check saved=${savedRegistration != null} " +
+                "cameraId=${savedRegistration?.cameraId.orEmpty()} " +
+                "savedBluetoothAddressPresent=${!savedRegistration?.bluetoothAddress.isNullOrBlank()} " +
+                "registeredTerminalNamePresent=${!savedRegistration?.registeredTerminalName.isNullOrBlank()} " +
+                "registeredTerminalNameLength=${savedRegistration?.registeredTerminalName.orEmpty().length} " +
+                "canReadSystemBonds=$canReadSystemBonds systemBondCount=${systemBonds.size}",
+        )
+        val issue = CameraVendorPairingRegistrationPolicy.issueFor(
+            savedRegistration = savedRegistration,
+            systemBonds = systemBonds,
+            canReadSystemBonds = canReadSystemBonds,
+        )
+        DiagnosticLog.append(
+            context,
+            TAG,
+            "Registration consistency result issue=${issue?.failure ?: "none"} action=${issue?.primaryAction ?: "none"}",
+        )
+        if (issue == null) {
+            val registeredTerminalName = savedRegistration?.registeredTerminalName
+            if (!registeredTerminalName.isNullOrBlank()) {
+                val repaired = CameraVendorConnectedDeviceNameStore(context).rememberRegisteredTerminalName(registeredTerminalName)
+                DiagnosticLog.append(
+                    context,
+                    TAG,
+                    "Registered terminal name cache sync repaired=$repaired length=${registeredTerminalName.length}",
+                )
+            }
+        }
+        return issue
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun systemBluetoothBonds(): List<CameraVendorSystemBluetoothBond> {
+        if (!CameraBluetoothPermissionPolicy.canReadSystemBonds(context)) return emptyList()
+        val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        return manager.adapter.bondedDevices
+            ?.map { device ->
+                CameraVendorSystemBluetoothBond(
+                    name = device.name.orEmpty(),
+                    address = device.address.orEmpty(),
+                    bondState = device.bondState,
+                )
+            }
+            .orEmpty()
     }
 
     suspend fun connectToCamera(onStatus: (String) -> Unit = {}) {
@@ -137,6 +165,10 @@ class CameraService(override val context: Context) : CameraFileSource {
 
     suspend fun confirmPairing(onStatus: (String) -> Unit = {}) {
         pairingService.confirmPairing(onStatus)
+    }
+
+    suspend fun refreshPairedCameraOnlineStatus(onStatus: (String) -> Unit = {}): Boolean {
+        return galleryConnectionCoordinator.refreshRememberedCameraBleOnlineStatus(onStatus)
     }
 
     suspend fun connectPairedCameraToGallery(onStatus: (String) -> Unit = {}) {
@@ -183,12 +215,22 @@ class CameraService(override val context: Context) : CameraFileSource {
     }
 
     private fun cameraVendorPtpClientName(): String {
-        val decision = CameraVendorHandshakeIdentityPolicy.currentConnectedDeviceNameDecision()
-        val ptpName = CameraVendorPtpIdentityPolicy.legacyInitFriendlyName(decision.name)
+        val rememberedName = rememberedPairing()?.registeredTerminalName?.takeIf { it.isNotBlank() }
+        val decision = CameraVendorConnectedDeviceNameStore(context).currentDecision()
+        val terminalName = rememberedName ?: decision.name
+        val source = if (rememberedName != null) "paired_camera_registered_terminal_name" else decision.source
         DiagnosticLog.append(
             context,
             TAG,
-            "PTP client name decision name=$ptpName source=${decision.source} " +
+            "Terminal name consistency before PTP rememberedPresent=${rememberedName != null} " +
+                "rememberedLength=${rememberedName.orEmpty().length} storeSource=${decision.source} " +
+                "storeLength=${decision.name.length} same=${rememberedName == null || rememberedName == decision.name}",
+        )
+        val ptpName = CameraVendorPtpIdentityPolicy.legacyInitFriendlyName(terminalName)
+        DiagnosticLog.append(
+            context,
+            TAG,
+            "PTP client name decision name=$ptpName source=$source " +
                 "rawLength=${decision.rawLength} normalizedLength=${decision.normalizedLength} " +
                 "utf16BytesWithNull=${ptpName.toByteArray(Charsets.UTF_16LE).size + 2}",
         )
@@ -207,7 +249,7 @@ class CameraService(override val context: Context) : CameraFileSource {
 
     private fun rememberedRecordFor(hs: CameraVendorBleHandshake): CameraVendorPairedCameraRecord {
         val wifiConfigurations = hs.referenceAppWifiConfigurations()
-        return CameraVendorPairedCameraRecord(
+        val record = CameraVendorPairedCameraRecord(
             deviceName = hs.cameraName(),
             serialNumber = hs.cameraSerial(),
             wifiConfigurations = wifiConfigurations,
@@ -218,8 +260,18 @@ class CameraService(override val context: Context) : CameraFileSource {
                 bluetoothAddress = hs.bluetoothAddress(),
                 wifiSsid = wifiConfigurations.firstOrNull()?.ssid,
             ),
+            registeredTerminalName = CameraVendorConnectedDeviceNameStore(context).currentDecision().name,
             lastConnectedAtMillis = System.currentTimeMillis(),
         )
+        DiagnosticLog.append(
+            context,
+            TAG,
+            "Remembered pairing record prepared cameraId=${record.cameraId} " +
+                "bluetoothAddressPresent=${!record.bluetoothAddress.isNullOrBlank()} " +
+                "registeredTerminalNamePresent=${!record.registeredTerminalName.isNullOrBlank()} " +
+                "registeredTerminalNameLength=${record.registeredTerminalName.orEmpty().length}",
+        )
+        return record
     }
 
     @SuppressLint("MissingPermission")
@@ -313,14 +365,26 @@ class CameraService(override val context: Context) : CameraFileSource {
     }
 
     suspend fun forgetPairing() {
+        resetConnectionForFreshPairing()
+    }
+
+    suspend fun resetConnectionForFreshPairing() {
+        DiagnosticLog.append(context, TAG, "Reset connection for fresh pairing")
         val remembered = rememberedPairing()
         val bluetoothAddresses = remembered
-            ?.let { rememberedBluetoothAddressCandidates(it) }
-            .orEmpty()
+            ?.let {
+                (listOfNotNull(it.bluetoothAddress) + rememberedBluetoothAddressCandidates(it))
+                    .filter { address -> address.isNotBlank() }
+                    .distinct()
+            }
+            .orEmpty() + CameraVendorPairingRegistrationPolicy.systemCameraBondAddresses(systemBluetoothBonds())
         disconnect()
-        pairingStore.rememberDeletedBluetoothAddresses(bluetoothAddresses)
-        removeSystemBluetoothBonds(bluetoothAddresses)
+        val cleanupAddresses = bluetoothAddresses.distinct()
+        pairingStore.rememberDeletedBluetoothAddresses(cleanupAddresses)
+        removeSystemBluetoothBonds(cleanupAddresses)
         pairingStore.clear()
+        CameraVendorTerminalIdentityStore(context).clearRegisteredTerminalName()
+        DiagnosticLog.append(context, TAG, "Cleared pairing store and registered terminal name for fresh pairing")
     }
 
     @SuppressLint("MissingPermission")

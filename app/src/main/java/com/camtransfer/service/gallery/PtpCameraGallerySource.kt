@@ -39,8 +39,24 @@ class PtpCameraGallerySource(
             connection.cameraVendorSpecifiedObjectHandles
         )
         if (handles.isEmpty()) return emptyList()
-        DiagnosticLog.append(context, TAG, "Fast gallery placeholders count=${handles.size}")
-        return handles.map { handle -> CameraFile(placeholderObjectInfo(handle)) }
+        val captureDatesByHandle = CameraVendorGalleryDiscoveryPolicy.captureDatesByHandle(
+            specifiedHandles = connection.cameraVendorSpecifiedObjectHandles,
+            countsByDate = connection.cameraVendorSpecifiedObjectCountsByDate,
+        )
+        DiagnosticLog.append(
+            context,
+            TAG,
+            "Fast gallery placeholders count=${handles.size} dateGroups=${connection.cameraVendorSpecifiedObjectCountsByDate.size} " +
+                "datedPlaceholders=${captureDatesByHandle.size}",
+        )
+        return handles.map { handle ->
+            CameraFile(
+                placeholderObjectInfo(
+                    handle = handle,
+                    captureDate = captureDatesByHandle[handle].orEmpty(),
+                )
+            )
+        }
     }
 
     override suspend fun getThumbnail(handle: Int): ByteArray {
@@ -96,7 +112,7 @@ class PtpCameraGallerySource(
 
     override suspend fun disconnect() = Unit
 
-    private fun placeholderObjectInfo(handle: Int): ObjectInfo = ObjectInfo(
+    private fun placeholderObjectInfo(handle: Int, captureDate: String = ""): ObjectInfo = ObjectInfo(
         handle = handle,
         storageId = 0,
         format = PtpObjectFormat.JPEG,
@@ -109,6 +125,6 @@ class PtpCameraGallerySource(
         imagePixHeight = 0,
         parentObject = 0,
         filename = "0x%08X.JPG".format(handle),
-        captureDate = "",
+        captureDate = captureDate,
     )
 }

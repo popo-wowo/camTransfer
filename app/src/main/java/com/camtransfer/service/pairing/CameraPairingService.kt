@@ -2,6 +2,7 @@ package com.camtransfer.service.pairing
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.util.Log
 import com.camtransfer.ble.CameraVendorBleHandshake
@@ -11,7 +12,8 @@ import com.camtransfer.service.CameraBluetoothPermissionPolicy
 import com.camtransfer.service.CameraPairingGuidance
 import com.camtransfer.service.CameraVendorPairedCameraRecord
 import com.camtransfer.service.CameraVendorPairedCameraStore
-import com.camtransfer.service.CameraVendorPairingForgetPolicy
+import com.camtransfer.service.CameraVendorPairingRegistrationPolicy
+import com.camtransfer.service.CameraVendorSystemBluetoothBond
 import com.camtransfer.service.DiagnosticLog
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeout
@@ -72,11 +74,32 @@ class CameraPairingService(
             DiagnosticLog.append(context, TAG, "Skipped stale BLE bond check: missing BLUETOOTH_CONNECT")
             return
         }
-        if (!CameraVendorPairingForgetPolicy.shouldPromptSystemBondRemovalBeforeFreshPairing(device.bondState)) {
-            return
-        }
-        val message = CameraVendorPairingForgetPolicy.systemBondRemovalMessage(device.name)
-        DiagnosticLog.append(context, TAG, "Fresh pairing blocked by existing system BLE bond")
-        throw IllegalStateException(message)
+        val issue = CameraVendorPairingRegistrationPolicy.freshPairingIssueForScannedCamera(
+            scannedDeviceName = device.name,
+            scannedDeviceAddress = device.address,
+            systemBonds = systemBluetoothBonds(),
+            canReadSystemBonds = true,
+        ) ?: return
+        DiagnosticLog.append(
+            context,
+            TAG,
+            "Fresh pairing blocked by existing system BLE bond address=${device.address}",
+        )
+        throw IllegalStateException(issue.detail)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun systemBluetoothBonds(): List<CameraVendorSystemBluetoothBond> {
+        if (!CameraBluetoothPermissionPolicy.canReadSystemBonds(context)) return emptyList()
+        val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        return manager.adapter.bondedDevices
+            ?.map { device ->
+                CameraVendorSystemBluetoothBond(
+                    name = device.name.orEmpty(),
+                    address = device.address.orEmpty(),
+                    bondState = device.bondState,
+                )
+            }
+            .orEmpty()
     }
 }

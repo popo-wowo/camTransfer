@@ -6,7 +6,7 @@ enum class CameraVendorBleReconnectStage {
 }
 
 object CameraVendorBleReconnectPolicy {
-    const val REMEMBERED_DIRECT_CONNECT_TIMEOUT_MS = 15_000L
+    const val REMEMBERED_DIRECT_CONNECT_TIMEOUT_MS = 5_000L
     const val REMEMBERED_RECONNECT_SCAN_TIMEOUT_MS = 12_000L
 
     fun reconnectStages(

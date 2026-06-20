@@ -10,8 +10,8 @@ class CameraVendorWifiJoinPolicyTest {
     }
 
     @Test
-    fun exactWifiRequestRetriesShortUnavailableBeforeSurfacingFailure() {
-        assertEquals(5, CameraVendorWifiJoinPolicy.AUTO_JOIN_ATTEMPTS_PER_EXACT_NETWORK)
+    fun exactWifiRequestSurfacesUnavailableWithoutInternalRetryLoop() {
+        assertEquals(1, CameraVendorWifiJoinPolicy.AUTO_JOIN_ATTEMPTS_PER_EXACT_NETWORK)
         assertEquals(1_500L, CameraVendorWifiJoinPolicy.retryDelayMs(afterFailedAttempt = 1))
         assertEquals(3_000L, CameraVendorWifiJoinPolicy.retryDelayMs(afterFailedAttempt = 2))
         assertEquals(4_000L, CameraVendorWifiJoinPolicy.retryDelayMs(afterFailedAttempt = 3))
