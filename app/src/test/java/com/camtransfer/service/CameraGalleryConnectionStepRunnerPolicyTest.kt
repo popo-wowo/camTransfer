@@ -46,7 +46,7 @@ class CameraGalleryConnectionStepRunnerPolicyTest {
         ).first { it.exists() }.readText()
 
         assertTrue(serviceSource.contains("private val galleryConnectionCoordinator"))
-        assertTrue(serviceSource.contains("galleryConnectionCoordinator.connectToGallery(onStatus)"))
+        assertTrue(serviceSource.contains("galleryConnectionCoordinator.connectToGallery(onStatus, onStep)"))
         assertTrue(serviceSource.contains("CameraGalleryConnectionCoordinator"))
     }
 }

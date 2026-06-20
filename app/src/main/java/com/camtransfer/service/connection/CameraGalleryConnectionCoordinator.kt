@@ -17,6 +17,7 @@ import com.camtransfer.protocol.CameraVendorPtpConnectionStartupPolicy
 import com.camtransfer.protocol.PtpConnection
 import com.camtransfer.service.CameraBluetoothPermissionPolicy
 import com.camtransfer.service.CameraConnectionCancellationPolicy
+import com.camtransfer.service.CameraConnectionStep
 import com.camtransfer.service.CameraVendorBleEndpointPolicy
 import com.camtransfer.service.CameraVendorCameraIdentityPolicy
 import com.camtransfer.service.CameraVendorOfficialCameraOpenAdapter
@@ -74,12 +75,16 @@ class CameraGalleryConnectionCoordinator(
         }
     }
 
-    suspend fun connectToGallery(onStatus: (String) -> Unit = {}) {
+    suspend fun connectToGallery(
+        onStatus: (String) -> Unit = {},
+        onStep: (CameraConnectionStep) -> Unit = {},
+    ) {
         var connectedHandshake: CameraVendorBleHandshake? = null
         var wifiConfigurations: List<CameraVendorWifiNetworkConfiguration> = emptyList()
         val preferCompressedDownloads = preferCompressedDownloads()
         CameraGalleryConnectionService(
             onStepStarted = { step ->
+                onStep(step)
                 DiagnosticLog.append(context, TAG, "Official gallery step started step=$step")
             },
             onStepConfirmed = { step, elapsedMs ->
@@ -231,11 +236,15 @@ class CameraGalleryConnectionCoordinator(
     suspend fun connectWifiAndPtp(
         wifiConfigurations: List<CameraVendorWifiNetworkConfiguration>,
         onStatus: (String) -> Unit,
+        onStep: (CameraConnectionStep) -> Unit = {},
     ) {
+        onStep(CameraConnectionStep.JoinCameraWifi)
         joinCameraWifi(wifiConfigurations, onStatus)
+        onStep(CameraConnectionStep.ConnectPtp)
         onStatus("手机已连到相机 Wi-Fi，正在打开相机 PTP 通信会话")
         connectPtpWithRetry(onStatus)
 
+        onStep(CameraConnectionStep.LoadGallery)
         onStatus("已连接")
         Log.d(TAG, "Full connection established")
         DiagnosticLog.append(context, TAG, "Full connection established")

@@ -146,16 +146,16 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
                 if (CameraConnectionEntryPolicy.shouldProbeExistingPtpBeforeBle(entryState, hasRememberedPairing)) {
                     currentStep = CameraConnectionStep.ExistingPtpProbe
                     _activeStep.value = currentStep
-                    val directPtpConnected = cameraService.connectExistingCameraWifiToGallery { status ->
-                        DiagnosticLog.append(appContext, "ConnectionStatus", status)
-                        _statusText.value = status
-                        _state.value = when {
-                            "已连接" in status -> ConnectionState.CONNECTED
-                            else -> ConnectionState.CONNECTING_PTP
-                        }
-                        currentStep = CameraConnectionStep.ExistingPtpProbe
-                        _activeStep.value = currentStep
-                    }
+                    val directPtpConnected = cameraService.connectExistingCameraWifiToGallery(
+                        onStatus = { status ->
+                            DiagnosticLog.append(appContext, "ConnectionStatus", status)
+                            _statusText.value = status
+                        },
+                        onStep = { step ->
+                            currentStep = step
+                            publishActiveStep(step)
+                        },
+                    )
                     if (directPtpConnected) {
                         _state.value = ConnectionState.CONNECTED
                         _connectionIssue.value = null
@@ -165,13 +165,16 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
                     }
                     _state.value = ConnectionState.SCANNING
                 }
-                cameraService.pairWithCamera { status ->
-                    DiagnosticLog.append(appContext, "ConnectionStatus", status)
-                    _statusText.value = status
-                    _state.value = CameraConnectionStatusPolicy.pairingState(status, _state.value)
-                    currentStep = CameraConnectionStatusPolicy.pairingStep(status, currentStep)
-                    _activeStep.value = currentStep
-                }
+                cameraService.pairWithCamera(
+                    onStatus = { status ->
+                        DiagnosticLog.append(appContext, "ConnectionStatus", status)
+                        _statusText.value = status
+                    },
+                    onStep = { step ->
+                        currentStep = step
+                        publishActiveStep(step)
+                    },
+                )
                 _state.value = ConnectionState.WAITING_CAMERA_CONFIRMATION
                 _activeStep.value = CameraConnectionStep.PairingConfirmation
                 _connectionIssue.value = null
@@ -193,14 +196,15 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
         cancelConnectionJob()
         connectionJob = viewModelScope.launch {
             try {
-                cameraService.confirmPairing { status ->
-                    DiagnosticLog.append(appContext, "ConnectionStatus", status)
-                    _statusText.value = status
-                    _state.value = when {
-                        "配对成功" in status -> ConnectionState.PAIRED
-                        else -> ConnectionState.CONNECTING_BLE
-                    }
-                }
+                cameraService.confirmPairing(
+                    onStatus = { status ->
+                        DiagnosticLog.append(appContext, "ConnectionStatus", status)
+                        _statusText.value = status
+                    },
+                    onStep = { step ->
+                        publishActiveStep(step)
+                    },
+                )
                 _state.value = ConnectionState.PAIRED
                 _activeStep.value = CameraConnectionStep.SavePairing
                 refreshPairedCameras()
@@ -240,13 +244,16 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     awaitPairedCameraOnlineRefreshBeforeGalleryStart()
                 }
-                cameraService.connectPairedCameraToGallery { status ->
-                    DiagnosticLog.append(appContext, "ConnectionStatus", status)
-                    _statusText.value = status
-                    currentStep = CameraConnectionStatusPolicy.galleryStep(status, currentStep)
-                    _activeStep.value = currentStep
-                    _state.value = CameraConnectionStatusPolicy.galleryState(status, _state.value)
-                }
+                cameraService.connectPairedCameraToGallery(
+                    onStatus = { status ->
+                        DiagnosticLog.append(appContext, "ConnectionStatus", status)
+                        _statusText.value = status
+                    },
+                    onStep = { step ->
+                        currentStep = step
+                        publishActiveStep(step)
+                    },
+                )
                 _state.value = ConnectionState.CONNECTED
                 _activeStep.value = CameraConnectionStep.LoadGallery
                 _connectionIssue.value = null
@@ -282,24 +289,20 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
         cancelPairedCameraOnlineRefresh()
         connectionJob = viewModelScope.launch {
             try {
-                val directPtpConnected = cameraService.connectExistingCameraWifiToGallery { status ->
-                    DiagnosticLog.append(appContext, "ConnectionStatus", status)
-                    _statusText.value = status
-                    _activeStep.value = if ("已连接" in status) {
-                        CameraConnectionStep.LoadGallery
-                    } else {
-                        CameraConnectionStep.ConnectPtp
-                    }
-                    _state.value = when {
-                        "已连接" in status -> ConnectionState.CONNECTED
-                        else -> ConnectionState.CONNECTING_PTP
-                    }
-                }
+                val directPtpConnected = cameraService.connectExistingCameraWifiToGallery(
+                    onStatus = { status ->
+                        DiagnosticLog.append(appContext, "ConnectionStatus", status)
+                        _statusText.value = status
+                    },
+                    onStep = { step ->
+                        publishActiveStep(step)
+                    },
+                )
                 if (directPtpConnected) {
-                _state.value = ConnectionState.CONNECTED
-                _connectionIssue.value = null
-                refreshPairedCameras()
-                DiagnosticLog.append(appContext, "Connection", "Gallery connection established after manual WiFi")
+                    _state.value = ConnectionState.CONNECTED
+                    _connectionIssue.value = null
+                    refreshPairedCameras()
+                    DiagnosticLog.append(appContext, "Connection", "Gallery connection established after manual WiFi")
                     publishGalleryConnectionEvent()
                 } else {
                     val issue = CameraConnectionIssue.ptpNotReady()
@@ -327,13 +330,16 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
         connectionJob = viewModelScope.launch {
             var currentStep = CameraConnectionStep.JoinCameraWifi
             try {
-                cameraService.retryCameraWifiToGallery { status ->
-                    DiagnosticLog.append(appContext, "ConnectionStatus", status)
-                    _statusText.value = status
-                    currentStep = CameraConnectionStatusPolicy.galleryStep(status, currentStep)
-                    _activeStep.value = currentStep
-                    _state.value = CameraConnectionStatusPolicy.galleryState(status, _state.value)
-                }
+                cameraService.retryCameraWifiToGallery(
+                    onStatus = { status ->
+                        DiagnosticLog.append(appContext, "ConnectionStatus", status)
+                        _statusText.value = status
+                    },
+                    onStep = { step ->
+                        currentStep = step
+                        publishActiveStep(step)
+                    },
+                )
                 _state.value = ConnectionState.CONNECTED
                 _activeStep.value = CameraConnectionStep.LoadGallery
                 _connectionIssue.value = null
@@ -423,6 +429,11 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
         val cameras = cameraService.pairedCameras()
         _pairedCameras.value = cameras
         _selectedCameraId.value = cameraService.selectedCameraId()
+    }
+
+    private fun publishActiveStep(step: CameraConnectionStep) {
+        _activeStep.value = step
+        _state.value = CameraConnectionUiPolicy.stateForStep(step)
     }
 
     private fun startPairedCameraOnlineRefresh(deviceName: String) {
@@ -565,80 +576,4 @@ internal object CameraConnectionRetryPolicy {
 internal object CameraConnectionEntryPolicy {
     fun shouldProbeExistingPtpBeforeBle(state: ConnectionState, hasRememberedPairing: Boolean): Boolean =
         state == ConnectionState.ERROR && hasRememberedPairing
-}
-
-internal object CameraConnectionStatusPolicy {
-    fun pairingState(status: String, currentState: ConnectionState): ConnectionState =
-        when {
-            "搜索" in status -> ConnectionState.SCANNING
-            "蓝牙" in status -> ConnectionState.CONNECTING_BLE
-            "确认" in status -> ConnectionState.WAITING_CAMERA_CONFIRMATION
-            "配对成功" in status -> ConnectionState.PAIRED
-            status.hasWifiText() -> ConnectionState.CONNECTING_WIFI
-            status.hasAlbumChannelText() -> ConnectionState.CONNECTING_PTP
-            else -> currentState
-        }
-
-    fun galleryState(status: String, currentState: ConnectionState): ConnectionState =
-        when {
-            status.hasTransferAuthorizationText() ||
-                status.hasCameraWifiActivationText() ||
-                status.hasCameraWifiReadyWaitText() -> ConnectionState.CONNECTING_BLE
-            status.hasWifiText() -> ConnectionState.CONNECTING_WIFI
-            status.hasAlbumChannelText() -> ConnectionState.CONNECTING_PTP
-            status.hasGalleryModeConfirmationText() -> ConnectionState.CONNECTING_PTP
-            "已连接" in status -> ConnectionState.CONNECTED
-            status.hasRememberedBleReconnectText() ||
-                "蓝牙" in status ||
-                "传图" in status ||
-                "相机允许" in status -> ConnectionState.CONNECTING_BLE
-            else -> currentState
-        }
-
-    fun pairingStep(status: String, currentStep: CameraConnectionStep): CameraConnectionStep =
-        when {
-            "搜索" in status -> CameraConnectionStep.BleScan
-            "蓝牙" in status -> CameraConnectionStep.BleHandshake
-            "确认" in status -> CameraConnectionStep.PairingConfirmation
-            else -> currentStep
-        }
-
-    fun galleryStep(status: String, currentStep: CameraConnectionStep): CameraConnectionStep =
-        when {
-            status.hasRememberedBleReconnectText() -> CameraConnectionStep.ReconnectPairedBle
-            status.hasTransferAuthorizationText() -> CameraConnectionStep.TransferAuthorization
-            status.hasCameraWifiActivationText() -> CameraConnectionStep.ActivateCameraWifi
-            status.hasCameraWifiReadyWaitText() -> CameraConnectionStep.WaitCameraWifiReady
-            status.hasWifiText() -> CameraConnectionStep.JoinCameraWifi
-            status.hasAlbumChannelText() -> CameraConnectionStep.ConnectPtp
-            status.hasGalleryModeConfirmationText() -> CameraConnectionStep.ConfirmGalleryMode
-            "恢复" in status || "触发" in status || "传图" in status -> CameraConnectionStep.ActivateCameraWifi
-            "已连接" in status -> CameraConnectionStep.LoadGallery
-            else -> currentStep
-        }
-
-    private fun String.hasWifiText(): Boolean =
-        "WiFi" in this || "Wi-Fi" in this || "Wi‑Fi" in this
-
-    private fun String.hasAlbumChannelText(): Boolean =
-        "PTP" in this || "相册通道" in this
-
-    private fun String.hasTransferAuthorizationText(): Boolean =
-        "确认相机允许" in this
-
-    private fun String.hasCameraWifiActivationText(): Boolean =
-        "让相机打开" in this && hasWifiText()
-
-    private fun String.hasCameraWifiReadyWaitText(): Boolean =
-        "等待相机确认" in this && "准备好" in this && hasWifiText()
-
-    private fun String.hasGalleryModeConfirmationText(): Boolean =
-        "确认相机" in this && "相册模式" in this
-
-    private fun String.hasRememberedBleReconnectText(): Boolean =
-        "直连已配对相机" in this ||
-            "查找已配对相机" in this ||
-            "唤醒已配对相机" in this ||
-            "复用刚才的相机蓝牙连接" in this ||
-            "这台已配对相机" in this
 }

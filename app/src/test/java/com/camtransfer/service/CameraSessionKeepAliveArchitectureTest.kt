@@ -34,9 +34,9 @@ class CameraSessionKeepAliveArchitectureTest {
         assertTrue(method.contains("CameraSessionKeepAlive.start(context)"))
         assertTrue(method.contains("CameraSessionKeepAlive.stop(context)"))
         assertTrue(method.indexOf("CameraSessionKeepAlive.start(context)") >
-            method.indexOf("galleryConnectionCoordinator.connectToGallery(onStatus)"))
+            method.indexOf("galleryConnectionCoordinator.connectToGallery(onStatus, onStep)"))
         assertTrue(method.indexOf("CameraSessionKeepAlive.stop(context)") >
-            method.indexOf("galleryConnectionCoordinator.connectToGallery(onStatus)"))
+            method.indexOf("galleryConnectionCoordinator.connectToGallery(onStatus, onStep)"))
     }
 
     @Test
@@ -150,6 +150,27 @@ class CameraSessionKeepAliveArchitectureTest {
         assertTrue(galleryMethod.contains("publishRegistrationConsistencyIssueIfNeeded()"))
         assertTrue(galleryMethod.indexOf("publishRegistrationConsistencyIssueIfNeeded()") <
             galleryMethod.indexOf("cameraService.connectPairedCameraToGallery"))
+    }
+
+    @Test
+    fun connectionViewModelUsesStructuredStepsInsteadOfParsingStatusCopy() {
+        val source = sourceFile("viewmodel/ConnectionViewModel.kt").readText()
+
+        assertTrue(source.contains("onStep = { step ->"))
+        assertTrue(source.contains("publishActiveStep(step)"))
+        assertTrue(!source.contains("CameraConnectionStatusPolicy."))
+    }
+
+    @Test
+    fun cameraServiceConnectionEntryPointsExposeStructuredStepCallbacks() {
+        val source = sourceFile("service/CameraService.kt").readText()
+
+        assertTrue(source.contains("suspend fun pairWithCamera("))
+        assertTrue(source.contains("onStep: (CameraConnectionStep) -> Unit = {}"))
+        assertTrue(source.contains("pairingService.pairWithCamera(onStatus, onStep)"))
+        assertTrue(source.contains("pairingService.confirmPairing(onStatus, onStep)"))
+        assertTrue(source.contains("galleryConnectionCoordinator.connectToGallery(onStatus, onStep)"))
+        assertTrue(source.contains("galleryConnectionCoordinator.connectWifiAndPtp(wifiConfigurations, onStatus, onStep)"))
     }
 
     @Test

@@ -27,7 +27,7 @@ class CameraPairingServiceArchitectureTest {
         ).first { it.exists() }.readText()
 
         assertTrue(serviceSource.contains("private val pairingService"))
-        assertTrue(serviceSource.contains("pairingService.pairWithCamera(onStatus)"))
-        assertTrue(serviceSource.contains("pairingService.confirmPairing(onStatus)"))
+        assertTrue(serviceSource.contains("pairingService.pairWithCamera(onStatus, onStep)"))
+        assertTrue(serviceSource.contains("pairingService.confirmPairing(onStatus, onStep)"))
     }
 }

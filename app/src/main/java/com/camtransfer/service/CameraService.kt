@@ -133,17 +133,26 @@ class CameraService(override val context: Context) : CameraFileSource {
             .orEmpty()
     }
 
-    suspend fun connectToCamera(onStatus: (String) -> Unit = {}) {
-        pairWithCamera(onStatus)
-        confirmPairing(onStatus)
-        connectPairedCameraToGallery(onStatus)
+    suspend fun connectToCamera(
+        onStatus: (String) -> Unit = {},
+        onStep: (CameraConnectionStep) -> Unit = {},
+    ) {
+        pairWithCamera(onStatus, onStep)
+        confirmPairing(onStatus, onStep)
+        connectPairedCameraToGallery(onStatus, onStep)
     }
 
-    suspend fun connectExistingCameraWifiToGallery(onStatus: (String) -> Unit = {}): Boolean {
+    suspend fun connectExistingCameraWifiToGallery(
+        onStatus: (String) -> Unit = {},
+        onStep: (CameraConnectionStep) -> Unit = {},
+    ): Boolean {
+        onStep(CameraConnectionStep.ExistingPtpProbe)
         onStatus("正在检测已连接的相机 WiFi/PTP...")
         return runCatching {
+            onStep(CameraConnectionStep.ConnectPtp)
             connection.connect(clientName = cameraVendorPtpClientName())
             CameraSessionKeepAlive.start(context)
+            onStep(CameraConnectionStep.LoadGallery)
             onStatus("已连接")
             Log.d(TAG, "Existing camera PTP connection established")
             DiagnosticLog.append(context, TAG, "Existing camera PTP connection established")
@@ -158,21 +167,30 @@ class CameraService(override val context: Context) : CameraFileSource {
         }
     }
 
-    suspend fun pairWithCamera(onStatus: (String) -> Unit = {}) {
-        pairingService.pairWithCamera(onStatus)
+    suspend fun pairWithCamera(
+        onStatus: (String) -> Unit = {},
+        onStep: (CameraConnectionStep) -> Unit = {},
+    ) {
+        pairingService.pairWithCamera(onStatus, onStep)
     }
 
-    suspend fun confirmPairing(onStatus: (String) -> Unit = {}) {
-        pairingService.confirmPairing(onStatus)
+    suspend fun confirmPairing(
+        onStatus: (String) -> Unit = {},
+        onStep: (CameraConnectionStep) -> Unit = {},
+    ) {
+        pairingService.confirmPairing(onStatus, onStep)
     }
 
     suspend fun refreshPairedCameraOnlineStatus(onStatus: (String) -> Unit = {}): Boolean {
         return galleryConnectionCoordinator.refreshRememberedCameraBleOnlineStatus(onStatus)
     }
 
-    suspend fun connectPairedCameraToGallery(onStatus: (String) -> Unit = {}) {
+    suspend fun connectPairedCameraToGallery(
+        onStatus: (String) -> Unit = {},
+        onStep: (CameraConnectionStep) -> Unit = {},
+    ) {
         runCatching {
-            galleryConnectionCoordinator.connectToGallery(onStatus)
+            galleryConnectionCoordinator.connectToGallery(onStatus, onStep)
             CameraSessionKeepAlive.start(context)
         }.onFailure {
             CameraSessionKeepAlive.stop(context)
@@ -188,19 +206,22 @@ class CameraService(override val context: Context) : CameraFileSource {
         clearHandshake()
     }
 
-    suspend fun retryCameraWifiToGallery(onStatus: (String) -> Unit = {}) {
+    suspend fun retryCameraWifiToGallery(
+        onStatus: (String) -> Unit = {},
+        onStep: (CameraConnectionStep) -> Unit = {},
+    ) {
         runCatching {
             if (CameraVendorWifiJoinPolicy.SHOULD_PROBE_EXISTING_PTP_BEFORE_WIFI_REQUEST) {
                 onStatus("正在确认手机是否已经手动连上相机 Wi-Fi")
                 DiagnosticLog.append(context, TAG, "Probing existing PTP before retrying WiFi request")
-                if (connectExistingCameraWifiToGallery(onStatus)) return
+                if (connectExistingCameraWifiToGallery(onStatus, onStep)) return
             }
             val wifiConfigurations = handshake?.wifiConfigurations().orEmpty()
             if (wifiConfigurations.isEmpty()) {
                 throw IllegalStateException("本次相机蓝牙授权没有返回 Wi-Fi 配置，请重新点进入相机相册走完整连接流程。")
             }
             DiagnosticLog.append(context, TAG, "Retrying camera WiFi/PTP without BLE activation")
-            galleryConnectionCoordinator.connectWifiAndPtp(wifiConfigurations, onStatus)
+            galleryConnectionCoordinator.connectWifiAndPtp(wifiConfigurations, onStatus, onStep)
             CameraSessionKeepAlive.start(context)
         }.onFailure {
             CameraSessionKeepAlive.stop(context)
