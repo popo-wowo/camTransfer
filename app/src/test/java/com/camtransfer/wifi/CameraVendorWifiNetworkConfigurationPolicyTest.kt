@@ -5,7 +5,7 @@ import org.junit.Test
 
 class CameraVendorWifiNetworkConfigurationPolicyTest {
     @Test
-    fun exactBleWifiConfigurationDoesNotAddGuessedCandidates() {
+    fun exactBleWifiConfigurationUsesOnlyFreshOfficialCandidate() {
         val candidates = CameraVendorWifiNetworkConfigurationPolicy.configurations(
             deviceName = "X-T5",
             serialNumber = "221019F1932011003B",
@@ -56,37 +56,24 @@ class CameraVendorWifiNetworkConfigurationPolicyTest {
     }
 
     @Test
-    fun doesNotDuplicateSuffixedDeviceName() {
+    fun missingReferenceAppWifiConfigurationDoesNotGenerateGuessedCandidates() {
         val candidates = CameraVendorWifiNetworkConfigurationPolicy.configurations(
             deviceName = "X-T5-003B",
             serialNumber = "221019F1932011003B",
             preferredWifiNetwork = null,
         )
 
-        assertEquals(
-            listOf(
-                CameraVendorWifiNetworkConfiguration("FUJIFILM-X-T5-003B", "00000000", false),
-                CameraVendorWifiNetworkConfiguration("X-T5-003B", "00000000", false),
-            ),
-            candidates,
-        )
+        assertEquals(emptyList<CameraVendorWifiNetworkConfiguration>(), candidates)
     }
 
     @Test
-    fun fallbackUsesFujifilmSuffixedSsidBeforeCameraName() {
+    fun missingReferenceAppWifiConfigurationWithCameraNameStillStopsInsteadOfGuessing() {
         val candidates = CameraVendorWifiNetworkConfigurationPolicy.configurations(
             deviceName = "X-T5",
             serialNumber = "221019F1932011003B",
             preferredWifiNetwork = null,
         )
 
-        assertEquals(
-            listOf(
-                CameraVendorWifiNetworkConfiguration("FUJIFILM-X-T5-003B", "00000000", false),
-                CameraVendorWifiNetworkConfiguration("X-T5-003B", "00000000", false),
-                CameraVendorWifiNetworkConfiguration("X-T5", "00000000", false),
-            ),
-            candidates,
-        )
+        assertEquals(emptyList<CameraVendorWifiNetworkConfiguration>(), candidates)
     }
 }

@@ -32,6 +32,7 @@ object CameraVendorPtpDataParser {
         val filename = ptpString(data, filenameOffset)
         val captureDateOffset = filenameOffset + ptpStringByteLength(data, filenameOffset)
         val captureDate = ptpString(data, captureDateOffset)
+        val metadataOffset = captureDateOffset + ptpStringByteLength(data, captureDateOffset)
         return ObjectInfo(
             handle = handle,
             storageId = storageId,
@@ -46,6 +47,7 @@ object CameraVendorPtpDataParser {
             parentObject = parentObject,
             filename = filename.ifBlank { "0x%08X.JPG".format(handle) },
             captureDate = captureDate,
+            orientation = cameraVendorOrientation(data, metadataOffset),
         )
     }
 
@@ -59,7 +61,7 @@ object CameraVendorPtpDataParser {
         return info.copy(
             filename = filename.ifBlank { info.filename },
             captureDate = captureDate.ifBlank { info.captureDate },
-            orientation = cameraVendorOrientation(data, orientationOffset),
+            orientation = cameraVendorOrientation(data, orientationOffset) ?: info.orientation,
         )
     }
 
@@ -141,20 +143,25 @@ object CameraVendorPtpDataParser {
 
     private fun cameraVendorOrientation(data: ByteArray, offset: Int): Int? {
         var currentOffset = offset
-        repeat(8) {
+        repeat(12) {
             if (currentOffset >= data.size) return null
             val value = ptpString(data, currentOffset)
             orientationFromMetadataString(value)?.let { return it }
             val length = ptpStringByteLength(data, currentOffset)
-            if (length <= 1) return null
-            currentOffset += length
+            currentOffset += length.coerceAtLeast(1)
         }
         return null
     }
 
     private fun orientationFromMetadataString(value: String): Int? {
-        val match = Regex("""(?i)\borientation\s*:\s*([1-4])\b""").find(value) ?: return null
-        return match.groupValues[1].toIntOrNull()
+        val match = Regex("""(?i)\borientation\s*:\s*([1-8])\b""").find(value) ?: return null
+        return when (match.groupValues[1].toIntOrNull()) {
+            1, 2 -> 1
+            6, 7 -> 2
+            3, 4 -> 3
+            5, 8 -> 4
+            else -> null
+        }
     }
 
     private fun uint16OrZero(data: ByteArray, offset: Int): Int =

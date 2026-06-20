@@ -207,16 +207,23 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun enterCameraAlbum() {
+        enterCameraAlbum(resetBeforeStart = false)
+    }
+
+    private fun enterCameraAlbum(resetBeforeStart: Boolean) {
         if (_state.value != ConnectionState.PAIRED) return
         _error.value = null
         _connectionIssue.value = null
         _activeStep.value = CameraConnectionStep.ReconnectPairedBle
         _state.value = CameraConnectionUiPolicy.stateForStep(CameraConnectionStep.ReconnectPairedBle)
-        DiagnosticLog.append(appContext, "Connection", "Enter gallery requested")
+        DiagnosticLog.append(appContext, "Connection", "Enter gallery requested resetBeforeStart=$resetBeforeStart")
         cancelConnectionJob()
         connectionJob = viewModelScope.launch {
             var currentStep = CameraConnectionStep.ReconnectPairedBle
             try {
+                if (resetBeforeStart) {
+                    cameraService.resetGalleryConnectionBeforeRetry()
+                }
                 cameraService.connectPairedCameraToGallery { status ->
                     DiagnosticLog.append(appContext, "ConnectionStatus", status)
                     _statusText.value = status
@@ -326,7 +333,7 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
             CameraConnectionRetryTarget.ExistingPtpProbe -> confirmWifiJoinedAndOpenGallery()
             CameraConnectionRetryTarget.PairingScan -> connect()
             CameraConnectionRetryTarget.PairingModeConfirmation -> confirmCameraPairingModeAndStartScan()
-            CameraConnectionRetryTarget.GalleryEntryWithBle -> enterCameraAlbum()
+            CameraConnectionRetryTarget.GalleryEntryWithBle -> enterCameraAlbum(resetBeforeStart = true)
         }
     }
 
@@ -413,7 +420,6 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         super.onCleared()
         cancelConnectionJob()
-        viewModelScope.launch { cameraService.disconnect() }
     }
 }
 

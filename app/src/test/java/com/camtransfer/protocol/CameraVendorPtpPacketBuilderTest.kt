@@ -7,10 +7,9 @@ import org.junit.Test
 class CameraVendorPtpPacketBuilderTest {
 
     @Test
-    fun cameraVendorLegacyInitUsesIosWireFormat() {
+    fun cameraVendorLegacyInitUsesKnownWorkingWireFormat() {
         val packet = PtpPacketBuilder.buildCameraVendorLegacyInitCommandRequest(
             friendlyName = "CamTransfer",
-            clientIp = "192.168.0.23",
         )
 
         assertEquals(82, packet.size)
@@ -22,7 +21,7 @@ class CameraVendorPtpPacketBuilderTest {
                 0xAD.toByte(), 0xA5.toByte(), 0x48, 0x5D,
                 0x87.toByte(), 0xB2.toByte(), 0x7F, 0x0B,
                 0xD3.toByte(), 0xD5.toByte(), 0xDE.toByte(), 0xD0.toByte(),
-                0x17, 0x00, 0xA8.toByte(), 0xC0.toByte(),
+                0x00, 0x00, 0x00, 0x00,
             ),
             packet.copyOfRange(0, 28),
         )

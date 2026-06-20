@@ -970,9 +970,13 @@ class CameraVendorBleHandshake(private val context: Context) {
     }
 
     private fun appName(): ByteArray {
-        val connectedDeviceName = CameraVendorHandshakeIdentityPolicy.currentConnectedDeviceName()
-        Log.d(TAG, "Connected device name payload: $connectedDeviceName")
-        return connectedDeviceName.toByteArray(Charsets.UTF_8)
+        val decision = CameraVendorHandshakeIdentityPolicy.currentConnectedDeviceNameDecision()
+        val message =
+            "Connected device name decision name=${decision.name} source=${decision.source} " +
+                "rawLength=${decision.rawLength} normalizedLength=${decision.normalizedLength}"
+        Log.d(TAG, message)
+        DiagnosticLog.append(context, TAG, message)
+        return decision.name.toByteArray(Charsets.UTF_8)
     }
     private fun ByteArray.trimmedUtf8(): String =
         copyOfRange(0, indexOf(0).takeIf { it >= 0 } ?: size)

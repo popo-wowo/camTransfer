@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import com.camtransfer.protocol.CameraVendorPtpConnectionStartupPolicy
+import com.camtransfer.wifi.CameraVendorWifiNetworkConfiguration
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 
@@ -41,6 +42,31 @@ class CameraConnectionFlowTest {
                 completed,
             )
         )
+    }
+
+    @Test
+    fun transferAuthorizationUsesSingleFreshOfficialWifiConfiguration() {
+        val officialConfiguration = CameraVendorWifiNetworkConfiguration(
+            ssid = "FUJIFILM-X-T5-003B",
+            passphrase = "12345678",
+            isHidden = false,
+            bssid = "aa:bb:cc:dd:ee:ff",
+        )
+
+        assertEquals(
+            listOf(officialConfiguration),
+            CameraVendorOfficialGalleryConnectionPolicy.officialWifiConfigurations(officialConfiguration),
+        )
+    }
+
+    @Test
+    fun transferAuthorizationDoesNotFallBackToRememberedWifiConfiguration() {
+        val result = runCatching {
+            CameraVendorOfficialGalleryConnectionPolicy.officialWifiConfigurations(null)
+        }
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull()?.message.orEmpty().contains("官方 Wi-Fi"))
     }
 
     @Test
@@ -153,6 +179,8 @@ class CameraConnectionFlowTest {
         assertEquals(CameraConnectionStep.ConnectPtp, issue.step)
         assertFalse(issue.allowedActions.contains(CameraConnectionAction.RestartPairing))
         assertTrue(issue.allowedActions.contains(CameraConnectionAction.RetryStep))
+        assertTrue(issue.detail.contains("不是重新配对能解决的问题"))
+        assertTrue(issue.detail.contains("重启相机"))
     }
 
     @Test

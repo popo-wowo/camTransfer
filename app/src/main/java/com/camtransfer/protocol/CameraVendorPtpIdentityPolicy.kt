@@ -1,7 +1,7 @@
 package com.camtransfer.protocol
 
 object CameraVendorPtpIdentityPolicy {
-    private const val FallbackLegacyInitFriendlyName = "CamTransfer"
+    private const val FallbackLegacyInitFriendlyName = "CamTransfer-6970"
 
     fun legacyInitFriendlyName(connectedDeviceName: String? = null): String {
         val candidate = connectedDeviceName?.trim().orEmpty()

@@ -24,7 +24,61 @@ class CameraVendorPtpDataParserImageTest {
 
         assertEquals("DSCF3309.HEIC", info.filename)
         assertEquals("20260328T045849", info.captureDate)
+        assertEquals(1, info.orientation)
+    }
+
+    @Test
+    fun mapsCameraVendorRawOrientationMetadataLikeReferenceApp() {
+        val expected = mapOf(
+            1 to 1,
+            2 to 1,
+            6 to 2,
+            7 to 2,
+            3 to 3,
+            4 to 3,
+            5 to 4,
+            8 to 4,
+        )
+
+        expected.forEach { (rawOrientation, normalizedOrientation) ->
+            val payload = cameraVendorObjectInfoPayload(
+                filename = "DSCF3309.HEIC",
+                captureDate = "20260328T045849",
+                metadata = listOf("Orientation:$rawOrientation"),
+            )
+
+            val info = CameraVendorPtpDataParser.cameraVendorObjectInfo(0x10000001, payload)
+
+            assertEquals("raw orientation $rawOrientation", normalizedOrientation, info.orientation)
+        }
+    }
+
+    @Test
+    fun parsesStandardObjectInfoOrientationMetadataAfterCaptureDate() {
+        val payload = standardObjectInfoPayload(
+            filename = "DSCF3310.JPG",
+            captureDate = "20260328T050001",
+            metadata = listOf("Orientation:6"),
+        )
+
+        val info = CameraVendorPtpDataParser.objectInfo(0x10000002, payload)
+
+        assertEquals("DSCF3310.JPG", info.filename)
+        assertEquals("20260328T050001", info.captureDate)
         assertEquals(2, info.orientation)
+    }
+
+    @Test
+    fun skipsEmptyObjectInfoMetadataFieldsBeforeOrientation() {
+        val payload = standardObjectInfoPayload(
+            filename = "DSCF3311.JPG",
+            captureDate = "20260328T050002",
+            metadata = listOf("", "Orientation:8"),
+        )
+
+        val info = CameraVendorPtpDataParser.objectInfo(0x10000003, payload)
+
+        assertEquals(4, info.orientation)
     }
 
     @Test
@@ -56,4 +110,20 @@ class CameraVendorPtpDataParserImageTest {
         bytes.add(0)
         return bytes.toByteArray()
     }
+
+    private fun standardObjectInfoPayload(
+        filename: String,
+        captureDate: String,
+        metadata: List<String>,
+    ): ByteArray =
+        ByteArray(52) + ptpString(filename) + ptpString(captureDate) + metadata.flatMap { ptpString(it).toList() }
+            .toByteArray()
+
+    private fun cameraVendorObjectInfoPayload(
+        filename: String,
+        captureDate: String,
+        metadata: List<String>,
+    ): ByteArray =
+        ByteArray(54) + ptpString(filename) + ptpString(captureDate) + metadata.flatMap { ptpString(it).toList() }
+            .toByteArray()
 }

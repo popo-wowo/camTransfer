@@ -1,6 +1,10 @@
 # CamTransfer Camera Flow and Product Notes
 
 > 目的：把当前已经验证过的 CameraVendor 相机连接、图库加载、HEIF/RAW 发现、产品首页和图库 UI 逻辑写清楚。后续改动必须先对照本文，避免把已验证的链路再次改坏。
+>
+> Android 连接边界：本文包含历史 iOS 调试记录。Android 已配对进入相册、BLE/Wi-Fi/PTP 主链路必须以
+> `docs/android-current-execution-logic.md` 和 `docs/android-official-xapp-connection-analysis.md`
+> 为准，不使用 iOS 行为作为 Android 实现依据。
 
 ## 当前结论
 
@@ -201,7 +205,7 @@ AP_STATE_READY ... Launched(0x8001)
 当前正式链路：
 
 ```text
-PTP INIT (CameraVendor legacy + client IP GUID)
+PTP INIT (Android XApp native plain legacy, GUID fourth word = 0)
 OpenSession
 D212 读取图库上下文
 DF01 读当前 ClientState

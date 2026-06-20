@@ -3,6 +3,8 @@ package com.camtransfer.viewmodel
 import com.camtransfer.model.CameraFile
 import com.camtransfer.model.ObjectInfo
 import com.camtransfer.protocol.PtpObjectFormat
+import com.camtransfer.viewmodel.gallery.GalleryFastInitialLoadPolicy
+import com.camtransfer.viewmodel.gallery.GalleryFileLoadPolicy
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame

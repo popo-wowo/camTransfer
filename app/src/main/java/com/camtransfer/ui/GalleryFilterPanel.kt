@@ -1,0 +1,375 @@
+package com.camtransfer.ui
+
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
+import android.graphics.Matrix
+import android.os.Build
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredWidth
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyGridState
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.camtransfer.model.CameraFile
+import com.camtransfer.model.TransferItem
+import com.camtransfer.model.TransferState
+import com.camtransfer.service.CameraFileSource
+import com.camtransfer.viewmodel.BrowseViewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.nio.ByteBuffer
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
+import kotlin.math.hypot
+
+private val GalleryActionColor = Color(0xFF177C6D)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun GalleryFilterPanel(
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    state: GalleryFilterState,
+    onStateChange: (GalleryFilterState) -> Unit,
+    sortMode: GallerySortMode,
+    onSortModeChange: (GallerySortMode) -> Unit,
+    onPickDate: () -> Unit,
+    onPickDateRange: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 18.dp, top = 6.dp, end = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onExpandedChange(!expanded) },
+            shape = RoundedCornerShape(24.dp),
+            color = CamTransferColors.WarmFill,
+            border = BorderStroke(1.dp, CamTransferColors.Hairline),
+            shadowElevation = 2.dp,
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilterPanelIcon(expanded = expanded)
+                Text(
+                    "筛选",
+                    color = CamTransferColors.Ink,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 13.sp,
+                    maxLines = 1,
+                )
+                Text(
+                    GalleryFilterPanelPolicy.summary(state, sortMode),
+                    modifier = Modifier.weight(1f),
+                    color = CamTransferColors.SecondaryInk,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                FilterPanelChevron(expanded = expanded)
+            }
+        }
+        if (expanded) {
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                color = CamTransferColors.WarmFill,
+                border = BorderStroke(1.dp, CamTransferColors.Hairline),
+            ) {
+                CompactFilterChips(
+                    modifier = Modifier.padding(10.dp),
+                    state = state,
+                    onStateChange = onStateChange,
+                    sortMode = sortMode,
+                    onSortModeChange = onSortModeChange,
+                    onPickDate = onPickDate,
+                    onPickDateRange = onPickDateRange,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompactFilterChips(
+    modifier: Modifier = Modifier,
+    state: GalleryFilterState,
+    onStateChange: (GalleryFilterState) -> Unit,
+    sortMode: GallerySortMode,
+    onSortModeChange: (GallerySortMode) -> Unit,
+    onPickDate: () -> Unit,
+    onPickDateRange: () -> Unit,
+) {
+    Column(
+        modifier = modifier,
+        verticalArrangement = Arrangement.spacedBy(7.dp),
+    ) {
+        FilterChipRow {
+            LuxuryFilterChip(
+                selected = state.date == GalleryDateFilter.All,
+                label = "全部",
+                onClick = { onStateChange(state.copy(date = GalleryDateFilter.All)) },
+            )
+            LuxuryFilterChip(
+                selected = state.date == GalleryDateFilter.Today,
+                label = "今天",
+                onClick = { onStateChange(state.copy(date = GalleryDateFilter.Today)) },
+            )
+            val specificDay = state.date as? GalleryDateFilter.SpecificDay
+            LuxuryFilterChip(
+                selected = specificDay != null,
+                label = specificDay?.day?.format(DateTimeFormatter.ofPattern("MM-dd")) ?: "日期",
+                onClick = onPickDate,
+            )
+            val range = state.date as? GalleryDateFilter.Range
+            LuxuryFilterChip(
+                selected = range != null,
+                label = range?.let { rangeLabel(it.start, it.end) } ?: "范围",
+                onClick = onPickDateRange,
+            )
+        }
+        FilterChipRow {
+            LuxuryFilterChip(
+                selected = state.formats.isEmpty(),
+                label = "全部格式",
+                onClick = { onStateChange(state.copy(formats = emptySet())) },
+            )
+            FormatChip("JPG", GalleryFormatFilter.Jpg, state, onStateChange)
+            FormatChip("HEIF", GalleryFormatFilter.Heif, state, onStateChange)
+            FormatChip("RAW", GalleryFormatFilter.Raw, state, onStateChange)
+            FormatChip("视频", GalleryFormatFilter.Video, state, onStateChange)
+        }
+        FilterChipRow {
+            SortChip("最新", GallerySortMode.NewestFirst, sortMode, onSortModeChange)
+            SortChip("最早", GallerySortMode.OldestFirst, sortMode, onSortModeChange)
+            SortChip("未下载", GallerySortMode.NotDownloadedFirst, sortMode, onSortModeChange)
+        }
+    }
+}
+
+@Composable
+private fun FilterChipRow(content: @Composable () -> Unit) {
+    Row(
+        modifier = Modifier.horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        content()
+    }
+}
+
+internal fun rangeLabel(start: LocalDate, end: LocalDate): String {
+    val first = minOf(start, end)
+    val last = maxOf(start, end)
+    val formatter = DateTimeFormatter.ofPattern("MM-dd")
+    return "${first.format(formatter)}~${last.format(formatter)}"
+}
+
+@Composable
+private fun FormatChip(
+    label: String,
+    format: GalleryFormatFilter,
+    state: GalleryFilterState,
+    onStateChange: (GalleryFilterState) -> Unit,
+) {
+    LuxuryFilterChip(
+        selected = format in state.formats,
+        label = label,
+        onClick = {
+            val formats = state.formats.toMutableSet()
+            if (!formats.add(format)) formats.remove(format)
+            onStateChange(state.copy(formats = formats))
+        },
+    )
+}
+
+@Composable
+private fun SortChip(
+    label: String,
+    mode: GallerySortMode,
+    sortMode: GallerySortMode,
+    onSortModeChange: (GallerySortMode) -> Unit,
+) {
+    LuxuryFilterChip(
+        selected = sortMode == mode,
+        label = label,
+        onClick = { onSortModeChange(mode) },
+    )
+}
+
+@Composable
+private fun LuxuryFilterChip(selected: Boolean, label: String, onClick: () -> Unit) {
+    Surface(
+        modifier = Modifier
+            .height(32.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(16.dp),
+        color = if (selected) CamTransferColors.Ink else CamTransferColors.Card,
+        border = BorderStroke(1.dp, if (selected) CamTransferColors.Ink else CamTransferColors.Hairline),
+    ) {
+        Box(
+            modifier = Modifier.padding(horizontal = 12.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                label,
+                color = if (selected) CamTransferColors.Card else CamTransferColors.Ink,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Black,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+@Composable
+private fun FilterPanelIcon(expanded: Boolean) {
+    Box(
+        modifier = Modifier
+            .size(30.dp)
+            .clip(CircleShape)
+            .background(if (expanded) CamTransferColors.Ink else CamTransferColors.MutedFill),
+        contentAlignment = Alignment.Center,
+    ) {
+        androidx.compose.foundation.Canvas(modifier = Modifier.size(16.dp)) {
+            val color = if (expanded) CamTransferColors.Card else CamTransferColors.Ink
+            val strokeWidth = 1.8.dp.toPx()
+            val rows = listOf(0.28f, 0.50f, 0.72f)
+            rows.forEachIndexed { index, yFactor ->
+                val knobX = when (index) {
+                    0 -> 0.68f
+                    1 -> 0.34f
+                    else -> 0.56f
+                }
+                drawLine(
+                    color = color,
+                    start = Offset(size.width * 0.18f, size.height * yFactor),
+                    end = Offset(size.width * 0.82f, size.height * yFactor),
+                    strokeWidth = strokeWidth,
+                    cap = StrokeCap.Round,
+                )
+                drawCircle(
+                    color = color,
+                    radius = 2.2.dp.toPx(),
+                    center = Offset(size.width * knobX, size.height * yFactor),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FilterPanelChevron(expanded: Boolean) {
+    Box(
+        modifier = Modifier
+            .size(28.dp)
+            .clip(CircleShape)
+            .background(CamTransferColors.MutedFill),
+        contentAlignment = Alignment.Center,
+    ) {
+        androidx.compose.foundation.Canvas(modifier = Modifier.size(14.dp)) {
+            val yStart = if (expanded) 0.60f else 0.40f
+            val yEnd = if (expanded) 0.40f else 0.60f
+            drawLine(
+                color = CamTransferColors.Ink,
+                start = Offset(size.width * 0.22f, size.height * yStart),
+                end = Offset(size.width * 0.50f, size.height * yEnd),
+                strokeWidth = 2.dp.toPx(),
+                cap = StrokeCap.Round,
+            )
+            drawLine(
+                color = CamTransferColors.Ink,
+                start = Offset(size.width * 0.78f, size.height * yStart),
+                end = Offset(size.width * 0.50f, size.height * yEnd),
+                strokeWidth = 2.dp.toPx(),
+                cap = StrokeCap.Round,
+            )
+        }
+    }
+}

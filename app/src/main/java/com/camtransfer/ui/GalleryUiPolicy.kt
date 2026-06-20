@@ -209,9 +209,15 @@ object GalleryDisconnectPolicy {
 object GalleryDragSelectionPolicy {
     fun shouldSelectForDrag(startHandleSelected: Boolean): Boolean = !startHandleSelected
 
-    fun shouldStartDragSelection(deltaX: Float, deltaY: Float, touchSlop: Float): Boolean {
+    fun shouldStartDragSelection(
+        deltaX: Float,
+        deltaY: Float,
+        touchSlop: Float,
+        selectionActive: Boolean = false,
+    ): Boolean {
         val distance = hypot(deltaX.toDouble(), deltaY.toDouble()).toFloat()
         if (distance < touchSlop) return false
+        if (selectionActive) return true
         return abs(deltaX) >= abs(deltaY) * 0.55f
     }
 
@@ -228,11 +234,59 @@ object GalleryDragSelectionPolicy {
             currentSelection - handle
         }
     }
+
+    fun updatedRangeSelection(
+        currentSelection: Set<Int>,
+        orderedHandles: List<Int>,
+        startHandle: Int,
+        endHandle: Int,
+        downloadStates: Map<Int, TransferState?>,
+        shouldSelect: Boolean,
+    ): Set<Int> {
+        val startIndex = orderedHandles.indexOf(startHandle)
+        val endIndex = orderedHandles.indexOf(endHandle)
+        if (startIndex < 0 || endIndex < 0) return currentSelection
+        val range = if (startIndex <= endIndex) {
+            startIndex..endIndex
+        } else {
+            endIndex..startIndex
+        }
+        val selectableHandles = range
+            .map { orderedHandles[it] }
+            .filter { handle -> GalleryDownloadUiPolicy.canSelect(downloadStates[handle]) }
+            .toSet()
+        return if (shouldSelect) {
+            currentSelection + selectableHandles
+        } else {
+            currentSelection - selectableHandles
+        }
+    }
+
+    fun autoScrollDelta(
+        pointerY: Float,
+        viewportStart: Float,
+        viewportEnd: Float,
+        edgeSize: Float,
+        maxDelta: Float,
+    ): Float {
+        if (edgeSize <= 0f || maxDelta <= 0f || viewportEnd <= viewportStart) return 0f
+        return when {
+            pointerY < viewportStart + edgeSize -> {
+                val intensity = ((viewportStart + edgeSize - pointerY) / edgeSize).coerceIn(0f, 1f)
+                -maxDelta * intensity
+            }
+            pointerY > viewportEnd - edgeSize -> {
+                val intensity = ((pointerY - (viewportEnd - edgeSize)) / edgeSize).coerceIn(0f, 1f)
+                maxDelta * intensity
+            }
+            else -> 0f
+        }
+    }
 }
 
 object GalleryColumnLayoutPolicy {
     const val MIN_COLUMNS = 2
-    const val MAX_COLUMNS = 5
+    const val MAX_COLUMNS = 6
     const val DEFAULT_COLUMNS = 3
     private const val ZOOM_IN_THRESHOLD = 1.45f
     private const val ZOOM_OUT_THRESHOLD = 0.7f
@@ -245,6 +299,11 @@ object GalleryColumnLayoutPolicy {
             else -> normalized
         }
     }
+}
+
+object GalleryGridSpacingPolicy {
+    const val HORIZONTAL_DP = 5
+    const val VERTICAL_DP = 7
 }
 
 object GalleryPreviewNavigationPolicy {
@@ -483,4 +542,11 @@ internal object GalleryThumbnailDecodePolicy {
         }
         return sampleSize
     }
+}
+
+internal object GalleryPreviewImagePolicy {
+    const val FULL_IMAGE_MAX_DECODED_SIDE = 3072
+
+    fun displayBytes(previewImage: ByteArray?, thumbnail: ByteArray?): ByteArray? =
+        previewImage ?: thumbnail
 }

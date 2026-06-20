@@ -17,6 +17,8 @@ interface CameraFileSource {
 
     suspend fun resolveFile(handle: Int): CameraFile? = null
 
+    suspend fun getPreviewImage(handle: Int): ByteArray = getFile(handle)
+
     suspend fun getFile(handle: Int): ByteArray
 
     suspend fun disconnect()

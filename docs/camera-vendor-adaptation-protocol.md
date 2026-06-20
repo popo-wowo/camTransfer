@@ -1,13 +1,19 @@
 # CameraVendor Adaptation Protocol
 
-> Scope: this document records the CameraVendor camera adaptation protocol used by the
-> current iOS implementation and the Android parity gap. It is intended to be
-> the source of truth before adapting additional CameraVendor models.
+> Android warning: this is historical cross-platform material and is not the
+> Android source of truth. Android camera connection changes must use
+> `docs/android-current-execution-logic.md` and
+> `docs/android-official-xapp-connection-analysis.md`, which are based on the
+> official Android XApp analysis. Do not use iOS implementation behavior to
+> decide Android BLE, Wi-Fi, or PTP behavior.
 
 ## Current Source Of Truth
 
-- Primary implementation: `ios/Runner/CameraVendorBluetoothService.swift`
-- iOS protocol tests: `ios/RunnerTests/RunnerTests.swift`
+- Android source of truth:
+  - `docs/android-current-execution-logic.md`
+  - `docs/android-official-xapp-connection-analysis.md`
+- Historical iOS implementation references below are not authoritative for
+  Android behavior.
 - Product and field notes:
   - `docs/cameraVendor-camera-flow-and-product-notes.md`
   - `docs/camtransfer-product-implementation-v2.md`
@@ -107,18 +113,23 @@ camera-subnet IP are the same.
 
 ## PTP INIT
 
-The current iOS path attempts CameraVendor legacy INIT only:
+Android follows the official Android XApp connection chain. `libFTLPTPIP.so`
+contains the CameraVendor legacy plain INIT template:
 
 ```text
 [4 length]
 [4 packetType = 0x00000001]
 [4 CameraVendor protocolVersion = 0x8F53E4F2]
-[16 GUID words, with client IP in the fourth word only on 192.168.0.x]
+[16 GUID words, fourth word = 0x00000000 in the plain template]
 [54 raw UTF-16LE friendly name, zero padded]
 ```
 
-Standard PTP/IP INIT exists in code for reference, but is not currently selected
-by `performInitHandshake`.
+The native plain template is not enough by itself on the current verified X-T5
+path. Keep the Kotlin gallery-open order aligned with the stable implementation:
+send the CameraVendor legacy INIT variant with local `192.168.0.x` in the fourth
+GUID word first, then send the plain template only if the first variant does not
+ACK. Standard PTP/IP INIT exists in code for reference, but Android gallery open
+does not select it.
 
 After INIT ACK:
 
@@ -224,8 +235,19 @@ Thumbnail path:
 
 1. Optionally read `ObjectInfo`.
 2. Try standard `GetThumb(0x100A)`.
-3. Fall back to partial preview with `GetPartialObject(0x101B)`.
-4. Normalize CameraVendor-prefixed JPEG/HEIF payloads before rendering.
+3. Normalize CameraVendor-prefixed JPEG/HEIF payloads before rendering.
+4. If the standard thumbnail is unavailable, report thumbnail failure. Do not
+   fall back to `GetPartialObject(0x101B)` for grid thumbnails.
+
+Screen preview path:
+
+1. Treat screen preview as separate from grid thumbnails and original download.
+2. Set `D226 ImageForceCompression` to `1`.
+3. Re-read `ObjectInfo`.
+4. Read `GetPartialObject(0x101B)` from offset `0` using the fresh
+   `ObjectInfo.compressedSize`.
+5. Validate that returned image data is complete before caching or rendering.
+6. Reset `D226` to `0`.
 
 Original photo download path:
 
@@ -260,7 +282,7 @@ Create one row per tested camera/firmware:
 | Gallery handshake | first failing step, if any |
 | D621 behavior | complete list, partial list, hidden gaps |
 | RAW/HEIF codes | exact format codes |
-| Thumbnail path | GetThumb success or partial fallback |
+| Thumbnail path | GetThumb success or explicit thumbnail failure |
 | Original path | partial chunk size, size accuracy, reset behavior |
 | Parallelism | whether multiple PTP sessions disconnect camera |
 

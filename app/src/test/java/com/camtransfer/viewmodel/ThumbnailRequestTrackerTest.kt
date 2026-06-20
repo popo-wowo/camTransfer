@@ -1,5 +1,12 @@
 package com.camtransfer.viewmodel
 
+import com.camtransfer.model.CameraFile
+import com.camtransfer.model.ObjectInfo
+import com.camtransfer.protocol.PtpObjectFormat
+import com.camtransfer.viewmodel.gallery.GalleryFastInitialLoadPolicy
+import com.camtransfer.viewmodel.gallery.GalleryPreviewFullImageLoadPolicy
+import com.camtransfer.viewmodel.gallery.ThumbnailLoadPolicy
+import com.camtransfer.viewmodel.gallery.ThumbnailLoadQueue
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -102,4 +109,30 @@ class ThumbnailRequestTrackerTest {
             )
         )
     }
+
+    @Test
+    fun fullPreviewRequestsOnlyJpegAndHeifImagesThatAreNotCached() {
+        assertTrue(GalleryPreviewFullImageLoadPolicy.shouldRequestFullImagePreview(file(PtpObjectFormat.JPEG), false))
+        assertTrue(GalleryPreviewFullImageLoadPolicy.shouldRequestFullImagePreview(file(PtpObjectFormat.HEIF), false))
+        assertFalse(GalleryPreviewFullImageLoadPolicy.shouldRequestFullImagePreview(file(PtpObjectFormat.CAMERA_VENDOR_RAF), false))
+        assertFalse(GalleryPreviewFullImageLoadPolicy.shouldRequestFullImagePreview(file(PtpObjectFormat.JPEG), true))
+    }
+
+    private fun file(format: Int): CameraFile = CameraFile(
+        ObjectInfo(
+            handle = 42,
+            storageId = 1,
+            format = format,
+            compressedSize = 1024,
+            thumbFormat = PtpObjectFormat.JPEG,
+            thumbCompressedSize = 128,
+            thumbPixWidth = 160,
+            thumbPixHeight = 120,
+            imagePixWidth = 4000,
+            imagePixHeight = 3000,
+            parentObject = 0,
+            filename = "DSCF0042.JPG",
+            captureDate = "20260604T120000",
+        ),
+    )
 }

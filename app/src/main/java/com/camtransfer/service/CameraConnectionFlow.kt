@@ -1,6 +1,8 @@
 package com.camtransfer.service
 
 import com.camtransfer.protocol.CameraVendorPtpConnectionStartupPolicy
+import com.camtransfer.wifi.CameraVendorWifiNetworkConfiguration
+import com.camtransfer.wifi.CameraVendorWifiNetworkConfigurationPolicy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 
@@ -139,8 +141,8 @@ data class CameraConnectionIssue(
                 step = CameraConnectionStep.ConnectPtp,
                 failure = CameraConnectionFailure.PtpNotReady,
                 title = "相册服务还没准备好",
-                detail = "手机可能已经连到相机 Wi-Fi，但相机的相册通道还没响应。\n" +
-                    "请保持相机停在传图/相册界面，等几秒后重试。",
+                detail = "手机已经完成蓝牙授权并连到相机 Wi-Fi，但相机的 PTP 相册通道没有接受连接。\n" +
+                    "这不是重新配对能解决的问题。请让相机退出并重新进入传图/相册模式；如果仍失败，重启相机后再重试。",
                 primaryAction = CameraConnectionAction.RetryStep,
                 secondaryAction = CameraConnectionAction.ExportDiagnosticLog,
             )
@@ -348,6 +350,17 @@ object CameraVendorOfficialGalleryConnectionPolicy {
         when (step) {
             CameraConnectionStep.ConnectPtp -> CameraVendorPtpConnectionStartupPolicy.STARTUP_DELAY_MS
             else -> 0L
+        }
+
+    fun officialWifiConfigurations(
+        officialWifiConfiguration: CameraVendorWifiNetworkConfiguration?,
+    ): List<CameraVendorWifiNetworkConfiguration> =
+        CameraVendorWifiNetworkConfigurationPolicy.configurations(
+            deviceName = null,
+            serialNumber = null,
+            preferredWifiNetwork = officialWifiConfiguration,
+        ).ifEmpty {
+            throw IllegalStateException("相机没有返回本次官方 Wi-Fi 名称和密码，已停止进入相册")
         }
 
     private fun isConfirmedPrefix(completedSteps: List<CameraConnectionStep>): Boolean =

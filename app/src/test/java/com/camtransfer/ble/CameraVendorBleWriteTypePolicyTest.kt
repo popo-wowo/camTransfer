@@ -8,7 +8,7 @@ import java.util.UUID
 class CameraVendorBleWriteTypePolicyTest {
 
     @Test
-    fun securePairingWritesUseResponseLikeIos() {
+    fun securePairingWritesUseResponseForAndroidCameraGatt() {
         assertTrue(
             CameraVendorBleWriteTypePolicy.shouldWriteWithResponse(
                 CameraVendorBleProfile.IDENTIFIER_CHAR,
@@ -24,7 +24,7 @@ class CameraVendorBleWriteTypePolicyTest {
     }
 
     @Test
-    fun referenceAppActivationWritesUseResponseLikeIos() {
+    fun referenceAppActivationWritesUseResponseForAndroidCameraGatt() {
         assertTrue(
             CameraVendorBleWriteTypePolicy.shouldWriteWithResponse(
                 CameraVendorBleProfile.LAUNCH_REQUEST_CHAR,

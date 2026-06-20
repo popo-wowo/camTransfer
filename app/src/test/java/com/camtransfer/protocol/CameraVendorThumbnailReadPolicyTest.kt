@@ -32,8 +32,13 @@ class CameraVendorThumbnailReadPolicyTest {
     }
 
     @Test
-    fun primesObjectContextBeforePartialFallbackOnly() {
-        assertTrue(CameraVendorThumbnailReadPolicy.shouldPrimeObjectContextBeforePartialFallback())
+    fun doesNotPrimeObjectContextForDisabledPartialFallback() {
+        assertFalse(CameraVendorThumbnailReadPolicy.shouldPrimeObjectContextBeforePartialFallback())
+    }
+
+    @Test
+    fun partialObjectIsNotUsedAsThumbnailFallback() {
+        assertFalse(CameraVendorThumbnailReadPolicy.shouldReadPartialPreviewAsThumbnailFallback())
     }
 
     @Test
@@ -46,6 +51,35 @@ class CameraVendorThumbnailReadPolicyTest {
                     thumbPixWidth = 640,
                     thumbPixHeight = 480,
                 ),
+            ),
+        )
+    }
+
+    @Test
+    fun smallJpegAndHeifCompressedObjectsCanBeUsedForFullScreenPreview() {
+        assertTrue(
+            CameraVendorPreviewImageReadPolicy.shouldReadCompressedPreview(
+                objectInfo(
+                    format = PtpObjectFormat.JPEG,
+                    compressedSize = 167_936,
+                    thumbPixWidth = 640,
+                    thumbPixHeight = 480,
+                ),
+            ),
+        )
+        assertTrue(
+            CameraVendorPreviewImageReadPolicy.shouldReadCompressedPreview(
+                objectInfo(format = PtpObjectFormat.HEIF, compressedSize = 167_936),
+            ),
+        )
+        assertFalse(
+            CameraVendorPreviewImageReadPolicy.shouldReadCompressedPreview(
+                objectInfo(format = PtpObjectFormat.CAMERA_VENDOR_RAF_ALT, compressedSize = 84_658_176),
+            ),
+        )
+        assertFalse(
+            CameraVendorPreviewImageReadPolicy.shouldReadCompressedPreview(
+                objectInfo(format = PtpObjectFormat.JPEG, compressedSize = 0),
             ),
         )
     }

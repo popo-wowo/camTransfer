@@ -11,6 +11,7 @@ object AppPermissionPolicy {
                 add(Manifest.permission.BLUETOOTH_CONNECT)
                 if (sdkInt >= Build.VERSION_CODES.TIRAMISU) {
                     add(Manifest.permission.NEARBY_WIFI_DEVICES)
+                    add(Manifest.permission.POST_NOTIFICATIONS)
                 }
             }
         } else {

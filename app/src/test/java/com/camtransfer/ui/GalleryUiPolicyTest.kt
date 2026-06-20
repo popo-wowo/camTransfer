@@ -4,6 +4,7 @@ import com.camtransfer.model.CameraFile
 import com.camtransfer.model.ObjectInfo
 import com.camtransfer.model.TransferState
 import com.camtransfer.protocol.PtpObjectFormat
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -299,6 +300,14 @@ class GalleryUiPolicyTest {
         assertTrue(GalleryDragSelectionPolicy.shouldStartDragSelection(deltaX = 12f, deltaY = 10f, touchSlop = 8f))
         assertFalse(GalleryDragSelectionPolicy.shouldStartDragSelection(deltaX = 3f, deltaY = 2f, touchSlop = 8f))
         assertFalse(GalleryDragSelectionPolicy.shouldStartDragSelection(deltaX = 3f, deltaY = 18f, touchSlop = 8f))
+        assertTrue(
+            GalleryDragSelectionPolicy.shouldStartDragSelection(
+                deltaX = 3f,
+                deltaY = 18f,
+                touchSlop = 8f,
+                selectionActive = true,
+            )
+        )
 
         assertEquals(
             setOf(1, 2),
@@ -330,12 +339,91 @@ class GalleryUiPolicyTest {
     }
 
     @Test
-    fun columnLayoutPolicyMapsPinchScaleToTwoThroughFiveColumns() {
+    fun dragSelectionSelectsContiguousRangeAcrossRowsSkippingUnavailableHandles() {
+        val handles = (1..12).toList()
+        val downloadStates = mapOf(
+            5 to TransferState.DONE,
+            8 to TransferState.DOWNLOADING,
+        )
+
+        assertEquals(
+            setOf(2, 3, 4, 6, 7, 9),
+            GalleryDragSelectionPolicy.updatedRangeSelection(
+                currentSelection = emptySet(),
+                orderedHandles = handles,
+                startHandle = 2,
+                endHandle = 9,
+                downloadStates = downloadStates,
+                shouldSelect = true,
+            ),
+        )
+    }
+
+    @Test
+    fun dragSelectionCanRemoveContiguousRangeAcrossRows() {
+        val handles = (1..12).toList()
+
+        assertEquals(
+            setOf(1, 10, 11, 12),
+            GalleryDragSelectionPolicy.updatedRangeSelection(
+                currentSelection = handles.toSet(),
+                orderedHandles = handles,
+                startHandle = 2,
+                endHandle = 9,
+                downloadStates = emptyMap(),
+                shouldSelect = false,
+            ),
+        )
+    }
+
+    @Test
+    fun dragSelectionAutoScrollsNearViewportEdgesOnly() {
+        assertEquals(
+            -30f,
+            GalleryDragSelectionPolicy.autoScrollDelta(
+                pointerY = 0f,
+                viewportStart = 0f,
+                viewportEnd = 600f,
+                edgeSize = 80f,
+                maxDelta = 30f,
+            ),
+        )
+        assertEquals(
+            30f,
+            GalleryDragSelectionPolicy.autoScrollDelta(
+                pointerY = 600f,
+                viewportStart = 0f,
+                viewportEnd = 600f,
+                edgeSize = 80f,
+                maxDelta = 30f,
+            ),
+        )
+        assertEquals(
+            0f,
+            GalleryDragSelectionPolicy.autoScrollDelta(
+                pointerY = 300f,
+                viewportStart = 0f,
+                viewportEnd = 600f,
+                edgeSize = 80f,
+                maxDelta = 30f,
+            ),
+        )
+    }
+
+    @Test
+    fun columnLayoutPolicyMapsPinchScaleToTwoThroughSixColumns() {
         assertEquals(2, GalleryColumnLayoutPolicy.targetColumns(currentColumns = 3, pinchScale = 1.5f))
         assertEquals(4, GalleryColumnLayoutPolicy.targetColumns(currentColumns = 3, pinchScale = 0.65f))
         assertEquals(3, GalleryColumnLayoutPolicy.targetColumns(currentColumns = 3, pinchScale = 1.1f))
         assertEquals(2, GalleryColumnLayoutPolicy.targetColumns(currentColumns = 2, pinchScale = 1.7f))
-        assertEquals(5, GalleryColumnLayoutPolicy.targetColumns(currentColumns = 5, pinchScale = 0.5f))
+        assertEquals(6, GalleryColumnLayoutPolicy.targetColumns(currentColumns = 5, pinchScale = 0.5f))
+        assertEquals(6, GalleryColumnLayoutPolicy.targetColumns(currentColumns = 6, pinchScale = 0.5f))
+    }
+
+    @Test
+    fun galleryGridSpacingKeepsPhotoGapsCompact() {
+        assertEquals(5, GalleryGridSpacingPolicy.HORIZONTAL_DP)
+        assertEquals(7, GalleryGridSpacingPolicy.VERTICAL_DP)
     }
 
     @Test
@@ -358,6 +446,43 @@ class GalleryUiPolicyTest {
         )
         assertEquals(1, GalleryThumbnailDecodePolicy.sampleSize(width = 640, height = 480))
         assertEquals(1, GalleryThumbnailDecodePolicy.sampleSize(width = 0, height = 0))
+    }
+
+    @Test
+    fun previewImagePolicyPrefersHighResolutionPreviewOverListThumbnail() {
+        val highResolutionPreview = byteArrayOf(0x01, 0x02)
+        val listThumbnail = byteArrayOf(0x03, 0x04)
+
+        assertArrayEquals(
+            highResolutionPreview,
+            GalleryPreviewImagePolicy.displayBytes(
+                previewImage = highResolutionPreview,
+                thumbnail = listThumbnail,
+            ),
+        )
+        assertArrayEquals(
+            listThumbnail,
+            GalleryPreviewImagePolicy.displayBytes(
+                previewImage = null,
+                thumbnail = listThumbnail,
+            ),
+        )
+    }
+
+    @Test
+    fun previewImagePolicyDecodesFullObjectLargerThanThumbnailPreview() {
+        assertTrue(
+            GalleryPreviewImagePolicy.FULL_IMAGE_MAX_DECODED_SIDE >
+                GalleryThumbnailDecodePolicy.PREVIEW_MAX_DECODED_SIDE,
+        )
+        assertEquals(
+            4,
+            GalleryThumbnailDecodePolicy.sampleSize(
+                width = 7728,
+                height = 5152,
+                maxDecodedSide = GalleryPreviewImagePolicy.FULL_IMAGE_MAX_DECODED_SIDE,
+            ),
+        )
     }
 
     @Test
@@ -530,6 +655,28 @@ class GalleryUiPolicyTest {
     }
 
     @Test
+    fun thumbnailDisplayRotationPolicyUsesCameraVendorOrientationFour() {
+        val portrait = file(
+            handle = 76,
+            format = PtpObjectFormat.JPEG,
+            captureDate = "20260529T111500",
+            imageWidth = 4000,
+            imageHeight = 3000,
+            orientation = 4,
+        )
+
+        assertEquals(
+            270,
+            GalleryThumbnailDisplayPolicy.rotationDegrees(
+                file = portrait,
+                decodedWidth = 640,
+                decodedHeight = 480,
+                thumbnail = ByteArray(0),
+            ),
+        )
+    }
+
+    @Test
     fun previewRotationPolicyCyclesManualClockwiseRotation() {
         assertEquals(90, GalleryPreviewRotationPolicy.nextManualRotationDegrees(0))
         assertEquals(180, GalleryPreviewRotationPolicy.nextManualRotationDegrees(90))
@@ -555,6 +702,27 @@ class GalleryUiPolicyTest {
         assertTrue(summary.contains("thumbInfo=160x120"))
         assertTrue(summary.contains("objectOrientation=unknown"))
         assertTrue(summary.contains("autoRotation=90"))
+    }
+
+    @Test
+    fun thumbnailDiagnosticSummaryReportsCameraVendorOrientationRotation() {
+        val summary = GalleryThumbnailDiagnosticPolicy.summary(
+            handle = 81,
+            file = file(
+                handle = 81,
+                format = PtpObjectFormat.JPEG,
+                captureDate = "20260529T111500",
+                imageWidth = 4000,
+                imageHeight = 3000,
+                orientation = 4,
+            ),
+            thumbnail = ByteArray(0),
+            decodedWidth = 640,
+            decodedHeight = 480,
+        )
+
+        assertTrue(summary.contains("objectOrientation=4"))
+        assertTrue(summary.contains("autoRotation=270"))
     }
 
     private fun file(handle: Int, format: Int, captureDate: String): CameraFile =

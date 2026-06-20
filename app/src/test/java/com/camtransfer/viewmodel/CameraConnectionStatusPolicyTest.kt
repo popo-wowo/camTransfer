@@ -122,7 +122,7 @@ class CameraConnectionStatusPolicyTest {
     }
 
     @Test
-    fun wifiJoinFailureRetriesWifiWithoutBleActivation() {
+    fun wifiJoinFailureRetriesWifiHandoffWithoutBleReset() {
         val target = CameraConnectionRetryPolicy.targetForStep(CameraConnectionStep.JoinCameraWifi)
 
         assertEquals(CameraConnectionRetryTarget.WifiHandoffWithoutBle, target)

@@ -1,10 +1,20 @@
 # Android Official XApp Connection Analysis
 
-更新日期: 2026-06-17
+更新日期: 2026-06-19
 
 本文记录从已安装官方 FUJIFILM XApp Android 包中读到的连接逻辑。后续 Android 改造以这里的证据作为对照，避免靠猜测等待或串行试探。
 
 当前 Android 实现的完整执行规则见 `docs/android-current-execution-logic.md`。本文继续作为官方 XApp 行为对照和协议证据记录。
+
+## 证据等级与决策规则
+
+后续 Android 连接、相册、预览、导入相关决策按以下证据优先级判断:
+
+1. 实机网络抓包或实机诊断日志能直接证明的行为优先。
+2. 官方 Android XApp APK 静态分析能证明的 Android 平台连接流程优先于跨平台推测。
+3. iPhone 原厂 XApp 抓包可证明相机 Wi-Fi/PTP 层的实际协议行为，但不能证明 BLE/GATT、Android `requestNetwork`、Android 权限弹窗等平台层行为。
+4. 没有实机证据、APK 证据或稳定日志支撑的 fallback 不进入主链路；历史上证明有害或无证明有用的 fallback 应删除或隔离到显式实验路径。
+5. 任何新优化必须能说明自己属于哪个阶段: 配对、BLE 唤醒/AP ready、Wi-Fi handover、PTP open、列表缩略图、高清预览、原图导入。不能跨阶段兜底。
 
 ## 样本来源
 
@@ -28,6 +38,100 @@
 2. 进入相册阶段: 通过 BLE 让相机启动 WiFi/AP，然后手机用保存的 SSID、密码、MAC 发起系统 WiFi handover，最后通过 PTP/IP 和原生 SDK 进入图片列表与传输。
 
 这里的核心结论是: 官方 App 并不是靠猜测相机 WiFi 名称，也不是按 FUJ 前缀串行试很多网络。它在配对时就读取了精确的 SSID、WiFi 密码和 MAC，后面进入相册时直接使用这些值。
+
+## 原厂 XApp 配对与连接执行逻辑
+
+本节是后续 Android 连接改造的官方对照基准。除非有新的原厂 APK 反编译证据或实机日志证据，否则不要用 iOS 逻辑、SSID 猜测、无身份扫描兜底或固定等待替代这里的步骤。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant User as 用户
+    participant XApp as FUJIFILM XApp
+    participant Repo as BTEntryCameraRepository
+    participant BLE as BTCamera / BLE GATT
+    participant Camera as 相机
+    participant WiFi as WiFiHandOverService
+    participant Android as Android ConnectivityManager
+    participant FFIR as ControlFFIR / native SDK
+    participant PTP as 相机 192.168.0.1
+
+    User->>XApp: 配对/注册相机
+    XApp->>BLE: connectGatt + discoverServices
+    BLE->>Camera: read GAP device name
+    Camera-->>BLE: productName
+    BLE->>BLE: cameraID = serialNumber + "_" + productName
+    BLE->>Camera: read Y number / serial / SSID / MAC / firmware
+    Camera-->>BLE: SSID, MAC, serial, firmware
+    BLE->>Camera: read Wi-Fi passphrase
+    Camera-->>BLE: passphrase
+    XApp->>BLE: write CHARACTERISTIC_FF_PAIRING_KEY
+    XApp->>BLE: write CHARACTERISTIC_FF_CONNECTED_DEVICE_NAME_STRING
+    XApp->>Repo: save cameraID / SSID / passphrase / MAC / pairing info
+
+    User->>XApp: 进入相册/导入图片
+    XApp->>Repo: getCameraSSID(cameraID)
+    Repo-->>XApp: exact SSID
+    XApp->>Repo: getCameraWifiPassPhrase(cameraID)
+    Repo-->>XApp: exact passphrase
+    XApp->>Repo: getMacAddress(cameraID)
+    Repo-->>XApp: MAC/BSSID
+
+    XApp->>BLE: reconnect paired camera BLE/GATT for cameraID
+    XApp->>BLE: write ImageTransferSetting = 00
+    XApp->>BLE: write ImageTransferSettingEx = 01
+    XApp->>BLE: write ImageResizeSetting = 00/01
+    XApp->>BLE: write FunctionLaunchRequest = 0300
+    loop wait AP state
+        BLE->>Camera: read/notify CHARACTERISTIC_FF_AP_STATE
+        Camera-->>BLE: AP_STATE
+    end
+    alt AP ready
+        XApp->>WiFi: startWifiHandover(ssid, macAddress, passPhrase)
+    else AP not ready / timeout
+        XApp-->>User: stop at camera Wi-Fi/AP launch failure
+    end
+
+    WiFi->>Android: WifiNetworkSpecifier.setSsidPattern(exact SSID)
+    WiFi->>Android: optional setBssid(MAC)
+    WiFi->>Android: setWpa2Passphrase(passphrase)
+    WiFi->>Android: NetworkRequest Wi-Fi + remove INTERNET + requestNetwork
+    Android-->>WiFi: onAvailable(network)
+    Android-->>WiFi: onCapabilitiesChanged(networkCapabilities)
+    WiFi->>WiFi: verify capabilities SSID == targetSSID; save targetNetwork
+    alt onUnavailable
+        WiFi->>XApp: failure message 103
+        XApp->>XApp: retry only when retryCount < 3, needsRetry, and not firstConnect
+    end
+
+    XApp->>FFIR: ControlFFIR.Open(smartPhoneID, timeout)
+    FFIR->>Android: iterate Wi-Fi Networks
+    FFIR->>Android: bindProcessToNetwork(network)
+    FFIR->>Android: network.getSocketFactory()
+    FFIR->>PTP: socket connect 192.168.0.1:55740 timeout=5000ms
+    alt socket OK
+        FFIR->>FFIR: Java_SDK_SetOpenSocket(fd, 55740)
+        FFIR->>PTP: Java_SDK_Open(native PTP/IP init/open)
+    else socket/native failure
+        FFIR->>FFIR: close socket
+        FFIR->>FFIR: wait 500ms
+        FFIR-->>XApp: Open failure
+    end
+    FFIR-->>XApp: camera communication session opened
+```
+
+执行约束:
+
+1. 配对阶段必须读到并保存 `cameraID`、精确 `SSID`、`passphrase`、`MAC/BSSID`。`cameraID` 来自 `serialNumber + "_" + productName`，BLE address 只是 endpoint，不是身份本身。
+2. 进入相册阶段必须先通过 BLE/GATT 让相机进入 import-image / gallery Wi-Fi 模式，不能在未唤醒相机时直接猜 Wi-Fi 或直接打 PTP。
+3. 相机 Wi-Fi 启动指令按官方顺序写入: `ImageTransferSetting=00`、`ImageTransferSettingEx=01`、`ImageResizeSetting=00/01`、`FunctionLaunchRequest=0300`。
+4. Wi-Fi handover 使用配对记录或 BLE 读到的精确 `SSID + passphrase + optional BSSID`，通过 `WifiNetworkSpecifier` / `requestNetwork` 交给系统，不生成 FUJ 前缀候选。
+5. Wi-Fi 成功不只看系统默认网络，必须保存目标 `Network` 并在 PTP socket 前绑定到相机 Wi-Fi 的 `Network`。
+6. PTP/IP 入口由 `ControlFFIR.Open()` 调 `SDK_SetOpenSocket(55740)` 后交给 native `Java_SDK_Open()`。Java 层可见 socket 连接 `192.168.0.1:55740`，connect timeout 为 `5000ms`；native 内部 INIT/open 细节不在 Java 层完全展开。
+7. `SDK_SetOpenSocket()` 失败时关闭 socket 并等待 `500ms` 后返回；这不是无条件快速循环重试。
+8. `55741` 和 `55742` 在 `InitiateOpenCapture` 等拍摄/through/event 阶段才由官方代码另行打开；普通相册 open 首先只需要 base socket `55740`。
+9. `WiFiHandOverService.onUnavailable()` 的重试是受条件控制的: `retryCount < 3`、`needsRetry == true`、并且不是首次连接；不是无边界 requestNetwork 循环。
+10. 主链路失败时应停在当前失败阶段提示用户处理，不应跨阶段兜底。例如 BLE/AP ready 没确认时，不应直接进入 Wi-Fi/PTP。
 
 ## BLE 配对读到的信息
 
@@ -88,9 +192,98 @@
   - event socket: `55742`
 - `SDK_SetOpenSocket(portNo)` 会优先使用当前相机 WiFi 对应的 `Network.getSocketFactory()`。
 - 如果系统里保存了目标 `Network`，还会调用 `ConnectivityManager.bindProcessToNetwork(network)`。
-- socket connect timeout 是 `5000ms`。
+- socket connect timeout 是 `5000ms`。这是官方 native `SDK_SetOpenSocket` 里的 socket connect 窗口，不等同于 Kotlin 侧已验证可工作的 PTP open 窗口。
+- socket 创建 / 交给 native 失败后，`SDK_SetOpenSocket` 内部等待 `500ms` 再返回；Android 主链路不要 0ms 连续打 `55740`。
+- `libFTLPTPIP.so` 内置的 `< PTP-IP Init_Command_Request >` 模板为 legacy plain INIT: `52 00 00 00 01 00 00 00 f2 e4 53 8f ad a5 48 5d 87 b2 7f 0b d3 d5 de d0 00 00 00 00 ...`。这证明 plain 模板存在，但不是当前 X-T5 实机唯一可用的 INIT 形态；昨天稳定版本和今天日志对照显示，Kotlin 路径需要先发送写入手机 `192.168.0.x` 的 legacy INIT 变体。
 
 这说明进入 PTP/IP 前，关键是把进程和 socket 明确绑定到相机 WiFi 的 `Network`，不能只依赖系统默认网络。
+
+## 2026-06-19 iPhone 原厂 XApp 实机抓包结论
+
+本节记录 iPhone 原厂 XApp 通过 USB RVI 抓到的相机 Wi-Fi/PTP 实机流量。它是“相机 Wi-Fi 已连接后”的网络证据，用来校验 PTP 相册、预览、导入行为；它不能证明 BLE 配对/GATT、iOS Wi-Fi handover UI、系统授权弹窗等非 IP 层行为。
+
+样本:
+
+- 抓包文件: `.analysis/packet-captures/iphone-xapp-clean-rvi2-20260619-213437.pcap`
+- 抓包接口: `rvi2`
+- `tcpdump` 结果: `158630 packets captured`、`158736 packets received by filter`、`0 packets dropped by kernel`
+- 用户动作时间:
+  - `21:36:16` 相册列表出来
+  - `21:36:59` 单图打开
+  - `21:37:37` 放大完成
+  - `21:38:10` 左右开始导入
+- 分析脚本: `.analysis/analyze_xapp_pcap.py`
+
+注意: RVI/PKTAP 会让同一 TCP payload 出现重复记录。本文所有字节数以 TCP seq + payload 去重并重组 PTP 流后的结果为准，不能直接用原始包数相加。
+
+抓包能确定的连接事实:
+
+- 普通相册浏览、单图预览、放大、导入都走 `192.168.0.101 -> 192.168.0.1:55740` 这一条 PTP command socket。
+- 本样本没有看到 `55741` / `55742` 承载普通相册预览或导入；这与 Android 官方 APK 静态分析一致: `55741`、`55742` 属于拍摄/through/event 等阶段，不是普通相册 open 的主路径。
+- PTP payload 是 CameraVendor legacy packet 格式，和 Android 当前 `CameraVendorLegacyOperationRequest` 的 `length + kind + opCode + transactionId + params/data` 结构一致。
+- 有效去重 payload:
+  - camera -> phone: `19,433,691 bytes`，约 `18.53 MiB`
+  - phone -> camera: `21,830 bytes`
+- 样本内主要 opcode:
+  - `GET_DEVICE_PROP_VALUE(0x1015)`: `810`
+  - `GET_OBJECT_INFO(0x1008)`: `525`
+  - `SET_DEVICE_PROP_VALUE(0x1016)`: `6`
+  - `GET_PARTIAL_OBJECT(0x101B)`: `3`
+  - `VENDOR_GET_LATEST_OBJECT_INFO(0x9054)`: `1`
+  - `VENDOR_GET_EXTENSION_THUMB(0x9055)`: `1`
+
+原厂进入相册后的初始化行为:
+
+- `SET_DEVICE_PROP_VALUE(0xDF01)=20`
+- `SET_DEVICE_PROP_VALUE(0xDF28)=3`
+- `SET_DEVICE_PROP_VALUE(0xD226)=0`
+- `VENDOR_GET_LATEST_OBJECT_INFO(0x9054, handle=0x10000001)` 返回 `144 bytes`
+- `VENDOR_GET_EXTENSION_THUMB(0x9055, handle=0x10000001)` 返回 `41061 bytes`，抽出后是 `640x480` JPEG
+- 后续存在大量 `GET_DEVICE_PROP_VALUE(0xD212)` 轮询，用于相册/当前对象上下文状态；这类状态轮询不应和缩略图、预览、导入并发抢 PTP 通道。
+
+单图打开的确定行为:
+
+1. 原厂先发 `SET_DEVICE_PROP_VALUE(0xD226)=1`。
+2. 随后发 `GET_OBJECT_INFO(handle=0xb6)`。
+3. 该 ObjectInfo 的 `compressedSize` 为 `0x1f7427`，即 `2061351 bytes`。
+4. 原厂发 `GET_PARTIAL_OBJECT(handle=0xb6, offset=0, length=0x1f7427)`。
+5. 抽出的返回数据是完整 JPEG，尺寸 `3840x2560`，结尾有 JPEG EOI。
+6. 预览完成后原厂发 `SET_DEVICE_PROP_VALUE(0xD226)=0`。
+
+因此，原厂单图清晰不是因为把 `640x480` 缩略图放大，也不是立刻下载完整原图；而是通过 `D226=1 + ObjectInfo.compressedSize + GET_PARTIAL_OBJECT` 读取一张中间档高清预览 JPEG。
+
+放大行为:
+
+- `21:36:59-21:37:37` 放大期间没有显著图片数据传输，主要是 `GET_DEVICE_PROP_VALUE` 状态轮询。
+- 这说明放大直接使用单图打开时已经拿到的 `3840x2560` 预览图，不会在手势缩放时再临时下载更大图。
+
+导入行为:
+
+1. 原厂发 `SET_DEVICE_PROP_VALUE(0xD226)=2`。
+2. 原厂分段读取同一 handle:
+   - `GET_PARTIAL_OBJECT(handle=0xb6, offset=0, length=0xbfffe0)` -> `12582880 bytes`
+   - `GET_PARTIAL_OBJECT(handle=0xb6, offset=0xbfffe0, length=0x46b737)` -> `4634423 bytes`
+3. 两段拼接后是完整 JPEG，尺寸 `7728x5152`，总计 `17217303 bytes`，结尾有 JPEG EOI。
+
+分时窗口:
+
+- 相册列表/预列表: camera -> phone 约 `0.07 MiB`
+- 单图打开: camera -> phone 约 `2.02 MiB`
+- 放大: camera -> phone 约 `0 MiB`
+- 导入: camera -> phone 约 `16.44 MiB`
+
+对后续 Android 决策的约束:
+
+1. 配对与进入相册主链路仍以 Android 官方 APK 静态分析和 Android 实机日志为准: BLE 身份确认、精确 SSID/passphrase/BSSID、AP ready、Network 绑定、`55740` PTP open 这些步骤不能被这次 iPhone IP 抓包替代或省略。
+2. 这次抓包反向确认: 相机 Wi-Fi 已建立后，普通相册/预览/导入只需要 base command socket `55740`；不要为了单图预览或导入打开额外 PTP session 或 `55741/55742`。
+3. 列表缩略图、高清预览、原图导入必须分层:
+   - 缩略图: 小图通道，不能用未证明有效的 partial fallback 顶替。
+   - 高清预览: `D226=1 -> GET_OBJECT_INFO -> GET_PARTIAL_OBJECT(compressedSize)`，缓存完整 `3840x2560` 预览 JPEG。
+   - 原图导入: `D226=2 -> GET_PARTIAL_OBJECT` 分段读取完整原图，和预览缓存状态分离。
+4. `GET_PARTIAL_OBJECT` 不是缩略图兜底的证据。它在本样本里用于高清预览和原图导入，并且都依赖明确的压缩模式和 `ObjectInfo.compressedSize`。
+5. PTP 请求必须由统一调度器串行/优先级控制。原厂行为显示状态轮询、ObjectInfo、预览、导入都复用同一条 command socket；Android 不应让缩略图 worker、预览、下载各自并发抢相机。
+6. 单图预览缓存是必要设计: 原厂打开一次单图会传约 `2 MiB` 高清预览；放大不再传输。Android 应以内存 + 磁盘缓存避免每次打开同一张图都重新走 PTP。
+7. 不能把本节作为“可以跳过 BLE/AP ready/Network 绑定”的证据。抓包开始时手机已经完成系统 Wi-Fi 连接，BLE 配对和 Wi-Fi handover 的前置过程不在 pcap 的可见范围内。
 
 ## 相册列表与缩略图
 
@@ -139,16 +332,16 @@
 
 ## 当前 Android 官方路径约束
 
-2026-06-14 之后，Android 进入相册主链路按“严格官方协议适配层”执行。这个链路只使用已经确认的相机身份和官方 BLE/配对记录里的精确连接信息，不在正常路径里猜测、扫描兜底或预热 WiFi。
+2026-06-18 复查官方 XApp 后，Android 进入相册主链路按“严格官方协议适配层”执行。这个链路只使用已经确认的相机身份和官方 BLE/配对记录里的精确连接信息，不在正常路径里猜测、无身份扫描兜底或预热 WiFi。
 
 主链路顺序:
 
-1. `ReconnectPairedBle`: 读取当前选中的配对记录，必须有保存的 Bluetooth address；只对这个地址发起 GATT direct connect。没有地址或直连失败，停在这一步提示重新配对/重试，不再按名称 scan 附近设备。
+1. `ReconnectPairedBle`: 读取当前选中的配对记录，先使用保存的 Bluetooth address 做 GATT direct connect；直连超时后，按官方 `PairingMode.RE_CONNECT` 对当前 `cameraID` 做受限扫描并连接匹配候选。不能做无身份扫描，也不能把扫描结果绕过身份校验直接推进 Wi-Fi/PTP。
 2. `TransferAuthorization`: 通过 BLE 确认配对状态，并读取官方 SSID、WiFi passphrase、MAC/BSSID。没有拿到官方 SSID 和密码，不进入 WiFi 步骤。
 3. `ActivateCameraWifi`: 写官方 AP launch/transfer activation 指令，让相机打开 WiFi。
 4. `WaitCameraWifiReady`: 只等待 BLE transfer/AP ready 逻辑返回，不在等待期间启动 WiFi prewarm。
 5. `JoinCameraWifi`: 使用一个精确的官方 `ssid + passphrase + optional bssid` 发起一次系统 `requestNetwork`。不生成 FUJ 前缀候选，不串行尝试多个 SSID，也不在主链路里用旧候选替代本次官方信息。
-6. `ConnectPtp`: 在相机 WiFi 对应 `Network` 上打开 PTP/IP 相机通信会话。这里对齐官方 `cameraOpen`: 每次 open timeout 5 秒，总窗口约 30 秒，不重新选择相机或 WiFi。
+6. `ConnectPtp`: 在相机 WiFi 对应 `Network` 上打开 PTP/IP 相机通信会话。官方 native `SDK_SetOpenSocket` 证明 socket 必须绑定相机 Wi-Fi Network；当前 Kotlin 实现保留已验证稳定窗口: 单次 socket connect 1.5 秒，最多 5 次，失败间隔线性增加，INIT ACK read timeout 15 秒。
 7. `ConfirmGalleryMode`: PTP 连通后再确认相机已经进入相册模式。
 
 恢复入口单独处理:
@@ -202,11 +395,11 @@ UI 侧也同步调整: 已配对状态下如果还挂着进入相册阶段的问
 
 ## 2026-06-04 连接恢复与首屏缩略图优化
 
-这一轮曾经为了恢复体验加入过 scan fallback 和 WiFi 重试。2026-06-14 之后，下面的重连策略只保留为历史记录，主链路以“当前 Android 官方路径约束”为准:
+这一轮曾经为了恢复体验加入过多轮 scan fallback 和 WiFi 重试。2026-06-18 复查后，主链路以“当前 Android 官方路径约束”为准:
 
-- 历史上已配对相机曾使用: 保存的 BLE address 直连 -> 短 scan -> scan fallback。这个策略已经退出进入相册主链路；当前主链路只允许保存地址 `DirectAddress`，没有地址或直连失败就停在 `ReconnectPairedBle`。
+- 历史上已配对相机曾使用: 保存的 BLE address 直连 -> 短 scan -> 多轮 scan fallback。多轮 scan fallback 已退出进入相册主链路；当前主链路保留 `DirectAddress -> OfficialReconnectScan`，其中扫描必须等价于原厂 `PairingMode.RE_CONNECT`，受当前 `cameraID`/同一相机身份约束。
 - WiFi 失败后的重试先探测当前 PTP。用户如果已经去系统 Wi-Fi 手动连上相机热点，App 会直接打开相册通道，不重新 BLE 唤醒相机，也不重新 requestNetwork。
-- 历史上曾在 WiFi 已连接后立即尝试 PTP，并按 500ms、1000ms、1500ms... 短退避重试。2026-06-14 后主链路改为官方 `cameraOpen` 窗口: 每次 open 5 秒，总窗口约 30 秒，不再使用自定义线性退避。
+- 历史上曾在 WiFi 已连接后立即尝试 PTP，并按 500ms、1000ms、1500ms... 短退避重试。2026-06-19 复查官方 XApp 后，主链路按官方 `cameraOpen` 窗口执行: 每次 open 5 秒，总窗口约 30 秒；socket/open 失败间隔固定 500ms，对齐 `SDK_SetOpenSocket`，不使用 0ms 连续重试或自定义线性退避。
 - 首屏缩略图读取从单 worker 改为 2 个受控 worker。保持小并发窗口，避免无限并发压垮相机 PTP，同时减少首屏缩略图串行等待。
 
 ## 2026-06-04 首屏缩略图回归修正
@@ -238,7 +431,7 @@ UI 侧也同步调整: 已配对状态下如果还挂着进入相册阶段的问
 当前规则:
 
 - 如果 `ObjectInfo.thumbFormat == JPEG` 且 `thumbPixWidth/thumbPixHeight > 0`，缩略图必须先走标准 `GET_THUMB`。
-- `GET_PARTIAL_OBJECT` 只在没有标准缩略图信息，或标准 `GET_THUMB` 失败/不可用时作为 fallback。
+- 2026-06-19 抓包复核后，列表缩略图不再使用 `GET_PARTIAL_OBJECT` fallback；标准 `GET_THUMB` 不可用时记录缩略图失败。
 - 这样列表优先拿相机提供的 640x480 缩略图，避免把整张小 JPG/partial 对象当作缩略图显示。
 
 ## 2026-06-12 大图库首屏阻塞修正
@@ -250,7 +443,7 @@ UI 侧也同步调整: 已配对状态下如果还挂着进入相册阶段的问
 - 大图库已经拿到 vendor handle 占位列表时，先发布完整 handle 占位并结束列表 loading。
 - 不立即启动完整 ObjectInfo 枚举，避免它在首屏前占用 40 秒以上相机通道。
 - 首屏可见项优先读取标准 `GET_THUMB`；完整文件名、日期、尺寸、RAW/HEIF 信息后续再低优先级补齐。
-- `GET_PARTIAL_OBJECT` 只作为兜底，并拒绝没有 JPEG EOI 的不完整预览，避免把 167936 字节 partial 原图当作列表缩略图。
+- 2026-06-19 后不再把 `GET_PARTIAL_OBJECT` 作为列表缩略图兜底，避免把 partial 原图/预览片段当作网格缩略图。
 
 ## 2026-06-12 富士扩展缩略图与 UI 缓存修正
 
@@ -259,8 +452,8 @@ UI 侧也同步调整: 已配对状态下如果还挂着进入相册阶段的问
 当前规则:
 
 - `0x9055 GetExtensionThumb(handle=0x10000001)` 只用于官方初始化链路里的 current image thumbnail context prime。
-- 列表单张缩略图按官方 `ReadThumbnail` 语义走标准 `GET_THUMB(handle)` 优先；`GET_PARTIAL_OBJECT` 只允许作为最后兜底。
-- 诊断日志区分 `Thumbnail vendorExtension`、`Thumbnail standard` 和 `Thumbnail partial`，后续实机可以直接判断命中的通道。
+- 列表单张缩略图按官方 `ReadThumbnail` 语义走标准 `GET_THUMB(handle)`；`GET_PARTIAL_OBJECT` 不再作为最后兜底。
+- 诊断日志区分 `Thumbnail vendorExtension` 和 `Thumbnail standard`，后续实机可以直接判断命中的通道。
 - `BrowseViewModel` 增加 handle 级缩略图缓存，完整 `ObjectInfo` 回来或占位列表刷新时不覆盖已经加载好的缩略图。
 - 网格和下载中心优先用 `BitmapFactory` 采样解码，减少部分 Android/厂商 ROM 上 `ImageDecoder` 失败导致一直显示占位的风险。
 
@@ -339,8 +532,8 @@ UI 侧也同步调整: 已配对状态下如果还挂着进入相册阶段的问
 Android 侧同步补齐身份层:
 
 - 本地配对记录新增 `cameraId`，优先使用 `serialNumber_productName`，旧记录或系统蓝牙 bond 兜底时使用序列号、蓝牙地址或 SSID 生成过渡身份。
-- 已配对进入相册时，必须使用当前选中 `cameraId` 记录里的保存蓝牙地址走 `DirectAddress`。没有保存地址或直连失败，就停在 `ReconnectPairedBle`，不再按名称扫描兜底。
-- 扫描兜底不再属于进入相册主链路。后续如果要恢复扫描，只能作为明确的重新配对/修复配对记录入口，并且仍必须通过 `cameraId`、序列号、蓝牙地址或设备名确认仍是同一台相机。
+- 已配对进入相册时，必须围绕当前选中 `cameraId` 记录执行 BLE 重连：先使用保存蓝牙地址走 `DirectAddress`，直连失败后才进入官方 `RE_CONNECT` 受限扫描。
+- 无身份约束的扫描兜底不属于进入相册主链路。任何扫描都必须通过 `cameraId`、序列号、蓝牙地址或设备名确认仍是同一台相机；GATT 连上后必须再次读取身份并强校验。
 - 如果连接到的相机身份与已配对记录不一致，流程停止并要求重新配对，不能继续启动 WiFi 或进入 PTP。
 
 ## 2026-06-14 多相机配对仓库
@@ -357,17 +550,17 @@ Android 侧同步补齐身份层:
 
 进入相册阶段新增 Android 侧 `CameraVendorOfficialGalleryConnectionAdapter`。它不是复用官方代码或官方 JNI，而是把已确认的官方协议行为转成项目内可测试的状态机，原则是每一步成功确认后才允许下一步:
 
-1. `ReconnectPairedBle`: 当前选中 `cameraId` 的已配对相机只走保存的 BLE address 直连；没有地址或直连失败时停止，不能 fast scan / scan fallback。
+1. `ReconnectPairedBle`: 当前选中 `cameraId` 的已配对相机先使用保存的 BLE address 直连；直连失败后进入官方 `RE_CONNECT` 受限扫描。不能进入无身份扫描或多轮 scan fallback。
 2. `TransferAuthorization`: 通过 BLE 确认相机允许当前手机传图，并读取/刷新精确 SSID、passphrase、BSSID/MAC。
 3. `ActivateCameraWifi`: 写入 ReferenceApp import-image 启动命令，包括传输尺寸偏好和 `FunctionLaunchRequest=0300`。
 4. `WaitCameraWifiReady`: 等待 `AP_STATE` 明确返回 `0x8001` 或 `0x8003`。`0x8000` 仍只代表启动中，不能放行。
 5. `JoinCameraWifi`: Android 使用精确 Wi-Fi 配置加入相机热点；有 BSSID 时绑定 BSSID。
-6. `ConnectPtp`: 使用相机 Wi-Fi 对应的 `Network.socketFactory` 打开 `192.168.0.1:55740`。PTP legacy INIT 使用短固定 friendly name `CamTransfer`，不把 UUID 写进固定长度 INIT 字段；单次 open 超时 5 秒，总窗口约 30 秒。
+6. `ConnectPtp`: 使用相机 Wi-Fi 对应的 `Network.socketFactory` 打开 `192.168.0.1:55740`。PTP legacy INIT 沿用当前实机稳定顺序：先发送带手机 `192.168.0.x` 的 legacy INIT 变体；未收到 ACK 时再发送官方 native plain legacy 模板，GUID 后 4 字节保持 `0`。friendly name 使用当前已确认手机名，字段超长才回退。Kotlin open 窗口保持单次 1.5 秒、最多 5 次、线性退避；INIT ACK read timeout 保持 15 秒。
 7. `ConfirmGalleryMode`: PTP open session 成功后，只执行官方图片浏览 function mode 设置: `SetFunctionMode(20)`、两次 `GetFunctionVersion(57128)`、按相机返回版本 `SetFunctionVersion(57128, version)`、`GetDualSlotStatus()`。照片 handle、缩略图、搜索模式、日期分组等读取全部移动到图库加载阶段。
 
 兼容说明:
 
-- `CameraVendorPtpIdentityPolicy` 固定 legacy INIT friendly name 为 `CamTransfer`，避免把 36 位 UUID 截断进富士 legacy INIT 包。
+- `CameraVendorPtpIdentityPolicy` 优先使用当前已确认手机名；超出 54 字节 legacy 字段时才回退到 `CamTransfer`，避免把过长标识截断进富士 legacy INIT 包。
 - `CameraVendorBleHandshake.prepareTransferActivation()` 保持原 API，但内部已经拆成“写启动命令”和“等待 AP ready”，方便服务层按步骤确认。
 - 手动 Wi-Fi 重试路径仍保留短路径: 如果用户已经手动连上相机 Wi-Fi，先探测 PTP 并继续打开相册，不强制重新 BLE 唤醒。
 
@@ -376,10 +569,10 @@ Android 侧同步补齐身份层:
 为优化进入 Wi-Fi 前的等待，Android 侧允许复用上一轮仍然有效的 BLE/GATT 会话，但复用边界必须保守:
 
 - 只有 `BluetoothGatt` 仍存在、传图启动必需特征仍能找到、当前相机身份与选中 `cameraId` 匹配、且会话年龄不超过 2 分钟时，才复用 `CameraVendorBleHandshake`。
-- 复用只跳过 BLE reconnect / scan，不跳过 `TransferAuthorization`、`ActivateCameraWifi`、`WaitCameraWifiReady` 等官方步骤。
-- 如果缓存会话断开、缺特征、身份不匹配或过期，立即丢弃缓存并回到已配对地址直连；直连失败就停止在 `ReconnectPairedBle`。
+- 复用只跳过 BLE reconnect，不跳过 `TransferAuthorization`、`ActivateCameraWifi`、`WaitCameraWifiReady` 等官方步骤。
+- 如果缓存会话断开、缺特征、身份不匹配或过期，立即丢弃缓存并回到已配对地址直连；直连失败后只允许当前 `cameraID` 的官方 `RE_CONNECT` 受限扫描，仍失败就停止在 `ReconnectPairedBle`。
 - `AP_STATE` 不做缓存。每次进入相册都必须重新等待相机返回 `0x8001` 或 `0x8003` 后才允许 Wi-Fi handoff。
-- 已配对地址直连的 GATT 连接超时使用 15 秒；超时后直接暴露为已配对 BLE 直连失败，提示用户重试或重新配对。
+- 已配对地址直连的 GATT 连接超时使用 15 秒；超时后暴露为已配对 BLE 连接失败，提示用户重试或重新配对。
 
 ## 2026-06-16 已配对身份与 BLE endpoint
 
@@ -387,7 +580,7 @@ Android 侧同步补齐身份层:
 
 - `cameraID` 是配对记录主键，优先使用 `serialNumber_productName`。本地仓库按 `cameraID` 保存多台相机记录，并保留旧单相机字段迁移读取能力。
 - BLE GATT 不能直接用 `cameraID` 发起连接；Android 连接入口仍是 `BluetoothDevice` 地址。因此 `cameraID` 用于选择和校验相机身份，BLE 地址只是该身份下的连接 endpoint。
-- 进入相册时，先从当前 `cameraID` 记录和系统已配对 bond 构造同一相机的 BLE endpoint 候选；不扫描附近设备，不按名称兜底选择未配对设备。
+- 进入相册时，先从当前 `cameraID` 记录和系统已配对 bond 构造同一相机的 BLE endpoint 候选；直连失败后才按原厂 `RE_CONNECT` 做受限扫描。扫描命中只是候选，必须在 GATT 身份校验通过后才能进入 Wi-Fi/PTP。
 - 每次 GATT 连上后必须读取相机序列号/设备名，并与当前 `cameraID` 匹配。身份不匹配时停止在 `ReconnectPairedBle`，不能继续 Wi-Fi 或 PTP。
 - 已配对 direct GATT 超时调整为 15 秒。实机日志显示 Android BLE 地址解析有时超过 6 秒才完成连接，6 秒会把可成功的已配对连接误判失败。
 

@@ -5,17 +5,19 @@ import org.junit.Test
 
 class CameraVendorBleReconnectPolicyTest {
     @Test
-    fun retriesRememberedCameraGattReconnects() {
-        assertEquals(3, CameraVendorBleReconnectPolicy.MAX_REMEMBERED_RECONNECT_ATTEMPTS)
+    fun rememberedCameraReconnectUsesOnlyDocumentedOfficialStages() {
         assertEquals(15_000L, CameraVendorBleReconnectPolicy.REMEMBERED_DIRECT_CONNECT_TIMEOUT_MS)
-        assertEquals(4_000L, CameraVendorBleReconnectPolicy.REMEMBERED_FAST_SCAN_TIMEOUT_MS)
-        assertEquals(12_000L, CameraVendorBleReconnectPolicy.REMEMBERED_SCAN_TIMEOUT_MS)
-        assertEquals(500L, CameraVendorBleReconnectPolicy.retryDelayMs(afterFailedAttempt = 1))
-        assertEquals(1_000L, CameraVendorBleReconnectPolicy.retryDelayMs(afterFailedAttempt = 2))
+        assertEquals(
+            setOf(
+                CameraVendorBleReconnectStage.DirectAddress,
+                CameraVendorBleReconnectStage.OfficialReconnectScan,
+            ),
+            CameraVendorBleReconnectStage.entries.toSet(),
+        )
     }
 
     @Test
-    fun rememberedBluetoothAddressUsesOnlyDirectConnectInOfficialGalleryPath() {
+    fun rememberedBluetoothAddressWithoutStableIdentityUsesOnlyDirectConnect() {
         val stages = CameraVendorBleReconnectPolicy.reconnectStages(
             hasRememberedBluetoothAddress = true,
             hasStableCameraIdentity = false,
@@ -30,7 +32,7 @@ class CameraVendorBleReconnectPolicyTest {
     }
 
     @Test
-    fun missingRememberedBluetoothAddressStopsInsteadOfScanning() {
+    fun missingRememberedBluetoothAddressAndIdentityStopsInsteadOfScanning() {
         val stages = CameraVendorBleReconnectPolicy.reconnectStages(
             hasRememberedBluetoothAddress = false,
             hasStableCameraIdentity = false,
@@ -40,7 +42,7 @@ class CameraVendorBleReconnectPolicyTest {
     }
 
     @Test
-    fun stableCameraIdentityStillUsesRememberedAddressOnly() {
+    fun stableCameraIdentityWithAddressUsesDirectConnectThenOfficialReconnectScan() {
         val stages = CameraVendorBleReconnectPolicy.reconnectStages(
             hasRememberedBluetoothAddress = true,
             hasStableCameraIdentity = true,
@@ -49,6 +51,22 @@ class CameraVendorBleReconnectPolicyTest {
         assertEquals(
             listOf(
                 CameraVendorBleReconnectStage.DirectAddress,
+                CameraVendorBleReconnectStage.OfficialReconnectScan,
+            ),
+            stages,
+        )
+    }
+
+    @Test
+    fun stableCameraIdentityWithoutAddressUsesOfficialReconnectScan() {
+        val stages = CameraVendorBleReconnectPolicy.reconnectStages(
+            hasRememberedBluetoothAddress = false,
+            hasStableCameraIdentity = true,
+        )
+
+        assertEquals(
+            listOf(
+                CameraVendorBleReconnectStage.OfficialReconnectScan,
             ),
             stages,
         )
