@@ -7,6 +7,7 @@ import android.os.Build
 import androidx.core.content.FileProvider
 import com.camtransfer.BuildConfig
 import com.camtransfer.model.CameraFile
+import com.camtransfer.protocol.PtpObjectFormat
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -75,6 +76,12 @@ object DiagnosticLog {
         }
     }
 
+    fun appendMetadataSnapshot(context: Context, label: String, files: List<CameraFile>) {
+        GalleryMetadataDiagnosticPolicy.snapshotLines(label, files).forEach { line ->
+            append(context, "GalleryMetadata", line)
+        }
+    }
+
     fun shareIntent(context: Context): Intent {
         val file = exportFile(context)
         val uri = FileProvider.getUriForFile(context, "${BuildConfig.APPLICATION_ID}.fileprovider", file)
@@ -109,6 +116,42 @@ object DiagnosticLog {
         if (!file.exists() || file.length() <= MaxBytes) return
         val text = file.readText()
         file.writeText(text.takeLast(MaxBytes / 2))
+    }
+}
+
+object GalleryMetadataDiagnosticPolicy {
+    private const val LargeFileThresholdBytes = 8 * 1024 * 1024
+    private const val MaxLargeFileLines = 24
+
+    fun snapshotLines(label: String, files: List<CameraFile>): List<String> {
+        val formatCounts = files.groupingBy { it.info.formatLabel }.eachCount()
+        val unresolvedCount = files.count { it.info.format == PtpObjectFormat.UNDEFINED }
+        val largeFiles = files
+            .filter { it.info.compressedSize >= LargeFileThresholdBytes }
+            .sortedWith(compareByDescending<CameraFile> { it.info.compressedSize }.thenByDescending { it.info.handle })
+        return buildList {
+            add(
+                "Metadata snapshot $label total=${files.size} formats=$formatCounts " +
+                    "unresolved=$unresolvedCount largeFiles=${largeFiles.size}"
+            )
+            largeFiles.take(MaxLargeFileLines).forEach { file ->
+                val info = file.info
+                add(
+                    String.format(
+                        Locale.US,
+                        "Metadata large %s handle=%d format=0x%04X label=%s size=%d",
+                        label,
+                        info.handle,
+                        info.format,
+                        info.formatLabel,
+                        info.compressedSize,
+                    )
+                )
+            }
+            if (largeFiles.size > MaxLargeFileLines) {
+                add("Metadata large $label truncated remaining=${largeFiles.size - MaxLargeFileLines}")
+            }
+        }
     }
 }
 

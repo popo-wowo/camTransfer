@@ -2,6 +2,7 @@ package com.camtransfer.ui
 
 import com.camtransfer.model.CameraFile
 import com.camtransfer.model.TransferState
+import com.camtransfer.protocol.PtpObjectFormat
 import java.nio.ByteOrder
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
@@ -135,12 +136,7 @@ object GalleryFilterStatsPolicy {
                     )
                 }
                 .sortedWith(compareByDescending<GalleryFolderCount> { it.count }.thenBy { it.label }),
-            formatCounts = mapOf(
-                GalleryFormatFilter.Jpg to files.count { it.info.isJpeg },
-                GalleryFormatFilter.Heif to files.count { it.info.isHeif },
-                GalleryFormatFilter.Raw to files.count { it.info.isRaw },
-                GalleryFormatFilter.Video to files.count { it.info.isVideo },
-            ),
+            formatCounts = localFormatCounts(files),
         )
 
     fun folderLabel(folder: GalleryFolderFilter): String =
@@ -149,6 +145,14 @@ object GalleryFilterStatsPolicy {
         } else {
             "存储卡 ${folder.storageId}"
         }
+
+    private fun localFormatCounts(files: List<CameraFile>): Map<GalleryFormatFilter, Int> =
+        mapOf(
+            GalleryFormatFilter.Jpg to files.count { it.info.isJpeg },
+            GalleryFormatFilter.Heif to files.count { it.info.isHeif },
+            GalleryFormatFilter.Raw to files.count { it.info.isRaw },
+            GalleryFormatFilter.Video to files.count { it.info.isVideo },
+        )
 }
 
 object GallerySectionPolicy {
@@ -158,23 +162,32 @@ object GallerySectionPolicy {
     fun sections(
         files: List<CameraFile>,
         expandedDays: Set<LocalDate>,
-    ): List<GalleryDaySection> =
-        files.groupBy { GalleryUiPolicy.captureDate(it) }
-            .entries
-            .sortedWith(compareByDescending<Map.Entry<LocalDate?, List<CameraFile>>> { it.key ?: LocalDate.MIN })
-            .map { (day, dayFiles) ->
+    ): List<GalleryDaySection> {
+        val filesByDay = files.groupBy { GalleryUiPolicy.captureDate(it) }
+        val orderedDays = files
+            .mapNotNull { GalleryUiPolicy.captureDate(it) }
+            .distinct()
+        val unknownFiles = filesByDay[null].orEmpty()
+        val sections = orderedDays.mapNotNull { day ->
+            filesByDay[day]?.let { dayFiles ->
                 GalleryDaySection(
                     day = day,
                     files = dayFiles,
-                    hourGroups = if (day != null && day in expandedDays) hourGroups(dayFiles) else emptyList(),
+                    hourGroups = if (day in expandedDays) hourGroups(dayFiles) else emptyList(),
                 )
             }
+        }
+        if (unknownFiles.isEmpty()) return sections
+        return sections + GalleryDaySection(
+            day = null,
+            files = unknownFiles,
+        )
+    }
 
     private fun hourGroups(files: List<CameraFile>): List<GalleryHourGroup> =
         files.groupBy { captureHour(it) }
             .entries
             .filter { it.key != null }
-            .sortedByDescending { it.key }
             .map { (hour, hourFiles) ->
                 GalleryHourGroup(
                     hour = hour ?: 0,
@@ -360,6 +373,28 @@ object GalleryDownloadUiPolicy {
             TransferState.DOWNLOADING,
             TransferState.SAVING,
             TransferState.DONE -> false
+        }
+}
+
+enum class GalleryTileDownloadBadge {
+    PendingText,
+    Progress,
+    DownloadedIcon,
+    ErrorText,
+}
+
+object GalleryTileBadgePolicy {
+    fun formatLabel(file: CameraFile): String? =
+        file.info.formatLabel.takeIf { file.info.format != PtpObjectFormat.UNDEFINED }
+
+    fun downloadBadge(state: TransferState?): GalleryTileDownloadBadge? =
+        when (state) {
+            TransferState.PENDING -> GalleryTileDownloadBadge.PendingText
+            TransferState.DOWNLOADING,
+            TransferState.SAVING -> GalleryTileDownloadBadge.Progress
+            TransferState.DONE -> GalleryTileDownloadBadge.DownloadedIcon
+            TransferState.ERROR -> GalleryTileDownloadBadge.ErrorText
+            null -> null
         }
 }
 

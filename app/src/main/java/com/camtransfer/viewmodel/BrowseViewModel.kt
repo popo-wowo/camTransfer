@@ -33,6 +33,7 @@ class BrowseViewModel : ViewModel() {
 
     val files = filesController.files
     val isLoading = filesController.isLoading
+    val isLoadingHiddenFormats = filesController.isLoadingHiddenFormats
     val selectedHandles = selectionController.selectedHandles
     val previewImages = previewController.previewImages
     val error = filesController.error

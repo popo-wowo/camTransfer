@@ -87,22 +87,35 @@ class PtpCommands(
                 "Gallery discovery vendorInfos=${vendorInfos.size} " +
                     "elapsedMs=${SystemClock.elapsedRealtime() - vendorStartedMs}",
             )
+            // iOS logic: if specified list has no HEIF/RAW, do standard PTP enumeration
+            // (GetStorageIDs → GetObjectHandles → GetObjectInfo) which returns ALL formats
+            val hasExtendedStill = vendorInfos.any { it.isHeif || it.isRaw }
             val standardInfos = if (
-                CameraVendorGalleryDiscoveryPolicy.shouldIncludeStandardEnumeration(specifiedHandles.size)
+                CameraVendorGalleryDiscoveryPolicy.shouldIncludeStandardEnumeration(specifiedHandles.size) ||
+                CameraVendorGalleryDiscoveryPolicy.shouldProbeStandardWhenNoExtendedStill(hasExtendedStill)
             ) {
                 val standardStartedMs = SystemClock.elapsedRealtime()
-                runCatching { standardObjectInfos() }
+                runCatching { standardObjectInfosCapped() }
                     .onSuccess {
                         val elapsedMs = SystemClock.elapsedRealtime() - standardStartedMs
                         Log.d(TAG, "Standard enumeration loaded count=${it.size} elapsedMs=$elapsedMs")
-                        diagnostic("Gallery discovery standardInfos=${it.size} elapsedMs=$elapsedMs")
+                        diagnostic("Gallery discovery standardInfos=${it.size} elapsedMs=$elapsedMs hasExtendedStill=$hasExtendedStill")
                     }
                     .onFailure { Log.d(TAG, "Standard enumeration failed: ${it.message}") }
                     .getOrElse { emptyList() }
             } else {
                 emptyList()
             }
-            val merged = mergeInfos(vendorInfos + standardInfos)
+            // iOS logic: use standard result only if it has extended still or more items
+            val useStandard = standardInfos.isNotEmpty() && (
+                standardInfos.any { it.isHeif || it.isRaw || it.isVideo } ||
+                standardInfos.size > vendorInfos.size
+            )
+            val merged = if (useStandard) {
+                mergeInfos(vendorInfos + standardInfos)
+            } else {
+                vendorInfos
+            }
             diagnostic("Gallery discovery merged=${merged.size} elapsedMs=${SystemClock.elapsedRealtime() - startedMs}")
             if (merged.isNotEmpty()) {
                 return merged
@@ -297,6 +310,22 @@ class PtpCommands(
         return infos.sortedByDescending { it.handle }
     }
 
+    private suspend fun standardObjectInfosCapped(): List<ObjectInfo> {
+        val maxProbe = CameraVendorGalleryDiscoveryPolicy.MAX_STANDARD_OBJECT_INFO_PROBE_COUNT
+        val infos = mutableListOf<ObjectInfo>()
+        for (storageId in getStorageIDs()) {
+            val handles = getObjectHandles(storageId)
+            diagnostic("Standard enumeration storageId=0x${storageId.toString(16)} handles=${handles.size}")
+            for (handle in handles.take(maxProbe)) {
+                if (infos.size >= maxProbe) break
+                runCatching { getObjectInfo(handle) }
+                    .onSuccess { if (!it.isFolder) infos.add(it) }
+                    .onFailure { Log.d(TAG, "Standard ObjectInfo failed handle=$handle: ${it.message}") }
+            }
+        }
+        return infos.sortedByDescending { it.handle }
+    }
+
     private suspend fun hiddenObjectInfos(
         specifiedHandles: List<Int>,
         currentInfos: List<ObjectInfo>,
@@ -308,6 +337,48 @@ class PtpCommands(
                 .onFailure { Log.d(TAG, "Hidden ObjectInfo failed handle=$handle: ${it.message}") }
                 .getOrNull()
         }
+    }
+
+    suspend fun hiddenStillObjectInfos(knownHandles: List<Int>): List<ObjectInfo> {
+        val gapCandidates = CameraVendorHiddenObjectProbePolicy.backgroundHiddenHandleCandidates(knownHandles)
+        val forwardCandidates = CameraVendorHiddenObjectProbePolicy.forwardProbeCandidates(knownHandles)
+        val allCandidates = (gapCandidates + forwardCandidates).distinct()
+        if (allCandidates.isEmpty()) {
+            diagnostic("Gallery hidden metadata skipped because no candidates found")
+            return emptyList()
+        }
+        diagnostic("Gallery hidden metadata probing candidates=${allCandidates.size} gaps=${gapCandidates.size} forward=${forwardCandidates.size}")
+        val known = knownHandles.toSet()
+        var consecutiveForwardFailures = 0
+        val infos = mutableListOf<ObjectInfo>()
+        for (handle in allCandidates) {
+            if (handle in known) continue
+            val info = runCatching { getObjectInfo(handle) }
+                .onSuccess {
+                    consecutiveForwardFailures = 0
+                    if (it.isHeif || it.isRaw || it.isVideo) {
+                        diagnostic(
+                            "Gallery hidden metadata found handle=$handle " +
+                                "format=0x${it.format.toString(16)} label=${it.formatLabel} filename=${it.filename}",
+                        )
+                    }
+                }
+                .onFailure {
+                    consecutiveForwardFailures++
+                    Log.d(TAG, "Background hidden ObjectInfo failed handle=$handle: ${it.message}")
+                }
+                .getOrNull()
+            if (info != null && (info.isHeif || info.isRaw || info.isVideo)) {
+                infos.add(info)
+            }
+            // Stop forward probing after too many consecutive failures
+            if (handle in forwardCandidates.toSet() && consecutiveForwardFailures >= 8) {
+                diagnostic("Gallery hidden forward probe stopped after $consecutiveForwardFailures consecutive failures")
+                break
+            }
+        }
+        diagnostic("Gallery hidden metadata selected=${infos.size}")
+        return mergeInfos(infos)
     }
 
     private suspend fun forwardObjectInfos(
@@ -429,7 +500,7 @@ class PtpCommands(
     private fun placeholderObjectInfo(handle: Int): ObjectInfo = ObjectInfo(
         handle = handle,
         storageId = 0,
-        format = PtpObjectFormat.JPEG,
+        format = PtpObjectFormat.UNDEFINED,
         compressedSize = 0,
         thumbFormat = 0,
         thumbCompressedSize = 0,
@@ -438,7 +509,7 @@ class PtpCommands(
         imagePixWidth = 0,
         imagePixHeight = 0,
         parentObject = 0,
-        filename = "0x%08X.JPG".format(handle),
+        filename = "0x%08X".format(handle),
         captureDate = "",
     )
 

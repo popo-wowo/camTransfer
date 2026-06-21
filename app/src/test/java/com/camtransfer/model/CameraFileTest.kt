@@ -46,6 +46,17 @@ class CameraFileTest {
         assertEquals("HEIF", hif.formatLabel)
     }
 
+    @Test
+    fun rawFilesAreRecognizedByCommonCameraExtensionsWhenFormatCodeIsGeneric() {
+        val raf = info(filename = "DSCF0004.RAF", format = PtpObjectFormat.UNDEFINED)
+        val raw = info(filename = "DSCF0005.RAW", format = PtpObjectFormat.UNDEFINED)
+
+        assertTrue(raf.isRaw)
+        assertTrue(raw.isRaw)
+        assertEquals("RAW", raf.formatLabel)
+        assertEquals("RAW", raw.formatLabel)
+    }
+
     private fun info(
         filename: String = "DSCF0001.JPG",
         format: Int = PtpObjectFormat.JPEG,

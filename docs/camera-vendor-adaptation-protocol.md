@@ -198,6 +198,11 @@ Do not wire `D222` ready polling into the normal path. It remains diagnostic
 only. Previous field notes say D222 polling can disturb D212 and lead to
 `0x2009`, timeouts, or connection refusal.
 
+`9052 GetSearchModeAll` is still not part of the release gallery handshake. A
+debug build may read and log a SearchModeAll snapshot after `9050` only for
+format-count research; it must not send `9051 SetSearchModeAll` unless the
+payload format and restore path are proven on real camera logs.
+
 ## Object Discovery
 
 The main gallery list comes from `D621 SpecifiedObjectHandles`.

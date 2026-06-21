@@ -1,0 +1,667 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CamTransfer 首页精修方向</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #151515;
+      background: #eeece7;
+    }
+    .page { padding: 34px 22px 52px; }
+    .hero {
+      max-width: 1320px;
+      margin: 0 auto 26px;
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      align-items: end;
+    }
+    .kicker {
+      margin: 0 0 9px;
+      color: #927141;
+      font-size: 12px;
+      font-weight: 950;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(32px, 5vw, 58px);
+      line-height: .96;
+      letter-spacing: 0;
+    }
+    .hero p {
+      max-width: 660px;
+      margin: 14px 0 0;
+      color: #69635a;
+      font-size: 15px;
+      line-height: 1.7;
+      font-weight: 650;
+    }
+    .select-note {
+      min-width: 240px;
+      padding: 15px 17px;
+      border: 1px solid rgba(21,21,21,.1);
+      border-radius: 18px;
+      background: rgba(255,255,255,.64);
+    }
+    .select-note strong { display: block; font-size: 13px; }
+    .select-note span {
+      display: block;
+      margin-top: 5px;
+      color: #69635a;
+      font-size: 12px;
+      line-height: 1.5;
+      font-weight: 700;
+    }
+    .grid {
+      max-width: 1560px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(286px, 1fr));
+      gap: 18px;
+      align-items: start;
+    }
+    .concept {
+      padding: 12px;
+      border: 1px solid rgba(21,21,21,.1);
+      border-radius: 30px;
+      background: rgba(255,255,255,.58);
+      box-shadow: 0 22px 62px rgba(0,0,0,.07);
+    }
+    .concept-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 4px 5px 12px;
+    }
+    .concept h2 { margin: 0; font-size: 15px; line-height: 1.15; }
+    .concept-head p {
+      margin: 5px 0 0;
+      color: #69635a;
+      font-size: 11px;
+      line-height: 1.4;
+      font-weight: 700;
+    }
+    .pick {
+      min-height: 38px;
+      padding: 0 13px;
+      border: 0;
+      border-radius: 999px;
+      color: #fff;
+      background: #151515;
+      font-size: 12px;
+      font-weight: 900;
+      cursor: pointer;
+    }
+    .concept.selected {
+      outline: 3px solid rgba(45,111,186,.22);
+      border-color: rgba(45,111,186,.42);
+    }
+    .phone {
+      width: 100%;
+      aspect-ratio: 390 / 812;
+      overflow: hidden;
+      border: 8px solid #111;
+      border-radius: 30px;
+      background: #f4f1ea;
+    }
+    .screen {
+      height: 100%;
+      padding: 22px 20px;
+      overflow: hidden;
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 18px;
+      font-size: 10px;
+      font-weight: 950;
+      letter-spacing: .16em;
+    }
+    .title {
+      margin: 0 0 18px;
+      font-size: 32px;
+      line-height: 1;
+      font-weight: 950;
+      letter-spacing: 0;
+    }
+    .primary {
+      width: 100%;
+      min-height: 58px;
+      border: 0;
+      border-radius: 20px;
+      font-size: 16px;
+      font-weight: 950;
+      cursor: pointer;
+    }
+    .section-title {
+      margin: 24px 0 10px;
+      font-size: 14px;
+      line-height: 1.2;
+      font-weight: 950;
+    }
+    .footer-links {
+      display: flex;
+      justify-content: center;
+      gap: 18px;
+      margin-top: 18px;
+      font-size: 12px;
+      font-weight: 760;
+    }
+    .footnote {
+      margin-top: 9px;
+      text-align: center;
+      font-size: 10px;
+      line-height: 1.5;
+      opacity: .58;
+      font-weight: 650;
+    }
+    .desc {
+      padding: 11px 7px 2px;
+      color: #69635a;
+      font-size: 12px;
+      line-height: 1.55;
+      font-weight: 650;
+    }
+
+    /* Variant A */
+    .warm .screen {
+      background:
+        radial-gradient(circle at 48% -12%, rgba(162,125,70,.18), transparent 34%),
+        repeating-linear-gradient(90deg, rgba(89,70,44,.025) 0 1px, transparent 1px 9px),
+        #f4f1ea;
+      color: #151515;
+    }
+    .warm .topbar { color: #9a7846; }
+    .warm .camera {
+      overflow: hidden;
+      border-radius: 30px;
+      background: #fffdf8;
+      border: 1px solid rgba(101,77,42,.18);
+      box-shadow: 0 28px 72px rgba(55,43,28,.15), inset 0 1px rgba(255,255,255,.9);
+    }
+    .warm .plate {
+      min-height: 46px;
+      padding: 0 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(101,77,42,.1);
+      background: linear-gradient(180deg, rgba(255,255,255,.7), rgba(248,243,232,.55));
+      font-size: 9px;
+      font-weight: 950;
+      letter-spacing: .12em;
+      color: rgba(21,21,21,.58);
+    }
+    .menu {
+      min-height: 30px;
+      padding: 0 12px;
+      border: 1px solid rgba(21,21,21,.08);
+      border-radius: 999px;
+      background: rgba(255,255,255,.6);
+      color: rgba(21,21,21,.72);
+      font-size: 11px;
+      font-weight: 900;
+    }
+    .warm .profile {
+      padding: 20px;
+    }
+    .warm .profile-row {
+      display: grid;
+      grid-template-columns: 76px 1fr;
+      gap: 16px;
+      align-items: center;
+    }
+    .warm .avatar {
+      width: 76px;
+      height: 76px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(145deg, rgba(255,255,255,.72), rgba(247,238,221,.72));
+      border: 1px solid rgba(162,125,70,.2);
+      box-shadow: 0 13px 28px rgba(53,43,29,.12);
+      font-weight: 950;
+    }
+    .model {
+      display: inline-flex;
+      min-height: 22px;
+      align-items: center;
+      padding: 0 8px;
+      border-radius: 999px;
+      background: rgba(21,21,21,.045);
+      color: rgba(21,21,21,.58);
+      font-size: 10px;
+      font-weight: 950;
+    }
+    .name { margin-top: 8px; font-size: 24px; line-height: 1; font-weight: 950; }
+    .sub { margin-top: 7px; color: #706b62; font-size: 12px; font-weight: 750; }
+    .warm .status {
+      margin-top: 18px;
+      padding: 13px 14px;
+      border-radius: 19px;
+      background: rgba(255,255,255,.58);
+      border: 1px solid rgba(21,21,21,.08);
+    }
+    .status-chip {
+      display: inline-flex;
+      gap: 7px;
+      align-items: center;
+      min-height: 31px;
+      padding: 0 11px;
+      border-radius: 999px;
+      color: #2d6fba;
+      background: #e6f0fb;
+      font-size: 13px;
+      font-weight: 900;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+    .status p { margin: 10px 0 0; color: #706b62; font-size: 13px; line-height: 1.45; font-weight: 700; }
+    .warm .primary {
+      margin-top: 18px;
+      color: #fffdf8;
+      background: #151515;
+      box-shadow: 0 20px 38px rgba(21,21,21,.26);
+    }
+    .wired {
+      min-height: 72px;
+      padding: 16px;
+      border-radius: 19px;
+      display: flex;
+      align-items: center;
+      gap: 13px;
+      background: rgba(255,255,255,.68);
+      color: #151515;
+    }
+    .wired-icon {
+      width: 38px;
+      height: 38px;
+      border-radius: 15px;
+      display: grid;
+      place-items: center;
+      background: rgba(162,125,70,.1);
+      color: #9a7846;
+      font-weight: 950;
+    }
+    .wired strong { display: block; font-size: 15px; }
+    .wired span { display: block; margin-top: 4px; color: #706b62; font-size: 12px; font-weight: 700; }
+    .warm .footer-links { color: rgba(112,107,98,.58); }
+
+    /* Variant B */
+    .dark .screen {
+      color: #eef7ff;
+      background:
+        radial-gradient(circle at 50% -10%, rgba(54,141,255,.24), transparent 36%),
+        linear-gradient(180deg, #09111d, #05080e);
+    }
+    .dark .topbar { color: #79b8ff; }
+    .dark .title { color: #f5fbff; }
+    .dark .camera {
+      position: relative;
+      padding: 18px;
+      border-radius: 30px;
+      background:
+        linear-gradient(145deg, rgba(255,255,255,.1), rgba(255,255,255,.03)),
+        #0c1726;
+      border: 1px solid rgba(121,184,255,.18);
+      box-shadow: 0 28px 70px rgba(0,0,0,.32), inset 0 1px rgba(255,255,255,.12);
+    }
+    .dark .camera::before {
+      content: "";
+      position: absolute;
+      inset: 16px;
+      border-radius: 22px;
+      border: 1px solid rgba(121,184,255,.08);
+      pointer-events: none;
+    }
+    .dark .plate {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: rgba(238,247,255,.62);
+      font-size: 10px;
+      font-weight: 950;
+      letter-spacing: .13em;
+    }
+    .dark .menu {
+      color: #dff0ff;
+      background: rgba(121,184,255,.1);
+      border-color: rgba(121,184,255,.18);
+    }
+    .radar {
+      height: 168px;
+      margin-top: 18px;
+      border-radius: 24px;
+      display: grid;
+      place-items: center;
+      background:
+        radial-gradient(circle, rgba(121,184,255,.24) 0 2px, transparent 3px),
+        radial-gradient(circle, transparent 0 44%, rgba(121,184,255,.14) 45% 46%, transparent 47%),
+        radial-gradient(circle, transparent 0 64%, rgba(121,184,255,.12) 65% 66%, transparent 67%),
+        rgba(255,255,255,.035);
+    }
+    .radar-core {
+      width: 88px;
+      height: 88px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      color: #dff0ff;
+      background: rgba(121,184,255,.13);
+      border: 1px solid rgba(121,184,255,.32);
+      box-shadow: 0 0 45px rgba(45,111,186,.32);
+      font-weight: 950;
+    }
+    .dark .status {
+      margin-top: 16px;
+      color: #9bd3ff;
+      font-size: 13px;
+      line-height: 1.45;
+      font-weight: 760;
+    }
+    .dark .primary {
+      margin-top: 18px;
+      color: #06101d;
+      background: #9bd3ff;
+      box-shadow: 0 18px 46px rgba(121,184,255,.24);
+    }
+    .dark .wired {
+      background: rgba(255,255,255,.06);
+      border: 1px solid rgba(255,255,255,.08);
+      color: #eef7ff;
+    }
+    .dark .wired-icon { background: rgba(121,184,255,.12); color: #9bd3ff; }
+    .dark .wired span { color: rgba(238,247,255,.6); }
+    .dark .footer-links { color: rgba(238,247,255,.48); }
+
+    /* Variant C */
+    .glass .screen {
+      color: #111827;
+      background:
+        linear-gradient(145deg, rgba(255,255,255,.95), rgba(241,246,255,.8) 44%, rgba(250,247,241,.92));
+    }
+    .glass .topbar { color: #2563eb; }
+    .glass .camera {
+      padding: 18px;
+      border: 1px solid rgba(255,255,255,.78);
+      border-radius: 30px;
+      background: rgba(255,255,255,.62);
+      box-shadow: 0 28px 70px rgba(54,74,105,.14);
+      backdrop-filter: blur(18px);
+    }
+    .glass .plate {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 10px;
+      color: rgba(17,24,39,.58);
+      font-weight: 950;
+      letter-spacing: .12em;
+    }
+    .glass .menu {
+      background: rgba(255,255,255,.62);
+      color: #111827;
+    }
+    .glass .profile-row {
+      margin-top: 18px;
+      display: grid;
+      grid-template-columns: 82px 1fr;
+      gap: 16px;
+      align-items: center;
+    }
+    .glass .avatar {
+      width: 82px;
+      height: 82px;
+      border-radius: 26px;
+      display: grid;
+      place-items: center;
+      color: #2563eb;
+      background: rgba(37,99,235,.09);
+      border: 1px solid rgba(37,99,235,.18);
+      font-weight: 950;
+      box-shadow: inset 0 1px rgba(255,255,255,.8);
+    }
+    .glass .status {
+      margin-top: 17px;
+      padding: 14px;
+      border-radius: 20px;
+      color: #475569;
+      background: rgba(255,255,255,.54);
+      border: 1px solid rgba(255,255,255,.62);
+      font-size: 13px;
+      line-height: 1.45;
+      font-weight: 720;
+    }
+    .glass .primary {
+      margin-top: 18px;
+      color: #fff;
+      background: #111827;
+      box-shadow: 0 18px 36px rgba(17,24,39,.24);
+    }
+    .glass .wired { background: rgba(255,255,255,.58); }
+    .glass .wired-icon { color: #2563eb; background: rgba(37,99,235,.09); }
+    .glass .footer-links { color: rgba(71,85,105,.62); }
+
+    /* Variant D */
+    .photo .screen {
+      color: #181818;
+      background: #f5f0e7;
+    }
+    .photo .topbar { color: #8b6c3e; }
+    .photo .photo-hero {
+      height: 220px;
+      margin: 0 -2px 17px;
+      border-radius: 30px;
+      overflow: hidden;
+      background:
+        linear-gradient(150deg, rgba(255,255,255,.18), rgba(0,0,0,.22)),
+        linear-gradient(135deg, #8caec8, #efe2ca 48%, #bd7f55);
+      box-shadow: 0 26px 68px rgba(83,58,31,.16);
+    }
+    .photo .camera {
+      padding: 18px;
+      border-radius: 26px;
+      background: rgba(255,250,242,.88);
+      border: 1px solid rgba(93,70,43,.12);
+    }
+    .photo .plate {
+      display: flex;
+      justify-content: space-between;
+      color: rgba(24,24,24,.56);
+      font-size: 10px;
+      font-weight: 950;
+      letter-spacing: .12em;
+    }
+    .photo .menu { background: rgba(255,255,255,.58); }
+    .photo .name { font-size: 29px; }
+    .photo .status {
+      margin-top: 12px;
+      color: #6f665a;
+      font-size: 13px;
+      line-height: 1.45;
+      font-weight: 720;
+    }
+    .photo .primary {
+      margin-top: 17px;
+      color: #fffaf2;
+      background: #181818;
+      box-shadow: 0 18px 34px rgba(24,24,24,.22);
+    }
+    .photo .wired { background: rgba(255,255,255,.55); }
+    .photo .footer-links { color: rgba(111,102,90,.62); }
+
+    @media (max-width: 1280px) { .grid { grid-template-columns: repeat(2, minmax(286px, 1fr)); } }
+    @media (max-width: 720px) {
+      .page { padding: 22px 14px 34px; }
+      .hero { display: block; }
+      .select-note { margin-top: 18px; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div>
+        <p class="kicker">CamTransfer visual directions</p>
+        <h1>保留当前稿，再看几个更强的方向。</h1>
+        <p>每个方案的信息架构一致，只比较视觉气质。当前暖色方案保留，后面补了科技控制台、明亮玻璃、照片内容三种方向。</p>
+      </div>
+      <div class="select-note">
+        <strong>当前选择</strong>
+        <span id="selectedText">还没选。点任意方案的“选这个”。</span>
+      </div>
+    </section>
+
+    <section class="grid">
+      <article class="concept" data-name="A 当前保留：暖色高级相机工具">
+        <div class="concept-head">
+          <div>
+            <h2>A. 当前保留版</h2>
+            <p>暖色、设备铭牌、偏相机工具。</p>
+          </div>
+          <button class="pick">选这个</button>
+        </div>
+        <div class="phone warm">
+          <div class="screen">
+            <div class="topbar"><span>CAMTRANSFER</span><span>已配对</span></div>
+            <h3 class="title">连接相机</h3>
+            <section class="camera">
+              <div class="plate"><span>CAMERA PROFILE</span><button class="menu">管理</button></div>
+              <div class="profile">
+                <div class="profile-row">
+                  <div class="avatar">X-T5</div>
+                  <div>
+                    <div class="model">FUJIFILM X SERIES</div>
+                    <div class="name">旅行机</div>
+                    <div class="sub">已保存相机</div>
+                  </div>
+                </div>
+                <div class="status">
+                  <div class="status-chip"><span class="dot"></span><span>蓝牙在线</span></div>
+                  <p>相机已经在线，可以启动 Wi-Fi 并进入相机相册。</p>
+                </div>
+              </div>
+            </section>
+            <button class="primary">进入相机相册</button>
+            <div class="section-title">接入方式</div>
+            <div class="wired"><div class="wired-icon">USB</div><div><strong>有线接入</strong><span>通过 USB 或读卡器导入照片</span></div></div>
+            <div class="footer-links"><span>诊断日志</span><span>使用须知</span></div>
+            <div class="footnote">相机连接和照片导入会根据设备状态执行。</div>
+          </div>
+        </div>
+        <p class="desc">最接近当前版本，落地成本最低。适合做稳重工具型首页。</p>
+      </article>
+
+      <article class="concept" data-name="B 深色科技控制台">
+        <div class="concept-head">
+          <div>
+            <h2>B. 科技控制台</h2>
+            <p>更像设备在线控制面板。</p>
+          </div>
+          <button class="pick">选这个</button>
+        </div>
+        <div class="phone dark">
+          <div class="screen">
+            <div class="topbar"><span>CAMTRANSFER</span><span>ONLINE</span></div>
+            <h3 class="title">连接相机</h3>
+            <section class="camera">
+              <div class="plate"><span>CAMERA LINK</span><button class="menu">管理</button></div>
+              <div class="radar"><div class="radar-core">X-T5</div></div>
+              <div class="name">旅行机</div>
+              <div class="status">蓝牙在线。进入相册时将启动相机 Wi-Fi 并建立相册连接。</div>
+            </section>
+            <button class="primary">进入相机相册</button>
+            <div class="section-title">接入方式</div>
+            <div class="wired"><div class="wired-icon">USB</div><div><strong>有线接入</strong><span>USB / 读卡器导入</span></div></div>
+            <div class="footer-links"><span>诊断日志</span><span>使用须知</span></div>
+            <div class="footnote">低频修复操作收在相机管理里。</div>
+          </div>
+        </div>
+        <p class="desc">画面感最强，更有科技感；需要谨慎落地，避免太“游戏化”。</p>
+      </article>
+
+      <article class="concept" data-name="C 明亮玻璃精密感">
+        <div class="concept-head">
+          <div>
+            <h2>C. 明亮玻璃版</h2>
+            <p>轻、干净、接近成熟消费 App。</p>
+          </div>
+          <button class="pick">选这个</button>
+        </div>
+        <div class="phone glass">
+          <div class="screen">
+            <div class="topbar"><span>CAMTRANSFER</span><span>已配对</span></div>
+            <h3 class="title">连接相机</h3>
+            <section class="camera">
+              <div class="plate"><span>CAMERA PROFILE</span><button class="menu">管理</button></div>
+              <div class="profile-row">
+                <div class="avatar">X-T5</div>
+                <div>
+                  <div class="model">FUJIFILM X SERIES</div>
+                  <div class="name">旅行机</div>
+                  <div class="sub">蓝牙在线</div>
+                </div>
+              </div>
+              <div class="status">相机已经在线，可以启动 Wi-Fi 并进入相机相册。</div>
+            </section>
+            <button class="primary">进入相机相册</button>
+            <div class="section-title">接入方式</div>
+            <div class="wired"><div class="wired-icon">USB</div><div><strong>有线接入</strong><span>通过 USB 或读卡器导入照片</span></div></div>
+            <div class="footer-links"><span>诊断日志</span><span>使用须知</span></div>
+            <div class="footnote">视觉更轻，适合长期使用不疲劳。</div>
+          </div>
+        </div>
+        <p class="desc">最安全、最成熟，像一款主流消费级 App，但个性弱一些。</p>
+      </article>
+
+      <article class="concept" data-name="D 照片内容优先">
+        <div class="concept-head">
+          <div>
+            <h2>D. 照片内容版</h2>
+            <p>把用户目标“看照片”做成第一视觉。</p>
+          </div>
+          <button class="pick">选这个</button>
+        </div>
+        <div class="phone photo">
+          <div class="screen">
+            <div class="topbar"><span>CAMTRANSFER</span><span>蓝牙在线</span></div>
+            <div class="photo-hero"></div>
+            <section class="camera">
+              <div class="plate"><span>CAMERA PROFILE</span><button class="menu">管理</button></div>
+              <div class="name">旅行机</div>
+              <div class="sub">X-T5 · 已保存相机</div>
+              <div class="status">进入相册后可以预览、筛选和导入照片。</div>
+            </section>
+            <button class="primary">进入相机相册</button>
+            <div class="section-title">接入方式</div>
+            <div class="wired"><div class="wired-icon">USB</div><div><strong>有线接入</strong><span>导入本地照片</span></div></div>
+            <div class="footer-links"><span>诊断日志</span><span>使用须知</span></div>
+            <div class="footnote">弱化连接细节，强调照片工作流。</div>
+          </div>
+        </div>
+        <p class="desc">最贴近用户目的，但连接状态表达相对弱。</p>
+      </article>
+    </section>
+  </main>
+  <script>
+    const selectedText = document.getElementById("selectedText");
+    document.querySelectorAll(".concept").forEach((concept) => {
+      concept.querySelector(".pick").addEventListener("click", () => {
+        document.querySelectorAll(".concept").forEach((item) => item.classList.remove("selected"));
+        concept.classList.add("selected");
+        selectedText.textContent = concept.dataset.name;
+      });
+    });
+  </script>
+</body>
+</html>

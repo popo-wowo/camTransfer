@@ -49,7 +49,10 @@ import com.camtransfer.viewmodel.TransferViewModel
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import androidx.lifecycle.lifecycleScope
 
 class MainActivity : ComponentActivity() {
 
@@ -117,8 +120,12 @@ class MainActivity : ComponentActivity() {
     }
 
     fun shareDiagnosticLog() {
-        val shareIntent = DiagnosticLog.shareIntent(this)
-        startActivity(Intent.createChooser(shareIntent, "导出诊断日志"))
+        lifecycleScope.launch {
+            val shareIntent = withContext(Dispatchers.IO) {
+                DiagnosticLog.shareIntent(this@MainActivity)
+            }
+            startActivity(Intent.createChooser(shareIntent, "导出诊断日志"))
+        }
     }
 
     private fun installCrashLogging() {

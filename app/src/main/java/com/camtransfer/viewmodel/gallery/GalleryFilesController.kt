@@ -1,6 +1,7 @@
 package com.camtransfer.viewmodel.gallery
 
 import com.camtransfer.model.CameraFile
+import com.camtransfer.protocol.CameraVendorHiddenObjectProbePolicy
 import com.camtransfer.service.CameraFileSource
 import com.camtransfer.service.DiagnosticLog
 import kotlinx.coroutines.CoroutineScope
@@ -25,6 +26,9 @@ class GalleryFilesController(
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
+
+    private val _isLoadingHiddenFormats = MutableStateFlow(false)
+    val isLoadingHiddenFormats: StateFlow<Boolean> = _isLoadingHiddenFormats.asStateFlow()
 
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
@@ -132,6 +136,7 @@ class GalleryFilesController(
         fullObjectInfoJob = scope.launch(Dispatchers.IO) {
             delay(GalleryFastInitialLoadPolicy.FULL_OBJECT_INFO_AFTER_PLACEHOLDERS_DELAY_MS)
             if (loadedSource !== cameraSource) return@launch
+            _isLoadingHiddenFormats.value = true
             try {
                 DiagnosticLog.append(cameraSource.context, "Gallery", "Loading full object info incrementally after initial thumbnails")
                 val handles = _files.value.map { it.info.handle }
@@ -141,7 +146,7 @@ class GalleryFilesController(
                     val file = requestScheduler.run(GalleryRequestPriority.BackgroundMetadata) {
                         cameraSource.resolveFile(handle)
                     }
-                    if (file != null && !file.info.isFolder && !file.info.isVideo) {
+                    if (file != null && GalleryFastInitialLoadPolicy.shouldPublishResolvedMetadata(file)) {
                         batch += file
                     }
                     if (GalleryFastInitialLoadPolicy.shouldPublishIncrementalMetadataBatch(
@@ -170,19 +175,51 @@ class GalleryFilesController(
                         "Gallery",
                         "Published final object info batch count=${batch.size}",
                     )
+                    DiagnosticLog.appendMetadataSnapshot(
+                        context = cameraSource.context,
+                        label = "full-object-info-final",
+                        files = _files.value,
+                    )
+                    resolveHiddenStillFilesAfterFullMetadata(cameraSource)
                 }
             } catch (e: Exception) {
                 DiagnosticLog.append(cameraSource.context, "Gallery", "Full object info background load failed", e)
+            } finally {
+                _isLoadingHiddenFormats.value = false
             }
         }
     }
 
+    private suspend fun resolveHiddenStillFilesAfterFullMetadata(cameraSource: CameraFileSource) {
+        if (loadedSource !== cameraSource) return
+        val handles = _files.value.map { it.info.handle }
+        val additionalFiles = requestScheduler.run(GalleryRequestPriority.BackgroundMetadata) {
+            cameraSource.resolveAdditionalFiles(handles)
+        }
+        if (additionalFiles.isEmpty()) return
+        publishFullObjectInfoBatch(additionalFiles)
+        DiagnosticLog.append(
+            cameraSource.context,
+            "Gallery",
+            "Published hidden still object info count=${additionalFiles.size}",
+        )
+        DiagnosticLog.appendMetadataSnapshot(
+            context = cameraSource.context,
+            label = "hidden-still-final",
+            files = _files.value,
+        )
+    }
+
     private fun publishFullObjectInfoBatch(files: List<CameraFile>) {
         if (files.isEmpty()) return
-        _files.value = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
+        val merged = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
             currentFiles = _files.value,
             fullFiles = files,
             thumbnailsByHandle = thumbnailCache(),
+        )
+        _files.value = merged.sortedWith(
+            compareByDescending<CameraFile> { it.info.captureDate }
+                .thenByDescending { it.info.handle }
         )
     }
 }
@@ -220,6 +257,9 @@ internal object GalleryFastInitialLoadPolicy {
         isFinalBatch: Boolean,
     ): Boolean =
         resolvedCount > 0 && (isFinalBatch || resolvedCount >= INCREMENTAL_METADATA_BATCH_SIZE)
+
+    fun shouldPublishResolvedMetadata(file: CameraFile): Boolean =
+        !file.info.isFolder
 
     fun shouldLoadThumbnail(
         isTransferPreparingOrActive: Boolean = false,

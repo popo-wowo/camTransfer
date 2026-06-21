@@ -1,5 +1,8 @@
 package com.camtransfer.service
 
+import com.camtransfer.model.CameraFile
+import com.camtransfer.model.ObjectInfo
+import com.camtransfer.protocol.PtpObjectFormat
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -145,4 +148,49 @@ class DiagnosticLogTest {
 
         assertEquals("最近 1 小时没有诊断日志。\n", body)
     }
+
+    @Test
+    fun galleryMetadataSnapshotHighlightsFormatCountsAndLargeFiles() {
+        val files = listOf(
+            cameraFile(handle = 1, format = PtpObjectFormat.JPEG, size = 167_936),
+            cameraFile(handle = 2, format = PtpObjectFormat.HEIF, size = 9_000_000, filename = "DSCF0002.HIF"),
+            cameraFile(handle = 3, format = PtpObjectFormat.CAMERA_VENDOR_RAF_ALT, size = 52_000_000, filename = "DSCF0003.RAF"),
+            cameraFile(handle = 4, format = PtpObjectFormat.UNDEFINED, size = 0, filename = "0x00000004"),
+        )
+
+        val lines = GalleryMetadataDiagnosticPolicy.snapshotLines(
+            label = "final",
+            files = files,
+        )
+
+        assertEquals(
+            "Metadata snapshot final total=4 formats={JPG=1, HEIF=1, RAW=1, 0x3000=1} unresolved=1 largeFiles=2",
+            lines.first(),
+        )
+        assertTrue(lines.any { it.contains("Metadata large final handle=3 format=0xB103 label=RAW size=52000000") })
+        assertTrue(lines.any { it.contains("Metadata large final handle=2 format=0x3812 label=HEIF size=9000000") })
+    }
+
+    private fun cameraFile(
+        handle: Int,
+        format: Int,
+        size: Int,
+        filename: String = "DSCF0001.JPG",
+    ): CameraFile = CameraFile(
+        ObjectInfo(
+            handle = handle,
+            storageId = 0,
+            format = format,
+            compressedSize = size,
+            thumbFormat = 0,
+            thumbCompressedSize = 0,
+            thumbPixWidth = 0,
+            thumbPixHeight = 0,
+            imagePixWidth = 0,
+            imagePixHeight = 0,
+            parentObject = 0,
+            filename = filename,
+            captureDate = "20260620T120000",
+        )
+    )
 }

@@ -176,6 +176,20 @@ class GalleryUiPolicyTest {
     }
 
     @Test
+    fun filterStatsDoNotCountUndefinedPlaceholdersAsJpg() {
+        val files = listOf(
+            file(1, PtpObjectFormat.UNDEFINED, "20260529"),
+            file(2, PtpObjectFormat.JPEG, "20260529T091500"),
+        )
+
+        val stats = GalleryFilterStatsPolicy.stats(files)
+
+        assertEquals(1, stats.formatCounts[GalleryFormatFilter.Jpg])
+        assertEquals(0, stats.formatCounts[GalleryFormatFilter.Heif])
+        assertEquals(0, stats.formatCounts[GalleryFormatFilter.Raw])
+    }
+
+    @Test
     fun gallerySectionsGroupFilesByDateAndHourForExpandedDays() {
         val files = listOf(
             file(1, PtpObjectFormat.JPEG, "20260520T151500"),
@@ -200,6 +214,25 @@ class GalleryUiPolicyTest {
     }
 
     @Test
+    fun hourGroupsFollowCurrentSortedFileOrderWithinExpandedDay() {
+        val sortedOldestFirst = listOf(
+            file(1, PtpObjectFormat.JPEG, "20260520T081500"),
+            file(2, PtpObjectFormat.JPEG, "20260520T091500"),
+            file(3, PtpObjectFormat.JPEG, "20260520T101500"),
+        )
+
+        val sections = GallerySectionPolicy.sections(
+            files = sortedOldestFirst,
+            expandedDays = setOf(LocalDate.of(2026, 5, 20)),
+        )
+
+        assertEquals(listOf(8, 9, 10), sections[0].hourGroups.map { it.hour })
+        assertEquals(listOf(1), sections[0].hourGroups[0].files.map { it.info.handle })
+        assertEquals(listOf(2), sections[0].hourGroups[1].files.map { it.info.handle })
+        assertEquals(listOf(3), sections[0].hourGroups[2].files.map { it.info.handle })
+    }
+
+    @Test
     fun dateSectionsStayDisabledWhileInitialPlaceholdersHaveNoCaptureDates() {
         val files = listOf(
             file(3, PtpObjectFormat.JPEG, ""),
@@ -216,11 +249,11 @@ class GalleryUiPolicyTest {
     }
 
     @Test
-    fun unknownDateSectionSortsAfterRecognizedCaptureDates() {
+    fun unknownDateSectionStaysAfterRecognizedCaptureDates() {
         val files = listOf(
-            file(1, PtpObjectFormat.JPEG, ""),
-            file(2, PtpObjectFormat.JPEG, "20260519T093000"),
             file(3, PtpObjectFormat.JPEG, "20260520T151500"),
+            file(2, PtpObjectFormat.JPEG, "20260519T093000"),
+            file(1, PtpObjectFormat.JPEG, ""),
         )
 
         val sections = GallerySectionPolicy.sections(files = files, expandedDays = emptySet())
@@ -229,6 +262,28 @@ class GalleryUiPolicyTest {
         assertEquals(LocalDate.of(2026, 5, 19), sections[1].day)
         assertEquals(null, sections[2].day)
         assertEquals(listOf(1), sections[2].files.map { it.info.handle })
+    }
+
+    @Test
+    fun dateSectionsFollowCurrentSortedFileOrderAcrossDays() {
+        val sortedOldestFirst = listOf(
+            file(1, PtpObjectFormat.JPEG, "20260518T081500"),
+            file(2, PtpObjectFormat.JPEG, "20260519T091500"),
+            file(3, PtpObjectFormat.JPEG, "20260520T101500"),
+            file(4, PtpObjectFormat.JPEG, ""),
+        )
+
+        val sections = GallerySectionPolicy.sections(files = sortedOldestFirst, expandedDays = emptySet())
+
+        assertEquals(
+            listOf(
+                LocalDate.of(2026, 5, 18),
+                LocalDate.of(2026, 5, 19),
+                LocalDate.of(2026, 5, 20),
+                null,
+            ),
+            sections.map { it.day },
+        )
     }
 
     @Test
@@ -429,6 +484,26 @@ class GalleryUiPolicyTest {
         assertFalse(GalleryDownloadUiPolicy.canSelect(TransferState.DOWNLOADING))
         assertFalse(GalleryDownloadUiPolicy.canSelect(TransferState.SAVING))
         assertFalse(GalleryDownloadUiPolicy.canSelect(TransferState.DONE))
+    }
+
+    @Test
+    fun galleryTileBadgesUseFormatLettersAndIconForDownloadedFiles() {
+        assertEquals(
+            "RAW",
+            GalleryTileBadgePolicy.formatLabel(file(1, PtpObjectFormat.CAMERA_VENDOR_RAF, "20260529T081500")),
+        )
+        assertEquals(
+            "HEIF",
+            GalleryTileBadgePolicy.formatLabel(file(2, PtpObjectFormat.HEIF, "20260529T081500")),
+        )
+        assertEquals(
+            null,
+            GalleryTileBadgePolicy.formatLabel(file(3, PtpObjectFormat.UNDEFINED, "20260529")),
+        )
+        assertEquals(GalleryTileDownloadBadge.DownloadedIcon, GalleryTileBadgePolicy.downloadBadge(TransferState.DONE))
+        assertEquals(GalleryTileDownloadBadge.Progress, GalleryTileBadgePolicy.downloadBadge(TransferState.DOWNLOADING))
+        assertEquals(GalleryTileDownloadBadge.PendingText, GalleryTileBadgePolicy.downloadBadge(TransferState.PENDING))
+        assertEquals(null, GalleryTileBadgePolicy.downloadBadge(null))
     }
 
     @Test

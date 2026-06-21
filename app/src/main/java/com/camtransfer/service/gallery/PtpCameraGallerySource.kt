@@ -4,6 +4,7 @@ import android.content.Context
 import com.camtransfer.model.CameraFile
 import com.camtransfer.model.ObjectInfo
 import com.camtransfer.protocol.CameraVendorGalleryDiscoveryPolicy
+import com.camtransfer.protocol.CameraVendorHiddenObjectProbePolicy
 import com.camtransfer.protocol.PtpCommands
 import com.camtransfer.protocol.PtpConnection
 import com.camtransfer.protocol.PtpObjectFormat
@@ -21,7 +22,7 @@ class PtpCameraGallerySource(
     override suspend fun listFiles(): List<CameraFile> {
         DiagnosticLog.append(context, TAG, "Reading gallery object infos")
         val files = commands.galleryObjectInfos()
-            .filterNot { it.isFolder || it.isVideo }
+            .filterNot { it.isFolder }
             .map { CameraFile(it) }
             .sortedWith(compareByDescending<CameraFile> { it.info.captureDate }.thenByDescending { it.info.handle })
         DiagnosticLog.append(context, TAG, "Gallery object infos visible=${files.size}")
@@ -88,13 +89,53 @@ class PtpCameraGallerySource(
                 DiagnosticLog.append(
                     context,
                     TAG,
-                    "Resolved file metadata handle=$handle filename=${file.info.filename} expected=${file.info.compressedSize}",
+                    "Resolved file metadata handle=$handle filename=${file.info.filename} " +
+                        "format=0x${file.info.format.toString(16)} label=${file.info.formatLabel} " +
+                        "expected=${file.info.compressedSize}",
                 )
             }
             .onFailure { error ->
                 DiagnosticLog.append(context, TAG, "Resolve file metadata failed handle=$handle", error)
             }
             .getOrNull()
+    }
+
+    override fun hiddenProbeCandidates(knownHandles: List<Int>): List<Int> {
+        val gapCandidates = CameraVendorHiddenObjectProbePolicy.backgroundHiddenHandleCandidates(knownHandles)
+        val forwardCandidates = CameraVendorHiddenObjectProbePolicy.forwardProbeCandidates(knownHandles)
+        return (gapCandidates + forwardCandidates).distinct().filterNot { it in knownHandles.toSet() }
+    }
+
+    override suspend fun resolveForwardFiles(knownHandles: List<Int>): List<CameraFile> {
+        val candidates = CameraVendorHiddenObjectProbePolicy.forwardProbeCandidates(knownHandles)
+        if (candidates.isEmpty()) return emptyList()
+        DiagnosticLog.append(context, TAG, "Forward probe candidates=${candidates.size}")
+        val known = knownHandles.toSet()
+        val files = mutableListOf<CameraFile>()
+        var consecutiveFailures = 0
+        for (handle in candidates) {
+            if (handle in known) continue
+            val info = runCatching { commands.getObjectInfo(handle) }
+                .onSuccess { consecutiveFailures = 0 }
+                .onFailure { consecutiveFailures++ }
+                .getOrNull()
+            if (info != null && !info.isFolder) {
+                files.add(CameraFile(info))
+            }
+            if (consecutiveFailures >= 8) break
+        }
+        DiagnosticLog.append(context, TAG, "Forward probe found=${files.size}")
+        return files.sortedByDescending { it.info.handle }
+    }
+
+    override suspend fun resolveAdditionalFiles(knownHandles: List<Int>): List<CameraFile> {
+        val files = commands.hiddenStillObjectInfos(knownHandles)
+            .filterNot { it.isFolder }
+            .filter { it.isHeif || it.isRaw || it.isVideo }
+            .map { CameraFile(it) }
+            .sortedByDescending { it.info.handle }
+        DiagnosticLog.append(context, TAG, "Resolved additional hidden files count=${files.size}")
+        return files
     }
 
     override suspend fun getPreviewImage(handle: Int): ByteArray {
@@ -115,7 +156,7 @@ class PtpCameraGallerySource(
     private fun placeholderObjectInfo(handle: Int, captureDate: String = ""): ObjectInfo = ObjectInfo(
         handle = handle,
         storageId = 0,
-        format = PtpObjectFormat.JPEG,
+        format = PtpObjectFormat.UNDEFINED,
         compressedSize = 0,
         thumbFormat = 0,
         thumbCompressedSize = 0,
@@ -124,7 +165,7 @@ class PtpCameraGallerySource(
         imagePixWidth = 0,
         imagePixHeight = 0,
         parentObject = 0,
-        filename = "0x%08X.JPG".format(handle),
+        filename = "0x%08X".format(handle),
         captureDate = captureDate,
     )
 }

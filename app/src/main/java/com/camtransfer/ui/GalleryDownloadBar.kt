@@ -184,29 +184,43 @@ private fun TransferModeCapsule(
     preferCompressedDownloads: Boolean,
     onPreferenceChanged: (Boolean) -> Unit,
 ) {
+    val label = if (preferCompressedDownloads) "压缩" else "原图"
+    val backgroundColor = if (preferCompressedDownloads) {
+        GalleryActionColor.copy(alpha = 0.10f)
+    } else {
+        Color(0xFF1A6B5C).copy(alpha = 0.08f)
+    }
     val borderColor = if (preferCompressedDownloads) {
         GalleryActionColor.copy(alpha = 0.54f)
     } else {
-        CamTransferColors.Hairline
+        Color(0xFF1A6B5C).copy(alpha = 0.32f)
     }
     val textColor = if (preferCompressedDownloads) {
         GalleryActionColor
     } else {
-        CamTransferColors.SecondaryInk
+        Color(0xFF1A6B5C)
     }
     Surface(
         modifier = Modifier
             .height(32.dp)
-            .requiredWidth(52.dp)
             .clip(RoundedCornerShape(16.dp))
             .clickable { onPreferenceChanged(!preferCompressedDownloads) },
         shape = RoundedCornerShape(16.dp),
-        color = if (preferCompressedDownloads) GalleryActionColor.copy(alpha = 0.10f) else CamTransferColors.Card,
+        color = backgroundColor,
         border = BorderStroke(1.dp, borderColor),
     ) {
-        Box(contentAlignment = Alignment.Center) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(6.dp)
+                    .background(textColor, CircleShape),
+            )
             Text(
-                "压缩",
+                label,
                 color = textColor,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Black,

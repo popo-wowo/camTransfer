@@ -17,6 +17,12 @@ interface CameraFileSource {
 
     suspend fun resolveFile(handle: Int): CameraFile? = null
 
+    suspend fun resolveAdditionalFiles(knownHandles: List<Int>): List<CameraFile> = emptyList()
+
+    suspend fun resolveForwardFiles(knownHandles: List<Int>): List<CameraFile> = emptyList()
+
+    fun hiddenProbeCandidates(knownHandles: List<Int>): List<Int> = emptyList()
+
     suspend fun getPreviewImage(handle: Int): ByteArray = getFile(handle)
 
     suspend fun getFile(handle: Int): ByteArray

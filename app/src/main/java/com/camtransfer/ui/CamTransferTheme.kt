@@ -6,13 +6,18 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
 object CamTransferColors {
-    val Background = Color(0xFFF8F7F4)
-    val Card = Color.White
-    val Ink = Color(0xFF171717)
-    val SecondaryInk = Color(0xFF6E6B63)
-    val Hairline = Color(0x1A171717)
-    val Accent = Color(0xFF9E8257)
-    val WarmFill = Color(0xFFFFFDF9)
+    val Background = Color(0xFFF1EEE7)
+    val Card = Color(0xFFFFFDF8)
+    val Ink = Color(0xFF151515)
+    val SecondaryInk = Color(0xFF706A60)
+    val Hairline = Color(0x1A151515)
+    val Accent = Color(0xFF9F7A45)
+    val AccentSoft = Color(0xFFEFE2CA)
+    val Blue = Color(0xFF2D6FBA)
+    val BlueSoft = Color(0xFFE6F0FB)
+    val Red = Color(0xFFB84632)
+    val RedSoft = Color(0xFFF7E4DF)
+    val WarmFill = Color(0xFFFFFDF8)
     val MutedFill = Color(0xB8FFFFFF)
 }
 

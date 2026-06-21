@@ -8,6 +8,7 @@ import com.camtransfer.wifi.CameraVendorWifiNetworkConfiguration
 import com.camtransfer.viewmodel.ConnectionState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -166,10 +167,28 @@ class ConnectionLiveGuidancePolicyTest {
     }
 
     @Test
-    fun transferSizeOnlyShowsAfterPairing() {
+    fun transferSizeSelectorStaysHiddenOnHome() {
         assertFalse(ConnectionUiLayoutPolicy.shouldShowTransferSizeSelector(ConnectionState.SCANNING))
         assertFalse(ConnectionUiLayoutPolicy.shouldShowTransferSizeSelector(ConnectionState.WAITING_CAMERA_CONFIRMATION))
-        assertTrue(ConnectionUiLayoutPolicy.shouldShowTransferSizeSelector(ConnectionState.PAIRED))
+        assertFalse(ConnectionUiLayoutPolicy.shouldShowTransferSizeSelector(ConnectionState.PAIRED))
+    }
+
+    @Test
+    fun pairedSupplementalActionsAreGroupedByIntentAndKeepDisclaimer() {
+        assertEquals("接入方式", ConnectionSupplementalActionsPolicy.utilitySectionTitle())
+        assertEquals("有线接入", ConnectionSupplementalActionsPolicy.wiredAccessLabel())
+        assertEquals("辅助工具", ConnectionSupplementalActionsPolicy.auxiliarySectionTitle())
+        assertEquals("诊断日志", ConnectionSupplementalActionsPolicy.diagnosticActionLabel())
+        assertEquals("使用须知", ConnectionSupplementalActionsPolicy.disclaimerLabel())
+        assertEquals(
+            "免责声明：相机连接、Wi-Fi 切换和照片导入会根据设备状态执行。",
+            ConnectionSupplementalActionsPolicy.disclaimerText(),
+        )
+        assertEquals(14, ConnectionSupplementalActionsPolicy.pairedActionsTopSpacingDp())
+        assertTrue(ConnectionSupplementalActionsPolicy.shouldShowStableUtilitySection(ConnectionState.IDLE))
+        assertTrue(ConnectionSupplementalActionsPolicy.shouldShowStableUtilitySection(ConnectionState.WAITING_CAMERA_CONFIRMATION))
+        assertTrue(ConnectionSupplementalActionsPolicy.shouldShowStableUtilitySection(ConnectionState.CONNECTING_WIFI))
+        assertTrue(ConnectionSupplementalActionsPolicy.shouldShowStableUtilitySection(ConnectionState.PAIRED))
     }
 
     @Test
@@ -185,8 +204,10 @@ class ConnectionLiveGuidancePolicyTest {
 
         assertEquals("旅行机", content.displayName)
         assertEquals("X-T5", content.modelName)
+        assertEquals("FUJIFILM X SERIES", content.seriesLabel)
         assertEquals("X-T5", content.avatarText)
         assertEquals("已配对", content.statusLabel)
+        assertNull(content.statusDetail)
         assertEquals(CameraIdentityRingState.Neutral, content.ringState)
     }
 
@@ -203,6 +224,7 @@ class ConnectionLiveGuidancePolicyTest {
                 activeStep = CameraConnectionStep.ReconnectPairedBle,
             ).let { content ->
                 assertEquals("连接中", content.statusLabel)
+                assertEquals("正在直连已配对相机", content.statusDetail)
                 content.ringState
             },
         )
@@ -217,9 +239,56 @@ class ConnectionLiveGuidancePolicyTest {
                 activeStep = CameraConnectionStep.SavePairing,
             ).let { content ->
                 assertEquals("蓝牙在线", content.statusLabel)
+                assertNull(content.statusDetail)
                 content.ringState
             },
         )
+        assertEquals(
+            CameraIdentityRingState.Connecting,
+            ConnectionCameraIdentityPolicy.content(
+                camera = pairedCamera(),
+                state = ConnectionState.CONNECTING_PTP,
+                statusText = "正在连接相机相册",
+                error = null,
+                issue = null,
+                activeStep = CameraConnectionStep.ConnectPtp,
+            ).let { content ->
+                assertEquals("连接中", content.statusLabel)
+                assertEquals("正在连接相机相册", content.statusDetail)
+                content.ringState
+            },
+        )
+    }
+
+    @Test
+    fun cameraIdentityKeepsDetailedWifiAndFailureGuidanceInsideSingleCard() {
+        assertEquals(
+            "正在等待手机加入相机 Wi-Fi",
+            ConnectionCameraIdentityPolicy.content(
+                camera = pairedCamera(),
+                state = ConnectionState.CONNECTING_WIFI,
+                statusText = "正在等待手机加入相机 Wi-Fi",
+                error = null,
+                issue = null,
+                activeStep = CameraConnectionStep.JoinCameraWifi,
+            ).statusDetail,
+        )
+
+        val issue = CameraConnectionIssue.wifiJoinTimeout(
+            ssid = "FUJIFILM-X-T5-0001",
+            passphrase = "12345678",
+        )
+        val content = ConnectionCameraIdentityPolicy.content(
+            camera = pairedCamera(),
+            state = ConnectionState.ERROR,
+            statusText = "",
+            error = null,
+            issue = issue,
+            activeStep = issue.step,
+        )
+
+        assertEquals(issue.title, content.statusLabel)
+        assertEquals(issue.detail, content.statusDetail)
     }
 
     private fun pairedCamera(): CameraVendorPairedCameraRecord =

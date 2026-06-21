@@ -1,0 +1,793 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CamTransfer 首页 UI 方案</title>
+  <style>
+    :root {
+      --page-bg: #f3f2ee;
+      --ink: #151515;
+      --muted: #68635b;
+      --line: rgba(21, 21, 21, .12);
+      --gold: #a7834f;
+      --blue: #2877d2;
+      --green: #23864f;
+      --red: #b94632;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--page-bg);
+    }
+
+    .page {
+      min-height: 100vh;
+      padding: 34px 24px 48px;
+    }
+
+    .hero {
+      max-width: 1220px;
+      margin: 0 auto 28px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 20px;
+      align-items: end;
+    }
+
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--gold);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(30px, 4vw, 54px);
+      line-height: .98;
+      letter-spacing: 0;
+    }
+
+    .hero p {
+      max-width: 620px;
+      margin: 14px 0 0;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.7;
+      font-weight: 650;
+    }
+
+    .selected-note {
+      min-width: 260px;
+      padding: 16px 18px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, .72);
+      box-shadow: 0 20px 60px rgba(0, 0, 0, .06);
+    }
+
+    .selected-note strong {
+      display: block;
+      font-size: 13px;
+      margin-bottom: 5px;
+    }
+
+    .selected-note span {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      font-weight: 650;
+    }
+
+    .concept-grid {
+      max-width: 1560px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: repeat(5, minmax(286px, 1fr));
+      gap: 18px;
+      align-items: start;
+    }
+
+    .concept {
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 30px;
+      background: rgba(255, 255, 255, .52);
+      box-shadow: 0 24px 70px rgba(0, 0, 0, .07);
+    }
+
+    .concept-header {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      padding: 4px 6px 12px;
+    }
+
+    .concept-title {
+      min-width: 0;
+    }
+
+    .concept-title h2 {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.15;
+    }
+
+    .concept-title p {
+      margin: 5px 0 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+      font-weight: 700;
+    }
+
+    .choose {
+      min-height: 38px;
+      padding: 0 13px;
+      border: 1px solid rgba(21, 21, 21, .16);
+      border-radius: 999px;
+      background: #151515;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 850;
+      cursor: pointer;
+    }
+
+    .concept.selected {
+      outline: 3px solid rgba(40, 119, 210, .22);
+      border-color: rgba(40, 119, 210, .42);
+    }
+
+    .phone {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 390 / 780;
+      overflow: hidden;
+      border-radius: 28px;
+      border: 8px solid #111;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,.1);
+    }
+
+    .screen {
+      height: 100%;
+      padding: 22px 18px;
+      overflow: hidden;
+    }
+
+    .topline {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 18px;
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: .04em;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 26px;
+      padding: 0 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 850;
+      white-space: nowrap;
+    }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .primary {
+      width: 100%;
+      min-height: 54px;
+      border: 0;
+      border-radius: 17px;
+      font-size: 15px;
+      font-weight: 900;
+      cursor: pointer;
+    }
+
+    .tool-title {
+      margin: 20px 0 10px;
+      font-size: 13px;
+      font-weight: 950;
+    }
+
+    .tiny-link {
+      margin-top: 13px;
+      text-align: center;
+      font-size: 12px;
+      font-weight: 750;
+      color: inherit;
+      opacity: .72;
+    }
+
+    .concept-foot {
+      padding: 11px 7px 2px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+      font-weight: 650;
+    }
+
+    /* 1. System Glass */
+    .glass .screen {
+      color: #111827;
+      background:
+        linear-gradient(145deg, rgba(255,255,255,.95), rgba(242,246,255,.8) 42%, rgba(250,247,240,.92));
+    }
+
+    .glass .camera-card {
+      padding: 18px;
+      border: 1px solid rgba(255,255,255,.72);
+      border-radius: 26px;
+      background: rgba(255,255,255,.66);
+      box-shadow: 0 24px 60px rgba(54,74,105,.14);
+      backdrop-filter: blur(18px);
+    }
+
+    .glass .avatar {
+      width: 76px;
+      height: 76px;
+      border-radius: 28px;
+      display: grid;
+      place-items: center;
+      color: #2563eb;
+      background: rgba(37,99,235,.09);
+      border: 1px solid rgba(37,99,235,.22);
+      font-weight: 950;
+      font-size: 18px;
+    }
+
+    .glass .card-head {
+      display: flex;
+      gap: 15px;
+      align-items: center;
+    }
+
+    .glass .name {
+      font-size: 25px;
+      font-weight: 950;
+      line-height: 1;
+    }
+
+    .glass .detail {
+      margin-top: 7px;
+      color: #64748b;
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .glass .status {
+      margin-top: 16px;
+      color: #2563eb;
+      background: rgba(37,99,235,.1);
+    }
+
+    .glass .primary {
+      margin-top: 18px;
+      color: #fff;
+      background: #111827;
+      box-shadow: 0 16px 32px rgba(17,24,39,.24);
+    }
+
+    .glass .tool-card {
+      padding: 14px;
+      border-radius: 20px;
+      background: rgba(255,255,255,.68);
+      border: 1px solid rgba(255,255,255,.74);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-weight: 900;
+    }
+
+    .glass .repair {
+      margin-top: 10px;
+      padding: 12px 14px;
+      border-radius: 18px;
+      background: rgba(255,255,255,.4);
+      border: 1px solid rgba(17,24,39,.08);
+    }
+
+    /* 2. Camera Hardware */
+    .hardware .screen {
+      color: #f2efe8;
+      background:
+        linear-gradient(180deg, #25221d, #11100f);
+    }
+
+    .hardware .topline {
+      color: #c4b08c;
+    }
+
+    .hardware .plate {
+      padding: 16px;
+      border-radius: 10px;
+      background: linear-gradient(180deg, #1a1917, #10100f);
+      border: 1px solid rgba(226,207,164,.25);
+      box-shadow: inset 0 1px rgba(255,255,255,.08), 0 22px 40px rgba(0,0,0,.25);
+    }
+
+    .hardware .brand-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: #c4b08c;
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: .15em;
+    }
+
+    .hardware .lens {
+      width: 124px;
+      height: 124px;
+      margin: 23px auto 20px;
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at 50% 50%, #090909 0 28%, #27313a 29% 34%, #050505 35% 54%, #2e2b25 55% 58%, #0f0e0d 59%);
+      border: 1px solid rgba(226,207,164,.28);
+      box-shadow: inset 0 0 0 7px #181714, inset 0 0 0 15px #0a0a09, 0 20px 45px rgba(0,0,0,.5);
+    }
+
+    .hardware .model {
+      font-size: 32px;
+      line-height: 1;
+      font-weight: 950;
+      letter-spacing: .02em;
+    }
+
+    .hardware .status-line {
+      margin-top: 10px;
+      color: #69d08a;
+      font-size: 12px;
+      font-weight: 850;
+    }
+
+    .hardware .primary {
+      margin-top: 16px;
+      color: #15120d;
+      background: #d6ba7a;
+      border-radius: 8px;
+      box-shadow: 0 16px 28px rgba(214,186,122,.2);
+    }
+
+    .hardware .tool-card,
+    .hardware .repair {
+      padding: 13px 14px;
+      border-radius: 8px;
+      border: 1px solid rgba(226,207,164,.18);
+      background: rgba(255,255,255,.045);
+      color: #f2efe8;
+      font-weight: 900;
+    }
+
+    .hardware .repair { margin-top: 10px; }
+
+    /* 3. Linear Tool */
+    .linear .screen {
+      color: #171717;
+      background: #fbfaf7;
+    }
+
+    .linear h3 {
+      margin: 0 0 12px;
+      font-size: 31px;
+      line-height: .98;
+      letter-spacing: 0;
+    }
+
+    .linear .state-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      border: 1px solid rgba(23,23,23,.1);
+      border-radius: 16px;
+      overflow: hidden;
+      margin-bottom: 16px;
+    }
+
+    .linear .state-row div {
+      padding: 12px 8px;
+      border-right: 1px solid rgba(23,23,23,.08);
+    }
+
+    .linear .state-row div:last-child { border-right: 0; }
+    .linear .metric { color: #6b655d; font-size: 10px; font-weight: 850; }
+    .linear .value { margin-top: 5px; font-size: 13px; font-weight: 950; }
+
+    .linear .timeline {
+      padding: 16px;
+      border: 1px solid rgba(23,23,23,.1);
+      border-radius: 18px;
+      background: #fff;
+    }
+
+    .linear .step {
+      display: grid;
+      grid-template-columns: 24px 1fr auto;
+      gap: 10px;
+      align-items: center;
+      padding: 8px 0;
+      font-size: 13px;
+      font-weight: 850;
+    }
+
+    .linear .node {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #171717;
+      color: #fff;
+      display: grid;
+      place-items: center;
+      font-size: 10px;
+      font-weight: 950;
+    }
+
+    .linear .primary {
+      margin-top: 16px;
+      color: #fff;
+      background: #171717;
+      border-radius: 12px;
+    }
+
+    .linear .tool-card,
+    .linear .repair {
+      padding: 13px 0;
+      border-top: 1px solid rgba(23,23,23,.1);
+      display: flex;
+      justify-content: space-between;
+      font-weight: 900;
+    }
+
+    /* 4. Device Console */
+    .console .screen {
+      color: #e9f3ff;
+      background: #07111f;
+    }
+
+    .console .map {
+      min-height: 172px;
+      padding: 17px;
+      border-radius: 22px;
+      background:
+        linear-gradient(135deg, rgba(43,119,210,.18), transparent 48%),
+        #0d1c2f;
+      border: 1px solid rgba(95,158,255,.24);
+    }
+
+    .console .online {
+      color: #76e0a5;
+      font-size: 12px;
+      font-weight: 950;
+      letter-spacing: .08em;
+    }
+
+    .console .big {
+      margin-top: 16px;
+      font-size: 42px;
+      line-height: .9;
+      font-weight: 950;
+    }
+
+    .console .chain {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-top: 18px;
+    }
+
+    .console .chain div {
+      padding: 10px 8px;
+      border-radius: 12px;
+      background: rgba(255,255,255,.07);
+      border: 1px solid rgba(255,255,255,.08);
+      font-size: 11px;
+      font-weight: 900;
+      text-align: center;
+    }
+
+    .console .primary {
+      margin-top: 16px;
+      color: #05101f;
+      background: #76e0a5;
+      border-radius: 14px;
+    }
+
+    .console .tool-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .console .tool-card,
+    .console .repair {
+      padding: 14px 12px;
+      min-height: 64px;
+      border-radius: 15px;
+      background: rgba(255,255,255,.07);
+      border: 1px solid rgba(255,255,255,.08);
+      font-weight: 900;
+    }
+
+    .console .repair { color: #ffd490; }
+
+    /* 5. Photo First */
+    .photo .screen {
+      color: #1b1b1b;
+      background: #f6f2ea;
+      padding: 18px;
+    }
+
+    .photo .strip {
+      height: 210px;
+      margin: 4px -4px 16px;
+      border-radius: 26px;
+      overflow: hidden;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+
+    .photo .shot {
+      background:
+        linear-gradient(150deg, rgba(255,255,255,.1), rgba(0,0,0,.24)),
+        linear-gradient(135deg, #b8c7b1, #6e775e 45%, #d4b984);
+    }
+
+    .photo .shot:nth-child(2) {
+      background:
+        linear-gradient(150deg, rgba(255,255,255,.12), rgba(0,0,0,.18)),
+        linear-gradient(135deg, #8caec8, #efe2ca 48%, #bd7f55);
+    }
+
+    .photo .hero-card {
+      padding: 17px;
+      border-radius: 24px;
+      background: #fffaf2;
+      border: 1px solid rgba(93,70,43,.12);
+    }
+
+    .photo .hero-card h3 {
+      margin: 0;
+      font-size: 30px;
+      line-height: 1;
+    }
+
+    .photo .hero-card p {
+      margin: 8px 0 0;
+      color: #6f665a;
+      font-size: 13px;
+      line-height: 1.45;
+      font-weight: 750;
+    }
+
+    .photo .primary {
+      margin-top: 15px;
+      color: #fffaf2;
+      background: #1b1b1b;
+      border-radius: 18px;
+    }
+
+    .photo .tool-card,
+    .photo .repair {
+      padding: 14px;
+      border-radius: 18px;
+      background: rgba(255,255,255,.62);
+      border: 1px solid rgba(93,70,43,.1);
+      font-weight: 900;
+    }
+
+    .photo .repair { margin-top: 9px; }
+
+    @media (max-width: 1500px) {
+      .concept-grid { grid-template-columns: repeat(3, minmax(286px, 1fr)); }
+    }
+
+    @media (max-width: 980px) {
+      .hero { grid-template-columns: 1fr; }
+      .concept-grid { grid-template-columns: repeat(2, minmax(286px, 1fr)); }
+    }
+
+    @media (max-width: 680px) {
+      .page { padding: 22px 14px 34px; }
+      .concept-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">CamTransfer UI concepts</p>
+        <h1>5 个首页方向，先选气质，再落 Compose。</h1>
+        <p>每个方案都保留同一套产品逻辑：相机状态、主入口、固定工具区、修复区、诊断日志和免责声明。这里只比较视觉语言和信息层级。</p>
+      </div>
+      <div class="selected-note">
+        <strong>当前选择</strong>
+        <span id="selectedText">还没选。点击任意方案右上角的“选这个”。</span>
+      </div>
+    </section>
+
+    <section class="concept-grid">
+      <article class="concept" data-name="方案 1：Apple / iOS 系统玻璃感">
+        <div class="concept-header">
+          <div class="concept-title">
+            <h2>1. 系统玻璃感</h2>
+            <p>像 iOS 设置和小组件，轻、干净、可信。</p>
+          </div>
+          <button class="choose">选这个</button>
+        </div>
+        <div class="phone glass">
+          <div class="screen">
+            <div class="topline"><span>CAMTRANSFER</span><span>已配对</span></div>
+            <div class="camera-card">
+              <div class="card-head">
+                <div class="avatar">X-T5</div>
+                <div>
+                  <div class="name">旅行机</div>
+                  <div class="detail">Serial 123456 · FUJIFILM</div>
+                  <div class="pill status"><span class="dot"></span>蓝牙在线</div>
+                </div>
+              </div>
+            </div>
+            <button class="primary">进入相机相册</button>
+            <div class="tool-title">其他功能</div>
+            <div class="tool-card"><span>有线接入</span><span>打开</span></div>
+            <div class="repair">修复连接 · 重新配对</div>
+            <div class="tiny-link">诊断日志</div>
+            <div class="tiny-link">使用须知与免责声明</div>
+          </div>
+        </div>
+        <p class="concept-foot">优点是最安全、最容易接受；缺点是品牌个性不强。</p>
+      </article>
+
+      <article class="concept" data-name="方案 2：Leica / Fujifilm 相机硬件感">
+        <div class="concept-header">
+          <div class="concept-title">
+            <h2>2. 相机硬件感</h2>
+            <p>像相机背屏和设备铭牌，专业、克制。</p>
+          </div>
+          <button class="choose">选这个</button>
+        </div>
+        <div class="phone hardware">
+          <div class="screen">
+            <div class="topline"><span>CAMTRANSFER</span><span>DEVICE READY</span></div>
+            <div class="plate">
+              <div class="brand-row"><span>FUJIFILM</span><span>BT ON</span></div>
+              <div class="lens"></div>
+              <div class="model">X-T5</div>
+              <div class="status-line">● 蓝牙在线 · 等待进入相册</div>
+            </div>
+            <button class="primary">进入相机相册</button>
+            <div class="tool-title">其他功能</div>
+            <div class="tool-card">有线接入 · USB / 读卡器</div>
+            <div class="repair">修复连接 · 重新配对</div>
+            <div class="tiny-link">诊断日志</div>
+            <div class="tiny-link">使用须知与免责声明</div>
+          </div>
+        </div>
+        <p class="concept-foot">最符合相机工具定位；适合做成我们自己的主风格。</p>
+      </article>
+
+      <article class="concept" data-name="方案 3：Linear / Notion 效率工具感">
+        <div class="concept-header">
+          <div class="concept-title">
+            <h2>3. 效率工具感</h2>
+            <p>状态清晰、信息密度高，像专业工作台。</p>
+          </div>
+          <button class="choose">选这个</button>
+        </div>
+        <div class="phone linear">
+          <div class="screen">
+            <div class="topline"><span>CAMTRANSFER</span><span>在线</span></div>
+            <h3>连接相机</h3>
+            <div class="state-row">
+              <div><div class="metric">BLE</div><div class="value">在线</div></div>
+              <div><div class="metric">Wi-Fi</div><div class="value">待启动</div></div>
+              <div><div class="metric">PTP</div><div class="value">待连接</div></div>
+            </div>
+            <div class="timeline">
+              <div class="step"><span class="node">1</span><span>直连相机</span><span>完成</span></div>
+              <div class="step"><span class="node">2</span><span>启动 Wi-Fi</span><span>待执行</span></div>
+              <div class="step"><span class="node">3</span><span>进入相册</span><span>待执行</span></div>
+            </div>
+            <button class="primary">进入相机相册</button>
+            <div class="tool-title">其他功能</div>
+            <div class="tool-card"><span>有线接入</span><span>打开</span></div>
+            <div class="repair">修复连接 · 重新配对</div>
+            <div class="tiny-link">诊断日志 · 使用须知与免责声明</div>
+          </div>
+        </div>
+        <p class="concept-foot">最适合排障和状态透明；缺点是消费感弱一点。</p>
+      </article>
+
+      <article class="concept" data-name="方案 4：DJI / GoPro 设备控制台感">
+        <div class="concept-header">
+          <div class="concept-title">
+            <h2>4. 设备控制台感</h2>
+            <p>强调在线状态和链路进度，动作设备风格。</p>
+          </div>
+          <button class="choose">选这个</button>
+        </div>
+        <div class="phone console">
+          <div class="screen">
+            <div class="topline"><span>CAMTRANSFER</span><span>LINK</span></div>
+            <div class="map">
+              <div class="online">● CAMERA ONLINE</div>
+              <div class="big">X-T5<br>READY</div>
+              <div class="chain">
+                <div>BLE</div><div>Wi-Fi</div><div>PTP</div>
+              </div>
+            </div>
+            <button class="primary">进入相机相册</button>
+            <div class="tool-title">其他功能</div>
+            <div class="tool-grid">
+              <div class="tool-card">有线接入</div>
+              <div class="repair">重新配对</div>
+            </div>
+            <div class="tiny-link">诊断日志</div>
+            <div class="tiny-link">使用须知与免责声明</div>
+          </div>
+        </div>
+        <p class="concept-foot">连接感最强；适合解决“我现在卡在哪一步”的问题。</p>
+      </article>
+
+      <article class="concept" data-name="方案 5：Lightroom / 内容优先感">
+        <div class="concept-header">
+          <div class="concept-title">
+            <h2>5. 照片内容感</h2>
+            <p>把“看照片”放到第一视觉，弱化技术细节。</p>
+          </div>
+          <button class="choose">选这个</button>
+        </div>
+        <div class="phone photo">
+          <div class="screen">
+            <div class="topline"><span>CAMTRANSFER</span><span>蓝牙在线</span></div>
+            <div class="strip">
+              <div class="shot"></div>
+              <div class="shot"></div>
+            </div>
+            <div class="hero-card">
+              <h3>旅行机</h3>
+              <p>X-T5 已保存配对。进入相册后可以预览、筛选和导入照片。</p>
+              <button class="primary">进入相机相册</button>
+            </div>
+            <div class="tool-title">其他功能</div>
+            <div class="tool-card">有线接入 · 导入本地照片</div>
+            <div class="repair">修复连接 · 重新配对</div>
+            <div class="tiny-link">诊断日志</div>
+            <div class="tiny-link">使用须知与免责声明</div>
+          </div>
+        </div>
+        <p class="concept-foot">用户目标最明确；但连接诊断信息会被弱化。</p>
+      </article>
+    </section>
+  </main>
+
+  <script>
+    const selectedText = document.getElementById('selectedText');
+    document.querySelectorAll('.concept').forEach((concept) => {
+      concept.querySelector('.choose').addEventListener('click', () => {
+        document.querySelectorAll('.concept').forEach((item) => item.classList.remove('selected'));
+        concept.classList.add('selected');
+        selectedText.textContent = concept.dataset.name;
+      });
+    });
+  </script>
+</body>
+</html>

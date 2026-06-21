@@ -68,6 +68,7 @@
 
 - 打开 App 后，如果本地存在 remembered pairing 且注册一致性检查通过，可以按原厂 App 行为预连接当前相机 BLE/GATT，并把 UI 更新为“相机在线”。
 - 启动在线预连接只允许建立并保留可复用 BLE 会话；不得写 `FunctionLaunchRequest`，不得启动相机 Wi-Fi，不得加入相机 Wi-Fi，不得连接 PTP，也不得启动 `CameraSessionKeepAlive`。
+- 原厂 Android XApp 另有 `PeriodicFetchingInformationService` 低频周期任务: 已注册相机、无已连接相机、非 remote booting 时，每轮遍历注册相机并约 60 秒后再循环；单台相机还受 1800 秒信息刷新间隔、remote boot、standby 条件限制。它通过 `START_CONNECT` 做 BLE 重连和信息同步，不进入 Wi-Fi/PTP。我们若实现同类自动恢复在线，只能作为低频 BLE 状态刷新模块，不能自动启动相册 Wi-Fi/PTP。
 - 用户点击进入相册时，如果启动预连接的 BLE 会话仍在 TTL 内且身份匹配，必须复用该会话继续后续主链路，不能再重复 `ReconnectPairedBle`。
 - 如果启动在线预连接仍在进行中，进入相册先等待一个短接管窗口；预连接完成后复用其 GATT，会话仍未完成才取消并执行主链路 BLE 重连。不能在用户点击时立即取消正在进行的在线预连接。
 - 如果会话已断开/过期/身份不匹配，才重新执行已配对 BLE 重连。

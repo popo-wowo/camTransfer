@@ -117,6 +117,8 @@ internal fun GalleryFilterPanel(
     onExpandedChange: (Boolean) -> Unit,
     state: GalleryFilterState,
     stats: GalleryFilterStats,
+    isLoadingJpg: Boolean = false,
+    isLoadingHiddenFormats: Boolean = false,
     onStateChange: (GalleryFilterState) -> Unit,
     sortMode: GallerySortMode,
     onSortModeChange: (GallerySortMode) -> Unit,
@@ -174,6 +176,8 @@ internal fun GalleryFilterPanel(
                     .padding(start = 2.dp, top = 1.dp, end = 2.dp, bottom = 2.dp),
                 state = state,
                 stats = stats,
+                isLoadingJpg = isLoadingJpg,
+                isLoadingHiddenFormats = isLoadingHiddenFormats,
                 onStateChange = onStateChange,
                 sortMode = sortMode,
                 onSortModeChange = onSortModeChange,
@@ -189,6 +193,8 @@ private fun CompactFilterChips(
     modifier: Modifier = Modifier,
     state: GalleryFilterState,
     stats: GalleryFilterStats,
+    isLoadingJpg: Boolean = false,
+    isLoadingHiddenFormats: Boolean = false,
     onStateChange: (GalleryFilterState) -> Unit,
     sortMode: GallerySortMode,
     onSortModeChange: (GallerySortMode) -> Unit,
@@ -227,20 +233,18 @@ private fun CompactFilterChips(
             LuxuryFilterChip(
                 selected = state.formats.isEmpty(),
                 label = "全部格式",
-                count = stats.totalCount,
                 onClick = { onStateChange(state.copy(formats = emptySet())) },
             )
-            FormatChip("JPG", GalleryFormatFilter.Jpg, stats, state, onStateChange)
-            FormatChip("HEIF", GalleryFormatFilter.Heif, stats, state, onStateChange)
-            FormatChip("RAW", GalleryFormatFilter.Raw, stats, state, onStateChange)
-            FormatChip("视频", GalleryFormatFilter.Video, stats, state, onStateChange)
+            FormatChip("JPG", GalleryFormatFilter.Jpg, stats, state, onStateChange, isLoading = isLoadingJpg)
+            FormatChip("HEIF", GalleryFormatFilter.Heif, stats, state, onStateChange, isLoading = isLoadingHiddenFormats)
+            FormatChip("RAW", GalleryFormatFilter.Raw, stats, state, onStateChange, isLoading = isLoadingHiddenFormats)
+            FormatChip("视频", GalleryFormatFilter.Video, stats, state, onStateChange, isLoading = isLoadingHiddenFormats)
         }
         if (stats.folderCounts.isNotEmpty()) {
             FilterChipRow {
                 LuxuryFilterChip(
                     selected = state.folders.isEmpty(),
                     label = "全部文件夹",
-                    count = stats.totalCount,
                     onClick = { onStateChange(state.copy(folders = emptySet())) },
                 )
                 stats.folderCounts.forEach { folderCount ->
@@ -280,11 +284,12 @@ private fun FormatChip(
     stats: GalleryFilterStats,
     state: GalleryFilterState,
     onStateChange: (GalleryFilterState) -> Unit,
+    isLoading: Boolean = false,
 ) {
     LuxuryFilterChip(
         selected = format in state.formats,
         label = label,
-        count = stats.formatCounts[format] ?: 0,
+        isLoading = isLoading,
         onClick = {
             val formats = state.formats.toMutableSet()
             if (!formats.add(format)) formats.remove(format)
@@ -316,7 +321,6 @@ private fun FolderChip(
     LuxuryFilterChip(
         selected = folderCount.folder in state.folders,
         label = folderCount.label,
-        count = folderCount.count,
         onClick = {
             val folders = state.folders.toMutableSet()
             if (!folders.add(folderCount.folder)) folders.remove(folderCount.folder)
@@ -330,6 +334,7 @@ private fun LuxuryFilterChip(
     selected: Boolean,
     label: String,
     count: Int? = null,
+    isLoading: Boolean = false,
     onClick: () -> Unit,
 ) {
     Surface(
@@ -353,7 +358,13 @@ private fun LuxuryFilterChip(
                 fontWeight = FontWeight.Black,
                 maxLines = 1,
             )
-            if (count != null) {
+            if (isLoading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(10.dp),
+                    strokeWidth = 1.5.dp,
+                    color = if (selected) CamTransferColors.Card else CamTransferColors.SecondaryInk,
+                )
+            } else if (count != null) {
                 Text(
                     count.toString(),
                     color = if (selected) CamTransferColors.Card.copy(alpha = 0.72f) else CamTransferColors.SecondaryInk,

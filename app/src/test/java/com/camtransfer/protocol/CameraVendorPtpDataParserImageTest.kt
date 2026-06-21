@@ -1,6 +1,7 @@
 package com.camtransfer.protocol
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -21,6 +22,113 @@ class CameraVendorPtpDataParserImageTest {
             ),
             result,
         )
+    }
+
+    @Test
+    fun parsesCountPrefixedSizedPtpStringDateCountsFromCameraVendorGallery() {
+        val firstRecord = ptpString("20260620") + uint32(12)
+        val secondRecord = ptpString("20260619") + uint32(3)
+        val payload = uint32(2) +
+            uint32(firstRecord.size + 4) + firstRecord +
+            uint32(secondRecord.size + 4) + secondRecord
+
+        val result = CameraVendorPtpDataParser.objectCountsByDate(payload)
+
+        assertEquals(
+            listOf(
+                CameraVendorObjectCountByDate("20260620", 12),
+                CameraVendorObjectCountByDate("20260619", 3),
+            ),
+            result,
+        )
+    }
+
+    @Test
+    fun describesLegacySearchModeSnapshotEntriesForFormatResearch() {
+        val payload = uint32(1) +
+            uint16(CameraVendorSearchMode.OBJECT_FORMAT_PROPERTY) +
+            uint16(CameraVendorSearchMode.DATA_TYPE_UINT16) +
+            uint32(CameraVendorSearchMode.FORMAT_RAW)
+
+        val result = CameraVendorPtpDataParser.searchModeSnapshot(payload)
+
+        assertEquals("[0xD604/type=1/value=16/layout=legacy8]", result)
+    }
+
+    @Test
+    fun describesNativeSearchModeSnapshotEntriesForFormatResearch() {
+        val payload = uint32(1) +
+            uint16(CameraVendorSearchMode.DATA_TYPE_UINT16) +
+            uint16(CameraVendorSearchMode.OBJECT_FORMAT_PROPERTY) +
+            uint32(CameraVendorSearchMode.FORMAT_HEIF) +
+            ByteArray(10)
+
+        val result = CameraVendorPtpDataParser.searchModeSnapshot(payload)
+
+        assertEquals("[0xD604/type=1/value=2/layout=native18]", result)
+    }
+
+    @Test
+    fun describesCameraSearchModeSnapshotValueFirstEntriesFromRealCamera() {
+        val payload = uint32(5) +
+            uint32(9) + uint16(0xD601) + uint16(1) +
+            uint32(9) + uint16(0xD602) + uint16(1) +
+            uint32(8) + uint16(0xD603) + uint16(0) +
+            uint32(8) + uint16(CameraVendorSearchMode.OBJECT_FORMAT_PROPERTY) + uint16(0) +
+            uint32(10) + uint16(0xD605) + uint16(0)
+
+        val result = CameraVendorPtpDataParser.searchModeSnapshot(payload)
+
+        assertEquals(
+            "[0xD601/type=1/value=9/layout=valueFirst8, " +
+                "0xD602/type=1/value=9/layout=valueFirst8, " +
+                "0xD603/type=0/value=8/layout=valueFirst8, " +
+                "0xD604/type=0/value=8/layout=valueFirst8, " +
+                "0xD605/type=0/value=10/layout=valueFirst8]",
+            result,
+        )
+    }
+
+    @Test
+    fun replacesCameraSearchModeObjectFormatValueWithoutChangingOtherBytes() {
+        val payload = uint32(2) +
+            uint32(9) + uint16(0xD601) + uint16(1) +
+            uint32(8) + uint16(CameraVendorSearchMode.OBJECT_FORMAT_PROPERTY) + uint16(0)
+
+        val result = CameraVendorPtpDataParser.searchModeWithObjectFormat(
+            payload,
+            CameraVendorSearchMode.FORMAT_HEIF,
+        )
+
+        assertArrayEquals(
+            uint32(2) +
+                uint32(9) + uint16(0xD601) + uint16(1) +
+                uint32(CameraVendorSearchMode.FORMAT_HEIF) +
+                uint16(CameraVendorSearchMode.OBJECT_FORMAT_PROPERTY) + uint16(0),
+            result,
+        )
+    }
+
+    @Test
+    fun replacesObjectFormatInRealCameraSearchModePayloadFromDiagnostics() {
+        val payload = hex(
+            "050000000900000001d60100000900000002d60100000800000003d600000800000004d600000a00000005d600000000"
+        )
+
+        val result = CameraVendorPtpDataParser.searchModeWithObjectFormat(
+            payload,
+            CameraVendorSearchMode.FORMAT_RAW,
+        )
+
+        assertEquals(
+            "[0xD601/type=1/value=9/layout=propertyScan, " +
+                "0xD602/type=1/value=9/layout=propertyScan, " +
+                "0xD603/type=0/value=8/layout=propertyScan, " +
+                "0xD604/type=0/value=16/layout=propertyScan, " +
+                "0xD605/type=0/value=10/layout=propertyScan]",
+            CameraVendorPtpDataParser.searchModeSnapshot(result ?: ByteArray(0)),
+        )
+        assertEquals(CameraVendorSearchMode.FORMAT_RAW, result?.let { uint32At(it, 30) })
     }
 
     @Test
@@ -159,6 +267,21 @@ class CameraVendorPtpDataParserImageTest {
             ((value ushr 16) and 0xFF).toByte(),
             ((value ushr 24) and 0xFF).toByte(),
         )
+
+    private fun uint16(value: Int): ByteArray =
+        byteArrayOf(
+            (value and 0xFF).toByte(),
+            ((value ushr 8) and 0xFF).toByte(),
+        )
+
+    private fun uint32At(data: ByteArray, offset: Int): Int =
+        (data[offset].toInt() and 0xFF) or
+            ((data[offset + 1].toInt() and 0xFF) shl 8) or
+            ((data[offset + 2].toInt() and 0xFF) shl 16) or
+            ((data[offset + 3].toInt() and 0xFF) shl 24)
+
+    private fun hex(value: String): ByteArray =
+        value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 
     private fun standardObjectInfoPayload(
         filename: String,

@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
 import android.graphics.Matrix
 import android.os.Build
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
@@ -59,6 +60,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -93,7 +95,13 @@ import androidx.compose.ui.window.DialogProperties
 import com.camtransfer.model.CameraFile
 import com.camtransfer.model.TransferItem
 import com.camtransfer.model.TransferState
+import com.camtransfer.localproofing.LocalProofingPhotoMapper
+import com.camtransfer.localproofing.LocalProofingQrCode
+import com.camtransfer.localproofing.LocalProofingRequestRouter
+import com.camtransfer.localproofing.LocalProofingServer
+import com.camtransfer.localproofing.LocalProofingSessionToken
 import com.camtransfer.service.CameraFileSource
+import com.camtransfer.service.DiagnosticLog
 import com.camtransfer.viewmodel.BrowseViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -123,6 +131,7 @@ fun BrowseScreen(
     }
     val files by viewModel.files.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val isLoadingHiddenFormats by viewModel.isLoadingHiddenFormats.collectAsState()
     val selectedHandles by viewModel.selectedHandles.collectAsState()
     val previewImages by viewModel.previewImages.collectAsState()
     val error by viewModel.error.collectAsState()
@@ -134,6 +143,9 @@ fun BrowseScreen(
     var showsDateRangePicker by remember { mutableStateOf(false) }
     var showsDisconnectConfirm by remember { mutableStateOf(false) }
     var previewFile by remember { mutableStateOf<CameraFile?>(null) }
+    var localProofingServer by remember { mutableStateOf<LocalProofingServer?>(null) }
+    var localProofingState by remember { mutableStateOf<LocalProofingShareUiState?>(null) }
+    var localProofingError by remember { mutableStateOf<String?>(null) }
     var columnCount by remember {
         mutableStateOf(
             prefs.getInt("columnCount", GalleryColumnLayoutPolicy.DEFAULT_COLUMNS)
@@ -197,8 +209,61 @@ fun BrowseScreen(
                 GalleryDownloadUiPolicy.canSelect(downloadStates[it.info.handle])
         }
     }
+    val currentFiles by rememberUpdatedState(files)
     val selectableDateDays = remember(today) {
         GalleryDatePickerPolicy.selectableDays(today)
+    }
+
+    fun stopLocalProofing() {
+        localProofingServer?.stop()
+        localProofingServer = null
+        localProofingState = null
+    }
+
+    fun logLocalProofing(message: String) {
+        Log.d("LocalProofing", message)
+        DiagnosticLog.append(context, "LocalProofing", message)
+    }
+
+    fun startLocalProofing() {
+        stopLocalProofing()
+        val token = LocalProofingSessionToken.make()
+        val router = LocalProofingRequestRouter(
+            sessionToken = token,
+            photosProvider = {
+                currentFiles
+                    .filterNot { it.info.isFolder }
+                    .map(LocalProofingPhotoMapper::photo)
+            },
+            previewProvider = { id ->
+                val handle = id.toIntOrNull()
+                currentFiles.firstOrNull { it.info.handle == handle }?.thumbnail
+            },
+            logger = ::logLocalProofing,
+        )
+        val server = LocalProofingServer(router = router, token = token, logger = ::logLocalProofing)
+        runCatching {
+            logLocalProofing(
+                "start requested files=${currentFiles.size} " +
+                    "photos=${currentFiles.count { !it.info.isFolder }} " +
+                    "previews=${currentFiles.count { !it.info.isFolder && it.thumbnail != null }}"
+            )
+            val started = server.start()
+            localProofingServer = server
+            localProofingState = LocalProofingShareUiState(
+                url = started.url,
+                qrBitmap = LocalProofingQrCode.bitmap(started.url),
+                photoCount = currentFiles.count { !it.info.isFolder },
+            )
+        }.onFailure { error ->
+            server.stop()
+            logLocalProofing("start failed error=${error.message}")
+            localProofingError = error.message ?: "启动现场分享失败"
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { stopLocalProofing() }
     }
 
     LaunchedEffect(cameraSource) {
@@ -263,8 +328,27 @@ fun BrowseScreen(
             onDismiss = { showsDisconnectConfirm = false },
             onConfirm = {
                 showsDisconnectConfirm = false
+                stopLocalProofing()
                 onDisconnect()
             },
+        )
+    }
+    localProofingState?.let { state ->
+        LocalProofingShareDialog(
+            state = state,
+            onDismiss = { stopLocalProofing() },
+        )
+    }
+    localProofingError?.let { errorMessage ->
+        AlertDialog(
+            onDismissRequest = { localProofingError = null },
+            confirmButton = {
+                TextButton(onClick = { localProofingError = null }) {
+                    Text("知道了")
+                }
+            },
+            title = { Text("无法开始分享") },
+            text = { Text(errorMessage) },
         )
     }
     previewFile?.let { file ->
@@ -340,6 +424,7 @@ fun BrowseScreen(
                 isLoading = isLoading,
                 isTransferring = isTransferring,
                 onBack = { showsDisconnectConfirm = true },
+                onOpenLocalProofing = { startLocalProofing() },
                 onOpenDownloads = onOpenDownloads,
             )
             GalleryFilterPanel(
@@ -347,6 +432,8 @@ fun BrowseScreen(
                 onExpandedChange = { filtersExpanded = it },
                 state = filterState,
                 stats = filterStats,
+                isLoadingJpg = isLoading,
+                isLoadingHiddenFormats = isLoadingHiddenFormats,
                 onStateChange = { filterState = it },
                 sortMode = sortMode,
                 onSortModeChange = { sortMode = it },

@@ -110,6 +110,7 @@ internal fun GalleryHeader(
     isLoading: Boolean,
     isTransferring: Boolean,
     onBack: () -> Unit,
+    onOpenLocalProofing: () -> Unit,
     onOpenDownloads: () -> Unit,
 ) {
     Column(
@@ -135,6 +136,12 @@ internal fun GalleryHeader(
                 fontWeight = FontWeight.Black,
             )
             Spacer(Modifier.weight(1f))
+            GalleryIconButton(
+                icon = GalleryHeaderIcon.Share,
+                contentDescription = "现场分享",
+                onClick = onOpenLocalProofing,
+            )
+            Spacer(Modifier.width(8.dp))
             GalleryIconButton(
                 icon = GalleryHeaderIcon.Downloads,
                 contentDescription = "下载中心",
@@ -165,6 +172,7 @@ internal fun GalleryHeader(
 
 private enum class GalleryHeaderIcon {
     Back,
+    Share,
     Downloads,
 }
 
@@ -207,6 +215,37 @@ private fun GalleryIconButton(
                             cap = StrokeCap.Round,
                         )
                     }
+                    GalleryHeaderIcon.Share -> {
+                        drawCircle(
+                            color = CamTransferColors.Ink,
+                            radius = size.width * 0.12f,
+                            center = Offset(size.width * 0.33f, size.height * 0.62f),
+                        )
+                        drawCircle(
+                            color = CamTransferColors.Ink,
+                            radius = size.width * 0.12f,
+                            center = Offset(size.width * 0.66f, size.height * 0.32f),
+                        )
+                        drawCircle(
+                            color = CamTransferColors.Ink,
+                            radius = size.width * 0.12f,
+                            center = Offset(size.width * 0.68f, size.height * 0.72f),
+                        )
+                        drawLine(
+                            color = CamTransferColors.Ink,
+                            start = Offset(size.width * 0.42f, size.height * 0.55f),
+                            end = Offset(size.width * 0.57f, size.height * 0.40f),
+                            strokeWidth = stroke.width,
+                            cap = StrokeCap.Round,
+                        )
+                        drawLine(
+                            color = CamTransferColors.Ink,
+                            start = Offset(size.width * 0.44f, size.height * 0.66f),
+                            end = Offset(size.width * 0.57f, size.height * 0.70f),
+                            strokeWidth = stroke.width,
+                            cap = StrokeCap.Round,
+                        )
+                    }
                     GalleryHeaderIcon.Downloads -> {
                         drawLine(
                             color = CamTransferColors.Ink,
@@ -244,4 +283,3 @@ private fun GalleryIconButton(
         }
     }
 }
-

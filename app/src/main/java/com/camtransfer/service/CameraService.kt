@@ -344,6 +344,10 @@ class CameraService(override val context: Context) : CameraFileSource {
         return gallerySource.resolveFile(handle)
     }
 
+    override suspend fun resolveAdditionalFiles(knownHandles: List<Int>): List<CameraFile> {
+        return gallerySource.resolveAdditionalFiles(knownHandles)
+    }
+
     override suspend fun getPreviewImage(handle: Int): ByteArray {
         return gallerySource.getPreviewImage(handle)
     }

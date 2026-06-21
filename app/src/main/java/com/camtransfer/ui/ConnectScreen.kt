@@ -11,6 +11,7 @@ import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
@@ -34,6 +35,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -41,17 +44,19 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -66,6 +71,7 @@ import com.camtransfer.service.CameraPairingGuidance
 import com.camtransfer.service.CameraVendorPairedCameraRecord
 import com.camtransfer.viewmodel.ConnectionState
 import com.camtransfer.viewmodel.ConnectionViewModel
+import kotlinx.coroutines.delay
 
 @Composable
 fun ConnectScreen(
@@ -79,7 +85,6 @@ fun ConnectScreen(
     val error by viewModel.error.collectAsState()
     val connectionIssue by viewModel.connectionIssue.collectAsState()
     val activeStep by viewModel.activeStep.collectAsState()
-    val preferCompressedDownloads by viewModel.preferCompressedDownloads.collectAsState()
     val pairedCameras by viewModel.pairedCameras.collectAsState()
     val selectedCameraId by viewModel.selectedCameraId.collectAsState()
     val context = LocalContext.current
@@ -88,7 +93,11 @@ fun ConnectScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(CamTransferColors.Background),
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(Color(0xFFFAF8F3), CamTransferColors.Background),
+                ),
+            ),
         contentAlignment = Alignment.TopCenter,
     ) {
         Column(
@@ -114,6 +123,7 @@ fun ConnectScreen(
                     activeStep = activeStep,
                     showLiveGuidance = showLiveGuidance,
                     onRename = viewModel::renamePairedCamera,
+                    onRemove = viewModel::forgetPairing,
                 )
             }
             if (actionsBeforeGuidance) {
@@ -160,13 +170,6 @@ fun ConnectScreen(
                         },
                     )
                 }
-            }
-            if (ConnectionUiLayoutPolicy.shouldShowTransferSizeSelector(state)) {
-                TransferSizeSelector(
-                    preferCompressedDownloads = preferCompressedDownloads,
-                    enabled = true,
-                    onPreferenceChanged = viewModel::setPreferCompressedDownloads,
-                )
             }
             if (!actionsBeforeGuidance) {
                 ConnectionActions(
@@ -302,7 +305,7 @@ internal object ConnectionUiLayoutPolicy {
         state != ConnectionState.IDLE || error != null || issue != null
 
     fun shouldShowTransferSizeSelector(state: ConnectionState): Boolean =
-        state == ConnectionState.PAIRED
+        false
 
     fun shouldShowPairedCameraSelector(
         state: ConnectionState,
@@ -314,6 +317,26 @@ internal object ConnectionUiLayoutPolicy {
         !issue.wifiSsid.isNullOrBlank() || !issue.wifiPassphrase.isNullOrBlank()
 }
 
+internal object ConnectionSupplementalActionsPolicy {
+    fun utilitySectionTitle(): String = "接入方式"
+
+    fun wiredAccessLabel(): String = "有线接入"
+
+    fun auxiliarySectionTitle(): String = "辅助工具"
+
+    fun diagnosticActionLabel(): String = "诊断日志"
+
+    fun disclaimerLabel(): String = "使用须知"
+
+    fun disclaimerText(): String = "免责声明：相机连接、Wi-Fi 切换和照片导入会根据设备状态执行。"
+
+    fun pairedActionsTopSpacingDp(): Int =
+        14
+
+    fun shouldShowStableUtilitySection(state: ConnectionState): Boolean =
+        true
+}
+
 enum class CameraIdentityRingState {
     Neutral,
     Connecting,
@@ -323,9 +346,11 @@ enum class CameraIdentityRingState {
 internal data class ConnectionCameraIdentityContent(
     val displayName: String,
     val modelName: String,
+    val seriesLabel: String,
     val avatarText: String,
     val detail: String,
     val statusLabel: String,
+    val statusDetail: String?,
     val ringState: CameraIdentityRingState,
 )
 
@@ -343,11 +368,13 @@ internal object ConnectionCameraIdentityPolicy {
         return ConnectionCameraIdentityContent(
             displayName = camera.localDisplayName?.takeIf { it.isNotBlank() } ?: modelName,
             modelName = modelName,
+            seriesLabel = seriesLabel(modelName),
             avatarText = avatarText(modelName),
             detail = camera.serialNumber.takeIf { it.isNotBlank() }
                 ?: camera.wifiConfigurations.firstOrNull()?.ssid
                 ?: camera.bluetoothAddress.orEmpty(),
             statusLabel = statusLabel(state, statusText, error, issue, ringState),
+            statusDetail = statusDetail(state, statusText, error, issue),
             ringState = ringState,
         )
     }
@@ -363,6 +390,14 @@ internal object ConnectionCameraIdentityPolicy {
         return cameraModel.takeIf { it.length in 2..6 } ?: normalized.take(6)
     }
 
+    private fun seriesLabel(modelName: String): String =
+        when {
+            modelName.contains("X", ignoreCase = true) -> "FUJIFILM X SERIES"
+            modelName.contains("GFX", ignoreCase = true) -> "FUJIFILM GFX SERIES"
+            modelName.isBlank() -> "CAMERA PROFILE"
+            else -> "FUJIFILM CAMERA"
+        }
+
     private fun ringState(
         state: ConnectionState,
         statusText: String,
@@ -371,13 +406,19 @@ internal object ConnectionCameraIdentityPolicy {
         when {
             state == ConnectionState.SCANNING ||
                 state == ConnectionState.CONNECTING_BLE ||
+                state == ConnectionState.CONNECTING_WIFI ||
+                state == ConnectionState.CONNECTING_PTP ||
                 activeStep == CameraConnectionStep.BleScan ||
                 activeStep == CameraConnectionStep.BleHandshake ||
                 activeStep == CameraConnectionStep.ReconnectPairedBle ||
-                activeStep == CameraConnectionStep.TransferAuthorization -> CameraIdentityRingState.Connecting
+                activeStep == CameraConnectionStep.TransferAuthorization ||
+                activeStep == CameraConnectionStep.ActivateCameraWifi ||
+                activeStep == CameraConnectionStep.WaitCameraWifiReady ||
+                activeStep == CameraConnectionStep.JoinCameraWifi ||
+                activeStep == CameraConnectionStep.ConnectPtp ||
+                activeStep == CameraConnectionStep.ConfirmGalleryMode ||
+                activeStep == CameraConnectionStep.LoadGallery -> CameraIdentityRingState.Connecting
             statusText.startsWith("相机在线") ||
-                state == ConnectionState.CONNECTING_WIFI ||
-                state == ConnectionState.CONNECTING_PTP ||
                 state == ConnectionState.CONNECTED -> CameraIdentityRingState.BleOnline
             else -> CameraIdentityRingState.Neutral
         }
@@ -398,6 +439,22 @@ internal object ConnectionCameraIdentityPolicy {
             state == ConnectionState.IDLE -> "准备配对"
             else -> connectionModeLabel(state)
         }
+
+    private fun statusDetail(
+        state: ConnectionState,
+        statusText: String,
+        error: String?,
+        issue: CameraConnectionIssue?,
+    ): String? {
+        issue?.detail?.takeIf { it.isNotBlank() }?.let { return it }
+        error?.takeIf { it.isNotBlank() }?.let { return it }
+        val normalizedStatus = statusText.trim()
+        if (normalizedStatus.isBlank()) return null
+        if (state == ConnectionState.IDLE) return null
+        if (state == ConnectionState.PAIRED && normalizedStatus.startsWith("已配对")) return null
+        if (state == ConnectionState.PAIRED && normalizedStatus.startsWith("相机在线")) return null
+        return normalizedStatus
+    }
 }
 
 @Composable
@@ -410,6 +467,7 @@ private fun CameraConnectionOverviewPanel(
     activeStep: CameraConnectionStep?,
     showLiveGuidance: Boolean,
     onRename: (String, String) -> Unit,
+    onRemove: () -> Unit,
 ) {
     val content = ConnectionCameraIdentityPolicy.content(
         camera = camera,
@@ -420,67 +478,143 @@ private fun CameraConnectionOverviewPanel(
         activeStep = activeStep,
     )
     var editing by remember(camera.cameraId) { mutableStateOf(false) }
+    var menuExpanded by remember(camera.cameraId) { mutableStateOf(false) }
     var draftName by remember(camera.cameraId, content.displayName) { mutableStateOf(content.displayName) }
     val accentColor = when {
-        issue != null || error != null -> Color(0xFFB6472D)
-        showLiveGuidance -> identityRingColor(content.ringState)
+        issue != null || error != null -> CamTransferColors.Red
+        content.ringState == CameraIdentityRingState.Neutral -> CamTransferColors.Accent
         else -> identityRingColor(content.ringState)
+    }
+    val borderWidth by animateDpAsState(
+        targetValue = if (content.ringState == CameraIdentityRingState.Connecting) 1.5.dp else 1.dp,
+        label = "camera-card-border-width",
+    )
+    val statusPanelDetail = content.statusDetail ?: when (content.ringState) {
+        CameraIdentityRingState.BleOnline -> "相机已经在线，可以启动 Wi-Fi 并进入相机相册。"
+        CameraIdentityRingState.Connecting -> "正在连接相机，请保持相机处于连接状态。"
+        CameraIdentityRingState.Neutral -> "已保存相机，可以点击进入相机相册开始连接。"
     }
 
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 108.dp),
-        shape = RoundedCornerShape(18.dp),
-        color = CamTransferColors.Card,
-        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.22f)),
+            .heightIn(min = 228.dp)
+            .shadow(
+                elevation = 8.dp,
+                shape = RoundedCornerShape(24.dp),
+                clip = false,
+                ambientColor = CamTransferColors.Ink.copy(alpha = 0.04f),
+                spotColor = CamTransferColors.Ink.copy(alpha = 0.03f),
+            ),
+        shape = RoundedCornerShape(24.dp),
+        color = Color(0xFFFAF4EA),
+        border = BorderStroke(borderWidth, CamTransferColors.Accent.copy(alpha = 0.16f)),
     ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        Column(
+            modifier = Modifier
+                .background(
+                    Brush.linearGradient(
+                        colors = listOf(
+                            Color(0xFFFFFBF3),
+                            Color(0xFFFBF5EA),
+                            Color(0xFFF6EFE2),
+                        ),
+                    ),
+                ),
         ) {
-            CameraIdentityAvatar(content)
-            Spacer(Modifier.width(14.dp))
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(7.dp),
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(46.dp)
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                Color.White.copy(alpha = 0.52f),
+                                CamTransferColors.AccentSoft.copy(alpha = 0.32f),
+                            ),
+                        ),
+                    )
+                    .padding(horizontal = 17.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    content.modelName,
-                    color = CamTransferColors.SecondaryInk,
-                    fontSize = 12.sp,
+                    "CAMERA PROFILE",
+                    color = CamTransferColors.SecondaryInk.copy(alpha = 0.78f),
+                    fontSize = 9.sp,
+                    lineHeight = 11.sp,
                     fontWeight = FontWeight.Black,
-                    maxLines = 1,
+                    letterSpacing = 1.4.sp,
                 )
+                CameraCardMenuButton(
+                    expanded = menuExpanded,
+                    onExpandedChange = { menuExpanded = it },
+                    onRename = {
+                        menuExpanded = false
+                        editing = true
+                    },
+                    onRemove = {
+                        menuExpanded = false
+                        onRemove()
+                    },
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(CamTransferColors.Accent.copy(alpha = 0.10f)),
+            )
+            Column(
+                modifier = Modifier.padding(horizontal = 17.dp, vertical = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(15.dp),
+            ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        content.displayName,
-                        color = CamTransferColors.Ink,
-                        fontSize = 22.sp,
-                        lineHeight = 26.sp,
-                        fontWeight = FontWeight.Black,
-                        maxLines = 1,
-                        modifier = Modifier.weight(1f, fill = false),
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    PencilEditButton(onClick = { editing = true })
+                    CameraIdentityAvatar(content)
+                    Spacer(Modifier.width(16.dp))
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = CamTransferColors.Ink.copy(alpha = 0.055f),
+                        ) {
+                            Text(
+                                content.seriesLabel,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                color = CamTransferColors.SecondaryInk,
+                                fontSize = 9.sp,
+                                lineHeight = 10.sp,
+                                fontWeight = FontWeight.Black,
+                                letterSpacing = 0.6.sp,
+                            )
+                        }
+                        Text(
+                            content.displayName,
+                            color = CamTransferColors.Ink,
+                            fontSize = 20.sp,
+                            lineHeight = 23.sp,
+                            fontWeight = FontWeight.Black,
+                            maxLines = 1,
+                        )
+                        Text(
+                            "已保存相机",
+                            color = CamTransferColors.SecondaryInk,
+                            fontSize = 12.sp,
+                            lineHeight = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
                 }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    StatusDot(color = accentColor)
-                    Spacer(Modifier.width(6.dp))
-                    Text(
-                        content.statusLabel,
-                        color = accentColor,
-                        fontSize = 13.sp,
-                        lineHeight = 17.sp,
-                        fontWeight = FontWeight.Black,
-                        maxLines = 1,
-                    )
-                }
+                CameraStatusPanel(
+                    label = content.statusLabel,
+                    detail = statusPanelDetail,
+                    color = accentColor,
+                    isError = issue != null || error != null,
+                )
             }
         }
     }
@@ -527,10 +661,83 @@ private fun StatusDot(color: Color) {
 }
 
 @Composable
+private fun CameraStatusChip(
+    label: String,
+    color: Color,
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = statusChipBackground(color),
+        border = BorderStroke(1.dp, color.copy(alpha = 0.18f)),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            StatusDot(color = color)
+            Spacer(Modifier.width(6.dp))
+            Text(
+                label,
+                color = color,
+                fontSize = 13.sp,
+                lineHeight = 16.sp,
+                fontWeight = FontWeight.Black,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+@Composable
+private fun CameraStatusPanel(
+    label: String,
+    detail: String,
+    color: Color,
+    isError: Boolean,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 84.dp),
+        shape = RoundedCornerShape(16.dp),
+        color = CamTransferColors.Card.copy(alpha = 0.72f),
+        border = BorderStroke(1.dp, CamTransferColors.Ink.copy(alpha = 0.08f)),
+    ) {
+        Column(
+            modifier = Modifier
+                .background(
+                    Brush.linearGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = 0.60f),
+                            CamTransferColors.Card.copy(alpha = 0.36f),
+                        ),
+                    ),
+                )
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            CameraStatusChip(label = label, color = color)
+            Text(
+                detail,
+                color = if (isError) CamTransferColors.Red else CamTransferColors.SecondaryInk,
+                fontSize = 12.sp,
+                lineHeight = 17.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+            )
+        }
+    }
+}
+
+@Composable
 private fun CameraIdentityAvatar(content: ConnectionCameraIdentityContent) {
-    val ringColor = identityRingColor(content.ringState)
+    val ringColor = if (content.ringState == CameraIdentityRingState.Connecting) {
+        identityRingColor(content.ringState)
+    } else {
+        CamTransferColors.Accent.copy(alpha = 0.24f)
+    }
     val ringWidth by animateDpAsState(
-        targetValue = if (content.ringState == CameraIdentityRingState.Neutral) 1.dp else 2.dp,
+        targetValue = if (content.ringState == CameraIdentityRingState.Connecting) 1.5.dp else 1.dp,
         label = "camera-avatar-ring-width",
     )
     val infiniteTransition = rememberInfiniteTransition(label = "camera-avatar-ring")
@@ -544,8 +751,8 @@ private fun CameraIdentityAvatar(content: ConnectionCameraIdentityContent) {
         label = "camera-avatar-ring-pulse-scale",
     )
     val pulseAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.18f,
-        targetValue = 0.42f,
+        initialValue = if (content.ringState == CameraIdentityRingState.Connecting) 0.18f else 0.08f,
+        targetValue = if (content.ringState == CameraIdentityRingState.Connecting) 0.42f else 0.22f,
         animationSpec = infiniteRepeatable(
             animation = tween(durationMillis = 900),
             repeatMode = RepeatMode.Reverse,
@@ -553,11 +760,11 @@ private fun CameraIdentityAvatar(content: ConnectionCameraIdentityContent) {
         label = "camera-avatar-ring-pulse-alpha",
     )
     Box(
-        modifier = Modifier.size(70.dp),
+        modifier = Modifier.size(66.dp),
         contentAlignment = Alignment.Center,
     ) {
         if (content.ringState == CameraIdentityRingState.Connecting) {
-            Canvas(modifier = Modifier.size(70.dp)) {
+            Canvas(modifier = Modifier.size(66.dp)) {
                 drawCircle(
                     color = ringColor.copy(alpha = pulseAlpha),
                     radius = size.minDimension * 0.5f * pulseScale,
@@ -565,25 +772,39 @@ private fun CameraIdentityAvatar(content: ConnectionCameraIdentityContent) {
                 )
             }
         }
-        Surface(
-            modifier = Modifier.size(62.dp),
-            shape = CircleShape,
-            color = CamTransferColors.WarmFill,
-            border = BorderStroke(ringWidth, ringColor),
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Text(
-                    content.avatarText,
-                    color = CamTransferColors.Ink,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Black,
-                    maxLines = 1,
+        Box(
+            modifier = Modifier
+                .size(58.dp)
+                .shadow(
+                    elevation = 5.dp,
+                    shape = CircleShape,
+                    clip = false,
+                    ambientColor = CamTransferColors.Accent.copy(alpha = 0.10f),
+                    spotColor = CamTransferColors.Ink.copy(alpha = 0.06f),
                 )
-            }
+                .clip(CircleShape)
+                .background(
+                    Brush.linearGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = 0.86f),
+                            CamTransferColors.AccentSoft.copy(alpha = 0.62f),
+                        ),
+                    ),
+                )
+                .border(ringWidth, ringColor, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                content.avatarText,
+                color = CamTransferColors.Ink,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Black,
+                maxLines = 1,
+            )
         }
         if (content.ringState == CameraIdentityRingState.Connecting) {
             CircularProgressIndicator(
-                modifier = Modifier.size(70.dp),
+                modifier = Modifier.size(66.dp),
                 strokeWidth = 2.dp,
                 color = ringColor,
             )
@@ -592,37 +813,51 @@ private fun CameraIdentityAvatar(content: ConnectionCameraIdentityContent) {
 }
 
 @Composable
-private fun PencilEditButton(onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .size(24.dp)
-            .clip(CircleShape)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Canvas(modifier = Modifier.size(14.dp)) {
-            val strokeWidth = 1.7.dp.toPx()
-            val color = CamTransferColors.SecondaryInk
-            drawLine(
-                color = color,
-                start = Offset(size.width * 0.26f, size.height * 0.74f),
-                end = Offset(size.width * 0.74f, size.height * 0.26f),
-                strokeWidth = strokeWidth,
-                cap = StrokeCap.Round,
+private fun CameraCardMenuButton(
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    onRename: () -> Unit,
+    onRemove: () -> Unit,
+) {
+    Box {
+        Surface(
+            modifier = Modifier
+                .size(30.dp)
+                .clip(CircleShape)
+                .clickable { onExpandedChange(true) },
+            shape = CircleShape,
+            color = CamTransferColors.Card.copy(alpha = 0.44f),
+            border = BorderStroke(1.dp, CamTransferColors.Ink.copy(alpha = 0.06f)),
+        ) {
+            Column(
+                modifier = Modifier.size(30.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                repeat(3) {
+                    Box(
+                        modifier = Modifier
+                            .size(3.5.dp)
+                            .clip(CircleShape)
+                            .background(CamTransferColors.SecondaryInk.copy(alpha = 0.68f)),
+                    )
+                    if (it < 2) {
+                        Spacer(Modifier.height(2.dp))
+                    }
+                }
+            }
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { onExpandedChange(false) },
+        ) {
+            DropdownMenuItem(
+                text = { Text("修改名称") },
+                onClick = onRename,
             )
-            drawLine(
-                color = color,
-                start = Offset(size.width * 0.62f, size.height * 0.18f),
-                end = Offset(size.width * 0.82f, size.height * 0.38f),
-                strokeWidth = strokeWidth,
-                cap = StrokeCap.Round,
-            )
-            drawLine(
-                color = color,
-                start = Offset(size.width * 0.22f, size.height * 0.82f),
-                end = Offset(size.width * 0.42f, size.height * 0.76f),
-                strokeWidth = strokeWidth,
-                cap = StrokeCap.Round,
+            DropdownMenuItem(
+                text = { Text("删除相机", color = Color(0xFFB6472D)) },
+                onClick = onRemove,
             )
         }
     }
@@ -632,7 +867,15 @@ private fun identityRingColor(state: CameraIdentityRingState): Color =
     when (state) {
         CameraIdentityRingState.Neutral -> CamTransferColors.Hairline
         CameraIdentityRingState.Connecting -> CamTransferColors.Accent
-        CameraIdentityRingState.BleOnline -> Color(0xFF2E6FBA)
+        CameraIdentityRingState.BleOnline -> CamTransferColors.Blue
+    }
+
+private fun statusChipBackground(color: Color): Color =
+    when (color) {
+        CamTransferColors.Blue -> CamTransferColors.BlueSoft
+        CamTransferColors.Accent -> CamTransferColors.AccentSoft
+        CamTransferColors.Red -> CamTransferColors.RedSoft
+        else -> color.copy(alpha = 0.10f)
     }
 
 @Composable
@@ -1245,6 +1488,7 @@ private fun ConnectionActions(
     state: ConnectionState,
     viewModel: ConnectionViewModel,
     issue: CameraConnectionIssue?,
+    showPairedPrimaryAction: Boolean = true,
     onOpenWiredImport: () -> Unit,
     onShareDiagnosticLog: () -> Unit,
     onShowDisclaimer: () -> Unit,
@@ -1261,14 +1505,6 @@ private fun ConnectionActions(
                     contentColor = CamTransferColors.Card,
                     onClick = { viewModel.connect() },
                 )
-                UtilityActionRow(
-                    leftLabel = "有线导入",
-                    onLeftClick = onOpenWiredImport,
-                    leftOutlined = true,
-                    rightLabel = "诊断日志",
-                    onRightClick = onShareDiagnosticLog,
-                )
-                SecondaryDarkAction(label = "使用须知与免责声明", onClick = onShowDisclaimer)
             }
             ConnectionState.ERROR -> {
                 PrimaryAction(
@@ -1285,57 +1521,46 @@ private fun ConnectionActions(
                 )
             }
             ConnectionState.WAITING_CAMERA_CONFIRMATION -> {
+                var confirmClicked by remember { mutableStateOf(false) }
                 PrimaryAction(
-                    label = "我已在相机上确认，继续",
+                    label = if (confirmClicked) "正在确认..." else "我已在相机上确认，继续",
                     containerColor = Color(0xFF2D7D46),
                     contentColor = CamTransferColors.Card,
-                    onClick = { viewModel.confirmCameraPairingSucceeded() },
+                    enabled = !confirmClicked,
+                    onClick = {
+                        confirmClicked = true
+                        viewModel.confirmCameraPairingSucceeded()
+                    },
                 )
-                UtilityActionRow(
-                    leftLabel = "取消连接",
-                    onLeftClick = { viewModel.disconnect() },
-                    rightLabel = "诊断日志",
-                    onRightClick = onShareDiagnosticLog,
-                )
-                SecondaryOutlinedAction(label = "有线导入", onClick = onOpenWiredImport)
+                if (!confirmClicked) {
+                    SecondaryDarkAction(label = "取消连接", onClick = { viewModel.disconnect() })
+                }
             }
             ConnectionState.PAIRED -> {
-                if (issue?.phase == CameraConnectionPhase.PAIR_CAMERA) {
-                    PrimaryAction(
-                        label = "继续处理配对问题",
-                        containerColor = CamTransferColors.Ink,
-                        contentColor = CamTransferColors.Card,
-                        onClick = { viewModel.retryCurrentIssue() },
-                    )
-                } else {
-                    val action = ConnectionPairedPrimaryActionPolicy.primaryAction(issue)
-                    PrimaryAction(
-                        label = ConnectionPairedPrimaryActionPolicy.primaryLabel(issue),
-                        containerColor = CamTransferColors.Accent,
-                        contentColor = CamTransferColors.Card,
-                        onClick = {
-                            when (action) {
-                                CameraConnectionAction.ResetConnection -> viewModel.resetConnectionForFreshPairing()
-                                CameraConnectionAction.RetryStep -> viewModel.retryCurrentIssue()
-                                else -> viewModel.enterCameraAlbum()
-                            }
-                        },
-                    )
+                if (showPairedPrimaryAction) {
+                    if (issue?.phase == CameraConnectionPhase.PAIR_CAMERA) {
+                        PrimaryAction(
+                            label = "继续处理配对问题",
+                            containerColor = CamTransferColors.Ink,
+                            contentColor = CamTransferColors.Card,
+                            onClick = { viewModel.retryCurrentIssue() },
+                        )
+                    } else {
+                        val action = ConnectionPairedPrimaryActionPolicy.primaryAction(issue)
+                        PrimaryAction(
+                            label = ConnectionPairedPrimaryActionPolicy.primaryLabel(issue),
+                            containerColor = CamTransferColors.Ink,
+                            contentColor = CamTransferColors.Card,
+                            onClick = {
+                                when (action) {
+                                    CameraConnectionAction.ResetConnection -> viewModel.resetConnectionForFreshPairing()
+                                    CameraConnectionAction.RetryStep -> viewModel.retryCurrentIssue()
+                                    else -> viewModel.enterCameraAlbum()
+                                }
+                            },
+                        )
+                    }
                 }
-                UtilityActionRow(
-                    leftLabel = "重新配对",
-                    onLeftClick = { viewModel.forgetPairing() },
-                    leftOutlined = true,
-                    rightLabel = "诊断日志",
-                    onRightClick = onShareDiagnosticLog,
-                )
-                UtilityActionRow(
-                    leftLabel = "断开",
-                    onLeftClick = { viewModel.disconnect() },
-                    leftOutlined = true,
-                    rightLabel = "有线导入",
-                    onRightClick = onOpenWiredImport,
-                )
             }
             else -> {
                 PrimaryAction(
@@ -1344,15 +1569,192 @@ private fun ConnectionActions(
                     contentColor = CamTransferColors.Card,
                     onClick = { viewModel.disconnect() },
                 )
-                UtilityActionRow(
-                    leftLabel = "有线导入",
-                    onLeftClick = onOpenWiredImport,
-                    leftOutlined = true,
-                    rightLabel = "诊断日志",
-                    onRightClick = onShareDiagnosticLog,
-                )
-                SecondaryDarkAction(label = "使用须知与免责声明", onClick = onShowDisclaimer)
             }
+        }
+        if (ConnectionSupplementalActionsPolicy.shouldShowStableUtilitySection(state)) {
+            ConnectionStableUtilitySection(
+                onShareDiagnosticLog = onShareDiagnosticLog,
+                onOpenWiredImport = onOpenWiredImport,
+                onShowDisclaimer = onShowDisclaimer,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ConnectionStableUtilitySection(
+    onShareDiagnosticLog: () -> Unit,
+    onOpenWiredImport: () -> Unit,
+    onShowDisclaimer: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = ConnectionSupplementalActionsPolicy.pairedActionsTopSpacingDp().dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(
+            ConnectionSupplementalActionsPolicy.utilitySectionTitle(),
+            color = CamTransferColors.Ink,
+            fontSize = 15.sp,
+            lineHeight = 18.sp,
+            fontWeight = FontWeight.Black,
+        )
+        WiredAccessCard(
+            label = ConnectionSupplementalActionsPolicy.wiredAccessLabel(),
+            onClick = onOpenWiredImport,
+        )
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            Text(
+                ConnectionSupplementalActionsPolicy.auxiliarySectionTitle(),
+                color = CamTransferColors.Ink,
+                fontSize = 15.sp,
+                lineHeight = 18.sp,
+                fontWeight = FontWeight.Black,
+            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                var diagnosticExporting by remember { mutableStateOf(false) }
+                if (diagnosticExporting) {
+                    LaunchedEffect(Unit) {
+                        delay(2000)
+                        diagnosticExporting = false
+                    }
+                }
+                AuxiliaryPillAction(
+                    label = if (diagnosticExporting) "导出中..." else ConnectionSupplementalActionsPolicy.diagnosticActionLabel(),
+                    onClick = {
+                        if (!diagnosticExporting) {
+                            diagnosticExporting = true
+                            onShareDiagnosticLog()
+                        }
+                    },
+                )
+                AuxiliaryPillAction(
+                    label = ConnectionSupplementalActionsPolicy.disclaimerLabel(),
+                    onClick = onShowDisclaimer,
+                )
+            }
+            Text(
+                ConnectionSupplementalActionsPolicy.disclaimerText(),
+                color = CamTransferColors.SecondaryInk.copy(alpha = 0.78f),
+                fontSize = 11.sp,
+                lineHeight = 16.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+    }
+}
+
+@Composable
+private fun WiredAccessCard(
+    label: String,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 66.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(18.dp),
+        color = CamTransferColors.Card.copy(alpha = 0.82f),
+        border = BorderStroke(1.dp, CamTransferColors.Ink.copy(alpha = 0.08f)),
+    ) {
+        Row(
+            modifier = Modifier
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = 0.74f),
+                            Color.White.copy(alpha = 0.44f),
+                        ),
+                    ),
+                )
+                .padding(horizontal = 15.dp, vertical = 13.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Surface(
+                modifier = Modifier.size(32.dp),
+                shape = RoundedCornerShape(12.dp),
+                color = CamTransferColors.Ink.copy(alpha = 0.055f),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text(
+                        "USB",
+                        color = CamTransferColors.SecondaryInk,
+                        fontSize = 9.sp,
+                        lineHeight = 10.sp,
+                        fontWeight = FontWeight.Black,
+                    )
+                }
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    label,
+                    color = CamTransferColors.Ink,
+                    fontSize = 14.sp,
+                    lineHeight = 17.sp,
+                    fontWeight = FontWeight.Black,
+                )
+                Text(
+                    "通过 USB 或读卡器导入照片",
+                    color = CamTransferColors.SecondaryInk,
+                    fontSize = 12.sp,
+                    lineHeight = 15.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun AuxiliaryPillAction(
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier
+            .height(38.dp)
+            .clip(RoundedCornerShape(19.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(19.dp),
+        color = CamTransferColors.Card.copy(alpha = 0.76f),
+        border = BorderStroke(1.dp, CamTransferColors.Ink.copy(alpha = 0.08f)),
+    ) {
+        Box(
+            modifier = Modifier
+                .height(38.dp)
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = 0.68f),
+                            Color.White.copy(alpha = 0.40f),
+                        ),
+                    ),
+                )
+                .padding(horizontal = 14.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                label,
+                color = CamTransferColors.Ink,
+                fontSize = 13.sp,
+                lineHeight = 16.sp,
+                fontWeight = FontWeight.Black,
+                maxLines = 1,
+            )
         }
     }
 }
@@ -1362,78 +1764,68 @@ private fun PrimaryAction(
     label: String,
     containerColor: Color,
     contentColor: Color,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
     val animatedContainerColor by animateColorAsState(
-        targetValue = containerColor,
+        targetValue = if (enabled) containerColor else containerColor.copy(alpha = 0.5f),
         label = "primary-action-container",
     )
     val animatedContentColor by animateColorAsState(
-        targetValue = contentColor,
+        targetValue = if (enabled) contentColor else contentColor.copy(alpha = 0.6f),
         label = "primary-action-content",
     )
-    Button(
-        onClick = onClick,
+    Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 54.dp),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = animatedContainerColor,
-            contentColor = animatedContentColor,
-        ),
-    ) {
-        Text(label, fontWeight = FontWeight.Bold)
-    }
-}
-
-@Composable
-private fun UtilityActionRow(
-    leftLabel: String,
-    onLeftClick: () -> Unit,
-    leftOutlined: Boolean = false,
-    rightLabel: String,
-    onRightClick: () -> Unit,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        if (leftOutlined) {
-            SecondaryOutlinedAction(
-                label = leftLabel,
-                onClick = onLeftClick,
-                modifier = Modifier.weight(1f),
+            .heightIn(min = 52.dp)
+            .shadow(
+                elevation = 7.dp,
+                shape = RoundedCornerShape(26.dp),
+                clip = false,
+                ambientColor = CamTransferColors.Ink.copy(alpha = 0.18f),
+                spotColor = CamTransferColors.Ink.copy(alpha = 0.16f),
             )
-        } else {
-            SecondaryDarkAction(
-                label = leftLabel,
-                onClick = onLeftClick,
-                modifier = Modifier.weight(1f),
+            .clip(RoundedCornerShape(26.dp))
+            .clickable(enabled = enabled, onClick = onClick),
+        shape = RoundedCornerShape(26.dp),
+        color = animatedContainerColor,
+        border = BorderStroke(1.dp, CamTransferColors.Ink.copy(alpha = 0.12f)),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 52.dp)
+                .background(primaryActionBrush(animatedContainerColor)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                label,
+                color = animatedContentColor,
+                fontSize = 14.sp,
+                lineHeight = 17.sp,
+                fontWeight = FontWeight.Black,
             )
         }
-        SecondaryDarkAction(
-            label = rightLabel,
-            onClick = onRightClick,
-            modifier = Modifier.weight(1f),
-        )
     }
 }
 
-@Composable
-private fun SecondaryOutlinedAction(
-    label: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier.fillMaxWidth(),
-) {
-    OutlinedButton(
-        onClick = onClick,
-        modifier = modifier.heightIn(min = 46.dp),
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = CamTransferColors.Ink),
-        border = BorderStroke(1.dp, CamTransferColors.Hairline),
-    ) {
-        Text(label, fontWeight = FontWeight.Bold)
+private fun primaryActionBrush(containerColor: Color): Brush =
+    if (containerColor == CamTransferColors.Ink) {
+        Brush.verticalGradient(
+            colors = listOf(
+                Color(0xFF2B2925),
+                CamTransferColors.Ink,
+            ),
+        )
+    } else {
+        Brush.verticalGradient(
+            colors = listOf(
+                containerColor.copy(alpha = 0.92f),
+                containerColor,
+            ),
+        )
     }
-}
 
 @Composable
 private fun SecondaryDarkAction(

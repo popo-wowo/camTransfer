@@ -13,6 +13,7 @@ import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -84,8 +85,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -200,6 +202,13 @@ internal fun GalleryGridItem(
             )
         }
 
+        GalleryTileBadgePolicy.formatLabel(file)?.let { label ->
+            FormatLetters(
+                label = label,
+                modifier = Modifier.align(Alignment.BottomEnd),
+            )
+        }
+
         DownloadStateBadge(downloadState, modifier = Modifier.align(Alignment.TopEnd))
     }
 }
@@ -245,27 +254,91 @@ private fun SelectionDot(isSelected: Boolean, modifier: Modifier = Modifier) {
 
 @Composable
 private fun DownloadStateBadge(state: TransferState?, modifier: Modifier = Modifier) {
-    when (state) {
-        TransferState.PENDING -> SmallBadge("排队", modifier)
-        TransferState.DOWNLOADING, TransferState.SAVING -> {
+    when (GalleryTileBadgePolicy.downloadBadge(state)) {
+        GalleryTileDownloadBadge.PendingText -> SmallBadge("排队", modifier)
+        GalleryTileDownloadBadge.Progress -> {
             Box(
                 modifier = modifier
                     .padding(7.dp)
-                    .size(28.dp)
+                    .size(22.dp)
                     .clip(CircleShape)
                     .background(Color.Black.copy(alpha = 0.42f)),
                 contentAlignment = Alignment.Center,
             ) {
                 CircularProgressIndicator(
-                    modifier = Modifier.size(16.dp),
-                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(12.dp),
+                    strokeWidth = 1.7.dp,
                     color = Color.White,
                 )
             }
         }
-        TransferState.DONE -> SmallBadge("已保存", modifier)
-        TransferState.ERROR -> SmallBadge("失败", modifier, background = MaterialTheme.colorScheme.error)
+        GalleryTileDownloadBadge.DownloadedIcon -> DownloadedIconBadge(modifier)
+        GalleryTileDownloadBadge.ErrorText -> SmallBadge("失败", modifier, background = MaterialTheme.colorScheme.error)
         null -> Unit
+    }
+}
+
+@Composable
+private fun FormatLetters(label: String, modifier: Modifier = Modifier) {
+    Text(
+        text = label,
+        modifier = modifier.padding(end = 5.dp, bottom = 4.dp),
+        color = Color.White.copy(alpha = 0.9f),
+        fontSize = 7.sp,
+        fontWeight = FontWeight.Black,
+        maxLines = 1,
+        style = TextStyle(
+            shadow = Shadow(
+                color = Color.Black.copy(alpha = 0.72f),
+                offset = Offset(0f, 1f),
+                blurRadius = 2f,
+            )
+        ),
+    )
+}
+
+@Composable
+private fun DownloadedIconBadge(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .padding(7.dp)
+            .size(18.dp)
+            .semantics { contentDescription = "已下载" }
+            .clip(CircleShape)
+            .background(Color.Black.copy(alpha = 0.42f)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Canvas(modifier = Modifier.size(10.dp)) {
+            val stroke = 1.4.dp.toPx()
+            drawLine(
+                color = Color.White,
+                start = Offset(size.width * 0.5f, size.height * 0.12f),
+                end = Offset(size.width * 0.5f, size.height * 0.64f),
+                strokeWidth = stroke,
+                cap = StrokeCap.Round,
+            )
+            drawLine(
+                color = Color.White,
+                start = Offset(size.width * 0.22f, size.height * 0.42f),
+                end = Offset(size.width * 0.5f, size.height * 0.7f),
+                strokeWidth = stroke,
+                cap = StrokeCap.Round,
+            )
+            drawLine(
+                color = Color.White,
+                start = Offset(size.width * 0.78f, size.height * 0.42f),
+                end = Offset(size.width * 0.5f, size.height * 0.7f),
+                strokeWidth = stroke,
+                cap = StrokeCap.Round,
+            )
+            drawLine(
+                color = Color.White,
+                start = Offset(size.width * 0.22f, size.height * 0.88f),
+                end = Offset(size.width * 0.78f, size.height * 0.88f),
+                strokeWidth = stroke,
+                cap = StrokeCap.Round,
+            )
+        }
     }
 }
 
@@ -294,15 +367,6 @@ private fun PlaceholderBox(file: CameraFile) {
     Box(
         Modifier
             .fillMaxSize()
-            .background(Color(0xFFEDEBE5)),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            file.info.formatLabel,
-            style = MaterialTheme.typography.bodySmall,
-            color = CamTransferColors.SecondaryInk,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
+            .background(Color(0xFFEDEBE5))
+    )
 }

@@ -24,7 +24,9 @@ data class ObjectInfo(
         filename.endsWith(".HEIC", ignoreCase = true) ||
         filename.endsWith(".HIF", ignoreCase = true)
     val isRaw: Boolean get() = format == PtpObjectFormat.CAMERA_VENDOR_RAF ||
-        format == PtpObjectFormat.CAMERA_VENDOR_RAF_ALT
+        format == PtpObjectFormat.CAMERA_VENDOR_RAF_ALT ||
+        filename.endsWith(".RAF", ignoreCase = true) ||
+        filename.endsWith(".RAW", ignoreCase = true)
     val isVideo: Boolean get() = format == PtpObjectFormat.MOV || format == PtpObjectFormat.MP4
     val isFolder: Boolean get() = format == PtpObjectFormat.ASSOCIATION
 

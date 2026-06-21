@@ -5,9 +5,168 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 object CameraVendorPtpDataParser {
+    fun searchModeSnapshot(data: ByteArray): String {
+        val exact = parseSearchModes(data)
+        if (exact.isNotEmpty()) return exact.joinToString(prefix = "[", postfix = "]") {
+            "0x%04X/type=%d/value=%d/layout=%s".format(
+                it.propertyCode,
+                it.dataType,
+                it.value.toLong() and 0xFFFFFFFFL,
+                it.layout,
+            )
+        }
+        val d604Offsets = mutableListOf<String>()
+        for (offset in 0..data.size - 2) {
+            if (uint16(data, offset) == CameraVendorSearchMode.OBJECT_FORMAT_PROPERTY) {
+                val nearby = data.copyOfRange(offset, (offset + 20).coerceAtMost(data.size)).joinToString("") {
+                    "%02x".format(it)
+                }
+                d604Offsets += "$offset:$nearby"
+            }
+        }
+        return if (d604Offsets.isEmpty()) "[]" else "d604Offsets=${d604Offsets.joinToString("|")}"
+    }
+
+    fun searchModeWithObjectFormat(data: ByteArray, formatMask: Int): ByteArray? {
+        val entry = parseSearchModes(data)
+            .firstOrNull { it.propertyCode == CameraVendorSearchMode.OBJECT_FORMAT_PROPERTY }
+            ?: return null
+        val copy = data.copyOf()
+        writeUInt32(copy, entry.valueOffset, formatMask)
+        return copy
+    }
+
+    private fun parseSearchModes(data: ByteArray): List<SearchModeEntry> {
+        if (data.size < 4) return emptyList()
+        val count = uint32(data, 0)
+        if (count !in 0..32) return emptyList()
+        return parseSearchModesWithStride(
+            data = data,
+            count = count,
+            stride = 8,
+            layout = "valueFirst8",
+            dataTypeOffset = 6,
+            propertyCodeOffset = 4,
+            valueOffset = 0,
+            allowZeroDataType = true,
+        ).ifEmpty {
+            parseSearchModesWithStride(
+                data = data,
+                count = count,
+                stride = 18,
+                layout = "native18",
+                dataTypeOffset = 0,
+                propertyCodeOffset = 2,
+                valueOffset = 4,
+                allowZeroDataType = false,
+            )
+        }.ifEmpty {
+            parseSearchModesWithStride(
+                data = data,
+                count = count,
+                stride = 18,
+                layout = "native18-swapped",
+                dataTypeOffset = 2,
+                propertyCodeOffset = 0,
+                valueOffset = 4,
+                allowZeroDataType = false,
+            )
+        }.ifEmpty {
+            parseSearchModesWithStride(
+                data = data,
+                count = count,
+                stride = 8,
+                layout = "legacy8",
+                dataTypeOffset = 2,
+                propertyCodeOffset = 0,
+                valueOffset = 4,
+                allowZeroDataType = false,
+            )
+        }.ifEmpty {
+            parseSearchModesByPropertyScan(data, count)
+        }
+    }
+
+    private fun parseSearchModesByPropertyScan(data: ByteArray, count: Int): List<SearchModeEntry> {
+        if (count == 0) return emptyList()
+        val result = mutableListOf<SearchModeEntry>()
+        for (propertyOffset in 4..data.size - 4) {
+            val propertyCode = uint16(data, propertyOffset)
+            if (!isPlausibleSearchModeProperty(propertyCode)) continue
+            val valueOffset = propertyOffset - 4
+            if (valueOffset < 4) continue
+            val dataType = uint16(data, propertyOffset + 2)
+            if (!isPlausibleSearchModeDataType(dataType, allowZero = true)) continue
+            val value = uint32(data, valueOffset)
+            if (!isPlausibleSearchModeValue(value)) continue
+            result += SearchModeEntry(
+                propertyCode = propertyCode,
+                dataType = dataType,
+                value = value,
+                valueOffset = valueOffset,
+                layout = "propertyScan",
+            )
+        }
+        return result.takeIf { it.size == count }.orEmpty()
+    }
+
+    private fun parseSearchModesWithStride(
+        data: ByteArray,
+        count: Int,
+        stride: Int,
+        layout: String,
+        dataTypeOffset: Int,
+        propertyCodeOffset: Int,
+        valueOffset: Int,
+        allowZeroDataType: Boolean,
+    ): List<SearchModeEntry> {
+        if (count == 0) return emptyList()
+        if (data.size < 4 + count * stride) return emptyList()
+        val result = mutableListOf<SearchModeEntry>()
+        var offset = 4
+        repeat(count) {
+            val propertyCode = uint16(data, offset + propertyCodeOffset)
+            val dataType = uint16(data, offset + dataTypeOffset)
+            val value = uint32(data, offset + valueOffset)
+            if (
+                !isPlausibleSearchModeProperty(propertyCode) ||
+                !isPlausibleSearchModeDataType(dataType, allowZeroDataType)
+            ) {
+                return emptyList()
+            }
+            result += SearchModeEntry(
+                propertyCode = propertyCode,
+                dataType = dataType,
+                value = value,
+                valueOffset = offset + valueOffset,
+                layout = layout,
+            )
+            offset += stride
+        }
+        return result
+    }
+
+    private fun isPlausibleSearchModeProperty(value: Int): Boolean =
+        value in 0xD600..0xD6FF
+
+    private fun isPlausibleSearchModeDataType(value: Int, allowZero: Boolean): Boolean =
+        value in 1..4 || (allowZero && value == 0)
+
+    private fun isPlausibleSearchModeValue(value: Int): Boolean =
+        value in 0..0xFFFF
+
+    private data class SearchModeEntry(
+        val propertyCode: Int,
+        val dataType: Int,
+        val value: Int,
+        val valueOffset: Int,
+        val layout: String,
+    )
+
     fun objectCountsByDate(data: ByteArray): List<CameraVendorObjectCountByDate> {
         if (data.isEmpty()) return emptyList()
-        return parseCountPrefixedPtpStringDateCounts(data)
+        return parseCountPrefixedSizedPtpStringDateCounts(data)
+            .ifEmpty { parseCountPrefixedPtpStringDateCounts(data) }
             .ifEmpty { parseCountPrefixedAsciiDateCounts(data) }
     }
 
@@ -182,6 +341,10 @@ object CameraVendorPtpDataParser {
     private fun uint32(data: ByteArray, offset: Int): Int =
         ByteBuffer.wrap(data, offset, 4).order(ByteOrder.LITTLE_ENDIAN).int
 
+    private fun writeUInt32(data: ByteArray, offset: Int, value: Int) {
+        ByteBuffer.wrap(data, offset, 4).order(ByteOrder.LITTLE_ENDIAN).putInt(value)
+    }
+
     private fun parseCountPrefixedPtpStringDateCounts(data: ByteArray): List<CameraVendorObjectCountByDate> {
         if (data.size < 4) return emptyList()
         val count = uint32(data, 0)
@@ -197,6 +360,30 @@ object CameraVendorPtpDataParser {
             if (!isPlausibleImageCount(numberOfImages)) return emptyList()
             offset += 4
             result += CameraVendorObjectCountByDate(normalizedDate, numberOfImages)
+        }
+        return result
+    }
+
+    private fun parseCountPrefixedSizedPtpStringDateCounts(data: ByteArray): List<CameraVendorObjectCountByDate> {
+        if (data.size < 8) return emptyList()
+        val count = uint32(data, 0)
+        if (!isPlausibleDateGroupCount(count)) return emptyList()
+        val result = mutableListOf<CameraVendorObjectCountByDate>()
+        var offset = 4
+        repeat(count) {
+            if (offset + 4 > data.size) return emptyList()
+            val recordLength = uint32(data, offset)
+            if (recordLength < 9 || offset + recordLength > data.size) return emptyList()
+            val recordEnd = offset + recordLength
+            val dateOffset = offset + 4
+            val rawDate = ptpString(data, dateOffset)
+            val normalizedDate = normalizedDateValue(rawDate) ?: return emptyList()
+            val countOffset = dateOffset + ptpStringByteLength(data, dateOffset)
+            if (countOffset + 4 > recordEnd) return emptyList()
+            val numberOfImages = uint32(data, countOffset)
+            if (!isPlausibleImageCount(numberOfImages)) return emptyList()
+            result += CameraVendorObjectCountByDate(normalizedDate, numberOfImages)
+            offset = recordEnd
         }
         return result
     }

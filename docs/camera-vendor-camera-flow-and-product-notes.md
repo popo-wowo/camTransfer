@@ -227,6 +227,46 @@ D620 读取 SpecifiedObjectCount
 D621 读取 SpecifiedObjectHandles
 ```
 
+### 官方日期分组与格式数量逻辑（2026-06-20）
+
+已确认的官方 App 线索：
+
+- Android 官方包 `ControlFFIR.java` 暴露了 `getSearchModeDescAll`、`getSpecifiedObjectCountGroupByDate`、`getSpecifiedObjectCount`、`getSpecifiedObjectHandles`、`getSearchModeAll`、`setSearchModeAll`。
+- `CameraConnectWrapper.java` 的 WLAN 路径 `getSpecifiedObjectCount(timeout)` 没有格式参数；USB/XSDK 路径 `getSpecifiedObjectCountForXSDK(lObjectFormatCode)` 才有格式参数。
+- `ObjectCountByDate` 只有 `dateValue1` 和 `numberOfImages`；`ImportImageModel` 会用 `ObjectCountByDate.numberOfImages` 去切分后续 handle 列表，先形成日期 section，再逐步补缩略图和对象信息。
+- `FilterItem` 存 `initialNumberOfImages` / `numberOfImages`；筛选 ViewModel 会围绕 SearchMode 读图像数量。格式筛选的 property code 在官方 UI 中是 `54788`。
+- iPhone 官方抓包里能看到 `0x9050 GetSearchModeDescAll` 和 `0x9053 GetSpecifiedObjectCountGroupByDate`，未在该样本中看到 `0x9051/0x9052`，所以不能仅凭该 pcap 证明生产链路会设置 SearchMode。
+
+当前结论：
+
+1. 日期分组不要等所有 `ObjectInfo`。相机已经通过 `0x9053` 返回“每个日期多少张”，我们应继续用这个结果把 `D621` handle 列表按数量切开，首屏占位图出来时就能显示日期 section。
+2. HEIF/RAW 数量现在没有，不是相机一定没有，而是我们的筛选数量来自本地 `CameraFile` 元数据。首屏占位图格式是 `UNDEFINED`，完整 `ObjectInfo` 没补齐前无法本地统计 HEIF/RAW。之前把未知格式假装成 JPG 会让 JPG 数量虚高；现在不再伪造，所以 HEIF/RAW 数量缺口暴露出来。
+3. 官方 WLAN 侧更可能是“设置/读取 SearchMode -> 调用 `getSpecifiedObjectCount` 让相机返回数量”，而不是把所有对象信息拉到本地后统计。也就是说，格式数量应该优先走相机侧权威 count。
+4. 不能直接恢复生产路径的 `0x9051 SetSearchModeAll`。旧文档已经明确正式路径中不要清空或改写 SearchModeAll，除非有真机日志证明 payload 和恢复流程完全正确。
+
+当前实现策略：
+
+- UI 统计策略先支持“相机侧权威格式数量”入口；拿不到时继续按本地 `ObjectInfo` 统计。
+- 调试版在 `0x9050` 后额外记录 `0x9052 GetSearchModeAll` 的原始长度和头部 hex，用来反推官方 SearchMode payload。
+- 暂不发送 `0x9051 SetSearchModeAll`。后续只有在日志确认格式 property `54788` 的 payload 写法，并且能在 `finally` 中恢复原始 SearchModeAll 时，才启用按 JPG/HEIF/RAW/Video 分别读取 `D620` 的格式数量。
+- 即使相机侧格式数量暂不可用，后台补齐 `ObjectInfo` 后也必须继续更新本地 HEIF/RAW 标签和筛选行为，不能把未知格式合并进 JPG。
+
+2026-06-21 官方 Android 反编译复核：
+
+- `ImportImageModel.applyFilterConditions()` 不是修改 `GetSearchModeAll` 返回 blob 里的单个 `D604` 值。它会重新创建 `SearchModeAllInfo`，按当前已选日期、文件夹、评分、格式、主体条件追加 `SearchModeStr` / `SearchModeLong`。
+- 格式筛选 `D604` 使用 bitmask 合并选择项：JPG=`1`、HEIF=`2`、MOV=`4`、MP4=`8`、RAW=`16`。例如同时选 RAW/HEIF 时应把值合成 `18`，不是逐个格式覆盖全局状态。
+- `getFiltersLoadThumbImg(searchModeAllInfo)` 先调用 `setSearchModeAll(searchModeAllInfo)`，随后调用 repository 的 `createImageHandlesByDate()`，也就是重新读取日期分组和 handles，再加载缩略图/对象信息。
+- `FilteringConditionsModel.getImageNum()` 为筛选面板数量逐个构造临时 `SearchMode`，读取 `getSpecifiedObjectCount()` 后恢复原 SearchMode。这个流程用于数量刷新，不等同于图库首屏加载。
+- 因此，未证明的实现禁止在主链路中发送手写 raw `9051` payload。实机日志已经证明“只改当前 `9052` blob 的 `D604` 值再读 `D621`”会让 HEIF/RAW/MOV/MP4 返回同一组 handles，污染格式筛选。
+- 当前 Android 正式路径恢复为 `9050 -> 9053 -> D620 -> D621`；占位对象格式必须保持 `UNDEFINED`；完整元数据结束后只允许用 bounded hidden handle gap 探测 HEIF/RAW。
+
+2026-06-21 Android 修正：
+
+- 快速占位对象的格式必须是 `UNDEFINED`，不能把未知对象伪装成 `JPEG`。否则首屏和后台补齐期间 JPG 数量会持续虚高，HEIF/RAW 会显示为 0。
+- 大图库首屏仍然不能做 hidden probe，避免拖慢官方式 `9053 + D621` 首屏加载。
+- 完整 `ObjectInfo` 后台补齐完成后，可以对已知 handle 的小缺口做有上限的 hidden probe，只选择 HEIF/RAW 合并进图库。这个阶段不改连接、缩略图、下载和 `SearchModeAll` 主链路。
+- hidden probe 必须有候选数上限；缺口太多时直接跳过，并通过诊断日志记录 `Gallery hidden metadata ...`，避免给相机施压。
+
 明确禁止：
 
 ```text

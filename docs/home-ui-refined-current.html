@@ -1,0 +1,888 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CamTransfer 精修首页</title>
+  <style>
+    :root {
+      --bg: #f4f1ea;
+      --paper: #fffdf8;
+      --card: #ffffff;
+      --ink: #151515;
+      --muted: #706b62;
+      --soft: #ebe5d9;
+      --panel: #f8f3e8;
+      --line: rgba(21, 21, 21, .11);
+      --line-strong: rgba(21, 21, 21, .2);
+      --gold: #a27d46;
+      --gold-soft: #f0e4d0;
+      --blue: #2d6fba;
+      --blue-soft: #e6f0fb;
+      --green: #2f7d4d;
+      --red: #b84632;
+      --red-soft: #f8e6e0;
+      --shadow: 0 26px 80px rgba(53, 43, 29, .14);
+      --card-shadow: 0 28px 72px rgba(55, 43, 28, .16), 0 2px 0 rgba(255,255,255,.88) inset;
+      --button-shadow: 0 20px 42px rgba(21,21,21,.24), inset 0 1px rgba(255,255,255,.18);
+      --radius-xl: 28px;
+      --radius-lg: 22px;
+      --radius-md: 16px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background:
+        linear-gradient(135deg, rgba(162, 125, 70, .12), transparent 36%),
+        linear-gradient(315deg, rgba(45, 111, 186, .1), transparent 34%),
+        var(--bg);
+    }
+
+    button {
+      font: inherit;
+      touch-action: manipulation;
+    }
+
+    .page {
+      min-height: 100vh;
+      padding: 36px 20px 48px;
+      display: grid;
+      grid-template-columns: minmax(280px, 470px) minmax(320px, 430px);
+      gap: 44px;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .brief {
+      max-width: 470px;
+    }
+
+    .eyebrow {
+      margin: 0 0 12px;
+      color: var(--gold);
+      font-size: 12px;
+      font-weight: 950;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(38px, 5vw, 62px);
+      line-height: .94;
+      letter-spacing: 0;
+    }
+
+    .brief-text {
+      margin: 18px 0 26px;
+      color: var(--muted);
+      font-size: 16px;
+      line-height: 1.8;
+      font-weight: 650;
+    }
+
+    .principles {
+      display: grid;
+      gap: 10px;
+    }
+
+    .principle {
+      min-height: 54px;
+      padding: 14px 16px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, .56);
+      box-shadow: 0 14px 38px rgba(53, 43, 29, .07);
+    }
+
+    .principle strong {
+      display: block;
+      font-size: 13px;
+      line-height: 1.2;
+    }
+
+    .principle span {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+      font-weight: 650;
+    }
+
+    .state-switcher {
+      margin-top: 22px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 9px;
+    }
+
+    .state-button {
+      min-height: 44px;
+      padding: 0 16px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--ink);
+      background: rgba(255, 255, 255, .7);
+      font-size: 13px;
+      font-weight: 850;
+      cursor: pointer;
+    }
+
+    .state-button.active {
+      color: #fff;
+      background: var(--ink);
+      border-color: var(--ink);
+    }
+
+    .phone-shell {
+      width: min(100%, 410px);
+      padding: 11px;
+      border-radius: 38px;
+      background: #111;
+      box-shadow: var(--shadow), 0 0 0 1px rgba(255,255,255,.22) inset;
+    }
+
+    .phone {
+      height: 812px;
+      overflow: hidden;
+      border-radius: 29px;
+      background: var(--bg);
+    }
+
+    .screen {
+      height: 100%;
+      padding: 24px 22px 18px;
+      overflow: auto;
+      overscroll-behavior: contain;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.48), transparent 38%),
+        radial-gradient(circle at 50% -12%, rgba(162,125,70,.22), transparent 34%),
+        repeating-linear-gradient(90deg, rgba(89,70,44,.025) 0 1px, transparent 1px 9px),
+        var(--bg);
+      scrollbar-width: none;
+    }
+
+    .screen::-webkit-scrollbar {
+      display: none;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 18px;
+    }
+
+    .brand {
+      color: var(--gold);
+      font-size: 10px;
+      font-weight: 950;
+      letter-spacing: .2em;
+    }
+
+    .mode {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .title {
+      margin: 0 0 22px;
+      font-size: 34px;
+      line-height: 1;
+      letter-spacing: 0;
+      font-weight: 950;
+    }
+
+    .camera-card {
+      position: relative;
+      overflow: hidden;
+      padding: 0;
+      border: 1px solid rgba(101, 77, 42, .18);
+      border-radius: 31px;
+      background:
+        linear-gradient(145deg, rgba(255,255,255,.82), rgba(255,250,241,.76)),
+        var(--paper);
+      box-shadow: var(--card-shadow);
+    }
+
+    .camera-card::before {
+      content: "";
+      position: absolute;
+      inset: auto 0 0;
+      height: 108px;
+      background:
+        linear-gradient(180deg, transparent, rgba(162,125,70,.08)),
+        repeating-linear-gradient(90deg, rgba(21,21,21,.032) 0 1px, transparent 1px 8px);
+      opacity: .58;
+      pointer-events: none;
+    }
+
+    .camera-card::after {
+      content: "";
+      position: absolute;
+      inset: 1px;
+      border-radius: 30px;
+      background:
+        linear-gradient(135deg, rgba(255,255,255,.66), transparent 42%),
+        radial-gradient(circle at 18% 24%, rgba(162,125,70,.12), transparent 28%);
+      pointer-events: none;
+    }
+
+    .card-plate {
+      position: relative;
+      z-index: 2;
+      min-height: 46px;
+      padding: 0 20px;
+      border-bottom: 1px solid rgba(101, 77, 42, .11);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: rgba(21,21,21,.58);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.7), rgba(248,243,232,.55));
+      font-size: 9px;
+      font-weight: 950;
+      letter-spacing: .12em;
+    }
+
+    .camera-content {
+      position: relative;
+      z-index: 2;
+      padding: 20px;
+    }
+
+    .camera-row {
+      display: grid;
+      grid-template-columns: 76px minmax(0, 1fr);
+      gap: 16px;
+      align-items: center;
+    }
+
+    .lens-avatar {
+      position: relative;
+      width: 76px;
+      height: 76px;
+      flex: 0 0 auto;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 35% 28%, rgba(255,255,255,.9), transparent 22%),
+        linear-gradient(145deg, rgba(255,255,255,.76), rgba(242,230,208,.78)),
+        #f7efe1;
+      border: 1px solid rgba(162,125,70,.18);
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.72),
+        inset 0 -10px 22px rgba(162,125,70,.08),
+        0 14px 30px rgba(53,43,29,.13);
+    }
+
+    .lens-avatar::after {
+      content: "X-T5";
+      position: absolute;
+      inset: 50% auto auto 50%;
+      transform: translateX(-50%);
+      min-width: 0;
+      padding: 0;
+      border-radius: 0;
+      color: var(--ink);
+      background: transparent;
+      border: 0;
+      font-size: 15px;
+      font-weight: 950;
+      text-align: center;
+      box-shadow: none;
+    }
+
+    .camera-main {
+      min-width: 0;
+      flex: 1;
+    }
+
+    .model-mark {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      margin-bottom: 7px;
+      padding: 0 8px;
+      border-radius: 999px;
+      color: rgba(21,21,21,.58);
+      background: rgba(21,21,21,.045);
+      font-size: 10px;
+      font-weight: 950;
+      letter-spacing: .08em;
+    }
+
+    .name-line {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .camera-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 24px;
+      line-height: 1.04;
+      font-weight: 950;
+    }
+
+    .edit {
+      width: 28px;
+      height: 28px;
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: rgba(255,255,255,.72);
+    }
+
+    .edit svg {
+      width: 13px;
+      height: 13px;
+      stroke: var(--muted);
+      stroke-width: 2.2;
+      fill: none;
+    }
+
+    .camera-actions {
+      position: relative;
+      top: auto;
+      right: auto;
+      z-index: 2;
+    }
+
+    .camera-menu {
+      min-width: 58px;
+      min-height: 30px;
+      border: 1px solid rgba(21,21,21,.08);
+      border-radius: 999px;
+      color: rgba(21,21,21,.74);
+      background: rgba(255,255,255,.6);
+      box-shadow: 0 10px 26px rgba(53,43,29,.08), inset 0 1px rgba(255,255,255,.6);
+      font-size: 11px;
+      font-weight: 900;
+      cursor: pointer;
+    }
+
+    .camera-menu-popover {
+      position: absolute;
+      top: 34px;
+      right: 0;
+      width: 132px;
+      padding: 7px;
+      border: 1px solid rgba(21,21,21,.08);
+      border-radius: 16px;
+      background: rgba(255,253,248,.92);
+      box-shadow: 0 18px 42px rgba(53,43,29,.14);
+      opacity: 0;
+      transform: translateY(-4px);
+      pointer-events: none;
+      transition: opacity .18s ease, transform .18s ease;
+    }
+
+    .camera-actions:hover .camera-menu-popover,
+    .camera-actions.open .camera-menu-popover {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+
+    .menu-item {
+      width: 100%;
+      min-height: 36px;
+      border: 0;
+      border-radius: 11px;
+      color: rgba(21,21,21,.78);
+      background: transparent;
+      text-align: left;
+      padding: 0 10px;
+      font-size: 12px;
+      font-weight: 850;
+    }
+
+    .menu-item.danger {
+      color: var(--red);
+      background: rgba(184,70,50,.06);
+    }
+
+    .serial {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.3;
+      font-weight: 750;
+    }
+
+    .status-panel {
+      margin-top: 18px;
+      padding: 14px 15px;
+      border: 1px solid rgba(21,21,21,.07);
+      border-radius: 20px;
+      background:
+        linear-gradient(135deg, rgba(255,255,255,.74), rgba(255,253,248,.42)),
+        rgba(255,255,255,.58);
+      box-shadow: inset 0 1px rgba(255,255,255,.72);
+    }
+
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 31px;
+      margin-top: 0;
+      padding: 0 11px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 900;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .status-detail {
+      margin: 10px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+      font-weight: 700;
+    }
+
+    .state-online .status-chip {
+      color: var(--blue);
+      background: var(--blue-soft);
+      border: 1px solid rgba(45, 111, 186, .18);
+    }
+
+    .state-connecting .status-chip {
+      color: var(--gold);
+      background: var(--gold-soft);
+      border: 1px solid rgba(162, 125, 70, .22);
+    }
+
+    .state-error .status-chip {
+      color: var(--red);
+      background: var(--red-soft);
+      border: 1px solid rgba(184, 70, 50, .2);
+    }
+
+    .state-connecting .lens-avatar {
+      animation: pulse 1.3s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(162,125,70,.22), 0 12px 28px rgba(21,21,21,.16); }
+      50% { box-shadow: 0 0 0 9px rgba(162,125,70,.08), 0 16px 34px rgba(21,21,21,.18); }
+    }
+
+    .primary-action {
+      width: 100%;
+      min-height: 58px;
+      margin-top: 18px;
+      border: 0;
+      border-radius: 20px;
+      color: #fffdf8;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.08), transparent),
+        var(--ink);
+      box-shadow: var(--button-shadow);
+      font-size: 16px;
+      font-weight: 950;
+      cursor: pointer;
+    }
+
+    .primary-action:active,
+    .tool-card:active,
+    .camera-menu:active,
+    .menu-item:active {
+      transform: translateY(1px);
+    }
+
+    .utility {
+      margin-top: 28px;
+      display: grid;
+      gap: 20px;
+    }
+
+    .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+    }
+
+    .access-section,
+    .more-section {
+      display: block;
+    }
+
+    .section-title {
+      margin: 0;
+      color: var(--ink);
+      font-size: 15px;
+      line-height: 1.2;
+      font-weight: 950;
+    }
+
+    .section-note {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .tool-card {
+      width: 100%;
+      min-height: 72px;
+      padding: 16px;
+      border: 0;
+      border-radius: 19px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 13px;
+      color: var(--ink);
+      background:
+        linear-gradient(135deg, rgba(255,255,255,.88), rgba(255,251,243,.7)),
+        rgba(255,255,255,.68);
+      box-shadow: 0 14px 36px rgba(53,43,29,.08), inset 0 1px rgba(255,255,255,.64);
+      cursor: pointer;
+    }
+
+    .more-panel {
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+    }
+
+    .tool-copy {
+      min-width: 0;
+    }
+
+    .tool-icon {
+      width: 38px;
+      height: 38px;
+      flex: 0 0 auto;
+      border-radius: 15px;
+      display: grid;
+      place-items: center;
+      color: var(--gold);
+      background: rgba(162,125,70,.1);
+    }
+
+    .tool-icon svg {
+      width: 20px;
+      height: 20px;
+      stroke: currentColor;
+      stroke-width: 2;
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .tool-label {
+      font-size: 15px;
+      line-height: 1.2;
+      font-weight: 950;
+    }
+
+    .tool-sub {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.3;
+      font-weight: 700;
+    }
+
+    .arrow {
+      width: 32px;
+      height: 32px;
+      flex: 0 0 auto;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      color: var(--gold);
+      background: rgba(162,125,70,.1);
+      font-weight: 950;
+    }
+
+    .bottom-links {
+      display: grid;
+      gap: 9px;
+    }
+
+    .text-link {
+      min-height: 46px;
+      border: 1px solid rgba(21,21,21,.075);
+      border-radius: 17px;
+      color: rgba(21,21,21,.78);
+      background: rgba(255,255,255,.42);
+      font-size: 13px;
+      font-weight: 850;
+      cursor: pointer;
+    }
+
+    .text-link.subtle {
+      min-height: 34px;
+      border: 0;
+      color: rgba(112,107,98,.6);
+      background: transparent;
+      font-size: 12px;
+      font-weight: 750;
+    }
+
+    .disclaimer {
+      margin-top: 4px;
+      color: rgba(112,107,98,.58);
+      text-align: center;
+      font-size: 11px;
+      line-height: 1.45;
+      font-weight: 650;
+    }
+
+    .state-error .primary-action {
+      background: var(--ink);
+    }
+
+    .state-error .status-detail {
+      color: var(--red);
+    }
+
+    @media (max-width: 860px) {
+      .page {
+        grid-template-columns: 1fr;
+        gap: 26px;
+        align-items: start;
+      }
+
+      .brief {
+        max-width: 640px;
+        margin: 0 auto;
+      }
+
+      .phone-shell {
+        margin: 0 auto;
+      }
+    }
+
+    @media (max-width: 460px) {
+      .page {
+        padding: 16px 10px 28px;
+      }
+
+      .phone-shell {
+        padding: 0;
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+      }
+
+      .phone {
+        height: 100vh;
+        min-height: 760px;
+        border-radius: 0;
+      }
+
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * {
+        animation-duration: .01ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="brief">
+      <p class="eyebrow">Refined current home</p>
+      <h1>保留现在结构，只把它做精致。</h1>
+      <p class="brief-text">
+        这个版本不是重做首页，而是把当前首页向“高级相机工具”精修：相机卡片像设备铭牌，主按钮更明确，其他功能保持独立固定区域，状态反馈更像成熟产品。
+      </p>
+      <div class="principles">
+        <div class="principle">
+          <strong>相机卡片是第一主角</strong>
+          <span>头像用镜头感表达设备身份，昵称、型号和状态放在同一张卡里。</span>
+        </div>
+        <div class="principle">
+          <strong>连接流程和工具区分离</strong>
+          <span>进入相册是主动作；有线接入、修复、诊断和免责声明始终稳定。</span>
+        </div>
+        <div class="principle">
+          <strong>状态颜色只表达真实状态</strong>
+          <span>蓝色在线、金色连接中、红色需要处理，避免装饰色干扰判断。</span>
+        </div>
+      </div>
+      <div class="state-switcher" aria-label="状态切换">
+        <button class="state-button active" data-state="online">蓝牙在线</button>
+        <button class="state-button" data-state="connecting">连接中</button>
+        <button class="state-button" data-state="error">需要处理</button>
+      </div>
+    </section>
+
+    <section class="phone-shell" aria-label="手机首页预览">
+      <div class="phone">
+        <div id="screen" class="screen state-online">
+          <div class="topbar">
+            <div class="brand">CAMTRANSFER</div>
+            <div id="mode" class="mode">已配对</div>
+          </div>
+
+          <h2 class="title">连接相机</h2>
+
+          <section class="camera-card">
+            <div class="card-plate">
+              <span>CAMERA PROFILE</span>
+              <div class="camera-actions">
+                <button class="camera-menu" aria-label="管理相机">管理</button>
+                <div class="camera-menu-popover" aria-label="管理菜单">
+                  <button class="menu-item">修改昵称</button>
+                  <button class="menu-item danger">重新配对</button>
+                </div>
+              </div>
+            </div>
+            <div class="camera-content">
+              <div class="camera-row">
+                <div class="lens-avatar" aria-hidden="true"></div>
+                <div class="camera-main">
+                  <div class="model-mark">FUJIFILM X SERIES</div>
+                  <div class="name-line">
+                    <div class="camera-name">旅行机</div>
+                    <button class="edit" aria-label="修改相机昵称">
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M4 20l4.6-1 10-10a2.4 2.4 0 0 0-3.4-3.4l-10 10L4 20z"></path>
+                        <path d="M14 6l4 4"></path>
+                      </svg>
+                    </button>
+                  </div>
+                  <div class="serial">已保存相机</div>
+                </div>
+              </div>
+              <div class="status-panel">
+                <div class="status-chip">
+                  <span class="status-dot"></span>
+                  <span id="statusLabel">蓝牙在线</span>
+                </div>
+                <p id="statusDetail" class="status-detail">
+                  相机已经在线，可以启动 Wi-Fi 并进入相机相册。
+                </p>
+              </div>
+            </div>
+          </section>
+
+          <button id="primaryAction" class="primary-action">进入相机相册</button>
+
+          <section class="utility">
+            <div class="access-section">
+              <div class="section-head">
+                <h3 class="section-title">接入方式</h3>
+                <span class="section-note">可选入口</span>
+              </div>
+              <button class="tool-card">
+                <span class="tool-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24">
+                    <path d="M7 7h10"></path>
+                    <path d="M12 7v7"></path>
+                    <path d="M9 14h6"></path>
+                    <path d="M10 18h4"></path>
+                    <path d="M5 3h14v4H5z"></path>
+                  </svg>
+                </span>
+                <span class="tool-copy">
+                  <span class="tool-label">有线接入</span>
+                  <span class="tool-sub">通过 USB 或读卡器导入照片</span>
+                </span>
+                <span class="arrow">›</span>
+              </button>
+            </div>
+
+            <div class="more-section">
+              <div class="section-head">
+                <h3 class="section-title">其他功能</h3>
+                <span class="section-note">不影响当前连接</span>
+              </div>
+              <div class="more-panel">
+                <div class="bottom-links">
+                  <button class="text-link">诊断日志</button>
+                  <button class="text-link subtle">使用须知</button>
+                </div>
+              </div>
+              <div class="disclaimer">相机连接、Wi-Fi 切换和照片导入会根据设备状态执行。</div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const stateCopy = {
+      online: {
+        mode: "已配对",
+        status: "蓝牙在线",
+        detail: "相机已经在线，可以启动 Wi-Fi 并进入相机相册。",
+        primary: "进入相机相册"
+      },
+      connecting: {
+        mode: "连接中",
+        status: "正在连接",
+        detail: "正在等待手机加入相机 Wi-Fi，请保持相机屏幕停留在连接状态。",
+        primary: "取消连接"
+      },
+      error: {
+        mode: "需要处理",
+        status: "需要处理",
+        detail: "手机没有成功进入相机 Wi-Fi。可以重试当前步骤，或在相机卡片里重新配对。",
+        primary: "重试当前步骤"
+      }
+    };
+
+    const screen = document.getElementById("screen");
+    const mode = document.getElementById("mode");
+    const statusLabel = document.getElementById("statusLabel");
+    const statusDetail = document.getElementById("statusDetail");
+    const primaryAction = document.getElementById("primaryAction");
+    const buttons = document.querySelectorAll(".state-button");
+    const cameraActions = document.querySelector(".camera-actions");
+    const cameraMenu = document.querySelector(".camera-menu");
+
+    buttons.forEach((button) => {
+      button.addEventListener("click", () => {
+        const state = button.dataset.state;
+        const copy = stateCopy[state];
+        screen.classList.remove("state-online", "state-connecting", "state-error");
+        screen.classList.add(`state-${state}`);
+        mode.textContent = copy.mode;
+        statusLabel.textContent = copy.status;
+        statusDetail.textContent = copy.detail;
+        primaryAction.textContent = copy.primary;
+        buttons.forEach((item) => item.classList.toggle("active", item === button));
+      });
+    });
+
+    cameraMenu.addEventListener("click", () => {
+      cameraActions.classList.toggle("open");
+    });
+  </script>
+</body>
+</html>

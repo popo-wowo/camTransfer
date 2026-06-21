@@ -284,6 +284,44 @@ class GalleryFileLoadPolicyTest {
     }
 
     @Test
+    fun publishesVideoMetadataSoVideoFilterCanMatchResolvedFiles() {
+        assertTrue(
+            GalleryFastInitialLoadPolicy.shouldPublishResolvedMetadata(
+                cameraFile(handle = 1, format = PtpObjectFormat.MP4),
+            )
+        )
+        assertFalse(
+            GalleryFastInitialLoadPolicy.shouldPublishResolvedMetadata(
+                cameraFile(handle = 2, format = PtpObjectFormat.ASSOCIATION),
+            )
+        )
+    }
+
+    @Test
+    fun hiddenStillMetadataUpdatesExistingPlaceholdersByHandle() {
+        val placeholders = listOf(
+            cameraFile(handle = 10, filename = "0x0000000A.JPG", captureDate = "20260620"),
+            cameraFile(handle = 9, filename = "0x00000009.JPG", captureDate = "20260620"),
+            cameraFile(handle = 8, filename = "0x00000008.JPG", captureDate = "20260620"),
+        )
+        val discoveredFormats = listOf(
+            cameraFile(handle = 10, filename = "0x0000000A.HIF", captureDate = "", format = PtpObjectFormat.HEIF),
+            cameraFile(handle = 9, filename = "0x00000009.RAF", captureDate = "", format = PtpObjectFormat.CAMERA_VENDOR_RAF_ALT),
+            cameraFile(handle = 8, filename = "0x00000008.MP4", captureDate = "", format = PtpObjectFormat.MP4),
+        )
+
+        val merged = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
+            currentFiles = placeholders,
+            fullFiles = discoveredFormats,
+        )
+
+        assertTrue(merged[0].info.isHeif)
+        assertEquals("20260620", merged[0].info.captureDate)
+        assertTrue(merged[1].info.isRaw)
+        assertTrue(merged[2].info.isVideo)
+    }
+
+    @Test
     fun limitsInitialThumbnailRequestsWhileFullObjectInfoIsStillLoading() {
         assertTrue(
             GalleryFastInitialLoadPolicy.shouldLoadThumbnail(
@@ -320,11 +358,12 @@ class GalleryFileLoadPolicyTest {
         filename: String = "DSCF%04d.JPG".format(handle),
         captureDate: String = "20260604T120000",
         thumbnail: ByteArray? = null,
+        format: Int = PtpObjectFormat.JPEG,
     ): CameraFile = CameraFile(
         info = ObjectInfo(
             handle = handle,
             storageId = 1,
-            format = PtpObjectFormat.JPEG,
+            format = format,
             compressedSize = 1024,
             thumbFormat = PtpObjectFormat.JPEG,
             thumbCompressedSize = 128,

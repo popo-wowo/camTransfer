@@ -136,6 +136,40 @@
 3. 这条规则只决定“相机屏幕上显示的手机名”和 PTP legacy INIT 里的 friendly name；是否允许连接仍要看注册一致性、BLE/GATT 授权、Wi-Fi handover 和 PTP ACK。
 4. 后续如果日志里继续出现 `source=reference_app_compatibility_name` 或 `iPhone-6970`，说明手机上运行的不是当前官方 Android 命名版本，不能用那次实机结果判断新规则是否有效。
 
+## 2026-06-20 Android 原厂冷启动离线后的周期重连机制
+
+本节回答“打开原厂 XApp 时相机没开机，后面相机开机后为什么能自动变在线”的静态反编译结论。这个结论来自官方 Android XApp APK，尚未用一轮“先关相机打开 App、再开相机”的实机 logcat 复核。
+
+关键反编译证据:
+
+- `MainApplication.startupPeriodicFetchingInformation()` 会绑定并启动 `PeriodicFetchingInformationService`。
+- `PeriodicFetchingInformationService.startGetCameraInformation()` 只有在三种条件满足时启动后台线程:
+  - 已注册相机数量不为 0。
+  - 当前没有已连接相机。
+  - `BTEntryCameraRepository.getRemoteBooting()` 为 false。
+- 后台线程 `taskGetInformationProcessing()` 循环遍历 `BTEntryCameraRepository.getMConnectCameraInfoList()` 里的注册相机，调用 `PeriodicFetchingInformationModel.getCameraInformation(cameraID)`。
+- 每轮循环结束后执行 `condition.await(60, TimeUnit.SECONDS)`，所以这是低频周期任务，不是高频 BLE 扫描。
+- `getCameraInformation()` 对单台相机还会检查:
+  - 相机型号支持 remote boot: `getProvideFeatures().getHasRemoteBoot()`。
+  - 相机处于 standby: `isStandby(btCamera)`。
+  - 距上次获取信息超过 `ConstantsKt.GET_CAMERA_INFORMATION_INTERVAL`；反编译常量值为 `1800` 秒。
+- 满足条件后进入 `startReconnectBluetooth()`，把 `QueueRequestId.START_CONNECT` 和当前 `cameraID` 写入 `BLEQueue`，等待 `bleReconnectResult` 回调。
+- 成功重连后继续做时间同步、位置同步、Vital、ActivityRecord、IPTC 等信息获取；失败则回到周期循环，不进入 Wi-Fi/PTP 相册链路。
+
+确定结论:
+
+1. 原厂 Android XApp 有一个独立的周期性相机信息刷新服务，不只是在首页做一次连接状态刷新。
+2. 相机第一次没开机时，官方不会立刻一直密集扫描；它用后台线程低频轮询注册相机，循环间隔约 60 秒。
+3. 真正尝试 BLE 重连前还有 1800 秒的信息刷新间隔门槛，以及 remote boot/standby 条件。这个机制更像“周期同步相机信息并顺带恢复在线状态”，不是“相册入口前的持续快速重连”。
+4. 该周期任务只走 BLE `START_CONNECT` 和信息同步；没有证据表明它会自动启动 `FunctionLaunchRequest`、启动相机 Wi-Fi、加入相机 Wi-Fi 或打开 PTP 相册。
+5. 对我们的 App，合理参考是: 保留打开 App 后的一次快速在线刷新；如果要补官方式自动恢复在线，应新增一个低频、可取消、只做 BLE 在线状态刷新的 foreground-visible 轮询模块，不能把 Wi-Fi/PTP 也放进去。
+
+仍需实机复核:
+
+- 用官方 XApp 做一次“相机关闭 -> 打开 App -> 等待离线状态 -> 打开相机 -> 观察多久变在线”的 logcat 采样。
+- 过滤 `PeriodicFetchingInformationService`、`startGetCameraInformation`、`START_CONNECT`、`bleReconnectResult`、`BtReconnectTry/BtReconnectSuccess`。
+- 复核 60 秒循环是否被 UI 前台状态或系统省电策略影响。
+
 ```mermaid
 sequenceDiagram
     autonumber
