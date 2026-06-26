@@ -112,6 +112,7 @@ internal fun GalleryDownloadBar(
     canToggleSelectAll: Boolean,
     preferCompressedDownloads: Boolean,
     canDownload: Boolean,
+    canChangeTransferMode: Boolean = true,
     onToggleSelectAll: () -> Unit,
     onPreferenceChanged: (Boolean) -> Unit,
     onDownload: () -> Unit,
@@ -150,6 +151,7 @@ internal fun GalleryDownloadBar(
             )
             TransferModeCapsule(
                 preferCompressedDownloads = preferCompressedDownloads,
+                enabled = canChangeTransferMode,
                 onPreferenceChanged = onPreferenceChanged,
             )
             Spacer(Modifier.width(9.dp))
@@ -182,6 +184,7 @@ internal fun GalleryDownloadBar(
 @Composable
 private fun TransferModeCapsule(
     preferCompressedDownloads: Boolean,
+    enabled: Boolean,
     onPreferenceChanged: (Boolean) -> Unit,
 ) {
     val label = if (preferCompressedDownloads) "压缩" else "原图"
@@ -204,9 +207,9 @@ private fun TransferModeCapsule(
         modifier = Modifier
             .height(32.dp)
             .clip(RoundedCornerShape(16.dp))
-            .clickable { onPreferenceChanged(!preferCompressedDownloads) },
+            .clickable(enabled = enabled) { onPreferenceChanged(!preferCompressedDownloads) },
         shape = RoundedCornerShape(16.dp),
-        color = backgroundColor,
+        color = if (enabled) backgroundColor else CamTransferColors.MutedFill,
         border = BorderStroke(1.dp, borderColor),
     ) {
         Row(
@@ -221,7 +224,7 @@ private fun TransferModeCapsule(
             )
             Text(
                 label,
-                color = textColor,
+                color = if (enabled) textColor else CamTransferColors.SecondaryInk,
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Black,
                 maxLines = 1,
@@ -269,4 +272,3 @@ private fun SelectAllBox(
         }
     }
 }
-

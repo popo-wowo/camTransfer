@@ -225,6 +225,7 @@ class GalleryFileLoadPolicyTest {
 
     @Test
     fun defersFullObjectInfoWhenLargePlaceholderListCanShowFirstScreen() {
+        assertTrue(GalleryFastInitialLoadPolicy.FULL_OBJECT_INFO_AFTER_PLACEHOLDERS_DELAY_MS >= 3_000L)
         assertTrue(
             GalleryFastInitialLoadPolicy.shouldDeferFullObjectInfoUntilAfterThumbnails(
                 initialFileCount = 1000,
@@ -281,6 +282,52 @@ class GalleryFileLoadPolicyTest {
                 isFinalBatch = true,
             )
         )
+    }
+
+    @Test
+    fun treatsEmptyFinalMetadataBatchAsCompletionSignal() {
+        assertTrue(
+            GalleryFastInitialLoadPolicy.shouldPublishIncrementalMetadataBatch(
+                resolvedCount = 0,
+                isFinalBatch = true,
+            )
+        )
+    }
+
+    @Test
+    fun resumesBackgroundMetadataOnlyWhenPlaceholdersRemainAfterExclusiveTransfer() {
+        assertTrue(
+            GalleryFastInitialLoadPolicy.shouldResumeFullObjectInfoAfterExclusiveOperation(
+                listOf(cameraFile(handle = 1, filename = "0x00000001", captureDate = "", format = PtpObjectFormat.UNDEFINED, compressedSize = 0)),
+            )
+        )
+        assertTrue(
+            GalleryFastInitialLoadPolicy.shouldResumeFullObjectInfoAfterExclusiveOperation(
+                listOf(cameraFile(handle = 2, filename = "DSCF0002.JPG", format = PtpObjectFormat.JPEG, compressedSize = 0)),
+            )
+        )
+        assertFalse(
+            GalleryFastInitialLoadPolicy.shouldResumeFullObjectInfoAfterExclusiveOperation(
+                listOf(cameraFile(handle = 3, filename = "DSCF0003.JPG", format = PtpObjectFormat.JPEG, compressedSize = 1024)),
+            )
+        )
+        assertFalse(
+            GalleryFastInitialLoadPolicy.shouldResumeFullObjectInfoAfterExclusiveOperation(emptyList())
+        )
+    }
+
+    @Test
+    fun backgroundMetadataSkipsFilesThatAlreadyHaveCompleteObjectInfo() {
+        val handles = GalleryFastInitialLoadPolicy.handlesNeedingFullObjectInfo(
+            listOf(
+                cameraFile(handle = 1, filename = "DSCF0001.JPG", format = PtpObjectFormat.JPEG, compressedSize = 1024),
+                cameraFile(handle = 2, filename = "0x00000002.JPG", format = PtpObjectFormat.JPEG, compressedSize = 1024),
+                cameraFile(handle = 3, filename = "DSCF0003.RAF", format = PtpObjectFormat.CAMERA_VENDOR_RAF_ALT, compressedSize = 0),
+                cameraFile(handle = 4, filename = "DSCF0004.JPG", format = PtpObjectFormat.UNDEFINED, compressedSize = 1024),
+            )
+        )
+
+        assertEquals(listOf(2, 3, 4), handles)
     }
 
     @Test
@@ -359,12 +406,13 @@ class GalleryFileLoadPolicyTest {
         captureDate: String = "20260604T120000",
         thumbnail: ByteArray? = null,
         format: Int = PtpObjectFormat.JPEG,
+        compressedSize: Int = 1024,
     ): CameraFile = CameraFile(
         info = ObjectInfo(
             handle = handle,
             storageId = 1,
             format = format,
-            compressedSize = 1024,
+            compressedSize = compressedSize,
             thumbFormat = PtpObjectFormat.JPEG,
             thumbCompressedSize = 128,
             thumbPixWidth = 160,

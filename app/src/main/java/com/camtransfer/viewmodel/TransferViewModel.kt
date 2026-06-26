@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.camtransfer.model.CameraFile
+import com.camtransfer.model.TransferDownloadMode
 import com.camtransfer.model.TransferItem
 import com.camtransfer.service.CameraFileSource
 import com.camtransfer.service.GalleryService
@@ -34,9 +35,12 @@ class TransferViewModel(app: Application) : AndroidViewModel(app) {
         transferService = TransferService(cameraSource, gallery)
     }
 
-    fun startTransfer(files: List<CameraFile>) {
+    fun startTransfer(
+        files: List<CameraFile>,
+        downloadMode: TransferDownloadMode = TransferDownloadMode.ORIGINAL,
+    ) {
         val service = transferService ?: return
-        service.enqueue(files)
+        service.enqueue(files, downloadMode)
         viewModelScope.launch { service.startTransfer() }
     }
 

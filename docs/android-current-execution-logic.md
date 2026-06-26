@@ -108,9 +108,12 @@ BLE session 复用规则:
 相册首屏规则:
 
 - 优先使用官方/厂商扩展拿到的 handle 列表发布占位网格，避免完整 `ObjectInfo` 枚举阻塞首屏。
+- Android X-T5 实测不能把 `D604=31` 视为全格式。`D604=31` 只返回 `JPG + MOV` 的 `D621` 列表；必须额外设置 `D604=HEIF` 或 `D604=RAW` 并重新读取 `9053/D620/D621`，如果相机返回更大的列表，则把这个扩展列表作为初始占位符来源。
+- 初始占位符必须保留相机返回的 `D621` 顺序，不要按 handle 数字倒序重排。同一天内 RAW/HEIF/JPG 可能以 `1267,1268,1265,1266...` 这种顺序出现，数字排序会破坏原厂时间线。
 - 可见缩略图按需加载，保持受控节流，避免和 PTP metadata 命令抢通道。
 - 如果完整信息后续补齐，应合并回现有列表并保留已加载缩略图。
 - 列表缩略图走标准 `GET_THUMB`；标准缩略图不可用时记录失败，不再用 `GET_PARTIAL_OBJECT` 作为兜底。
+- hidden gap probe 只作为扩展 `D621` 失败后的诊断/兜底，不是 RAW/HEIF 正式发现路径。
 
 缩略图显示规则:
 
@@ -150,8 +153,17 @@ BLE session 复用规则:
 
 下载模式:
 
-- `压缩` 是下载前的模式开关，开启表示走相机侧压缩/resize 传输路径。
+- `压缩` 是下载前的相机侧压缩/resize 选择。BLE `ImageResizeSetting(82A9F452)` 只保留为相机全局/初始状态来源；真正生效的本次选择在 Wi-Fi PTP 下载前通过 `D22E/D226` 写入。
 - `下载` 是执行动作，视觉上保持主按钮；压缩开关保持次级样式，避免和下载按钮混淆。
+- 点击下载时会把当前模式写入下载队列项；队列执行中不再读取可变全局偏好，避免用户切换开关后影响已入队任务。
+- 原图模式按原厂下载前切换：`D226 ImageForceCompression=2 -> GET_OBJECT_INFO -> GET_PARTIAL_OBJECT -> D226=0`。
+- 压缩模式按原厂下载前切换：`D22E ObjectCompressionSetting=1 -> D226 ImageForceCompression=1 -> GET_OBJECT_INFO -> GET_PARTIAL_OBJECT -> D226=0`。
+- `D226/D227/D22E` 的 PTP payload 使用 `UINT16`。原厂 native 里的 `FTL_PTP_DATA_TYPE=0x0004` 在这里对应 PTP `UINT16`，实机读取 `D226/D227` 也返回 2 bytes。不要按 4-byte integer 写这些属性。
+- 连接前 BLE `ImageResizeSetting` 只作为相机全局设置/初始状态来源，不再作为本次下载选择原图或压缩的唯一依据。
+- `D227 ImageCompressionRealInfo` 仍在图库初始化时复位，但不再作为 Android 下载主链路里的模式切换开关。
+- 压缩下载不是缩略图下载；原图下载也不能落到缩略图缓存。两种模式都必须在写入模式后重新读取 `ObjectInfo`，再按 fresh size 走 `GET_PARTIAL_OBJECT`。
+- 下载日志必须能同时看到 `Download mode prepare` 的 property/response 和后续 `Download partial` 的 `freshSize/readSize`。如果 response 成功但 fresh size 仍是几百 KB，说明协议状态或尺寸读取还没有复刻成功，不能用缩略图结果当成功。
+- 如果下载过程中出现 `Socket is closed`、`Not connected to camera`、`Connection reset` 等连接失效错误，停止剩余队列并把后续 pending 项标记为需要重新进入相册后重试。
 
 ## UI 结构
 

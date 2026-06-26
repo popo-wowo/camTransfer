@@ -14,6 +14,7 @@ import android.mtp.MtpObjectInfo
 import android.os.Build
 import com.camtransfer.model.CameraFile
 import com.camtransfer.model.ObjectInfo
+import com.camtransfer.model.TransferDownloadMode
 import com.camtransfer.protocol.PtpObjectFormat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -75,7 +76,10 @@ class WiredCameraService(override val context: Context) : CameraFileSource {
         mtp.getThumbnail(objectHandle) ?: ByteArray(0)
     }
 
-    override suspend fun getFile(handle: Int): ByteArray = withContext(Dispatchers.IO) {
+    override suspend fun getFile(
+        handle: Int,
+        downloadMode: TransferDownloadMode,
+    ): ByteArray = withContext(Dispatchers.IO) {
         val mtp = mtpDevice ?: throw IllegalStateException("请先连接 USB 相机")
         val objectHandle = objectHandleBySyntheticHandle[handle] ?: handle
         val info = mtp.getObjectInfo(objectHandle) ?: throw IllegalStateException("USB 相机文件已不可用")

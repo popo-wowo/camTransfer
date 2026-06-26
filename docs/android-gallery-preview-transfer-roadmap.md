@@ -72,14 +72,20 @@
 - 不把这条路径当缩略图 fallback。
 - 失败时 UI 继续显示缩略图，但记录明确诊断日志。
 
-### P0.3 原图导入压缩模式复核
+### P0.3 原图/压缩导入模式
 
-状态: 待讨论和实机 A/B 验证。
+状态: Android 已实现按本次下载选择传递模式；仍需要更多机型和 JPG/RAW A/B 文件比对。
 
-现在的问题:
+已落地行为:
 
-- 当前 Android 原图下载路径使用 `IMAGE_COMPRESSION_REAL_INFO(0xD227)=1` 后重新读 `ObjectInfo`，再分段 partial。
-- 原厂 iPhone 抓包中，导入前使用的是 `IMAGE_FORCE_COMPRESSION(0xD226)=2`，再分段 partial。
+- UI 点击下载时把当前模式写入队列项，后续下载不再依赖可变的全局偏好。
+- BLE `ImageResizeSetting(82A9F452)` 只作为相机全局/初始状态来源，不再决定本次队列项的最终下载模式。
+- 原图模式按原厂下载前切换: `IMAGE_FORCE_COMPRESSION(0xD226)=2`，重新读 `ObjectInfo`，再分段 partial，完成后 reset `D226=0`。
+- 压缩模式按原厂下载前切换: `OBJECT_COMPRESSION_SETTING(0xD22E)=1`，再设置 `IMAGE_FORCE_COMPRESSION(0xD226)=1`，重新读 `ObjectInfo`，再分段 partial，完成后 reset `D226=0`。
+- `D226/D227/D22E` 写入使用 PTP `UINT16` payload，不是 4-byte integer。实机 `D226/D227` 读取返回 2 bytes；宽度错误会导致后续对象尺寸仍停在小图级别。
+- 压缩导入和原图导入都不能保存列表缩略图缓存。下载结果必须来自写入模式后的 fresh `ObjectInfo` 和 `GET_PARTIAL_OBJECT`。
+- 2026-06-24 X-T5 实机复测发现 HEIF/JPG 压缩下载如果误用 `D226=2` 会得到缩略图级别的小传输图大小；2026-06-26 反编译确认 `D226=2` 是原图导入模式，不是压缩模式。
+- socket closed / Not connected 这类连接失效错误会停止剩余队列，并把后续 pending 项标记为需要重新进入相册后重试。
 
 为什么要复核:
 
@@ -95,16 +101,17 @@
 
 可能问题:
 
-- `D226=2` 是否对所有格式和机型都表示“完整原图/导入图”还需要更多样本。
-- 与现有 `D227=1` 的关系不清楚，不能直接删除现有路径。
-- 如果用户设置了压缩传输偏好，`D226=2` 是否绕过偏好需要确认。
+- `D22E=1 + D226=1` 压缩路径仍需要用 JPG/HEIF/RAW 样张和原厂 App 导出结果做 A/B 比对。
+- `D227=1` 保留为初始化复位对象，不再作为下载前原图/压缩模式切换。
 - 修改导入路径会影响保存到系统相册的最终文件，必须用实机样张比对尺寸、EXIF、哈希和肉眼质量。
+- 如果 `Download mode prepare` 的 PTP response 成功但 `Download partial` 的 `freshSize/readSize` 仍是几百 KB，说明协议状态或尺寸读取仍未完全复刻，不能把这个结果标成压缩或原图成功。
+- 大 RAW 下载仍要继续做实机稳定性验证；如果 `D226=1/2` 路径仍在特定机型断开，再单独处理分段大小、重连/重试或保存策略。
 
 建议验证方式:
 
-1. 同一张照片分别用当前 Android 路径、`D226=2` 路径、原厂 App 导入。
+1. 同一张照片分别用 Android 原图、Android 压缩、原厂 App 导入。
 2. 比对文件大小、像素尺寸、EXIF、SOI/EOI、是否可被系统相册正常识别。
-3. 再决定是否切换默认路径，或保留为可配置传输模式。
+3. 对 RAW 单独验证 `D226=1/2` 路径的超时、断点/重试、失败后是否停止队列。
 
 ## P1
 
@@ -158,7 +165,7 @@
 
 1. 把接口命名从 `getPreviewImage()` 进一步明确为 `getScreenPreview()`，避免默认 fallback 到 `getFile()`。
 2. 给 `D226` 状态切换、预览失败 reset、导入独占 PTP 增加协议级单元测试。
-3. 更新诊断日志字段，让每张图能看出命中的路径: `thumbnail/standard`、`preview/D226=1`、`original/D226=2`。
+3. 更新诊断日志字段，让每张图能看出命中的路径: `thumbnail/standard`、`preview/D226=1`、`download/original/D226=2`、`download/compressed/D22E=1+D226=1`。
 4. 更新用户可见文案，区分“正在加载预览”和“正在导入原图”。
 
 ## 原厂缓存目前能知道什么

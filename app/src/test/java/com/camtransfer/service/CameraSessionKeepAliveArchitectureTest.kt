@@ -91,7 +91,7 @@ class CameraSessionKeepAliveArchitectureTest {
         assertTrue(method.contains("cameraService.resetGalleryConnectionBeforeRetry()"))
         assertTrue(
             method.indexOf("cameraService.resetGalleryConnectionBeforeRetry()") <
-                method.indexOf("cameraService.connectPairedCameraToGallery")
+            method.indexOf("cameraService.connectPairedCameraToGallery")
         )
     }
 

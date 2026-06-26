@@ -38,7 +38,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.camtransfer.ui.BrowseScreen
 import com.camtransfer.ui.CamTransferTheme
 import com.camtransfer.ui.ConnectScreen
+import com.camtransfer.ui.GalleryTransferModeUiPolicy
 import com.camtransfer.ui.TransferScreen
+import com.camtransfer.model.TransferDownloadMode
 import com.camtransfer.service.CameraFileSource
 import com.camtransfer.service.DiagnosticLog
 import com.camtransfer.service.WiredCameraService
@@ -145,6 +147,7 @@ enum class Screen { CONNECT, BROWSE, TRANSFER }
 @Composable
 fun CamTransferApp(trialDays: Long) {
     val context = LocalContext.current
+    val debugEnterGallery = (context as? MainActivity)?.shouldDebugEnterGallery() == true
     val connectionVM: ConnectionViewModel = viewModel()
     val browseVM: BrowseViewModel = viewModel()
     val transferVM: TransferViewModel = viewModel()
@@ -160,6 +163,7 @@ fun CamTransferApp(trialDays: Long) {
     var isWiredImport by remember { mutableStateOf(false) }
     var isReturningToConnect by remember { mutableStateOf(false) }
     var lastHandledGalleryConnectionEvent by remember { mutableStateOf(0L) }
+    var debugEnterGalleryHandled by remember { mutableStateOf(false) }
 
     fun openWirelessBrowse() {
         isReturningToConnect = false
@@ -168,6 +172,20 @@ fun CamTransferApp(trialDays: Long) {
         transferVM.switchSource(connectionVM.cameraService)
         browseVM.reset()
         currentScreen = Screen.BROWSE
+    }
+
+    LaunchedEffect(debugEnterGallery, connectionState) {
+        if (
+            debugEnterGallery &&
+            !debugEnterGalleryHandled &&
+            BuildConfig.DEBUG &&
+            connectionState == ConnectionState.PAIRED
+        ) {
+            debugEnterGalleryHandled = true
+            DiagnosticLog.append(context, "Debug", "Auto entering gallery from debug intent after startup delay")
+            delay(DEBUG_ENTER_GALLERY_STARTUP_DELAY_MS)
+            connectionVM.enterCameraAlbum()
+        }
     }
 
     LaunchedEffect(connectionState) {
@@ -239,13 +257,21 @@ fun CamTransferApp(trialDays: Long) {
                 downloadedItems = downloadedItems,
                 isTransferring = isTransferring,
                 preferCompressedDownloads = preferCompressedDownloads,
+                canChangeTransferMode = GalleryTransferModeUiPolicy.canChangeTransferMode(isTransferring),
                 onFilesLoaded = { files -> transferVM.syncDownloadedFiles(files) },
                 onPreferenceChanged = connectionVM::setPreferCompressedDownloads,
                 onDownloadSelected = { files ->
                     scope.launch {
                         browseVM.prepareThumbnailLoadingForTransfer(cameraSource)
                         transferVM.init(cameraSource)
-                        transferVM.startTransfer(files)
+                        transferVM.startTransfer(
+                            files = files,
+                            downloadMode = if (preferCompressedDownloads) {
+                                TransferDownloadMode.COMPRESSED
+                            } else {
+                                TransferDownloadMode.ORIGINAL
+                            },
+                        )
                     }
                 },
                 onOpenDownloads = { currentScreen = Screen.TRANSFER },
@@ -437,3 +463,9 @@ private fun trialDays(): Long = (BuildConfig.TRIAL_DURATION_MINUTES / 1_440L).co
 private fun java.time.Instant.asLocalTimeText(): String =
     DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
         .format(atZone(ZoneId.systemDefault()))
+
+private const val EXTRA_DEBUG_ENTER_GALLERY = "camtransfer.debug.enter_gallery"
+private const val DEBUG_ENTER_GALLERY_STARTUP_DELAY_MS = 9_000L
+
+private fun MainActivity.shouldDebugEnterGallery(): Boolean =
+    BuildConfig.DEBUG && intent.getBooleanExtra(EXTRA_DEBUG_ENTER_GALLERY, false)

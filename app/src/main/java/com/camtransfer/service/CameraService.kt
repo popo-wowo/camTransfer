@@ -11,6 +11,7 @@ import com.camtransfer.ble.CameraVendorBleScanner
 import com.camtransfer.ble.CameraVendorBleTransferActivationPolicy
 import com.camtransfer.ble.CameraVendorConnectedDeviceNameStore
 import com.camtransfer.model.CameraFile
+import com.camtransfer.model.TransferDownloadMode
 import com.camtransfer.protocol.CameraVendorPtpIdentityPolicy
 import com.camtransfer.protocol.PtpCommands
 import com.camtransfer.protocol.PtpConnection
@@ -19,6 +20,7 @@ import com.camtransfer.service.gallery.PtpCameraGallerySource
 import com.camtransfer.service.pairing.CameraPairingService
 import com.camtransfer.wifi.CameraVendorWifiJoinPolicy
 import com.camtransfer.wifi.WifiConnector
+import java.io.OutputStream
 
 private const val TAG = "CameraService"
 
@@ -352,8 +354,19 @@ class CameraService(override val context: Context) : CameraFileSource {
         return gallerySource.getPreviewImage(handle)
     }
 
-    override suspend fun getFile(handle: Int): ByteArray {
-        return gallerySource.getFile(handle)
+    override suspend fun getFile(
+        handle: Int,
+        downloadMode: TransferDownloadMode,
+    ): ByteArray {
+        return gallerySource.getFile(handle, downloadMode)
+    }
+
+    override suspend fun writeFile(
+        handle: Int,
+        downloadMode: TransferDownloadMode,
+        output: OutputStream,
+    ): Long {
+        return gallerySource.writeFile(handle, downloadMode, output)
     }
 
     fun getFileStream(handle: Int) = commands.getObjectStream(handle)

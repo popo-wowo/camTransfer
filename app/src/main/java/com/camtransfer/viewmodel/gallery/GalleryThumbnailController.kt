@@ -30,7 +30,7 @@ class GalleryThumbnailController(
     fun loadThumbnail(cameraSource: CameraFileSource, handle: Int) {
         if (!GalleryFastInitialLoadPolicy.shouldLoadThumbnail(
                 isTransferPreparingOrActive = thumbnailLoadingPaused,
-                isLoadingFullObjectInfo = filesController.isLoading.value,
+                isLoadingFullObjectInfo = filesController.isLoadingHiddenFormats.value,
                 hasThumbnail = filesController.hasThumbnail(handle),
                 activeOrPendingThumbnailCount = activeOrPendingThumbnailCount(),
             )
@@ -104,7 +104,7 @@ class GalleryThumbnailController(
     private fun loadPreviewThumbnail(cameraSource: CameraFileSource, handle: Int) {
         if (!GalleryFastInitialLoadPolicy.shouldLoadThumbnail(
                 isTransferPreparingOrActive = thumbnailLoadingPaused,
-                isLoadingFullObjectInfo = filesController.isLoading.value,
+                isLoadingFullObjectInfo = filesController.isLoadingHiddenFormats.value,
                 hasThumbnail = filesController.hasThumbnail(handle),
                 activeOrPendingThumbnailCount = activeOrPendingThumbnailCount(),
             )

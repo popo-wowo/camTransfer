@@ -72,14 +72,23 @@ class CameraVendorBleTransferActivationPolicyTest {
     }
 
     @Test
-    fun resizePayloadMatchesOriginalAndCompressedModes() {
+    fun officialImportImageLaunchRequestUsesImportImageFunction() {
+        assertTrue(
+            CameraVendorBleTransferActivationPolicy.importImageLaunchRequestPayload()
+                .contentEquals(byteArrayOf(0x01, 0x00))
+        )
+        assertEquals("0100", CameraVendorBleTransferActivationPolicy.importImageLaunchRequestHex())
+    }
+
+    @Test
+    fun galleryActivationResizePayloadMatchesDownloadPreference() {
         assertTrue(CameraVendorBleTransferActivationPolicy.defaultPreferCompressedDownloads())
         assertTrue(
-            CameraVendorBleTransferActivationPolicy.resizePayload(preferCompressedDownloads = true)
+            CameraVendorBleTransferActivationPolicy.galleryActivationResizePayload(preferCompressedDownloads = true)
                 .contentEquals(byteArrayOf(0x01))
         )
         assertTrue(
-            CameraVendorBleTransferActivationPolicy.resizePayload(preferCompressedDownloads = false)
+            CameraVendorBleTransferActivationPolicy.galleryActivationResizePayload(preferCompressedDownloads = false)
                 .contentEquals(byteArrayOf(0x00))
         )
         assertTrue(

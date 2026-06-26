@@ -36,6 +36,7 @@ class GalleryFilesController(
     private var loadJob: Job? = null
     private var fullObjectInfoJob: Job? = null
     private var loadedSource: CameraFileSource? = null
+    private var fullObjectInfoPausedForExclusiveOperation = false
 
     fun loadIfNeeded(cameraSource: CameraFileSource) {
         val sourceChanged = loadedSource != null && loadedSource !== cameraSource
@@ -125,10 +126,34 @@ class GalleryFilesController(
         fullObjectInfoJob?.cancel()
         loadJob = null
         fullObjectInfoJob = null
+        fullObjectInfoPausedForExclusiveOperation = false
         _files.value = emptyList()
         _isLoading.value = false
         _error.value = null
         loadedSource = null
+    }
+
+    suspend fun pauseForExclusiveOperation(cameraSource: CameraFileSource, reason: String) {
+        if (loadedSource !== cameraSource) return
+        val jobToCancel = fullObjectInfoJob
+        if (fullObjectInfoJob?.isActive == true) {
+            DiagnosticLog.append(cameraSource.context, "Gallery", "Paused full object info for $reason")
+        }
+        fullObjectInfoPausedForExclusiveOperation = true
+        jobToCancel?.cancel()
+        fullObjectInfoJob = null
+        _isLoadingHiddenFormats.value = false
+        jobToCancel?.join()
+    }
+
+    fun resumeAfterExclusiveOperation(cameraSource: CameraFileSource, reason: String) {
+        if (loadedSource !== cameraSource) return
+        if (!fullObjectInfoPausedForExclusiveOperation) return
+        fullObjectInfoPausedForExclusiveOperation = false
+        if (GalleryFastInitialLoadPolicy.shouldResumeFullObjectInfoAfterExclusiveOperation(_files.value)) {
+            DiagnosticLog.append(cameraSource.context, "Gallery", "Resuming full object info after $reason")
+            scheduleFullObjectInfoLoad(cameraSource)
+        }
     }
 
     private fun scheduleFullObjectInfoLoad(cameraSource: CameraFileSource) {
@@ -136,13 +161,15 @@ class GalleryFilesController(
         fullObjectInfoJob = scope.launch(Dispatchers.IO) {
             delay(GalleryFastInitialLoadPolicy.FULL_OBJECT_INFO_AFTER_PLACEHOLDERS_DELAY_MS)
             if (loadedSource !== cameraSource) return@launch
+            if (fullObjectInfoPausedForExclusiveOperation) return@launch
             _isLoadingHiddenFormats.value = true
             try {
                 DiagnosticLog.append(cameraSource.context, "Gallery", "Loading full object info incrementally after initial thumbnails")
-                val handles = _files.value.map { it.info.handle }
+                val handles = GalleryFastInitialLoadPolicy.handlesNeedingFullObjectInfo(_files.value)
                 val batch = mutableListOf<CameraFile>()
                 for (handle in handles) {
                     if (loadedSource !== cameraSource) return@launch
+                    if (fullObjectInfoPausedForExclusiveOperation) return@launch
                     val file = requestScheduler.run(GalleryRequestPriority.BackgroundMetadata) {
                         cameraSource.resolveFile(handle)
                     }
@@ -191,12 +218,19 @@ class GalleryFilesController(
     }
 
     private suspend fun resolveHiddenStillFilesAfterFullMetadata(cameraSource: CameraFileSource) {
-        if (loadedSource !== cameraSource) return
+        if (loadedSource !== cameraSource) {
+            DiagnosticLog.append(cameraSource.context, "Gallery", "Skipped hidden still metadata because source changed")
+            return
+        }
         val handles = _files.value.map { it.info.handle }
+        DiagnosticLog.append(cameraSource.context, "Gallery", "Resolving hidden still metadata knownHandles=${handles.size}")
         val additionalFiles = requestScheduler.run(GalleryRequestPriority.BackgroundMetadata) {
             cameraSource.resolveAdditionalFiles(handles)
         }
-        if (additionalFiles.isEmpty()) return
+        if (additionalFiles.isEmpty()) {
+            DiagnosticLog.append(cameraSource.context, "Gallery", "No hidden still metadata resolved")
+            return
+        }
         publishFullObjectInfoBatch(additionalFiles)
         DiagnosticLog.append(
             cameraSource.context,
@@ -217,10 +251,7 @@ class GalleryFilesController(
             fullFiles = files,
             thumbnailsByHandle = thumbnailCache(),
         )
-        _files.value = merged.sortedWith(
-            compareByDescending<CameraFile> { it.info.captureDate }
-                .thenByDescending { it.info.handle }
-        )
+        _files.value = merged
     }
 }
 
@@ -239,7 +270,7 @@ internal object GalleryFileLoadPolicy {
 
 internal object GalleryFastInitialLoadPolicy {
     const val MAX_INITIAL_THUMBNAIL_REQUESTS = 8
-    const val FULL_OBJECT_INFO_AFTER_PLACEHOLDERS_DELAY_MS = 1_000L
+    const val FULL_OBJECT_INFO_AFTER_PLACEHOLDERS_DELAY_MS = 3_000L
     const val INCREMENTAL_METADATA_BATCH_SIZE = 12
     private const val LARGE_GALLERY_PLACEHOLDER_COUNT = 500
 
@@ -256,7 +287,17 @@ internal object GalleryFastInitialLoadPolicy {
         resolvedCount: Int,
         isFinalBatch: Boolean,
     ): Boolean =
-        resolvedCount > 0 && (isFinalBatch || resolvedCount >= INCREMENTAL_METADATA_BATCH_SIZE)
+        isFinalBatch || resolvedCount >= INCREMENTAL_METADATA_BATCH_SIZE
+
+    fun shouldResumeFullObjectInfoAfterExclusiveOperation(files: List<CameraFile>): Boolean =
+        handlesNeedingFullObjectInfo(files).isNotEmpty()
+
+    fun handlesNeedingFullObjectInfo(files: List<CameraFile>): List<Int> =
+        files.filter { file ->
+            file.info.format == com.camtransfer.protocol.PtpObjectFormat.UNDEFINED ||
+                file.info.compressedSize <= 0 ||
+                file.info.filename.startsWith("0x", ignoreCase = true)
+        }.map { it.info.handle }
 
     fun shouldPublishResolvedMetadata(file: CameraFile): Boolean =
         !file.info.isFolder

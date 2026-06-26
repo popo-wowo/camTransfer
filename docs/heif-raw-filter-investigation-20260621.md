@@ -1,5 +1,113 @@
 # HEIF/RAW 筛选问题排查记录 (2026-06-21)
 
+## 2026-06-24 最终结论
+
+问题已经解决。正式方案不是 hidden gap 猜 handle，也不是标准 PTP 全卡枚举，而是利用相机在不同 `D604` 格式 mask 下返回的 `D621 SpecifiedObjectHandles` 差异:
+
+```text
+D604=JPG  -> D621 count 1138
+D604=MOV  -> D621 count 14
+D604=MP4  -> D621 count 0
+D604=31   -> D621 count 1152, 后续 ObjectInfo 解析为 JPG=1138, Video=14
+D604=HEIF -> D621 count 1268
+D604=RAW  -> D621 count 1268
+```
+
+关键点:
+
+1. `D604=31` 在当前 Android X-T5 实机上不是完整时间线，只暴露 `JPG + MOV`。
+2. `D604=HEIF` 或 `D604=RAW` 后重新读取 `9053/D620/D621`，相机会返回更大的 1268 handle 列表。
+3. 这个 1268 列表不是我们猜出来的，而是相机自己返回的完整 specified list。
+4. 初始占位符使用这个扩展列表后，RAW/HEIF 一开始就存在，缩略图可以直接按首屏队列加载。
+5. 后续 hidden metadata probe 只剩兜底，实测扩展 D621 成功后 `selected=0`。
+
+最终验证日志:
+
+```text
+FormatSpecifiedHandles HEIF promotedToInitial count=1268 previous=1152
+Fast gallery placeholders count=1268 dateGroups=19 datedPlaceholders=1268
+Thumbnail context primed handle=1268 format=0x3812
+Thumbnail context primed handle=1267 format=0xb103
+full-object-info-final total=1268 formats={HEIF=37, RAW=79, JPG=1138, Video=14}
+Gallery hidden metadata selected=0
+```
+
+实现规则:
+
+1. 进入图库后仍先读取基线 `D604=31` 的 `9053/D620/D621`。
+2. 再设置 `D604=HEIF` 或 `D604=RAW` 并读取同一组 `9053/D620/D621`。
+3. 如果格式特定 pass 返回的 handle 数更多，并且日期分组总数等于 handle 数，则把它提升为初始占位符列表。
+4. 发布占位符时保留相机返回顺序，不要按 handle 数字倒序排。
+5. 完整 `ObjectInfo` 后台补齐，合并时保留已加载缩略图。
+6. hidden gap probe 保留为诊断兜底，不能作为主发现路径。
+
+顺序规则很重要。扩展 `D621` 的最新段可能是:
+
+```text
+1267,1268,1265,1266,1263,1264,1261,1262,1259,1260,1257,1258...
+```
+
+这代表相机自己的时间线顺序。按 handle 倒序会变成 `1268,1267,1266,1265...`，会打乱 RAW/HEIF/JPG 在同一拍摄组里的位置。
+
+## 复盘: 为什么这个问题解决了这么久
+
+### 1. 错把 `D604=31` 当成“全格式”
+
+最早的直觉是 `31 = JPG|HEIF|MOV|MP4|RAW`，因此它应该返回全部格式。这个假设在协议常量上看起来合理，但实机日志反复证明它在当前 Android 会话里只返回 `JPG + MOV`。
+
+真正的突破是停止从常量含义推断相机行为，改成逐个 mask 对比 `9053/D620/D621` 的真实返回。
+
+### 2. 被 hidden gap probe 的“能用”误导
+
+gap probe 确实能找到 RAW/HEIF，所以它一度让问题看起来已经解决。但它解决的是“最终能看到”，不是“原厂一样一开始就有占位符”。这导致我们在一段时间里优化后补逻辑，而不是继续追初始 handle 来源。
+
+后来的验证标准改成:
+
+```text
+Fast gallery placeholders 必须已经包含 RAW/HEIF 对应 handle
+full-object-info-final 之前不应再靠 hidden metadata found 补 RAW/HEIF
+```
+
+这个标准才把方向拉回到初始 `D621`。
+
+### 3. 过度相信 iPhone 抓包的命令序列对 Android 完全等价
+
+iPhone 抓包显示官方 App 没有明显调用 `9051 SetSearchModeAll`，但 iPhone 能拿到全格式。我们一度推断差异来自连接前状态、系统差异或原厂 native SDK 的隐藏行为。
+
+这些方向不是错的，但不够闭环。Android 实机上真正有用的证据来自同一连接内逐个设置 `D604` 后马上读 `9053/D620/D621`。这比跨设备对比更直接。
+
+### 4. 抓包和反编译没有直接给出最终答案
+
+VPN 抓包会影响官方 App 传图，标准 PTP 枚举又在 vendor Wi-Fi 会话里返回 `0x2005`。反编译能确认 `D604`、`SetSearchModeAll`、`GetSpecifiedObjectHandles` 等概念存在，但无法直接说明当前机型在每个 mask 下的返回行为。
+
+最终答案来自“反编译给方向，实机日志做判定”: 反编译确认格式 mask 值，实机枚举 mask 证明哪个请求能让相机吐出完整列表。
+
+### 5. 之前的日志粒度不够面向“列表来源”
+
+早期更多看最终文件数、RAW 是否出现、缩略图是否能加载。后来加了这些关键日志后，问题才变清楚:
+
+```text
+SpecifiedObjectHandles count
+FormatSpecifiedHandles <format> groups/count/first/last
+Fast gallery placeholders count
+full-object-info-final formats
+Gallery hidden metadata selected
+```
+
+这些日志能直接回答三个问题:
+
+1. 初始占位符来自哪个 handle 列表。
+2. RAW/HEIF 是初始列表已有，还是后面补出来。
+3. hidden probe 是否还在承担主发现职责。
+
+### 以后遇到类似问题的规则
+
+1. 不要只看最终 UI 是否出现，要看“出现的阶段”: 初始占位符、缩略图、完整 metadata、hidden probe。
+2. 不要用协议常量含义代替相机行为，必须逐个请求实测返回。
+3. 对相机返回的列表顺序保持敬畏，除非有证据证明 handle 倒序等价于时间顺序。
+4. 临时兜底能解决可见性，但不能替代原厂行为复刻。
+5. 每个协议假设都要有一条能反证的日志，比如 count、format distribution、hidden selected count。
+
 ## 问题描述
 
 1. HEIF 格式的照片筛选不出来
@@ -47,7 +155,7 @@ shouldResetSearchModeDuringColdStart = false
 
 iOS 版本也**不调用 SetSearchModeAll**——它依赖相机已经处于正确状态。
 
-## 当前实现方案（临时方案）
+## 旧实现方案（已降级为兜底）
 
 ### 方法：Hidden Gap Probe + Forward Probe
 
@@ -71,7 +179,7 @@ iOS 版本也**不调用 SetSearchModeAll**——它依赖相机已经处于正�
 - 日期分组和数量不包含 HEIF/RAW（9053 只返回 JPEG 的）
 - 总数量和相机显示的不一致
 
-## 未来优化方向
+## 历史优化方向（已被 2026-06-24 方案取代）
 
 ### 方案 A：抓取 Android 官方 app 的 PTP 流量
 

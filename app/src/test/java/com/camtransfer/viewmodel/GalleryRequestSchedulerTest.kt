@@ -2,6 +2,7 @@ package com.camtransfer.viewmodel
 
 import com.camtransfer.viewmodel.gallery.GalleryRequestPriority
 import com.camtransfer.viewmodel.gallery.GalleryRequestScheduler
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -42,6 +43,51 @@ class GalleryRequestSchedulerTest {
 
         assertEquals(
             listOf("first-start", "first-end", "second-start", "second-end"),
+            events,
+        )
+    }
+
+    @Test
+    fun visibleThumbnailRunsBeforeQueuedBackgroundMetadata() = runBlocking {
+        val scheduler = GalleryRequestScheduler()
+        val events = mutableListOf<String>()
+        val releaseFirst = CompletableDeferred<Unit>()
+
+        val first = async {
+            scheduler.run(GalleryRequestPriority.BackgroundMetadata) {
+                events += "first-background-start"
+                releaseFirst.await()
+                events += "first-background-end"
+            }
+        }
+        delay(10)
+
+        val background = async {
+            scheduler.run(GalleryRequestPriority.BackgroundMetadata) {
+                events += "queued-background"
+            }
+        }
+        delay(10)
+
+        val thumbnail = async {
+            scheduler.run(GalleryRequestPriority.VisibleThumbnail) {
+                events += "visible-thumbnail"
+            }
+        }
+        delay(10)
+
+        releaseFirst.complete(Unit)
+        first.await()
+        background.await()
+        thumbnail.await()
+
+        assertEquals(
+            listOf(
+                "first-background-start",
+                "first-background-end",
+                "visible-thumbnail",
+                "queued-background",
+            ),
             events,
         )
     }

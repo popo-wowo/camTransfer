@@ -2,12 +2,33 @@ package com.camtransfer.service
 
 import com.camtransfer.model.CameraFile
 import com.camtransfer.model.ObjectInfo
+import com.camtransfer.model.TransferDownloadMode
+import com.camtransfer.model.TransferItem
 import com.camtransfer.protocol.PtpObjectFormat
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.net.SocketException
 
 class TransferDownloadFilePolicyTest {
+    @Test
+    fun transferItemKeepsDownloadModeSelectedAtEnqueueTime() {
+        val queuedFile = cameraFile(
+            handle = 18,
+            filename = "DSCF0018.JPG",
+            compressedSize = 2048,
+        )
+
+        val item = TransferItem(
+            file = queuedFile,
+            downloadMode = TransferDownloadMode.ORIGINAL,
+        )
+
+        assertEquals(TransferDownloadMode.ORIGINAL, item.downloadMode)
+    }
+
     @Test
     fun usesResolvedCameraFileMetadataWhenQueuedFileIsPlaceholder() {
         val placeholderThumbnail = byteArrayOf(1, 2, 3)
@@ -51,17 +72,75 @@ class TransferDownloadFilePolicyTest {
         )
     }
 
+    @Test
+    fun stopsRemainingQueueWhenCameraConnectionIsLost() {
+        val current = listOf(
+            TransferItem(file = cameraFile(handle = 1, filename = "DSCF0001.RAF", compressedSize = 85_000_000), state = com.camtransfer.model.TransferState.ERROR),
+            TransferItem(file = cameraFile(handle = 2, filename = "DSCF0002.JPG", compressedSize = 1024)),
+            TransferItem(file = cameraFile(handle = 3, filename = "DSCF0003.JPG", compressedSize = 1024)),
+        )
+
+        assertTrue(TransferFailurePolicy.shouldStopQueueAfterFailure(SocketException("Socket is closed")))
+        assertTrue(TransferFailurePolicy.shouldStopQueueAfterFailure(IllegalStateException("Not connected to camera")))
+        assertFalse(TransferFailurePolicy.shouldStopQueueAfterFailure(IllegalArgumentException("保存失败")))
+
+        val stopped = TransferFailurePolicy.markPendingAfterFatalFailure(
+            items = current,
+            error = "相机连接已断开，请重新进入相册后重试",
+        )
+
+        assertEquals(com.camtransfer.model.TransferState.ERROR, stopped[1].state)
+        assertEquals(com.camtransfer.model.TransferState.ERROR, stopped[2].state)
+        assertEquals("相机连接已断开，请重新进入相册后重试", stopped[1].error)
+        assertEquals("相机连接已断开，请重新进入相册后重试", stopped[2].error)
+    }
+
+    @Test
+    fun streamsVideosAndLargeFilesInsteadOfHoldingWholeDownloadInMemory() {
+        assertTrue(
+            TransferDownloadFilePolicy.shouldStreamDownload(
+                cameraFile(
+                    handle = 54,
+                    filename = "DSCF0054.MOV",
+                    compressedSize = 243_269_040,
+                    format = PtpObjectFormat.MOV,
+                )
+            )
+        )
+        assertTrue(
+            TransferDownloadFilePolicy.shouldStreamDownload(
+                cameraFile(
+                    handle = 55,
+                    filename = "DSCF0055.JPG",
+                    compressedSize = 96_000_000,
+                    format = PtpObjectFormat.JPEG,
+                )
+            )
+        )
+        assertFalse(
+            TransferDownloadFilePolicy.shouldStreamDownload(
+                cameraFile(
+                    handle = 56,
+                    filename = "DSCF0056.JPG",
+                    compressedSize = 167_936,
+                    format = PtpObjectFormat.JPEG,
+                )
+            )
+        )
+    }
+
     private fun cameraFile(
         handle: Int,
         filename: String,
         compressedSize: Int,
         thumbnail: ByteArray? = null,
+        format: Int = PtpObjectFormat.JPEG,
     ): CameraFile =
         CameraFile(
             info = ObjectInfo(
                 handle = handle,
                 storageId = 1,
-                format = PtpObjectFormat.JPEG,
+                format = format,
                 compressedSize = compressedSize,
                 thumbFormat = PtpObjectFormat.JPEG,
                 thumbCompressedSize = 128,

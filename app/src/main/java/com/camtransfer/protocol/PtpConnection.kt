@@ -31,11 +31,15 @@ class PtpConnection {
     private var sessionOpen = false
     private val commandMutex = Mutex()
     private var specifiedObjectHandles: List<Int> = emptyList()
+    private var specifiedObjectCount: Int? = null
     private var specifiedObjectCountsByDate: List<CameraVendorObjectCountByDate> = emptyList()
+    private var specifiedObjectHandlesByFormatMask: Map<Int, List<Int>> = emptyMap()
 
     val isConnected: Boolean get() = sessionOpen
     val cameraVendorSpecifiedObjectHandles: List<Int> get() = specifiedObjectHandles
+    val cameraVendorSpecifiedObjectCount: Int? get() = specifiedObjectCount
     val cameraVendorSpecifiedObjectCountsByDate: List<CameraVendorObjectCountByDate> get() = specifiedObjectCountsByDate
+    val cameraVendorSpecifiedObjectHandlesByFormatMask: Map<Int, List<Int>> get() = specifiedObjectHandlesByFormatMask
     val nextTransactionId: Int get() = ++transactionId
 
     suspend fun connect(
@@ -51,7 +55,9 @@ class PtpConnection {
         disconnect()
         transactionId = 0
         specifiedObjectHandles = emptyList()
+        specifiedObjectCount = null
         specifiedObjectCountsByDate = emptyList()
+        specifiedObjectHandlesByFormatMask = emptyMap()
 
         withContext(Dispatchers.IO) {
             var lastError: Throwable? = null
@@ -191,29 +197,55 @@ class PtpConnection {
         cmdSocket = null
         transactionId = 0
         specifiedObjectHandles = emptyList()
+        specifiedObjectCount = null
         specifiedObjectCountsByDate = emptyList()
+        specifiedObjectHandlesByFormatMask = emptyMap()
     }
 
     private suspend fun performOfficialImageViewModeSetup() {
-        readDeviceProperty(CameraVendorDevicePropCode.INIT_SEQUENCE)
+        readDevicePropertyForDiagnostic(
+            label = "Gallery setup D212 before DF01 set",
+            code = CameraVendorDevicePropCode.REFERENCE_APP_GALLERY_OBJECT_CONTEXT,
+        )
+        Log.d(
+            TAG,
+            "Gallery setup DF01 writing official function mode " +
+                "value=${CameraVendorReferenceApp.REMOTE_IMAGE_VIEWER_CLIENT_STATE} width=uint16",
+        )
         setDevicePropertyUInt16(
             CameraVendorDevicePropCode.INIT_SEQUENCE,
             CameraVendorReferenceApp.REMOTE_IMAGE_VIEWER_CLIENT_STATE,
         )
-        readDeviceProperty(CameraVendorDevicePropCode.REFERENCE_APP_IMAGE_HOST)
-        val functionVersion = CameraVendorOfficialGalleryStartupPolicy.functionVersion(
-            readDeviceProperty(CameraVendorDevicePropCode.REFERENCE_APP_IMAGE_HOST)
+        val firstFunctionVersionData = readDevicePropertyForDiagnostic(
+            label = "Gallery setup DF28 first function version read",
+            code = CameraVendorDevicePropCode.REFERENCE_APP_IMAGE_HOST,
+        )
+        val firstFunctionVersion = CameraVendorOfficialGalleryStartupPolicy.functionVersion(firstFunctionVersionData)
+        val secondFunctionVersionData = readDevicePropertyForDiagnostic(
+            label = "Gallery setup DF28 second function version read",
+            code = CameraVendorDevicePropCode.REFERENCE_APP_IMAGE_HOST,
+        )
+        val functionVersion = CameraVendorOfficialGalleryStartupPolicy.functionVersion(secondFunctionVersionData)
+        val officialFunctionVersion = CameraVendorOfficialGalleryStartupPolicy.REMOTE_PHOTO_VIEW_EX_FUNCTION_VERSION
+        Log.d(
+            TAG,
+            "Gallery setup DF28 writing official function version " +
+                "first=$firstFunctionVersion second=$functionVersion write=$officialFunctionVersion",
         )
         setDevicePropertyUInt32(
             CameraVendorDevicePropCode.REFERENCE_APP_IMAGE_HOST,
-            functionVersion,
+            officialFunctionVersion,
         )
-        readDeviceProperty(CameraVendorDevicePropCode.REFERENCE_APP_GALLERY_ACCESS_STATE)
+        readDevicePropertyForDiagnostic(
+            label = "Gallery setup D244 after DF28 set",
+            code = CameraVendorDevicePropCode.REFERENCE_APP_GALLERY_ACCESS_STATE,
+        )
     }
 
     suspend fun loadCameraVendorGalleryObjectHandles() {
         readDeviceProperty(CameraVendorDevicePropCode.REFERENCE_APP_GALLERY_OBJECT_CONTEXT)
         readDeviceProperty(CameraVendorDevicePropCode.REFERENCE_APP_GALLERY_ACCESS_STATE)
+        resetOfficialCompressionModeForDiagnostic()
         runCatching {
             sendCommandGetData(
                 PtpOpCode.CAMERA_VENDOR_GET_LATEST_OBJECT_INFO,
@@ -227,6 +259,9 @@ class PtpConnection {
             )
         }.onFailure { Log.d(TAG, "Current thumbnail context prime failed: ${it.message}") }
         retrySearchModeDescAll()
+        readSearchModeAllForDiagnostic("SearchModeAll before official empty reset")
+        setOfficialDefaultSearchModeForDiagnostic()
+        setOfficialAllFormatSearchModeForDiagnostic()
         readCurrentObjectHandleSnapshot()
         val objectCountGroupData = sendCommandGetData(
             PtpOpCode.CAMERA_VENDOR_GET_SPECIFIED_OBJECT_COUNT_GROUP_BY_DATE,
@@ -235,23 +270,47 @@ class PtpConnection {
         specifiedObjectCountsByDate = CameraVendorPtpDataParser.objectCountsByDate(objectCountGroupData)
         Log.d(
             TAG,
-            "SpecifiedObjectCountsByDate=${specifiedObjectCountsByDate.size} " +
-                "bytes=${objectCountGroupData.size} head=${objectCountGroupData.headHex()} " +
-                "summary=${specifiedObjectCountsByDate.take(6).joinToString { "${it.dateValue}:${it.numberOfImages}" }}",
+            "SpecifiedObjectCountsByDate " +
+                CameraVendorGalleryDiagnosticPolicy.dateGroupSummary(specifiedObjectCountsByDate) + " " +
+                "bytes=${objectCountGroupData.size} head=${objectCountGroupData.headHex()}",
         )
         readDeviceProperty(CameraVendorDevicePropCode.REFERENCE_APP_GALLERY_OBJECT_CONTEXT)
-        readDeviceProperty(CameraVendorDevicePropCode.SPECIFIED_OBJECT_COUNT)
-        specifiedObjectHandles = CameraVendorPtpDataParser.uint32Array(
-            readDeviceProperty(CameraVendorDevicePropCode.SPECIFIED_OBJECT_HANDLES)
+        val specifiedObjectCountData = readDeviceProperty(CameraVendorDevicePropCode.SPECIFIED_OBJECT_COUNT)
+        specifiedObjectCount = specifiedObjectCountData.uint32OrNull()
+        Log.d(
+            TAG,
+            "SpecifiedObjectCount expected=${specifiedObjectCount ?: "unknown"} " +
+                "bytes=${specifiedObjectCountData.size} head=${specifiedObjectCountData.headHex()}",
         )
-        Log.d(TAG, "SpecifiedObjectHandles=${specifiedObjectHandles.size}")
+        val specifiedObjectHandlesData = readDeviceProperty(CameraVendorDevicePropCode.SPECIFIED_OBJECT_HANDLES)
+        specifiedObjectHandles = CameraVendorPtpDataParser.uint32Array(
+            specifiedObjectHandlesData
+        )
+        Log.d(
+            TAG,
+            "SpecifiedObjectHandles " +
+                CameraVendorGalleryDiagnosticPolicy.handleSummary(
+                    handles = specifiedObjectHandles,
+                    expectedCount = specifiedObjectCount,
+                ) + " bytes=${specifiedObjectHandlesData.size} head=${specifiedObjectHandlesData.headHex()}",
+        )
+        specifiedObjectHandlesByFormatMask = specifiedObjectHandlesByFormatMask +
+            (CameraVendorOfficialGalleryStartupPolicy.initialObjectFormatMask() to specifiedObjectHandles)
+        readStandardObjectHandlesForDiagnostic()
+        readFormatSpecificSpecifiedHandlesForDiagnostic()
+        setOfficialAllFormatSearchModeForDiagnostic()
     }
 
     private suspend fun retrySearchModeDescAll() {
         var lastError: Throwable? = null
         repeat(3) { index ->
             try {
-                sendCommandGetData(PtpOpCode.CAMERA_VENDOR_GET_SEARCH_MODE_DESC_ALL)
+                val data = sendCommandGetData(PtpOpCode.CAMERA_VENDOR_GET_SEARCH_MODE_DESC_ALL)
+                Log.d(
+                    TAG,
+                    "SearchModeDescAll bytes=${data.size} head=${data.headHex()} " +
+                        "snapshot=${CameraVendorPtpDataParser.searchModeSnapshot(data)}",
+                )
                 return
             } catch (e: Throwable) {
                 lastError = e
@@ -267,8 +326,203 @@ class PtpConnection {
             .onFailure { Log.d(TAG, "Current object handle read failed: ${it.message}") }
     }
 
+    private suspend fun readDevicePropertyForDiagnostic(label: String, code: Int): ByteArray {
+        val data = readDeviceProperty(code)
+        Log.d(
+            TAG,
+            "$label prop=0x${code.toString(16)} bytes=${data.size} head=${data.headHex()}",
+        )
+        return data
+    }
+
+    private suspend fun readSearchModeAllForDiagnostic(label: String): ByteArray? {
+        return runCatching {
+            sendCommandGetData(PtpOpCode.CAMERA_VENDOR_GET_SEARCH_MODE_ALL)
+        }.onSuccess { data ->
+            Log.d(
+                TAG,
+                "$label bytes=${data.size} head=${data.headHex()} " +
+                    "snapshot=${CameraVendorPtpDataParser.searchModeSnapshot(data)}",
+            )
+        }.onFailure {
+            Log.d(TAG, "$label read failed: ${it.message}")
+        }.getOrNull()
+    }
+
+    private suspend fun resetOfficialCompressionModeForDiagnostic() {
+        readDevicePropertyForDiagnosticIfAvailable(
+            label = "Gallery setup D226 before compression reset",
+            code = CameraVendorDevicePropCode.IMAGE_FORCE_COMPRESSION,
+        )
+        readDevicePropertyForDiagnosticIfAvailable(
+            label = "Gallery setup D227 before compression reset",
+            code = CameraVendorDevicePropCode.IMAGE_COMPRESSION_REAL_INFO,
+        )
+        runCatching {
+            setDevicePropertyUInt16(CameraVendorDevicePropCode.IMAGE_FORCE_COMPRESSION, 0)
+        }.onSuccess {
+            Log.d(TAG, "Gallery setup D226 compression reset response=0x${it.responseCode.toString(16)}")
+        }.onFailure {
+            Log.d(TAG, "Gallery setup D226 compression reset failed: ${it.message}")
+        }
+        runCatching {
+            setDevicePropertyUInt16(CameraVendorDevicePropCode.IMAGE_COMPRESSION_REAL_INFO, 0)
+        }.onSuccess {
+            Log.d(TAG, "Gallery setup D227 compression reset response=0x${it.responseCode.toString(16)}")
+        }.onFailure {
+            Log.d(TAG, "Gallery setup D227 compression reset failed: ${it.message}")
+        }
+        readDevicePropertyForDiagnosticIfAvailable(
+            label = "Gallery setup D226 after compression reset",
+            code = CameraVendorDevicePropCode.IMAGE_FORCE_COMPRESSION,
+        )
+        readDevicePropertyForDiagnosticIfAvailable(
+            label = "Gallery setup D227 after compression reset",
+            code = CameraVendorDevicePropCode.IMAGE_COMPRESSION_REAL_INFO,
+        )
+    }
+
+    private suspend fun setOfficialDefaultSearchModeForDiagnostic() {
+        val payload = CameraVendorPtpDataParser.emptySearchModeAllPayload()
+        Log.d(
+            TAG,
+            "SearchModeAll official empty reset attempting " +
+                "payloadBytes=${payload.size} head=${payload.headHex()} " +
+                "snapshot=${CameraVendorPtpDataParser.searchModeSnapshot(payload)}",
+        )
+        runCatching {
+            sendCommandWithData(PtpOpCode.CAMERA_VENDOR_SET_SEARCH_MODE_ALL, data = payload)
+        }.onSuccess {
+            Log.d(TAG, "SearchModeAll official empty reset response=0x${it.responseCode.toString(16)}")
+        }.onFailure {
+            Log.d(TAG, "SearchModeAll official empty reset failed: ${it.message}")
+        }
+        readSearchModeAllForDiagnostic("SearchModeAll after official empty reset")
+    }
+
+    private suspend fun setOfficialAllFormatSearchModeForDiagnostic() {
+        val payload = CameraVendorPtpDataParser.officialObjectFormatSearchModeAllPayload(
+            CameraVendorOfficialGalleryStartupPolicy.initialObjectFormatMask(),
+        )
+        Log.d(
+            TAG,
+            "SearchModeAll explicit all-format attempting " +
+                "payloadBytes=${payload.size} head=${payload.headHex()} " +
+                "snapshot=${CameraVendorPtpDataParser.searchModeSnapshot(payload)}",
+        )
+        runCatching {
+            sendCommandWithData(PtpOpCode.CAMERA_VENDOR_SET_SEARCH_MODE_ALL, data = payload)
+        }.onSuccess {
+            Log.d(TAG, "SearchModeAll explicit all-format response=0x${it.responseCode.toString(16)}")
+        }.onFailure {
+            Log.d(TAG, "SearchModeAll explicit all-format failed: ${it.message}")
+        }
+        readSearchModeAllForDiagnostic("SearchModeAll after explicit all-format")
+    }
+
+    private suspend fun readStandardObjectHandlesForDiagnostic() {
+        runCatching {
+            val storageIdsData = sendCommandGetData(PtpOpCode.GET_STORAGE_IDS)
+            val storageIds = CameraVendorPtpDataParser.uint32Array(storageIdsData)
+            Log.d(
+                TAG,
+                "StandardObjectHandles storageIds=${storageIds.joinToString { "0x${it.toString(16)}" }} " +
+                    "bytes=${storageIdsData.size} head=${storageIdsData.headHex()}",
+            )
+            val allHandles = mutableListOf<Int>()
+            for (storageId in storageIds) {
+                val handlesData = sendCommandGetData(
+                    PtpOpCode.GET_OBJECT_HANDLES,
+                    listOf(storageId, CameraVendorConst.ALL_FORMATS, CameraVendorConst.ALL_HANDLES),
+                )
+                val handles = CameraVendorPtpDataParser.uint32Array(handlesData)
+                allHandles += handles
+                Log.d(
+                    TAG,
+                    "StandardObjectHandles storageId=0x${storageId.toString(16)} " +
+                        CameraVendorGalleryDiagnosticPolicy.handleSummary(
+                            handles = handles,
+                            expectedCount = null,
+                        ) + " bytes=${handlesData.size} head=${handlesData.headHex()}",
+                )
+            }
+            Log.d(
+                TAG,
+                "StandardObjectHandles all " +
+                    CameraVendorGalleryDiagnosticPolicy.handleSummary(
+                        handles = allHandles,
+                        expectedCount = null,
+                    ),
+            )
+        }.onFailure {
+            Log.d(TAG, "StandardObjectHandles diagnostic failed: ${it.message}")
+        }
+    }
+
+    private suspend fun readFormatSpecificSpecifiedHandlesForDiagnostic() {
+        val formats = listOf(
+            "JPG" to CameraVendorSearchMode.FORMAT_JPEG,
+            "HEIF" to CameraVendorSearchMode.FORMAT_HEIF,
+            "MOV" to CameraVendorSearchMode.FORMAT_MOV,
+            "MP4" to CameraVendorSearchMode.FORMAT_MP4,
+            "RAW" to CameraVendorSearchMode.FORMAT_RAW,
+        )
+        for ((label, mask) in formats) {
+            runCatching {
+                val payload = CameraVendorPtpDataParser.officialObjectFormatSearchModeAllPayload(mask)
+                val response = sendCommandWithData(PtpOpCode.CAMERA_VENDOR_SET_SEARCH_MODE_ALL, data = payload)
+                Log.d(
+                    TAG,
+                    "FormatSpecifiedHandles $label setSearchMode response=0x${response.responseCode.toString(16)} " +
+                        "mask=$mask payload=${payload.headHex()}",
+                )
+                val groupsData = sendCommandGetData(
+                    PtpOpCode.CAMERA_VENDOR_GET_SPECIFIED_OBJECT_COUNT_GROUP_BY_DATE,
+                    listOf(0, CameraVendorReferenceApp.SPECIFIED_OBJECT_COUNT_LIMIT),
+                )
+                val groups = CameraVendorPtpDataParser.objectCountsByDate(groupsData)
+                val countData = readDeviceProperty(CameraVendorDevicePropCode.SPECIFIED_OBJECT_COUNT)
+                val count = countData.uint32OrNull()
+                val handlesData = readDeviceProperty(CameraVendorDevicePropCode.SPECIFIED_OBJECT_HANDLES)
+                val handles = CameraVendorPtpDataParser.uint32Array(handlesData)
+                specifiedObjectHandlesByFormatMask = specifiedObjectHandlesByFormatMask + (mask to handles)
+                if (
+                    (mask == CameraVendorSearchMode.FORMAT_HEIF || mask == CameraVendorSearchMode.FORMAT_RAW) &&
+                    handles.size > specifiedObjectHandles.size &&
+                    groups.sumOf { it.numberOfImages } == handles.size
+                ) {
+                    val previousCount = specifiedObjectHandles.size
+                    specifiedObjectHandles = handles
+                    specifiedObjectCount = count
+                    specifiedObjectCountsByDate = groups
+                    Log.d(
+                        TAG,
+                        "FormatSpecifiedHandles $label promotedToInitial " +
+                            "count=${handles.size} previous=$previousCount",
+                    )
+                }
+                Log.d(
+                    TAG,
+                    "FormatSpecifiedHandles $label " +
+                        "${CameraVendorGalleryDiagnosticPolicy.dateGroupSummary(groups)} " +
+                        CameraVendorGalleryDiagnosticPolicy.handleSummary(
+                            handles = handles,
+                            expectedCount = count,
+                        ) + " countHead=${countData.headHex()} handlesHead=${handlesData.headHex()}",
+                )
+            }.onFailure {
+                Log.d(TAG, "FormatSpecifiedHandles $label failed: ${it.message}")
+            }
+        }
+    }
+
     suspend fun readDeviceProperty(code: Int): ByteArray =
         sendCommandGetData(PtpOpCode.GET_DEVICE_PROP_VALUE, listOf(code))
+
+    private suspend fun readDevicePropertyForDiagnosticIfAvailable(label: String, code: Int): ByteArray? =
+        runCatching { readDevicePropertyForDiagnostic(label, code) }
+            .onFailure { Log.d(TAG, "$label prop=0x${code.toString(16)} read failed: ${it.message}") }
+            .getOrNull()
 
     suspend fun setDevicePropertyUInt16(code: Int, value: Int): PtpOperationResponse =
         sendCommandWithData(PtpOpCode.SET_DEVICE_PROP_VALUE, listOf(code), littleEndianUInt16(value))
@@ -369,6 +623,46 @@ class PtpConnection {
 
     private fun ByteArray.headHex(byteCount: Int = 96): String =
         take(byteCount).joinToString("") { "%02x".format(it) }
+
+    private fun ByteArray.uint32OrNull(): Int? =
+        if (size >= 4) ByteBuffer.wrap(this, 0, 4).order(ByteOrder.LITTLE_ENDIAN).int else null
+}
+
+internal object CameraVendorGalleryDiagnosticPolicy {
+    fun dateGroupSummary(groups: List<CameraVendorObjectCountByDate>): String {
+        val total = groups.sumOf { it.numberOfImages }
+        val summary = groups.take(12).joinToString { "${it.dateValue}:${it.numberOfImages}" }
+        return "groups=${groups.size} total=$total summary=$summary"
+    }
+
+    fun handleSummary(handles: List<Int>, expectedCount: Int?): String {
+        if (handles.isEmpty()) {
+            return "count=0 expected=${expectedCount ?: "unknown"}"
+        }
+        val sorted = handles.distinct().sorted()
+        val smallGaps = smallGapSummary(sorted)
+        val mismatch = expectedCount != null && expectedCount != handles.size
+        return "count=${handles.size} expected=${expectedCount ?: "unknown"} " +
+            "countMismatch=$mismatch min=${sorted.first()} max=${sorted.last()} " +
+            "first=${handles.take(16).joinToString(",")} " +
+            "last=${handles.takeLast(16).joinToString(",")} " +
+            "smallGaps=$smallGaps"
+    }
+
+    private fun smallGapSummary(sortedHandles: List<Int>): String {
+        if (sortedHandles.size < 2) return "none"
+        val gaps = mutableListOf<String>()
+        for (index in 0 until sortedHandles.lastIndex) {
+            val lower = sortedHandles[index]
+            val upper = sortedHandles[index + 1]
+            val missing = upper - lower - 1
+            if (missing in 1..20) {
+                gaps += "$lower-$upper:$missing"
+                if (gaps.size >= 12) break
+            }
+        }
+        return gaps.joinToString().ifBlank { "none" }
+    }
 }
 
 internal object PtpConnectionSocketPolicy {

@@ -119,6 +119,7 @@ fun BrowseScreen(
     downloadedItems: List<TransferItem>,
     isTransferring: Boolean,
     preferCompressedDownloads: Boolean,
+    canChangeTransferMode: Boolean = true,
     onFilesLoaded: (List<CameraFile>) -> Unit,
     onPreferenceChanged: (Boolean) -> Unit,
     onDownloadSelected: (List<CameraFile>) -> Unit,
@@ -392,6 +393,7 @@ fun BrowseScreen(
                 canToggleSelectAll = selectableFilteredHandles.isNotEmpty(),
                 preferCompressedDownloads = preferCompressedDownloads,
                 canDownload = selectedFiles.isNotEmpty(),
+                canChangeTransferMode = canChangeTransferMode,
                 onToggleSelectAll = {
                     if (allFilteredSelected) {
                         viewModel.clearSelection()

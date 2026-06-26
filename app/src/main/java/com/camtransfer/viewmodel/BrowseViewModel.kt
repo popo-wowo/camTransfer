@@ -90,10 +90,12 @@ class BrowseViewModel : ViewModel() {
     }
 
     suspend fun prepareThumbnailLoadingForTransfer(cameraSource: CameraFileSource) {
+        filesController.pauseForExclusiveOperation(cameraSource, reason = "transfer")
         thumbnailController.pauseForExclusiveOperation(cameraSource, reason = "transfer")
     }
 
     fun resumeThumbnailLoadingAfterTransfer(cameraSource: CameraFileSource) {
+        filesController.resumeAfterExclusiveOperation(cameraSource, reason = "transfer")
         thumbnailController.resumeAfterExclusiveOperation(cameraSource, reason = "transfer")
     }
 

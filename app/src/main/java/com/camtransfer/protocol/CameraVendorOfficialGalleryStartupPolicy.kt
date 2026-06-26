@@ -14,6 +14,10 @@ enum class CameraVendorOfficialGalleryStartupOperation {
 }
 
 object CameraVendorOfficialGalleryStartupPolicy {
+    const val REMOTE_PHOTO_VIEW_EX_FUNCTION_VERSION = 3
+
+    fun initialObjectFormatMask(): Int = CameraVendorSearchMode.ALL_FORMATS
+
     fun connectionStageOperations(): List<CameraVendorOfficialGalleryStartupOperation> =
         listOf(
             CameraVendorOfficialGalleryStartupOperation.SetFunctionMode,

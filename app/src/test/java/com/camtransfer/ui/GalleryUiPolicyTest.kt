@@ -1,6 +1,7 @@
 package com.camtransfer.ui
 
 import com.camtransfer.model.CameraFile
+import com.camtransfer.model.CameraFileFormatHint
 import com.camtransfer.model.ObjectInfo
 import com.camtransfer.model.TransferState
 import com.camtransfer.protocol.PtpObjectFormat
@@ -12,6 +13,12 @@ import org.junit.Test
 import java.time.LocalDate
 
 class GalleryUiPolicyTest {
+    @Test
+    fun transferModeCanChangeWheneverNoTransferIsRunning() {
+        assertTrue(GalleryTransferModeUiPolicy.canChangeTransferMode(isTransferring = false))
+        assertFalse(GalleryTransferModeUiPolicy.canChangeTransferMode(isTransferring = true))
+    }
+
     @Test
     fun defaultFilterShowsAllDatesAndAllFormats() {
         val today = LocalDate.of(2026, 5, 29)
@@ -131,6 +138,43 @@ class GalleryUiPolicyTest {
         val filtered = GalleryUiPolicy.filteredFiles(files, state, today)
 
         assertEquals(listOf(2, 3), filtered.map { it.info.handle })
+    }
+
+    @Test
+    fun formatFilterIncludesUnresolvedPlaceholdersWithCameraFormatHints() {
+        val today = LocalDate.of(2026, 5, 29)
+        val files = listOf(
+            file(1, PtpObjectFormat.UNDEFINED, "20260529T081500")
+                .copy(formatHints = setOf(CameraFileFormatHint.VIDEO)),
+            file(2, PtpObjectFormat.UNDEFINED, "20260529T091500")
+                .copy(formatHints = setOf(CameraFileFormatHint.HEIF, CameraFileFormatHint.RAW)),
+            file(3, PtpObjectFormat.UNDEFINED, "20260529T101500"),
+        )
+
+        assertEquals(
+            listOf(1),
+            GalleryUiPolicy.filteredFiles(
+                files,
+                GalleryFilterState(formats = setOf(GalleryFormatFilter.Video)),
+                today,
+            ).map { it.info.handle },
+        )
+        assertEquals(
+            listOf(2),
+            GalleryUiPolicy.filteredFiles(
+                files,
+                GalleryFilterState(formats = setOf(GalleryFormatFilter.Raw)),
+                today,
+            ).map { it.info.handle },
+        )
+        assertEquals(
+            listOf(2),
+            GalleryUiPolicy.filteredFiles(
+                files,
+                GalleryFilterState(formats = setOf(GalleryFormatFilter.Heif)),
+                today,
+            ).map { it.info.handle },
+        )
     }
 
     @Test
@@ -327,16 +371,46 @@ class GalleryUiPolicyTest {
         )
 
         assertEquals(
-            listOf(2, 4, 1, 3),
+            listOf(1, 2, 4, 3),
             GallerySortPolicy.sortedFiles(files, GallerySortMode.NewestFirst, downloadedStates).map { it.info.handle },
         )
         assertEquals(
-            listOf(3, 1, 4, 2),
+            listOf(3, 1, 2, 4),
             GallerySortPolicy.sortedFiles(files, GallerySortMode.OldestFirst, downloadedStates).map { it.info.handle },
         )
         assertEquals(
             listOf(1, 3, 2, 4),
             GallerySortPolicy.sortedFiles(files, GallerySortMode.NotDownloadedFirst, downloadedStates).map { it.info.handle },
+        )
+    }
+
+    @Test
+    fun newestSortPreservesCameraOrderWhenCaptureDateMatches() {
+        val cameraOrder = listOf(
+            file(1269, PtpObjectFormat.HEIF, "20260624"),
+            file(1270, PtpObjectFormat.CAMERA_VENDOR_RAF_ALT, "20260624"),
+            file(1267, PtpObjectFormat.HEIF, "20260621"),
+            file(1268, PtpObjectFormat.CAMERA_VENDOR_RAF_ALT, "20260621"),
+        )
+
+        assertEquals(
+            listOf(1269, 1270, 1267, 1268),
+            GallerySortPolicy.sortedFiles(cameraOrder, GallerySortMode.NewestFirst, emptyMap()).map { it.info.handle },
+        )
+    }
+
+    @Test
+    fun newestSortPreservesCameraOrderWhenFullMetadataAddsTimesWithinSameDay() {
+        val cameraOrderAfterMetadata = listOf(
+            file(1269, PtpObjectFormat.HEIF, "20260624T081500"),
+            file(1270, PtpObjectFormat.CAMERA_VENDOR_RAF_ALT, "20260624T101500"),
+            file(1267, PtpObjectFormat.HEIF, "20260621T091500"),
+            file(1268, PtpObjectFormat.CAMERA_VENDOR_RAF_ALT, "20260621T111500"),
+        )
+
+        assertEquals(
+            listOf(1269, 1270, 1267, 1268),
+            GallerySortPolicy.sortedFiles(cameraOrderAfterMetadata, GallerySortMode.NewestFirst, emptyMap()).map { it.info.handle },
         )
     }
 
@@ -525,15 +599,52 @@ class GalleryUiPolicyTest {
         assertTrue(GalleryDragSelectionPolicy.shouldSelectForDrag(startHandleSelected = false))
         assertFalse(GalleryDragSelectionPolicy.shouldSelectForDrag(startHandleSelected = true))
         assertTrue(GalleryDragSelectionPolicy.shouldStartDragSelection(deltaX = 18f, deltaY = 4f, touchSlop = 8f))
-        assertTrue(GalleryDragSelectionPolicy.shouldStartDragSelection(deltaX = 12f, deltaY = 10f, touchSlop = 8f))
+        assertFalse(GalleryDragSelectionPolicy.shouldStartDragSelection(deltaX = 12f, deltaY = 10f, touchSlop = 8f))
+        assertTrue(GalleryDragSelectionPolicy.shouldStartDragSelection(deltaX = 16f, deltaY = 10f, touchSlop = 8f))
         assertFalse(GalleryDragSelectionPolicy.shouldStartDragSelection(deltaX = 3f, deltaY = 2f, touchSlop = 8f))
         assertFalse(GalleryDragSelectionPolicy.shouldStartDragSelection(deltaX = 3f, deltaY = 18f, touchSlop = 8f))
-        assertTrue(
+        assertFalse(
             GalleryDragSelectionPolicy.shouldStartDragSelection(
                 deltaX = 3f,
                 deltaY = 18f,
                 touchSlop = 8f,
                 selectionActive = true,
+            )
+        )
+        assertTrue(
+            GalleryDragSelectionPolicy.shouldStartDragSelection(
+                deltaX = 18f,
+                deltaY = 4f,
+                touchSlop = 8f,
+                selectionActive = true,
+            )
+        )
+        assertFalse(
+            GalleryDragSelectionPolicy.shouldCommitDragSelection(
+                startHandle = 1,
+                endHandle = 1,
+                endDownloadState = null,
+            )
+        )
+        assertFalse(
+            GalleryDragSelectionPolicy.shouldCommitDragSelection(
+                startHandle = 1,
+                endHandle = null,
+                endDownloadState = null,
+            )
+        )
+        assertFalse(
+            GalleryDragSelectionPolicy.shouldCommitDragSelection(
+                startHandle = 1,
+                endHandle = 2,
+                endDownloadState = TransferState.DONE,
+            )
+        )
+        assertTrue(
+            GalleryDragSelectionPolicy.shouldCommitDragSelection(
+                startHandle = 1,
+                endHandle = 2,
+                endDownloadState = null,
             )
         )
 

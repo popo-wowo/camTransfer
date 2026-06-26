@@ -69,24 +69,45 @@ class CameraVendorPtpDataParserImageTest {
     }
 
     @Test
-    fun describesCameraSearchModeSnapshotValueFirstEntriesFromRealCamera() {
-        val payload = uint32(5) +
-            uint32(9) + uint16(0xD601) + uint16(1) +
-            uint32(9) + uint16(0xD602) + uint16(1) +
-            uint32(8) + uint16(0xD603) + uint16(0) +
-            uint32(8) + uint16(CameraVendorSearchMode.OBJECT_FORMAT_PROPERTY) + uint16(0) +
-            uint32(10) + uint16(0xD605) + uint16(0)
+    fun describesCameraSearchModeSnapshotSizedEntriesFromRealCamera() {
+        val payload = hex(
+            "050000000900000001d60100000900000002d60100000800000003d600000800000004d600000a00000005d600000000"
+        )
 
         val result = CameraVendorPtpDataParser.searchModeSnapshot(payload)
 
         assertEquals(
-            "[0xD601/type=1/value=9/layout=valueFirst8, " +
-                "0xD602/type=1/value=9/layout=valueFirst8, " +
-                "0xD603/type=0/value=8/layout=valueFirst8, " +
-                "0xD604/type=0/value=8/layout=valueFirst8, " +
-                "0xD605/type=0/value=10/layout=valueFirst8]",
+            "[0xD601/type=65535/value=1/layout=sized, " +
+                "0xD602/type=65535/value=1/layout=sized, " +
+                "0xD603/type=4/value=0/layout=sized, " +
+                "0xD604/type=4/value=0/layout=sized, " +
+                "0xD605/type=6/value=0/layout=sized]",
             result,
         )
+    }
+
+    @Test
+    fun buildsOfficialEmptySearchModeAllPayload() {
+        val payload = CameraVendorPtpDataParser.emptySearchModeAllPayload()
+
+        assertArrayEquals(uint32(0), payload)
+        assertEquals("[]", CameraVendorPtpDataParser.searchModeSnapshot(payload))
+    }
+
+    @Test
+    fun buildsOfficialObjectFormatSearchModeAllPayload() {
+        val payload = CameraVendorPtpDataParser.officialObjectFormatSearchModeAllPayload(
+            CameraVendorSearchMode.ALL_FORMATS,
+        )
+
+        assertArrayEquals(
+            uint32(1) +
+                uint32(8) +
+                uint16(CameraVendorSearchMode.OBJECT_FORMAT_PROPERTY) +
+                uint16(CameraVendorSearchMode.ALL_FORMATS),
+            payload,
+        )
+        assertEquals("[0xD604/type=4/value=31/layout=sized]", CameraVendorPtpDataParser.searchModeSnapshot(payload))
     }
 
     @Test
@@ -121,14 +142,15 @@ class CameraVendorPtpDataParserImageTest {
         )
 
         assertEquals(
-            "[0xD601/type=1/value=9/layout=propertyScan, " +
-                "0xD602/type=1/value=9/layout=propertyScan, " +
-                "0xD603/type=0/value=8/layout=propertyScan, " +
-                "0xD604/type=0/value=16/layout=propertyScan, " +
-                "0xD605/type=0/value=10/layout=propertyScan]",
+            "[0xD601/type=65535/value=1/layout=sized, " +
+                "0xD602/type=65535/value=1/layout=sized, " +
+                "0xD603/type=4/value=0/layout=sized, " +
+                "0xD604/type=4/value=16/layout=sized, " +
+                "0xD605/type=6/value=0/layout=sized]",
             CameraVendorPtpDataParser.searchModeSnapshot(result ?: ByteArray(0)),
         )
-        assertEquals(CameraVendorSearchMode.FORMAT_RAW, result?.let { uint32At(it, 30) })
+        assertEquals(8, result?.let { uint32At(it, 30) })
+        assertEquals(CameraVendorSearchMode.FORMAT_RAW, result?.let { uint16At(it, 36) })
     }
 
     @Test
@@ -279,6 +301,10 @@ class CameraVendorPtpDataParserImageTest {
             ((data[offset + 1].toInt() and 0xFF) shl 8) or
             ((data[offset + 2].toInt() and 0xFF) shl 16) or
             ((data[offset + 3].toInt() and 0xFF) shl 24)
+
+    private fun uint16At(data: ByteArray, offset: Int): Int =
+        (data[offset].toInt() and 0xFF) or
+            ((data[offset + 1].toInt() and 0xFF) shl 8)
 
     private fun hex(value: String): ByteArray =
         value.chunked(2).map { it.toInt(16).toByte() }.toByteArray()

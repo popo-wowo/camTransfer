@@ -29,6 +29,8 @@ class GalleryModularArchitectureTest {
         assertTrue(source.contains("GalleryThumbnailController"))
         assertTrue(source.contains("GalleryPreviewController"))
         assertTrue(source.contains("GallerySelectionController"))
+        assertTrue(source.contains("filesController.pauseForExclusiveOperation"))
+        assertTrue(source.contains("filesController.resumeAfterExclusiveOperation"))
         assertFalse(source.contains("class ThumbnailLoadQueue"))
         assertFalse(source.contains("private val thumbnailQueue"))
         assertFalse(source.contains("private val previewImageCache"))

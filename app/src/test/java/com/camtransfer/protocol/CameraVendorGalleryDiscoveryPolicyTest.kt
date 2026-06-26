@@ -59,19 +59,17 @@ class CameraVendorGalleryDiscoveryPolicyTest {
     }
 
     @Test
-    fun placeholderHandlesUseNewestBatchWithoutWaitingForObjectInfo() {
-        val handles = (1..600).toList()
+    fun placeholderHandlesPreserveCameraSpecifiedOrderWithoutWaitingForObjectInfo() {
+        val handles = listOf(1267, 1268, 1265, 1266, 1263, 1264)
 
         val initial = CameraVendorGalleryDiscoveryPolicy.initialPlaceholderHandles(handles)
 
-        assertEquals(600, initial.size)
-        assertEquals(600, initial.first())
-        assertEquals(1, initial.last())
+        assertEquals(handles, initial)
     }
 
     @Test
     fun mapsDateCountsOntoSpecifiedHandlesInNewestOrder() {
-        val handles = listOf(10, 11, 12, 13, 14)
+        val handles = listOf(13, 14, 11, 12, 10)
         val dates = listOf(
             CameraVendorObjectCountByDate(dateValue = "20260620", numberOfImages = 2),
             CameraVendorObjectCountByDate(dateValue = "20260619", numberOfImages = 3),
@@ -79,10 +77,10 @@ class CameraVendorGalleryDiscoveryPolicyTest {
 
         val result = CameraVendorGalleryDiscoveryPolicy.captureDatesByHandle(handles, dates)
 
-        assertEquals("20260620", result[14])
         assertEquals("20260620", result[13])
-        assertEquals("20260619", result[12])
+        assertEquals("20260620", result[14])
         assertEquals("20260619", result[11])
+        assertEquals("20260619", result[12])
         assertEquals("20260619", result[10])
     }
 

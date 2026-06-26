@@ -1,6 +1,7 @@
 package com.camtransfer.ui
 
 import com.camtransfer.model.CameraFile
+import com.camtransfer.model.CameraFileFormatHint
 import com.camtransfer.model.TransferState
 import com.camtransfer.protocol.PtpObjectFormat
 import java.nio.ByteOrder
@@ -101,14 +102,36 @@ object GalleryUiPolicy {
     private fun matchesFormat(file: CameraFile, formats: Set<GalleryFormatFilter>): Boolean {
         if (formats.isEmpty()) return true
         return formats.any { format ->
-            when (format) {
-                GalleryFormatFilter.Jpg -> file.info.isJpeg
-                GalleryFormatFilter.Heif -> file.info.isHeif
-                GalleryFormatFilter.Raw -> file.info.isRaw
-                GalleryFormatFilter.Video -> file.info.isVideo
+            if (file.info.format != PtpObjectFormat.UNDEFINED) {
+                matchesResolvedFormat(file, format)
+            } else {
+                matchesFormatHint(file, format)
             }
         }
     }
+
+    private fun matchesResolvedFormat(file: CameraFile, format: GalleryFormatFilter): Boolean =
+        when (format) {
+            GalleryFormatFilter.Jpg -> file.info.isJpeg
+            GalleryFormatFilter.Heif -> file.info.isHeif
+            GalleryFormatFilter.Raw -> file.info.isRaw
+            GalleryFormatFilter.Video -> file.info.isVideo
+        }
+
+    private fun matchesFormatHint(file: CameraFile, format: GalleryFormatFilter): Boolean =
+        when (format) {
+            GalleryFormatFilter.Jpg -> CameraFileFormatHint.JPG in file.formatHints
+            GalleryFormatFilter.Heif -> CameraFileFormatHint.HEIF in file.formatHints
+            GalleryFormatFilter.Raw -> CameraFileFormatHint.RAW in file.formatHints
+            GalleryFormatFilter.Video -> CameraFileFormatHint.VIDEO in file.formatHints
+        }
+
+    fun formatMatches(file: CameraFile, format: GalleryFormatFilter): Boolean =
+        if (file.info.format != PtpObjectFormat.UNDEFINED) {
+            matchesResolvedFormat(file, format)
+        } else {
+            matchesFormatHint(file, format)
+        }
 
     private fun matchesFolder(file: CameraFile, folders: Set<GalleryFolderFilter>): Boolean {
         if (folders.isEmpty()) return true
@@ -148,11 +171,15 @@ object GalleryFilterStatsPolicy {
 
     private fun localFormatCounts(files: List<CameraFile>): Map<GalleryFormatFilter, Int> =
         mapOf(
-            GalleryFormatFilter.Jpg to files.count { it.info.isJpeg },
-            GalleryFormatFilter.Heif to files.count { it.info.isHeif },
-            GalleryFormatFilter.Raw to files.count { it.info.isRaw },
-            GalleryFormatFilter.Video to files.count { it.info.isVideo },
+            GalleryFormatFilter.Jpg to files.count { GalleryUiPolicy.formatMatches(it, GalleryFormatFilter.Jpg) },
+            GalleryFormatFilter.Heif to files.count { GalleryUiPolicy.formatMatches(it, GalleryFormatFilter.Heif) },
+            GalleryFormatFilter.Raw to files.count { GalleryUiPolicy.formatMatches(it, GalleryFormatFilter.Raw) },
+            GalleryFormatFilter.Video to files.count { GalleryUiPolicy.formatMatches(it, GalleryFormatFilter.Video) },
         )
+}
+
+object GalleryTransferModeUiPolicy {
+    fun canChangeTransferMode(isTransferring: Boolean): Boolean = !isTransferring
 }
 
 object GallerySectionPolicy {
@@ -266,12 +293,15 @@ object GallerySortPolicy {
         }
 
     private fun newestFirstComparator(): Comparator<CameraFile> =
-        compareByDescending<CameraFile> { it.info.captureDate }
-            .thenByDescending { it.info.handle }
+        compareByDescending<CameraFile> { captureDaySortKey(it) }
 
     private fun oldestFirstComparator(): Comparator<CameraFile> =
-        compareBy<CameraFile> { it.info.captureDate }
-            .thenBy { it.info.handle }
+        compareBy<CameraFile> { captureDaySortKey(it) }
+
+    private fun captureDaySortKey(file: CameraFile): String {
+        val captureDate = file.info.captureDate
+        return if (captureDate.length >= 8) captureDate.take(8) else captureDate
+    }
 }
 
 object GalleryScrollResetPolicy {
@@ -414,6 +444,9 @@ object GalleryDisconnectPolicy {
 }
 
 object GalleryDragSelectionPolicy {
+    private const val HORIZONTAL_INTENT_RATIO = 1.25f
+    private const val MIN_HORIZONTAL_SLOP_MULTIPLIER = 1.15f
+
     fun shouldSelectForDrag(startHandleSelected: Boolean): Boolean = !startHandleSelected
 
     fun shouldStartDragSelection(
@@ -424,9 +457,20 @@ object GalleryDragSelectionPolicy {
     ): Boolean {
         val distance = hypot(deltaX.toDouble(), deltaY.toDouble()).toFloat()
         if (distance < touchSlop) return false
-        if (selectionActive) return true
-        return abs(deltaX) >= abs(deltaY) * 0.55f
+        val horizontal = abs(deltaX)
+        val vertical = abs(deltaY)
+        val minHorizontal = touchSlop * MIN_HORIZONTAL_SLOP_MULTIPLIER
+        return horizontal >= minHorizontal && horizontal >= vertical * HORIZONTAL_INTENT_RATIO
     }
+
+    fun shouldCommitDragSelection(
+        startHandle: Int,
+        endHandle: Int?,
+        endDownloadState: TransferState?,
+    ): Boolean =
+        endHandle != null &&
+            endHandle != startHandle &&
+            GalleryDownloadUiPolicy.canSelect(endDownloadState)
 
     fun updatedSelection(
         currentSelection: Set<Int>,

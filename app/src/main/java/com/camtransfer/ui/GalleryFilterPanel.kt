@@ -235,10 +235,10 @@ private fun CompactFilterChips(
                 label = "全部格式",
                 onClick = { onStateChange(state.copy(formats = emptySet())) },
             )
-            FormatChip("JPG", GalleryFormatFilter.Jpg, stats, state, onStateChange, isLoading = isLoadingJpg)
-            FormatChip("HEIF", GalleryFormatFilter.Heif, stats, state, onStateChange, isLoading = isLoadingHiddenFormats)
-            FormatChip("RAW", GalleryFormatFilter.Raw, stats, state, onStateChange, isLoading = isLoadingHiddenFormats)
-            FormatChip("视频", GalleryFormatFilter.Video, stats, state, onStateChange, isLoading = isLoadingHiddenFormats)
+            FormatChip("JPG", GalleryFormatFilter.Jpg, stats, state, onStateChange)
+            FormatChip("HEIF", GalleryFormatFilter.Heif, stats, state, onStateChange)
+            FormatChip("RAW", GalleryFormatFilter.Raw, stats, state, onStateChange)
+            FormatChip("视频", GalleryFormatFilter.Video, stats, state, onStateChange)
         }
         if (stats.folderCounts.isNotEmpty()) {
             FilterChipRow {

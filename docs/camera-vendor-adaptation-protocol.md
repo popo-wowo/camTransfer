@@ -76,7 +76,7 @@ Write sequence:
 |---|---|---|---|
 | 1 | `CAEDB497-83BF-482C-91EF-91CF6F1216FF` | `00` | `ImageTransferSetting` |
 | 2 | `98934B2C-756C-4632-AA2F-DCBA1BFEC824` | `01` | `ImageTransferSettingEx` |
-| 3 | `82A9F452-C5CE-4EF5-8203-3FC9A47F8171` | `00` or `01` | resize off/on |
+| 3 | `82A9F452-C5CE-4EF5-8203-3FC9A47F8171` | `00` or `01` | original or camera-side resize mode |
 | 4 | `600655E6-3637-42F1-8FB2-44EFC5C63B13` | `0300` | launch import image |
 
 Status characteristics:
@@ -90,11 +90,14 @@ For gallery transfer, AP state `Launched(0x8001)` is enough to proceed to Wi-Fi.
 `LaunchedForReservedImageTransfer(0x8003)` is reserved for the automatic image
 import diagnostic path, not the normal gallery path.
 
-Compression behavior:
+Connection-time resize behavior:
 
-- `82A9F452=00`: original transfer path.
-- `82A9F452=01`: camera-side downsize to a small JPG on verified DEVICE-A/DEVICE-B-like
-  behavior. This is model/firmware-specific and must be re-verified per model.
+- `82A9F452=00`: open gallery/import-image Wi-Fi in original-size mode.
+- `82A9F452=01`: open gallery/import-image Wi-Fi in camera-side resize mode;
+  the camera emits approximately 3 MB JPG transfers for still images.
+- Keep this BLE value as camera global/initial state only. The actual
+  original/compressed choice for a queued import is applied later on the Wi-Fi
+  PTP channel immediately before reading the object.
 
 ## Wi-Fi Handoff
 
@@ -185,8 +188,10 @@ D244 read gallery access state #2
 9054 read current image info, handle 0x10000001
 9055 read current image thumbnail, handle 0x10000001
 9050 read SearchModeDescAll
-skip 9052 GetSearchModeAll
-skip 9051 SetSearchModeAll
+optionally 9052 GetSearchModeAll for diagnostic snapshot
+D604 search-mode format pass:
+  D604=31 initial all-format attempt
+  D604=HEIF or D604=RAW expanded-list attempt
 D22B read current object handle
 9053 read SpecifiedObjectCountGroupByDate, params [0, 30000]
 D212 read context before specified list
@@ -198,10 +203,11 @@ Do not wire `D222` ready polling into the normal path. It remains diagnostic
 only. Previous field notes say D222 polling can disturb D212 and lead to
 `0x2009`, timeouts, or connection refusal.
 
-`9052 GetSearchModeAll` is still not part of the release gallery handshake. A
-debug build may read and log a SearchModeAll snapshot after `9050` only for
-format-count research; it must not send `9051 SetSearchModeAll` unless the
-payload format and restore path are proven on real camera logs.
+`9052 GetSearchModeAll` may be read as a diagnostic snapshot after `9050`.
+`9051 SetSearchModeAll` is allowed only for the verified `D604` format mask
+payload used to obtain specified object handles. Do not introduce unrelated
+SearchMode mutations unless the payload format and restore path are proven on
+real camera logs.
 
 ## Object Discovery
 
@@ -209,15 +215,35 @@ The main gallery list comes from `D621 SpecifiedObjectHandles`.
 
 Flow:
 
-1. Parse `D621` as a count-prefixed UInt32 array.
-2. Read `GetObjectInfo(0x1008)` for each returned handle.
-3. If the specified list lacks extended still formats, compute gaps between
-   min/max handles when the range is at most `120`.
-4. Probe missing handles with `GetObjectInfo`.
-5. If hidden probe finds HEIF or RAW, merge specified and hidden infos by
-   handle.
-6. If still insufficient, optionally try the standard storage/object path as a
-   diagnostic fallback.
+1. Enter gallery mode and read the baseline specified list with `D604=31`.
+2. Read `9053 GetSpecifiedObjectCountGroupByDate`, `D620 SpecifiedObjectCount`,
+   and `D621 SpecifiedObjectHandles`.
+3. Set `D604=HEIF` or `D604=RAW`, then read `9053/D620/D621` again.
+4. If the HEIF/RAW pass returns a larger list and date-group total equals the
+   handle count, promote that list to the initial gallery handle source.
+5. Preserve the promoted `D621` order for placeholders and date-bucket mapping.
+   Do not sort by handle before publishing placeholders.
+6. Read `GetObjectInfo(0x1008)` for each returned handle in the background.
+7. Hidden gap probing is now a diagnostic fallback only. It should find zero
+   items when expanded `D621` succeeds.
+8. If still insufficient, optionally try the standard storage/object path as a
+   diagnostic fallback. On the verified Android Wi-Fi vendor session,
+   `GetStorageIDs(0x1004)` returns `0x2005`.
+
+Verified Android X-T5 evidence from 2026-06-24:
+
+```text
+D604=JPG  -> D621 count 1138
+D604=MOV  -> D621 count 14
+D604=MP4  -> D621 count 0
+D604=31   -> D621 count 1152, formats later resolve to JPG=1138, Video=14
+D604=HEIF -> D621 count 1268
+D604=RAW  -> D621 count 1268
+
+promoted initial list:
+full-object-info-final total=1268 formats={HEIF=37, RAW=79, JPG=1138, Video=14}
+hidden metadata selected=0
+```
 
 Known format labels:
 
@@ -229,10 +255,12 @@ Known format labels:
 | `0xB103` | RAW |
 | `0x300B`, `0x300D` | Video |
 
-Risk to keep in mind: the current hidden probe is skipped once the specified
-list already contains any HEIF or RAW. A model that returns HEIF in `D621` but
-hides RAW in handle gaps could still miss RAW. See the audit document before
-changing this behavior.
+Risk to keep in mind: `D604=HEIF` and `D604=RAW` currently behave as an
+expanded-list trigger on the verified X-T5, not as literal single-format
+filters. Treat this as a camera behavior proven by logs, not as a generic PTP
+rule. If another model returns only one format for these masks, fall back to
+merging multiple format-specific `D621` lists and keep hidden probing as a
+diagnostic fallback.
 
 ## Thumbnail And Original Transfer
 
@@ -254,19 +282,59 @@ Screen preview path:
 5. Validate that returned image data is complete before caching or rendering.
 6. Reset `D226` to `0`.
 
-Original photo download path:
+Photo download path:
 
-1. Treat original download as an exclusive PTP operation. Pause thumbnail and
-   background metadata requests before starting it.
+1. Treat download as an exclusive PTP operation. Pause thumbnail and background
+   metadata requests before starting it.
 2. Resolve the selected handle to fresh `ObjectInfo` before saving, because a
    large-gallery UI item may still carry placeholder metadata.
 3. Do not use standard `GetObject` by default.
-4. Set `D227 ImageCompressionRealInfo` to `1` before getting a fresh object
-   size.
-5. Re-read `ObjectInfo`.
-6. Read chunks with `GetPartialObject(0x101B)`.
-7. Stop at expected size or JPEG EOI marker.
-8. Reset `D227` to `0`.
+4. Carry the UI-selected download mode with the queued item. Do not re-read a
+   mutable global preference after the item is queued.
+5. Original mode: immediately before the download, set
+   `D226 ImageForceCompression` to `2`, re-read `ObjectInfo`, read chunks with
+   `GetPartialObject(0x101B)`, then reset `D226` to `0`.
+6. Compressed mode: immediately before the download, set
+   `D22E ObjectCompressionSetting` to `1` (`ImageResizeRateValue.RateS`), then
+   set `D226 ImageForceCompression` to `1`, re-read `ObjectInfo`, read chunks
+   with `GetPartialObject(0x101B)`, then reset `D226` to `0`.
+7. `D227 ImageCompressionRealInfo` is reset during gallery initialization, but
+   it is not the official app's import-time original/compressed switch. The
+   download decision must come from the queued item's mode immediately before
+   the transfer, not from the BLE/AP activation preference.
+8. Never save grid thumbnail data as either compressed or original download.
+   A compressed download is still an import-image transfer object selected by
+   `D22E/D226`, not `GetThumb(0x100A)` and not the existing thumbnail cache.
+9. Stop at expected size or JPEG EOI marker. JPEG EOI is only a bounded stop
+   condition for JPEG-like data; do not use unbounded reads as a generic HEIF,
+   RAW, or video strategy.
+10. If a socket/connection-lost error occurs, stop the remaining queue and mark
+   pending items as failed with a reconnect-required message. Do not continue
+   issuing PTP commands after the command socket is invalid.
+
+2026-06-26 Android XApp reverse engineering: `ReceiveImageModel.startImportImage`
+sets `D22E=resizeRate` before compressed import, then sets `D226=1` for
+compressed or `D226=2` for original. `ReceiveImageModel.finishImportImage`
+resets `D226=0`. Native `libFFIR.so` confirms the mapping:
+`SetImageForceCompression -> D226`, `SetImageCompressionRealInfo -> D227`, and
+`SetObjectCompressionSetting -> D22E`.
+
+Property payload width is important: `D226`, `D227`, and `D22E` must be written
+as PTP `UINT16` values. Native `FTL_PTP_DATA_TYPE=0x0004` maps to the PTP
+`UINT16` datatype here, and device reads for `D226/D227` return two bytes
+(`0000` after reset on the verified X-T5). Writing these properties as
+four-byte integers can make the camera accept the command response while the
+following `ObjectInfo.compressedSize` remains at thumbnail/preview-object size.
+
+Required download diagnostics:
+
+- Log each mode write with handle, queued mode, format, property code, value,
+  width, and PTP response.
+- Log the fresh `ObjectInfo.compressedSize` after mode write and before the
+  first `GetPartialObject`.
+- A failed original/pressed mode is visible as `D226/D22E response=0x2001` but
+  `freshSize/readSize` staying at small thumbnail-like values such as a few
+  hundred KB. Do not paper over that by saving cached thumbnails.
 
 Video original download remains intentionally blocked until the file path is
 tested separately.
