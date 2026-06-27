@@ -7,8 +7,48 @@ enum NativePhotoPreviewRotationPolicy {
     normalizedDegrees(currentDegrees + 90)
   }
 
+  static func previousManualRotationDegrees(_ currentDegrees: Int) -> Int {
+    normalizedDegrees(currentDegrees - 90)
+  }
+
   static func normalizedDegrees(_ degrees: Int) -> Int {
     ((degrees % 360) + 360) % 360
+  }
+
+  static func autoRotationDegrees(
+    objectOrientation: Int?,
+    decodedWidth _: Int,
+    decodedHeight _: Int,
+    imageData: Data?
+  ) -> Int {
+    if let objectOrientation {
+      switch objectOrientation {
+      case 2:
+        return 90
+      case 3:
+        return 180
+      case 4:
+        return 270
+      default:
+        return 0
+      }
+    }
+    guard let imageData,
+          let source = CGImageSourceCreateWithData(imageData as CFData, nil),
+          let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+          let rawOrientation = properties[kCGImagePropertyOrientation] as? UInt32 else {
+      return 0
+    }
+    switch rawOrientation {
+    case 6, 7:
+      return 90
+    case 3, 4:
+      return 180
+    case 5, 8:
+      return 270
+    default:
+      return 0
+    }
   }
 
   static func displaySize(for size: CGSize, manualRotationDegrees: Int) -> CGSize {
@@ -17,6 +57,22 @@ enum NativePhotoPreviewRotationPolicy {
       return CGSize(width: size.height, height: size.width)
     }
     return size
+  }
+}
+
+enum NativeGalleryPreviewImageLoadPolicy {
+  static func shouldRequestPreviewImage(item: CameraVendorGalleryItem, hasPreviewImage: Bool) -> Bool {
+    if hasPreviewImage { return false }
+    let label = item.formatLabel.uppercased()
+    let filename = item.filename.uppercased()
+    return label == "JPG" ||
+      label == "JPEG" ||
+      label == "HEIF" ||
+      filename.hasSuffix(".JPG") ||
+      filename.hasSuffix(".JPEG") ||
+      filename.hasSuffix(".HEIC") ||
+      filename.hasSuffix(".HEIF") ||
+      filename.hasSuffix(".HIF")
   }
 }
 
@@ -720,9 +776,9 @@ enum NativeGalleryThumbnailSectionRefreshPolicy {
 }
 
 enum NativeGalleryThumbnailDecodePipeline {
-  static func decodedImage(from data: Data) async -> UIImage? {
+  static func decodedImage(from data: Data, objectOrientation: Int? = nil) async -> UIImage? {
     await Task.detached(priority: .userInitiated) {
-      CameraVendorGalleryThumbnailRenderer.decoded(from: data)
+      CameraVendorGalleryThumbnailRenderer.decoded(from: data, objectOrientation: objectOrientation)
     }.value
   }
 }
@@ -764,6 +820,7 @@ enum NativeGalleryMetadataMergePolicy {
         resolvedCaptureDate: resolvedItem.captureDate
       ),
       byteSizeText: item.byteSizeText,
+      orientation: item.orientation ?? existingItem.orientation,
       formatHints: shouldPreserveExistingFormatHints(
         existingItem: existingItem,
         resolvedItem: item
@@ -854,6 +911,7 @@ enum CameraVendorDownloadHistoryStore {
     let formatLabel: String
     let captureDate: String
     let byteSizeText: String
+    let orientation: Int?
     let thumbnailData: Data?
 
     var item: CameraVendorGalleryItem {
@@ -863,6 +921,7 @@ enum CameraVendorDownloadHistoryStore {
         formatLabel: formatLabel,
         captureDate: captureDate,
         byteSizeText: byteSizeText,
+        orientation: orientation,
         thumbnailData: thumbnailData
       )
     }
@@ -894,6 +953,7 @@ enum CameraVendorDownloadHistoryStore {
       formatLabel: item.formatLabel,
       captureDate: item.captureDate,
       byteSizeText: item.byteSizeText,
+      orientation: item.orientation,
       thumbnailData: item.thumbnailData
     )
     if let encoded = encodedRecord(record) {
@@ -6058,7 +6118,12 @@ private final class NativeGalleryViewController: UIViewController, UIGestureReco
       let data = thumbnail.data
       let ptpElapsedMs = Int(Date().timeIntervalSince(ptpStartedAt) * 1000)
       let decodeStartedAt = Date()
-      guard let decodedImage = await NativeGalleryThumbnailDecodePipeline.decodedImage(from: data) else {
+      let displayOrientation = thumbnail.item?.orientation ??
+        galleryState.items.first(where: { $0.handle == handle })?.orientation
+      guard let decodedImage = await NativeGalleryThumbnailDecodePipeline.decodedImage(
+        from: data,
+        objectOrientation: displayOrientation
+      ) else {
         let head = data.prefix(32).map { String(format: "%02x", $0) }.joined(separator: "")
         appendDiagnostic("缩略图解码失败 handle=\(handle) bytes=\(data.count) head=\(head)")
         thumbnailFailedHandles.insert(handle)
@@ -6835,7 +6900,13 @@ extension NativeGalleryViewController {
       let handle = request.handle
       let data = request.data
       thumbnailRehydrateTasks[handle] = Task { [weak self] in
-        let decodedImage = await NativeGalleryThumbnailDecodePipeline.decodedImage(from: data)
+        let orientation = await MainActor.run {
+          self?.galleryState.items.first(where: { $0.handle == handle })?.orientation
+        }
+        let decodedImage = await NativeGalleryThumbnailDecodePipeline.decodedImage(
+          from: data,
+          objectOrientation: orientation
+        )
         await MainActor.run { [weak self] in
           guard let self else { return }
           self.thumbnailRehydrateTasks.removeValue(forKey: handle)
@@ -7247,9 +7318,18 @@ enum CameraVendorGalleryThumbnailRenderer {
   /// extra letterboxing. We also detect & trim CameraVendor's baked-in black bars
   /// (cameras often hard-encode 4:3 thumbnails for 3:2 photos by adding
   /// black strips top & bottom; native UIImage(data:) preserves them).
-  static func decoded(from data: Data) -> UIImage? {
+  static func decoded(from data: Data, objectOrientation: Int? = nil) -> UIImage? {
     guard let raw = decodeRaw(data: data) else { return nil }
-    return cropBlackBars(raw) ?? raw
+    let cropped = cropBlackBars(raw) ?? raw
+    let imageDataForAutoRotation = objectOrientation != nil || cropped.imageOrientation == .up ? data : nil
+    let degrees = NativePhotoPreviewRotationPolicy.autoRotationDegrees(
+      objectOrientation: objectOrientation,
+      decodedWidth: Int(cropped.size.width),
+      decodedHeight: Int(cropped.size.height),
+      imageData: imageDataForAutoRotation
+    )
+    guard degrees != 0 else { return cropped }
+    return NativePhotoPreviewImageRenderer.rendered(image: cropped, manualRotationDegrees: degrees)
   }
 
   private static func decodeRaw(data: Data) -> UIImage? {
@@ -7639,8 +7719,12 @@ private final class NativeDownloadListViewController: UIViewController {
       guard thumbnailRehydrateTasks[item.handle] == nil,
             let data = item.thumbnailData else { return }
       let handle = item.handle
+      let orientation = item.orientation
       thumbnailRehydrateTasks[handle] = Task { [weak self] in
-        let decodedImage = await NativeGalleryThumbnailDecodePipeline.decodedImage(from: data)
+        let decodedImage = await NativeGalleryThumbnailDecodePipeline.decodedImage(
+          from: data,
+          objectOrientation: orientation
+        )
         await MainActor.run { [weak self] in
           guard let self else { return }
           self.thumbnailRehydrateTasks.removeValue(forKey: handle)
@@ -8057,7 +8141,7 @@ private final class NativeGalleryGridCell: UICollectionViewCell {
     formatBadgeLabel.text = NativeGalleryFormatDisplayPolicy.badgeText(for: item)
     formatBadgeLabel.isHidden = formatBadgeLabel.text == nil
     let decodedFallbackImage = NativeGalleryCellThumbnailDecodePolicy.shouldDecodeDataDuringCellConfigure
-      ? item.thumbnailData.flatMap { CameraVendorGalleryThumbnailRenderer.decoded(from: $0) }
+      ? item.thumbnailData.flatMap { CameraVendorGalleryThumbnailRenderer.decoded(from: $0, objectOrientation: item.orientation) }
       : nil
     if let image = thumbnailImage ?? decodedFallbackImage {
       imageView.contentMode = .scaleAspectFill
@@ -8292,7 +8376,16 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
     button.translatesAutoresizingMaskIntoConstraints = false
     button.tintColor = .white
     button.setImage(UIImage(systemName: "rotate.right", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold)), for: .normal)
-    button.accessibilityLabel = "旋转照片"
+    button.accessibilityLabel = "向右旋转"
+    return button
+  }()
+
+  private let rotateLeftButton: UIButton = {
+    let button = UIButton(type: .system)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    button.tintColor = .white
+    button.setImage(UIImage(systemName: "rotate.left", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold)), for: .normal)
+    button.accessibilityLabel = "向左旋转"
     return button
   }()
 
@@ -8419,15 +8512,17 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
 
     view.addSubview(topBar)
     topBar.addSubview(closeButton)
-    topBar.addSubview(rotateButton)
     topBar.addSubview(titleLabel)
     topBar.addSubview(subtitleLabel)
-    topBar.addSubview(downloadButton)
 
     view.addSubview(bottomBar)
     bottomBar.addSubview(selectionButton)
+    bottomBar.addSubview(rotateLeftButton)
+    bottomBar.addSubview(rotateButton)
+    bottomBar.addSubview(downloadButton)
 
     closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
+    rotateLeftButton.addTarget(self, action: #selector(rotateLeftTapped), for: .touchUpInside)
     rotateButton.addTarget(self, action: #selector(rotateTapped), for: .touchUpInside)
     selectionButton.addTarget(self, action: #selector(selectionTapped), for: .touchUpInside)
     downloadButton.addTarget(self, action: #selector(downloadTapped), for: .touchUpInside)
@@ -8454,21 +8549,13 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
 
       titleLabel.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
       titleLabel.leadingAnchor.constraint(greaterThanOrEqualTo: closeButton.trailingAnchor, constant: 10),
-      titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: rotateButton.leadingAnchor, constant: -10),
+      titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: topBar.trailingAnchor, constant: -16),
       titleLabel.bottomAnchor.constraint(equalTo: subtitleLabel.topAnchor, constant: -2),
 
       subtitleLabel.centerXAnchor.constraint(equalTo: topBar.centerXAnchor),
       subtitleLabel.leadingAnchor.constraint(greaterThanOrEqualTo: closeButton.trailingAnchor, constant: 10),
-      subtitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: rotateButton.leadingAnchor, constant: -10),
+      subtitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: topBar.trailingAnchor, constant: -16),
       subtitleLabel.bottomAnchor.constraint(equalTo: topBar.bottomAnchor, constant: -10),
-
-      downloadButton.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -16),
-      downloadButton.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
-
-      rotateButton.trailingAnchor.constraint(equalTo: downloadButton.leadingAnchor, constant: -8),
-      rotateButton.centerYAnchor.constraint(equalTo: closeButton.centerYAnchor),
-      rotateButton.widthAnchor.constraint(equalToConstant: 36),
-      rotateButton.heightAnchor.constraint(equalToConstant: 36),
 
       bottomBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
       bottomBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -8479,6 +8566,20 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
       selectionButton.topAnchor.constraint(equalTo: bottomBar.topAnchor, constant: 14),
       selectionButton.widthAnchor.constraint(equalToConstant: 44),
       selectionButton.heightAnchor.constraint(equalToConstant: 44),
+
+      rotateLeftButton.leadingAnchor.constraint(equalTo: selectionButton.trailingAnchor, constant: 12),
+      rotateLeftButton.centerYAnchor.constraint(equalTo: selectionButton.centerYAnchor),
+      rotateLeftButton.widthAnchor.constraint(equalToConstant: 40),
+      rotateLeftButton.heightAnchor.constraint(equalToConstant: 40),
+
+      rotateButton.leadingAnchor.constraint(equalTo: rotateLeftButton.trailingAnchor, constant: 8),
+      rotateButton.centerYAnchor.constraint(equalTo: selectionButton.centerYAnchor),
+      rotateButton.widthAnchor.constraint(equalToConstant: 40),
+      rotateButton.heightAnchor.constraint(equalToConstant: 40),
+
+      downloadButton.trailingAnchor.constraint(equalTo: bottomBar.trailingAnchor, constant: -18),
+      downloadButton.centerYAnchor.constraint(equalTo: selectionButton.centerYAnchor),
+      downloadButton.leadingAnchor.constraint(greaterThanOrEqualTo: rotateButton.trailingAnchor, constant: 12),
     ])
   }
 
@@ -8608,6 +8709,11 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
     let item = items[currentIndex]
     onSelectionToggle(item)
     updateSelectionButton(for: item)
+  }
+
+  @objc private func rotateLeftTapped() {
+    guard let page = pageController.viewControllers?.first as? NativePhotoPreviewPageController else { return }
+    page.rotateCounterClockwise()
   }
 
   @objc private func rotateTapped() {
@@ -8825,7 +8931,7 @@ private final class NativePhotoPreviewPageController: UIViewController, UIScroll
 
   private func loadImage() {
     if let data = item.thumbnailData,
-       let image = CameraVendorGalleryThumbnailRenderer.decoded(from: data) {
+       let image = CameraVendorGalleryThumbnailRenderer.decoded(from: data, objectOrientation: item.orientation) {
       setSourceImage(image)
     } else {
       spinner.startAnimating()
@@ -8845,12 +8951,31 @@ private final class NativePhotoPreviewPageController: UIViewController, UIScroll
         return
       }
       do {
-        let data = try await galleryService.fetchThumbnail(for: item.handle)
-        if Task.isCancelled { return }
-        let image = CameraVendorGalleryThumbnailRenderer.decoded(from: data)
+        var hasLoadedPreviewImage = false
+        if NativeGalleryPreviewImageLoadPolicy.shouldRequestPreviewImage(
+          item: item,
+          hasPreviewImage: false
+        ) {
+          let data = try await galleryService.fetchPreviewImage(for: item.handle)
+          if Task.isCancelled { return }
+          let image = CameraVendorGalleryThumbnailRenderer.decoded(from: data, objectOrientation: item.orientation)
+          if let image {
+            hasLoadedPreviewImage = true
+            await MainActor.run {
+              self.setSourceImage(image)
+            }
+          }
+        }
+        if !hasLoadedPreviewImage && item.thumbnailData == nil {
+          let data = try await galleryService.fetchThumbnail(for: item.handle)
+          if Task.isCancelled { return }
+          let image = CameraVendorGalleryThumbnailRenderer.decoded(from: data, objectOrientation: item.orientation)
+          await MainActor.run {
+            if let image { self.setSourceImage(image) }
+          }
+        }
         await MainActor.run {
           self.spinner.stopAnimating()
-          if let image { self.setSourceImage(image) }
           self.loadTask = nil
         }
       } catch {
@@ -8871,6 +8996,12 @@ private final class NativePhotoPreviewPageController: UIViewController, UIScroll
   func rotateClockwise() {
     guard sourceImage != nil else { return }
     manualRotationDegrees = NativePhotoPreviewRotationPolicy.nextManualRotationDegrees(manualRotationDegrees)
+    renderSourceImage()
+  }
+
+  func rotateCounterClockwise() {
+    guard sourceImage != nil else { return }
+    manualRotationDegrees = NativePhotoPreviewRotationPolicy.previousManualRotationDegrees(manualRotationDegrees)
     renderSourceImage()
   }
 

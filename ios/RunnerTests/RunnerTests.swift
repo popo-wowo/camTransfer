@@ -1,4 +1,5 @@
 import CoreLocation
+import ImageIO
 import Network
 import NetworkExtension
 import UIKit
@@ -319,6 +320,60 @@ final class RunnerTests: XCTestCase {
       CGSize(width: 120, height: 160)
     )
     XCTAssertEqual(NativePhotoPreviewRotationPolicy.displaySize(for: size, manualRotationDegrees: 180), size)
+  }
+
+  func testNativePhotoPreviewRotationPolicyUsesCameraVendorOrientationBeforeDimensionFallback() {
+    XCTAssertEqual(
+      NativePhotoPreviewRotationPolicy.autoRotationDegrees(
+        objectOrientation: 2,
+        decodedWidth: 160,
+        decodedHeight: 120,
+        imageData: nil
+      ),
+      90
+    )
+    XCTAssertEqual(
+      NativePhotoPreviewRotationPolicy.autoRotationDegrees(
+        objectOrientation: 4,
+        decodedWidth: 640,
+        decodedHeight: 480,
+        imageData: nil
+      ),
+      270
+    )
+  }
+
+  func testNativePhotoPreviewRotationPolicyFallsBackToJpegExifOrientation() throws {
+    let data = try jpegDataWithExifOrientation(.right)
+
+    XCTAssertEqual(
+      NativePhotoPreviewRotationPolicy.autoRotationDegrees(
+        objectOrientation: nil,
+        decodedWidth: 160,
+        decodedHeight: 120,
+        imageData: data
+      ),
+      90
+    )
+  }
+
+  func testNativeGalleryPreviewImageLoadPolicyMatchesAndroidJpegAndHeifOnly() {
+    XCTAssertTrue(NativeGalleryPreviewImageLoadPolicy.shouldRequestPreviewImage(
+      item: CameraVendorGalleryItem(handle: 1, filename: "A.JPG", formatLabel: "JPG", captureDate: "", byteSizeText: ""),
+      hasPreviewImage: false
+    ))
+    XCTAssertTrue(NativeGalleryPreviewImageLoadPolicy.shouldRequestPreviewImage(
+      item: CameraVendorGalleryItem(handle: 2, filename: "B.HEIC", formatLabel: "HEIF", captureDate: "", byteSizeText: ""),
+      hasPreviewImage: false
+    ))
+    XCTAssertFalse(NativeGalleryPreviewImageLoadPolicy.shouldRequestPreviewImage(
+      item: CameraVendorGalleryItem(handle: 3, filename: "C.RAF", formatLabel: "RAW", captureDate: "", byteSizeText: ""),
+      hasPreviewImage: false
+    ))
+    XCTAssertFalse(NativeGalleryPreviewImageLoadPolicy.shouldRequestPreviewImage(
+      item: CameraVendorGalleryItem(handle: 4, filename: "A.JPG", formatLabel: "JPG", captureDate: "", byteSizeText: ""),
+      hasPreviewImage: true
+    ))
   }
 
   func testWiredCameraImportStateSetsSelectionForDragOnlyWhenLiveImportableUnsaved() {
@@ -2831,6 +2886,7 @@ final class RunnerTests: XCTestCase {
       formatLabel: "HEIF",
       captureDate: "2026:05:04 10:31:00",
       byteSizeText: "8 MB",
+      orientation: 4,
       thumbnailData: Data([0xFF, 0xD8, 0xFF])
     )
 
@@ -4088,7 +4144,18 @@ final class RunnerTests: XCTestCase {
   }
 
   func testGalleryRequestSchedulerPrioritizesVisibleThumbnailBeforeBackgroundMetadata() async {
-    let scheduler = CameraVendorGalleryRequestScheduler()
+    let backgroundQueued = expectation(description: "background waiter queued")
+    let thumbnailQueued = expectation(description: "thumbnail waiter queued")
+    let scheduler = CameraVendorGalleryRequestScheduler { priority in
+      switch priority {
+      case .backgroundMetadata:
+        backgroundQueued.fulfill()
+      case .visibleThumbnail:
+        thumbnailQueued.fulfill()
+      default:
+        break
+      }
+    }
     let activeStarted = expectation(description: "active request started")
     let releaseActive = DispatchSemaphore(value: 0)
     let orderLock = NSLock()
@@ -4109,6 +4176,7 @@ final class RunnerTests: XCTestCase {
         orderLock.unlock()
       }
     }
+    await fulfillment(of: [backgroundQueued], timeout: 1)
     let thumbnail = Task {
       try await scheduler.run(priority: .visibleThumbnail) {
         orderLock.lock()
@@ -4116,6 +4184,7 @@ final class RunnerTests: XCTestCase {
         orderLock.unlock()
       }
     }
+    await fulfillment(of: [thumbnailQueued], timeout: 1)
 
     releaseActive.signal()
     _ = try? await active.value
@@ -4217,6 +4286,23 @@ final class RunnerTests: XCTestCase {
     )
 
     XCTAssertEqual(items.map(\.handle), [1267, 1268, 1265, 1266])
+  }
+
+  func testCameraVendorGalleryItemOrderingCarriesObjectOrientation() {
+    let info = CameraVendorCameraObjectInfo(
+      handle: 77,
+      storageID: 0x00010001,
+      formatCode: 0x3801,
+      compressedSize: 4_000_000,
+      thumbCompressedSize: 80_000,
+      filename: "DSCF0077.JPG",
+      captureDate: "2026:06:24 10:10:10",
+      orientation: 2
+    )
+
+    let items = CameraVendorGalleryItemOrderingPolicy.galleryItems(from: [info])
+
+    XCTAssertEqual(items.first?.orientation, 2)
   }
 
   func testNativeGalleryMetadataMergePreservesInitialDateGroupWhenResolvedDateIsMissingOrWrong() {
@@ -4326,6 +4412,31 @@ final class RunnerTests: XCTestCase {
       ),
       []
     )
+  }
+
+  func testNativeGalleryMetadataMergeUpdatesOrientationFromResolvedMetadata() {
+    let placeholder = CameraVendorGalleryItem(
+      handle: 8,
+      filename: "0x00000008",
+      formatLabel: "",
+      captureDate: "20260624",
+      byteSizeText: "",
+      orientation: nil,
+      thumbnailData: Data([0xFF, 0xD8])
+    )
+    let resolved = CameraVendorGalleryItem(
+      handle: 8,
+      filename: "DSCF0008.JPG",
+      formatLabel: "JPG",
+      captureDate: "2026:06:24 10:11:12",
+      byteSizeText: "4 MB",
+      orientation: 4
+    )
+
+    let merged = NativeGalleryMetadataMergePolicy.mergedItem(existingItem: placeholder, resolvedItem: resolved)
+
+    XCTAssertEqual(merged.orientation, 4)
+    XCTAssertEqual(merged.thumbnailData, Data([0xFF, 0xD8]))
   }
 
   func testNativeGalleryMetadataMergePreservesExistingHandleOrderForBackgroundBatches() {
@@ -5082,6 +5193,32 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(info.formatCode, 0x3801)
   }
 
+  func testCameraVendorObjectInfoParserReadsOrientationMetadataAfterCaptureDate() {
+    var payload = Data()
+    payload.append(contentsOf: [0x01, 0x00, 0x00, 0x10]) // storage
+    payload.append(contentsOf: [0x01, 0x38]) // JPEG
+    payload.append(contentsOf: [0x00, 0x00]) // protection
+    payload.append(contentsOf: [0x10, 0x00, 0x00, 0x00]) // size
+    payload.append(contentsOf: [0x01, 0x38]) // thumb format
+    payload.append(contentsOf: [0x08, 0x00, 0x00, 0x00]) // thumb size
+    payload.append(contentsOf: [0x40, 0x00, 0x00, 0x00]) // thumb w
+    payload.append(contentsOf: [0x30, 0x00, 0x00, 0x00]) // thumb h
+    payload.append(contentsOf: [0x00, 0x04, 0x00, 0x00]) // image w
+    payload.append(contentsOf: [0x00, 0x03, 0x00, 0x00]) // image h
+    payload.append(contentsOf: [0x18, 0x00, 0x00, 0x00]) // depth
+    payload.append(contentsOf: [0x00, 0x00, 0x00, 0x00]) // parent
+    payload.append(contentsOf: [0x00, 0x00]) // assoc type
+    payload.append(contentsOf: [0x00, 0x00, 0x00, 0x00]) // assoc desc
+    payload.append(contentsOf: [0x01, 0x00, 0x00, 0x00]) // seq
+    payload.append(ptpString("DSCF0001.JPG"))
+    payload.append(ptpString("2026:04:26 17:00:00"))
+    payload.append(ptpString("Orientation:6"))
+
+    let info = CameraVendorPtpDataParser.objectInfo(handle: 99, data: payload)
+
+    XCTAssertEqual(info.orientation, 2)
+  }
+
   func testCameraVendorVendorObjectInfoParserReadsReferenceAppLayout() {
     let payload = Data([
       0x01, 0x00, 0x00, 0x10, 0x12, 0x38, 0x00, 0x00,
@@ -5100,6 +5237,23 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(info.captureDate, "20260328T045849")
     XCTAssertEqual(info.formatCode, 0x3812)
     XCTAssertEqual(info.compressedSize, 897287)
+    XCTAssertEqual(info.orientation, 1)
+  }
+
+  func testCameraVendorVendorObjectInfoParserNormalizesReferenceAppOrientation() {
+    let payload = Data([
+      0x01, 0x00, 0x00, 0x10, 0x12, 0x38, 0x00, 0x00,
+      0x07, 0xB1, 0x0D, 0x00, 0x01, 0xB9, 0x80, 0xCB,
+      0x00, 0x00, 0x80, 0x02, 0x00, 0x00, 0xE0, 0x01,
+      0x00, 0x00, 0x30, 0x1E, 0x00, 0x00, 0x20, 0x14,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]) + ptpString("DSCF3309.HEIC") + ptpString("20260328T045849") + ptpString("Orientation:8")
+
+    let info = CameraVendorPtpDataParser.cameraVendorVendorObjectInfo(handle: 0x10000001, data: payload)
+
+    XCTAssertEqual(info.orientation, 4)
   }
 
   func testReferenceAppGalleryContextParserReadsD222Value() {
@@ -6099,6 +6253,27 @@ final class RunnerTests: XCTestCase {
     data.append(0)
     data.append(0)
     return data
+  }
+
+  private func jpegDataWithExifOrientation(_ orientation: CGImagePropertyOrientation) throws -> Data {
+    let image = UIGraphicsImageRenderer(size: CGSize(width: 16, height: 12)).image { context in
+      UIColor.red.setFill()
+      context.fill(CGRect(x: 0, y: 0, width: 16, height: 12))
+    }
+    let output = NSMutableData()
+    let destination = try XCTUnwrap(CGImageDestinationCreateWithData(
+      output,
+      "public.jpeg" as CFString,
+      1,
+      nil
+    ))
+    CGImageDestinationAddImage(
+      destination,
+      try XCTUnwrap(image.cgImage),
+      [kCGImagePropertyOrientation as String: orientation.rawValue] as CFDictionary
+    )
+    XCTAssertTrue(CGImageDestinationFinalize(destination))
+    return output as Data
   }
 
   private func fixedDate() -> Date {

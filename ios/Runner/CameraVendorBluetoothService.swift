@@ -1776,6 +1776,7 @@ struct CameraVendorGalleryItem: Equatable {
   let formatLabel: String
   let captureDate: String
   let byteSizeText: String
+  let orientation: Int?
   let formatHints: Set<CameraVendorGalleryFormatHint>
   var thumbnailData: Data? = nil
 
@@ -1785,6 +1786,7 @@ struct CameraVendorGalleryItem: Equatable {
     formatLabel: String,
     captureDate: String,
     byteSizeText: String,
+    orientation: Int? = nil,
     formatHints: Set<CameraVendorGalleryFormatHint> = [],
     thumbnailData: Data? = nil
   ) {
@@ -1793,6 +1795,7 @@ struct CameraVendorGalleryItem: Equatable {
     self.formatLabel = formatLabel
     self.captureDate = captureDate
     self.byteSizeText = byteSizeText
+    self.orientation = orientation
     self.formatHints = formatHints
     self.thumbnailData = thumbnailData
   }
@@ -1933,6 +1936,7 @@ enum CameraVendorGalleryItemOrderingPolicy {
         byteSizeText: info.compressedSize > 0
           ? ByteCountFormatter.string(fromByteCount: Int64(info.compressedSize), countStyle: .file)
           : "",
+        orientation: info.orientation,
         formatHints: formatHintsByHandle[info.handle, default: []]
       )
     }
@@ -1994,6 +1998,11 @@ final class CameraVendorGalleryRequestScheduler {
   private var waiters: [Waiter] = []
   private var nextSequence = 0
   private var nextWaiterID = 0
+  private let onWaiterQueued: ((CameraVendorGalleryRequestPriority) -> Void)?
+
+  init(onWaiterQueued: ((CameraVendorGalleryRequestPriority) -> Void)? = nil) {
+    self.onWaiterQueued = onWaiterQueued
+  }
 
   func run<T>(
     priority: CameraVendorGalleryRequestPriority,
@@ -2023,6 +2032,7 @@ final class CameraVendorGalleryRequestScheduler {
       try await withCheckedThrowingContinuation { continuation in
         var shouldAcquireImmediately = false
         var shouldResumeCancelled = false
+        var queuedPriority: CameraVendorGalleryRequestPriority?
         lock.lock()
         if Task.isCancelled {
           shouldResumeCancelled = true
@@ -2041,13 +2051,18 @@ final class CameraVendorGalleryRequestScheduler {
             )
           )
           nextSequence += 1
+          queuedPriority = priority
           if token.register(waiterID: waiterID) {
             waiters.removeAll { $0.id == waiterID }
             shouldResumeCancelled = true
+            queuedPriority = nil
           }
         }
         lock.unlock()
 
+        if let queuedPriority {
+          onWaiterQueued?(queuedPriority)
+        }
         if shouldAcquireImmediately {
           continuation.resume()
         } else if shouldResumeCancelled {
@@ -2286,6 +2301,7 @@ struct CameraVendorGalleryState: Equatable {
           formatLabel: resolvedItem.formatLabel,
           captureDate: resolvedItem.captureDate.isEmpty ? existingItem.captureDate : resolvedItem.captureDate,
           byteSizeText: resolvedItem.byteSizeText,
+          orientation: resolvedItem.orientation ?? existingItem.orientation,
           formatHints: existingItem.formatHints,
           thumbnailData: resolvedItem.thumbnailData
         )
@@ -2339,6 +2355,7 @@ protocol CameraVendorGalleryService {
   func fetchGallery() async throws -> [CameraVendorGalleryItem]
   func fetchThumbnail(for handle: Int) async throws -> Data
   func fetchThumbnailWithInfo(for handle: Int) async throws -> CameraVendorGalleryThumbnail
+  func fetchPreviewImage(for handle: Int) async throws -> Data
   func downloadOriginal(for handle: Int) async throws -> Data
   func downloadOriginalData(
     for handle: Int,
@@ -2359,6 +2376,10 @@ struct CameraVendorGalleryThumbnail {
 extension CameraVendorGalleryService {
   func fetchThumbnailWithInfo(for handle: Int) async throws -> CameraVendorGalleryThumbnail {
     CameraVendorGalleryThumbnail(data: try await fetchThumbnail(for: handle), item: nil)
+  }
+
+  func fetchPreviewImage(for handle: Int) async throws -> Data {
+    try await fetchThumbnail(for: handle)
   }
 
   func downloadOriginalData(
@@ -3167,6 +3188,27 @@ struct CameraVendorCameraObjectInfo: Equatable {
   let thumbCompressedSize: UInt32
   let filename: String
   let captureDate: String
+  let orientation: Int?
+
+  init(
+    handle: Int,
+    storageID: UInt32,
+    formatCode: UInt16,
+    compressedSize: UInt32,
+    thumbCompressedSize: UInt32,
+    filename: String,
+    captureDate: String,
+    orientation: Int? = nil
+  ) {
+    self.handle = handle
+    self.storageID = storageID
+    self.formatCode = formatCode
+    self.compressedSize = compressedSize
+    self.thumbCompressedSize = thumbCompressedSize
+    self.filename = filename
+    self.captureDate = captureDate
+    self.orientation = orientation
+  }
 
   var hasResolvedFormat: Bool {
     formatCode != Self.undefinedFormatCode
@@ -3208,7 +3250,8 @@ struct CameraVendorCameraObjectInfo: Equatable {
       compressedSize: 0,
       thumbCompressedSize: 0,
       filename: String(format: "0x%08X", handle),
-      captureDate: captureDate
+      captureDate: captureDate,
+      orientation: nil
     )
   }
 }
@@ -3436,6 +3479,7 @@ enum CameraVendorPtpDataParser {
     let filename = ptpString(from: data, offset: filenameOffset)
     let captureDateOffset = filenameOffset + ptpStringByteLength(from: data, offset: filenameOffset)
     let captureDate = ptpString(from: data, offset: captureDateOffset)
+    let metadataOffset = captureDateOffset + ptpStringByteLength(from: data, offset: captureDateOffset)
     return CameraVendorCameraObjectInfo(
       handle: handle,
       storageID: storageID,
@@ -3443,7 +3487,8 @@ enum CameraVendorPtpDataParser {
       compressedSize: compressedSize,
       thumbCompressedSize: thumbCompressedSize,
       filename: filename,
-      captureDate: captureDate
+      captureDate: captureDate,
+      orientation: cameraVendorOrientation(in: data, offset: metadataOffset)
     )
   }
 
@@ -3456,6 +3501,7 @@ enum CameraVendorPtpDataParser {
     let filename = ptpString(from: data, offset: filenameOffset)
     let captureDateOffset = filenameOffset + ptpStringByteLength(from: data, offset: filenameOffset)
     let captureDate = ptpString(from: data, offset: captureDateOffset)
+    let orientationOffset = captureDateOffset + ptpStringByteLength(from: data, offset: captureDateOffset)
     return CameraVendorCameraObjectInfo(
       handle: handle,
       storageID: storageID,
@@ -3463,7 +3509,8 @@ enum CameraVendorPtpDataParser {
       compressedSize: compressedSize,
       thumbCompressedSize: thumbCompressedSize,
       filename: filename,
-      captureDate: captureDate
+      captureDate: captureDate,
+      orientation: cameraVendorOrientation(in: data, offset: orientationOffset)
     )
   }
 
@@ -3500,6 +3547,44 @@ enum CameraVendorPtpDataParser {
   private static func ptpStringByteLength(from data: Data, offset: Int) -> Int {
     guard offset < data.count else { return 1 }
     return 1 + (Int(data[offset]) * 2)
+  }
+
+  private static func cameraVendorOrientation(in data: Data, offset: Int) -> Int? {
+    var currentOffset = offset
+    for _ in 0..<12 {
+      guard currentOffset < data.count else { return nil }
+      if let orientation = orientationFromMetadataString(ptpString(from: data, offset: currentOffset)) {
+        return orientation
+      }
+      currentOffset += max(ptpStringByteLength(from: data, offset: currentOffset), 1)
+    }
+    return nil
+  }
+
+  private static func orientationFromMetadataString(_ value: String) -> Int? {
+    guard let range = value.range(
+      of: #"(?i)\borientation\s*:\s*([1-8])\b"#,
+      options: .regularExpression
+    ) else {
+      return nil
+    }
+    let matched = String(value[range])
+    guard let rawValue = matched.split(separator: ":").last
+      .flatMap({ Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }) else {
+      return nil
+    }
+    switch rawValue {
+    case 1, 2:
+      return 1
+    case 6, 7:
+      return 2
+    case 3, 4:
+      return 3
+    case 5, 8:
+      return 4
+    default:
+      return nil
+    }
   }
 
   private static func uint16(from data: Data, offset: Int) -> UInt16 {
@@ -5447,6 +5532,12 @@ private final class CameraVendorPtpSession {
     return data
   }
 
+  func previewImage(handle: UInt32) throws -> Data {
+    report("[OBS] PTP_PREVIEW_IMAGE_REQUEST handle=0x\(String(format: "%08X", handle))")
+    let data = try readPreviewObject(handle: handle)
+    return CameraVendorImageDataNormalizer.imageData(from: data)
+  }
+
   private func readObjectSample(handle: UInt32, byteCount: UInt32) throws -> Data {
     report(
       "[OBS] PTP_STANDARD_PARTIAL_OBJECT_REQUEST purpose=reserved-receive-sample " +
@@ -7065,6 +7156,12 @@ final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVend
     return CameraVendorGalleryThumbnail(data: result.data, item: item)
   }
 
+  func fetchPreviewImage(for handle: Int) async throws -> Data {
+    try await requestScheduler.run(priority: .previewImage) {
+      try self.session.previewImage(handle: UInt32(handle))
+    }
+  }
+
   func downloadOriginal(for handle: Int) async throws -> Data {
     let expectedSize = objectInfoCache[handle]?.compressedSize.nonzero
     return try await requestScheduler.run(priority: .downloadOriginal) {
@@ -7333,6 +7430,7 @@ final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVend
       byteSizeText: info.compressedSize > 0
         ? ByteCountFormatter.string(fromByteCount: Int64(info.compressedSize), countStyle: .file)
         : "",
+      orientation: info.orientation,
       formatHints: formatHints
     )
   }
