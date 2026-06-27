@@ -1,6 +1,7 @@
 import CoreLocation
 import Network
 import NetworkExtension
+import UIKit
 import XCTest
 @testable import Runner
 
@@ -1153,7 +1154,7 @@ final class RunnerTests: XCTestCase {
     )
     XCTAssertEqual(routes.count, 1)
     XCTAssertEqual(routes[0].launchRequestPayload, Data([0x03, 0x00]))
-    XCTAssertEqual(routes[0].ptpStartupDelaySeconds, 3)
+    XCTAssertEqual(routes[0].ptpStartupDelaySeconds, 0)
   }
 
   func testHiddenGalleryRoutePolicyStopsAfterSuccessfulItems() {
@@ -1202,8 +1203,8 @@ final class RunnerTests: XCTestCase {
     )
   }
 
-  func testGalleryPreparationKeepsAutomaticWifiJoinDisabledForVerifiedManualPath() {
-    XCTAssertFalse(
+  func testGalleryPreparationAttemptsAutomaticWifiJoinWhenCameraCredentialsAreAvailable() {
+    XCTAssertTrue(
       CameraVendorGalleryPreparationPolicy.shouldAttemptAutomaticWifiJoin(
         hasWifiConfigurations: true,
         prefersManualWifiRecovery: false
@@ -1262,28 +1263,31 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(CameraVendorWifiJoinDiagnostics.shouldRemoveExistingConfigurationBeforeJoin)
   }
 
-  func testPtpStartupPolicyKeepsReferenceAppSettleDelayAfterWifiHandoff() {
+  func testPtpStartupPolicyAttemptsImmediatelyAfterWifiHandoffLikeAndroid() {
     XCTAssertEqual(
       CameraVendorGalleryPtpStartupPolicy.startupDelaySeconds(didCompleteWifiHandoff: true),
-      3
+      0
     )
     XCTAssertEqual(
       CameraVendorGalleryPtpStartupPolicy.startupDelaySeconds(didCompleteWifiHandoff: false),
-      3
+      0
     )
   }
 
-  func testPtpConnectionStartupPolicyAllowsLateCameraPtpListenerAfterApReady() {
+  func testWifiHandoffDoesNotAddExtraStabilizationDelayAfterSSIDMatchLikeAndroid() {
+    XCTAssertEqual(CameraVendorWifiHandoffStabilizationPolicy.delayAfterSSIDAssociationSeconds, 0)
+  }
+
+  func testPtpConnectionStartupPolicyMatchesAndroidBoundedRetryWindow() {
     XCTAssertEqual(CameraVendorPtpConnectionStartupPolicy.commandConnectTimeoutSeconds, 1.5)
+    XCTAssertEqual(CameraVendorPtpConnectionStartupPolicy.maxAttempts, 5)
     XCTAssertEqual(CameraVendorPtpConnectionStartupPolicy.retryDelaySeconds(afterFailedAttempt: 1), 0.5)
-    XCTAssertEqual(CameraVendorPtpConnectionStartupPolicy.retryDelaySeconds(afterFailedAttempt: 4), 0.5)
-    XCTAssertEqual(CameraVendorPtpConnectionStartupPolicy.maxElapsedSeconds, 45)
-    XCTAssertTrue(
-      CameraVendorPtpConnectionStartupPolicy.shouldContinueRetrying(elapsedSeconds: 30)
-    )
-    XCTAssertFalse(
-      CameraVendorPtpConnectionStartupPolicy.shouldContinueRetrying(elapsedSeconds: 45.1)
-    )
+    XCTAssertEqual(CameraVendorPtpConnectionStartupPolicy.retryDelaySeconds(afterFailedAttempt: 2), 1.0)
+    XCTAssertEqual(CameraVendorPtpConnectionStartupPolicy.retryDelaySeconds(afterFailedAttempt: 3), 1.5)
+    XCTAssertEqual(CameraVendorPtpConnectionStartupPolicy.retryDelaySeconds(afterFailedAttempt: 4), 2.0)
+    XCTAssertTrue(CameraVendorPtpConnectionStartupPolicy.shouldRetry(afterFailedAttempt: 1))
+    XCTAssertTrue(CameraVendorPtpConnectionStartupPolicy.shouldRetry(afterFailedAttempt: 4))
+    XCTAssertFalse(CameraVendorPtpConnectionStartupPolicy.shouldRetry(afterFailedAttempt: 5))
   }
 
   func testSearchModeDescRetryPolicyOnlyRetriesBusyResponse() {
@@ -1313,14 +1317,20 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(CameraVendorThumbnailLoadPolicy.shouldClosePtpSocketForPriorityDownloadInterruption)
   }
 
-  func testCameraVendorPartialObjectRequestPolicyUsesReferenceAppInitialReadSize() {
-    XCTAssertEqual(CameraVendorPartialObjectRequestPolicy.referenceAppInitialReadSize, 4 * 1_024 * 1_024)
+  func testCameraVendorPartialObjectRequestPolicyUsesAndroidReferenceReadSizes() {
+    XCTAssertEqual(CameraVendorPartialObjectRequestPolicy.referenceAppInitialReadSize, 1 * 1_024 * 1_024)
+    XCTAssertEqual(CameraVendorPartialObjectRequestPolicy.fileDownloadReadSize, 4 * 1_024 * 1_024)
+    XCTAssertEqual(
+      CameraVendorPartialObjectRequestPolicy.fileDownloadFallbackReadSize,
+      CameraVendorPartialObjectRequestPolicy.referenceAppInitialReadSize
+    )
+    XCTAssertEqual(CameraVendorPartialObjectRequestPolicy.fileDownloadReadTimeoutSeconds, 60)
   }
 
-  func testCameraVendorPartialObjectRequestPolicyUsesLargeFileChunksWithSafeFallback() {
+  func testCameraVendorPartialObjectRequestPolicyUsesStableAndroidFileChunksWithSafeFallback() {
     XCTAssertEqual(
       CameraVendorPartialObjectRequestPolicy.fileDownloadReadSize,
-      8 * 1_024 * 1_024
+      4 * 1_024 * 1_024
     )
     XCTAssertEqual(
       CameraVendorPartialObjectRequestPolicy.fileDownloadFallbackReadSize,
@@ -1343,7 +1353,12 @@ final class RunnerTests: XCTestCase {
     )
   }
 
-  func testAdaptiveDownloadChunkPolicyDowngradesAfterFirstSlowLargeChunk() {
+  func testAdaptiveDownloadChunkPolicyIsDisabledForAndroidParity() {
+    XCTAssertFalse(CameraVendorAdaptiveDownloadChunkPolicy.isEnabled)
+    XCTAssertEqual(CameraVendorAdaptiveDownloadChunkPolicy.strategyName, "android-fixed-4mb")
+  }
+
+  func testAdaptiveDownloadChunkPolicyKeepsStableAndroidFileChunks() {
     var state = CameraVendorAdaptiveDownloadChunkState()
 
     XCTAssertEqual(
@@ -1351,52 +1366,14 @@ final class RunnerTests: XCTestCase {
       3 * 1_024 * 1_024
     )
 
-    CameraVendorAdaptiveDownloadChunkPolicy.recordChunk(
-      byteCount: 8 * 1_024 * 1_024,
-      elapsedMs: 12_000,
-      state: &state
-    )
-
-    XCTAssertEqual(state.readSize, CameraVendorPartialObjectRequestPolicy.fileDownloadFallbackReadSize)
     XCTAssertEqual(
       CameraVendorAdaptiveDownloadChunkPolicy.requestSize(remaining: 20 * 1_024 * 1_024, state: state),
-      CameraVendorPartialObjectRequestPolicy.fileDownloadFallbackReadSize
-    )
-  }
-
-  func testAdaptiveDownloadChunkPolicyUpgradesAfterConsecutiveFastChunks() {
-    var state = CameraVendorAdaptiveDownloadChunkState(
-      readSize: CameraVendorPartialObjectRequestPolicy.fileDownloadFallbackReadSize
+      CameraVendorPartialObjectRequestPolicy.fileDownloadReadSize
     )
 
     CameraVendorAdaptiveDownloadChunkPolicy.recordChunk(
       byteCount: 4 * 1_024 * 1_024,
-      elapsedMs: 1_200,
-      state: &state
-    )
-    XCTAssertEqual(state.readSize, CameraVendorPartialObjectRequestPolicy.fileDownloadFallbackReadSize)
-
-    CameraVendorAdaptiveDownloadChunkPolicy.recordChunk(
-      byteCount: 4 * 1_024 * 1_024,
-      elapsedMs: 1_200,
-      state: &state
-    )
-    XCTAssertEqual(state.readSize, CameraVendorPartialObjectRequestPolicy.fileDownloadReadSize)
-  }
-
-  func testAdaptiveDownloadChunkPolicyReturnsToLargeChunksWhenFallbackIsNotBetter() {
-    var state = CameraVendorAdaptiveDownloadChunkState()
-
-    CameraVendorAdaptiveDownloadChunkPolicy.recordChunk(
-      byteCount: 8 * 1_024 * 1_024,
-      elapsedMs: 8_000,
-      state: &state
-    )
-    XCTAssertEqual(state.readSize, CameraVendorPartialObjectRequestPolicy.fileDownloadFallbackReadSize)
-
-    CameraVendorAdaptiveDownloadChunkPolicy.recordChunk(
-      byteCount: 4 * 1_024 * 1_024,
-      elapsedMs: 6_000,
+      elapsedMs: 12_000,
       state: &state
     )
 
@@ -1535,6 +1512,57 @@ final class RunnerTests: XCTestCase {
     )
   }
 
+  func testCameraVendorDownloadModePolicyMatchesAndroidOriginalAndCompressedProperties() {
+    XCTAssertEqual(
+      CameraVendorDownloadModePolicy.prepareProperties(mode: .original),
+      [
+        CameraVendorDownloadModeProperty(
+          code: CameraVendorDevicePropCode.imageForceCompression,
+          value: 2,
+          width: .uint16
+        )
+      ]
+    )
+    XCTAssertEqual(
+      CameraVendorDownloadModePolicy.prepareProperties(mode: .compressed),
+      [
+        CameraVendorDownloadModeProperty(
+          code: CameraVendorDevicePropCode.objectCompressionSetting,
+          value: 1,
+          width: .uint16
+        ),
+        CameraVendorDownloadModeProperty(
+          code: CameraVendorDevicePropCode.imageForceCompression,
+          value: 1,
+          width: .uint16
+        )
+      ]
+    )
+    XCTAssertEqual(
+      CameraVendorDownloadModePolicy.resetProperty(
+        for: CameraVendorDownloadModeProperty(
+          code: CameraVendorDevicePropCode.imageForceCompression,
+          value: 2,
+          width: .uint16
+        )
+      ),
+      CameraVendorDownloadModeProperty(
+        code: CameraVendorDevicePropCode.imageForceCompression,
+        value: 0,
+        width: .uint16
+      )
+    )
+    XCTAssertNil(
+      CameraVendorDownloadModePolicy.resetProperty(
+        for: CameraVendorDownloadModeProperty(
+          code: CameraVendorDevicePropCode.objectCompressionSetting,
+          value: 1,
+          width: .uint16
+        )
+      )
+    )
+  }
+
   func testCameraVendorThumbnailFallbackUsesSmallPreviewReadSize() {
     XCTAssertLessThan(
       CameraVendorThumbnailFetchPolicy.partialPreviewReadSize,
@@ -1617,6 +1645,22 @@ final class RunnerTests: XCTestCase {
     )
   }
 
+  func testImageDataNormalizerRecognizesAndroidVerifiedHeifBrands() {
+    for brand in ["heic", "heix", "hevc", "hevx", "heis", "hevm", "heif", "mif1", "msf1"] {
+      let prefixedHeif = Data([0xAA, 0xBB, 0xCC]) +
+        Data([0x00, 0x00, 0x00, 0x18]) +
+        Data("ftyp".utf8) +
+        Data(brand.utf8) +
+        Data([0x00, 0x00])
+
+      XCTAssertEqual(
+        CameraVendorImageDataNormalizer.imageData(from: prefixedHeif),
+        prefixedHeif.dropFirst(3),
+        "brand \(brand) should strip CameraVendor prefix before HEIF ftyp box"
+      )
+    }
+  }
+
   func testGalleryPreparationPausesBeforePtpWhileWaitingForManualWifiJoin() {
     XCTAssertTrue(
       CameraVendorGalleryPreparationPolicy.shouldPauseBeforeStartingPTP(
@@ -1665,8 +1709,8 @@ final class RunnerTests: XCTestCase {
     )
   }
 
-  func testTransferFlowAutomaticallyPreparesAfterPairingLikeReferenceApp() {
-    XCTAssertTrue(CameraVendorPostPairingTransferPolicy.shouldAutomaticallyPrepareTransferAfterPairing)
+  func testTransferFlowDoesNotAutomaticallyEnterGalleryAfterPairing() {
+    XCTAssertFalse(CameraVendorPostPairingTransferPolicy.shouldAutomaticallyPrepareTransferAfterPairing)
   }
 
   func testPairingCompletionWaitsForExplicitCameraConfirmation() {
@@ -1739,12 +1783,15 @@ final class RunnerTests: XCTestCase {
     )
   }
 
-  func testHomeScreenStartsScanningOnLaunchWhileKeepingRememberedCameraVisible() {
-    XCTAssertTrue(
+  func testHomeScreenWaitsForExplicitPairingWhenNoRememberedCamera() {
+    XCTAssertFalse(
       NativeCameraSearchStartupPolicy.shouldStartScanningOnLaunch(
         hasRememberedCamera: false
       )
     )
+  }
+
+  func testHomeScreenValidatesRememberedCameraOnLaunchWhileKeepingCardVisible() {
     XCTAssertTrue(
       NativeCameraSearchStartupPolicy.shouldStartScanningOnLaunch(
         hasRememberedCamera: true
@@ -1794,14 +1841,14 @@ final class RunnerTests: XCTestCase {
     )
   }
 
-  func testTransferFlowCanStartAfterPairingWhenAutoPrepareIsEnabled() {
+  func testTransferFlowRequiresExplicitGalleryEntryAfterPairing() {
     XCTAssertFalse(
       CameraVendorPostPairingTransferPolicy.canStartTransfer(
         hasCompletedPairing: false,
         hasUserInitiatedTransfer: true
       )
     )
-    XCTAssertTrue(
+    XCTAssertFalse(
       CameraVendorPostPairingTransferPolicy.canStartTransfer(
         hasCompletedPairing: true,
         hasUserInitiatedTransfer: false
@@ -1856,10 +1903,12 @@ final class RunnerTests: XCTestCase {
   }
 
   func testNativeTransferSizeSettingPolicyUsesCompactSwitchMetrics() {
-    XCTAssertEqual(NativeTransferSizeSettingPolicy.switchWidth, 132)
-    XCTAssertEqual(NativeTransferSizeSettingPolicy.switchHeight, 30)
-    XCTAssertEqual(NativeTransferSizeSettingPolicy.switchLabelFontSize, 10.5)
-    XCTAssertEqual(NativeTransferSizeSettingPolicy.switchSymbolPointSize, 9.5)
+    XCTAssertEqual(NativeTransferSizeSettingPolicy.switchWidth, 104)
+    XCTAssertEqual(NativeTransferSizeSettingPolicy.switchHeight, 40)
+    XCTAssertEqual(NativeTransferSizeSettingPolicy.switchLabelFontSize, 9.5)
+    XCTAssertEqual(NativeTransferSizeSettingPolicy.switchSymbolPointSize, 11)
+    XCTAssertEqual(NativeTransferSizeSettingPolicy.switchImagePlacement, .top)
+    XCTAssertEqual(NativeTransferSizeSettingPolicy.switchImagePadding, 1)
   }
 
   func testGalleryReloadPolicyRetriesOnlyWhenCameraWifiIsReadyAfterFailure() {
@@ -1915,8 +1964,8 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(CameraVendorGalleryLoadPolicy.shouldAllowManualReload(currentWifiIP: nil))
   }
 
-  func testGalleryLoadPolicyWaitsForExplicitGalleryEntryLoad() {
-    XCTAssertFalse(CameraVendorGalleryLoadPolicy.shouldLoadAutomaticallyOnEntry)
+  func testGalleryLoadPolicyStartsLoadWhenEnteringGallery() {
+    XCTAssertTrue(CameraVendorGalleryLoadPolicy.shouldLoadAutomaticallyOnEntry)
     XCTAssertTrue(CameraVendorGalleryLoadPolicy.shouldRetryAutomaticallyWhenAppBecomesActive)
   }
 
@@ -1980,6 +2029,53 @@ final class RunnerTests: XCTestCase {
     )
   }
 
+  func testGalleryBackgroundRuntimePolicyProtectsActiveCameraWork() {
+    XCTAssertEqual(NativeGalleryBackgroundRuntimePolicy.finiteTaskName, "CamTransferCameraTransfer")
+    XCTAssertTrue(
+      NativeGalleryBackgroundRuntimePolicy.shouldDisableIdleTimer(
+        isLoading: false,
+        isDownloading: true,
+        hasActiveCameraCommunication: false
+      )
+    )
+    XCTAssertTrue(
+      NativeGalleryBackgroundRuntimePolicy.shouldDisableIdleTimer(
+        isLoading: true,
+        isDownloading: false,
+        hasActiveCameraCommunication: false
+      )
+    )
+    XCTAssertTrue(
+      NativeGalleryBackgroundRuntimePolicy.shouldRequestFiniteBackgroundTask(
+        isLoading: false,
+        isDownloading: false,
+        hasActiveCameraCommunication: true
+      )
+    )
+    XCTAssertFalse(
+      NativeGalleryBackgroundRuntimePolicy.shouldRequestFiniteBackgroundTask(
+        isLoading: false,
+        isDownloading: false,
+        hasActiveCameraCommunication: false
+      )
+    )
+    XCTAssertEqual(
+      NativeGalleryBackgroundRuntimePolicy.formattedBackgroundTimeRemaining(27.8),
+      "27s"
+    )
+    XCTAssertEqual(
+      NativeGalleryBackgroundRuntimePolicy.formattedBackgroundTimeRemaining(.greatestFiniteMagnitude),
+      "foreground"
+    )
+  }
+
+  func testNativeGalleryExitCopyMatchesAndroidDisconnectDialog() {
+    XCTAssertEqual(NativeGalleryExitCopy.title, "确认断开相机连接？")
+    XCTAssertEqual(NativeGalleryExitCopy.confirmTitle, "确认断开")
+    XCTAssertEqual(NativeGalleryExitCopy.cancelTitle, "继续停留")
+    XCTAssertTrue(NativeGalleryExitCopy.message.contains("保持在照片筛选页面"))
+  }
+
   func testTransferActivationCompletionPolicyProceedsAfterObservedChange() {
     XCTAssertTrue(
       CameraVendorTransferActivationCompletionPolicy.shouldProceedToGallery(
@@ -2028,6 +2124,32 @@ final class RunnerTests: XCTestCase {
     )
     XCTAssertFalse(
       NativeCameraDebugLaunchPolicy.shouldAutoConnectRememberedCamera(
+        arguments: ["Runner"]
+      )
+    )
+  }
+
+  func testDebugLaunchPolicyShowsStubGalleryOnlyWithExplicitArgument() {
+    XCTAssertTrue(
+      NativeCameraDebugLaunchPolicy.shouldShowStubGallery(
+        arguments: ["Runner", "--camtransfer-show-stub-gallery"]
+      )
+    )
+    XCTAssertFalse(
+      NativeCameraDebugLaunchPolicy.shouldShowStubGallery(
+        arguments: ["Runner"]
+      )
+    )
+  }
+
+  func testDebugLaunchPolicyShowsStubDownloadsOnlyWithExplicitArgument() {
+    XCTAssertTrue(
+      NativeCameraDebugLaunchPolicy.shouldShowStubDownloads(
+        arguments: ["Runner", "--camtransfer-show-stub-downloads"]
+      )
+    )
+    XCTAssertFalse(
+      NativeCameraDebugLaunchPolicy.shouldShowStubDownloads(
         arguments: ["Runner"]
       )
     )
@@ -2206,8 +2328,10 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(CameraVendorGalleryDownloadPolicy.mediaType(for: jpeg), .photo)
   }
 
-  func testPhotoDownloadsAreSavedFromTemporaryFilesToAvoidMemorySpikes() {
-    XCTAssertTrue(CameraVendorPhotoLibrarySaveInputPolicy.shouldSavePhotoDownloadsFromTemporaryFile)
+  func testPhotoDownloadsUseDataFastPathForPriorDownloadSpeed() {
+    XCTAssertFalse(CameraVendorPhotoLibrarySaveInputPolicy.shouldSavePhotoDownloadsFromTemporaryFile)
+    XCTAssertTrue(CameraVendorDownloadPipelinePolicy.shouldUseDataFastPath(mediaType: .photo))
+    XCTAssertFalse(CameraVendorDownloadPipelinePolicy.shouldUseDataFastPath(mediaType: .video))
   }
 
   func testPhotoLibrarySavePolicyNormalizesHeifDownloadsBeforeSaving() {
@@ -2283,7 +2407,7 @@ final class RunnerTests: XCTestCase {
     )
   }
 
-  func testConnectionSummaryAddsVisibleFallbackForHiddenPreferredWifi() {
+  func testConnectionSummaryKeepsHiddenPreferredWifiAsSingleOfficialCredential() {
     let summary = CameraVendorConnectionSummary(
       deviceName: "DEVICE-A",
       serialNumber: "221019F1932011003B",
@@ -2294,12 +2418,10 @@ final class RunnerTests: XCTestCase {
       )
     )
 
-    let configurations = Array(summary.wifiConfigurations.prefix(2))
-    XCTAssertEqual(configurations.count, 2)
+    let configurations = summary.wifiConfigurations
+    XCTAssertEqual(configurations.count, 1)
     XCTAssertEqual(configurations[0].ssid, "CAMERA-DEVICE-A-003B")
     XCTAssertTrue(configurations[0].isHidden)
-    XCTAssertEqual(configurations[1].ssid, "CAMERA-DEVICE-A-003B")
-    XCTAssertFalse(configurations[1].isHidden)
   }
 
   func testRunnerInfoPlistIncludesLocationUsageDescription() throws {
@@ -2317,6 +2439,25 @@ final class RunnerTests: XCTestCase {
     XCTAssertNotNil(plist["NSLocalNetworkUsageDescription"] as? String)
     let appTransportSecurity = try XCTUnwrap(plist["NSAppTransportSecurity"] as? [String: Any])
     XCTAssertEqual(appTransportSecurity["NSAllowsLocalNetworking"] as? Bool, true)
+  }
+
+  func testRunnerTargetSignsWithWifiEntitlements() throws {
+    let testsDirectory = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+    let iosDirectory = testsDirectory.deletingLastPathComponent()
+    let entitlementsURL = iosDirectory.appendingPathComponent("Runner/Runner.entitlements")
+    let entitlements = try XCTUnwrap(NSDictionary(contentsOf: entitlementsURL))
+
+    XCTAssertEqual(entitlements["com.apple.developer.networking.HotspotConfiguration"] as? Bool, true)
+    XCTAssertEqual(entitlements["com.apple.developer.networking.wifi-info"] as? Bool, true)
+
+    let projectURL = iosDirectory.appendingPathComponent("Runner.xcodeproj/project.pbxproj")
+    let project = try String(contentsOf: projectURL, encoding: .utf8)
+    let expectedSetting = "CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;"
+
+    XCTAssertEqual(project.components(separatedBy: expectedSetting).count - 1, 2)
+    XCTAssertTrue(project.contains("com.apple.AccessWiFi"))
+    XCTAssertTrue(project.contains("com.apple.HotspotConfiguration"))
   }
 
   func testManualWifiJoinInstructionsIncludeHiddenNetworkHint() {
@@ -2405,6 +2546,141 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(selected, [9])
   }
 
+  func testNativeGalleryDragSelectionPolicyUsesAndroidHorizontalTouchSlop() {
+    XCTAssertFalse(
+      NativeGalleryDragSelectionPolicy.shouldStartDragSelection(
+        deltaX: 8,
+        deltaY: 0,
+        touchSlop: 10
+      )
+    )
+    XCTAssertFalse(
+      NativeGalleryDragSelectionPolicy.shouldStartDragSelection(
+        deltaX: 12,
+        deltaY: 10,
+        touchSlop: 10
+      )
+    )
+    XCTAssertTrue(
+      NativeGalleryDragSelectionPolicy.shouldStartDragSelection(
+        deltaX: 24,
+        deltaY: 6,
+        touchSlop: 10
+      )
+    )
+  }
+
+  func testNativeGalleryDragSelectionPolicyCommitsOnlyAfterMovingToAnotherSelectableHandle() {
+    XCTAssertFalse(
+      NativeGalleryDragSelectionPolicy.shouldCommitDragSelection(
+        startHandle: 2,
+        endHandle: 2,
+        canSelectEndHandle: true
+      )
+    )
+    XCTAssertFalse(
+      NativeGalleryDragSelectionPolicy.shouldCommitDragSelection(
+        startHandle: 2,
+        endHandle: 3,
+        canSelectEndHandle: false
+      )
+    )
+    XCTAssertTrue(
+      NativeGalleryDragSelectionPolicy.shouldCommitDragSelection(
+        startHandle: 2,
+        endHandle: 3,
+        canSelectEndHandle: true
+      )
+    )
+  }
+
+  func testNativeGalleryDragSelectionPolicySelectsContinuousRangeLikeAndroid() {
+    let selected = NativeGalleryDragSelectionPolicy.updatedRangeSelection(
+      selectedHandles: [9],
+      orderedHandles: [1, 2, 3, 4, 5, 6],
+      startHandle: 2,
+      endHandle: 5,
+      selectableHandles: [1, 2, 3, 5, 6],
+      mode: .selecting
+    )
+
+    XCTAssertEqual(selected, [2, 3, 5, 9])
+  }
+
+  func testNativeGalleryDragSelectionPolicyDeselectsContinuousRangeLikeAndroid() {
+    let selected = NativeGalleryDragSelectionPolicy.updatedRangeSelection(
+      selectedHandles: [1, 2, 3, 4, 5, 9],
+      orderedHandles: [1, 2, 3, 4, 5, 6],
+      startHandle: 5,
+      endHandle: 2,
+      selectableHandles: [1, 2, 3, 5, 6],
+      mode: .deselecting
+    )
+
+    XCTAssertEqual(selected, [1, 4, 9])
+  }
+
+  func testNativeGalleryUIInvalidationPolicyRefreshesOnlyChangedSelectionHandles() {
+    XCTAssertEqual(
+      NativeGalleryUIInvalidationPolicy.changedHandles(before: [1, 2, 9], after: [2, 3, 9]),
+      [1, 3]
+    )
+  }
+
+  func testNativeGallerySelectionRefreshPolicyUsesSelectionOnlyCellUpdates() {
+    XCTAssertFalse(NativeGallerySelectionRefreshPolicy.shouldReconfigureImageDuringSelectionChange)
+    XCTAssertTrue(NativeGallerySelectionRefreshPolicy.shouldPauseThumbnailLoadingDuringSelectionGesture)
+  }
+
+  func testNativeGalleryInteractionPriorityPolicyDoesNotWaitForThumbnailDrainBeforeBack() {
+    XCTAssertTrue(NativeGalleryInteractionPriorityPolicy.shouldCancelThumbnailQueueBeforeExitTap)
+    XCTAssertTrue(NativeGalleryInteractionPriorityPolicy.shouldSuppressThumbnailRetryAfterInteractionCancel)
+    XCTAssertEqual(NativeGalleryInteractionPriorityPolicy.thumbnailResumeDelayAfterSelectionSeconds, 0.2)
+  }
+
+  func testNativeGalleryDragSelectionPolicyAutoScrollsNearEdgesLikeAndroid() {
+    XCTAssertEqual(
+      NativeGalleryDragSelectionPolicy.autoScrollDelta(
+        pointerY: 10,
+        viewportStart: 0,
+        viewportEnd: 600,
+        edgeSize: 100,
+        maxDelta: 40
+      ),
+      -36,
+      accuracy: 0.001
+    )
+    XCTAssertEqual(
+      NativeGalleryDragSelectionPolicy.autoScrollDelta(
+        pointerY: 575,
+        viewportStart: 0,
+        viewportEnd: 600,
+        edgeSize: 100,
+        maxDelta: 40
+      ),
+      30,
+      accuracy: 0.001
+    )
+  }
+
+  func testNativeGallerySelectionSummaryCountsOnlySelectableFilteredItemsLikeAndroid() {
+    let items = [
+      CameraVendorGalleryItem(handle: 1, filename: "A.JPG", formatLabel: "JPG", captureDate: "", byteSizeText: "1 MB"),
+      CameraVendorGalleryItem(handle: 2, filename: "B.JPG", formatLabel: "JPG", captureDate: "", byteSizeText: "1 MB"),
+      CameraVendorGalleryItem(handle: 3, filename: "C.JPG", formatLabel: "JPG", captureDate: "", byteSizeText: "1 MB"),
+    ]
+    var state = CameraVendorGalleryState(items: items)
+    state.setSelection(handles: [1, 2, 3, 99])
+    state.enqueueDownloads(for: [2])
+    state.markDownloadFinished(handle: 3)
+
+    let summary = NativeGallerySelectionSummaryPolicy.summary(items: state.items, state: state)
+
+    XCTAssertEqual(summary.selectedCount, 1)
+    XCTAssertEqual(summary.totalSelectableCount, 1)
+    XCTAssertEqual(summary.text, "已选 1 / 共 1 张")
+  }
+
   func testGalleryQueueStartsRequestedDownloadsOnly() {
     let items = [
       CameraVendorGalleryItem(
@@ -2428,6 +2704,20 @@ final class RunnerTests: XCTestCase {
 
     XCTAssertEqual(state.downloadState(for: 11), .queued)
     XCTAssertEqual(state.downloadState(for: 22), .queued)
+  }
+
+  func testGalleryQueueCarriesDownloadModeCapturedAtSelectionTime() {
+    let items = [
+      CameraVendorGalleryItem(handle: 11, filename: "A.JPG", formatLabel: "JPG", captureDate: "", byteSizeText: "1 MB"),
+      CameraVendorGalleryItem(handle: 22, filename: "B.HEIF", formatLabel: "HEIF", captureDate: "", byteSizeText: "8 MB"),
+    ]
+    var state = CameraVendorGalleryState(items: items)
+
+    state.enqueueDownloads(for: [11], mode: .compressed)
+    state.enqueueDownloads(for: [22], mode: .original)
+
+    XCTAssertEqual(state.downloadMode(for: 11), .compressed)
+    XCTAssertEqual(state.downloadMode(for: 22), .original)
   }
 
   func testGalleryQueueClearsSelectionForQueuedDownloads() {
@@ -2580,9 +2870,26 @@ final class RunnerTests: XCTestCase {
     XCTAssertTrue(NativeGalleryNavigationPolicy.canDismissPreview(isDownloading: false))
   }
 
-  func testNativeGalleryNavigationPolicyBlocksOpeningPreviewWhileDownloading() {
-    XCTAssertFalse(NativeGalleryNavigationPolicy.canOpenPreview(isDownloading: true))
+  func testNativeGalleryNavigationPolicyAllowsOpeningPreviewWhileDownloadingLikeAndroid() {
+    XCTAssertTrue(NativeGalleryNavigationPolicy.canOpenPreview(isDownloading: true))
     XCTAssertTrue(NativeGalleryNavigationPolicy.canOpenPreview(isDownloading: false))
+  }
+
+  func testNativeGalleryDownloadBarPolicyAllowsSelectingAndDownloadingOtherItemsWhileDownloading() {
+    XCTAssertTrue(NativeGalleryDownloadBarPolicy.canToggleSelectAll(totalSelectableCount: 3, isDownloading: true))
+    XCTAssertTrue(NativeGalleryDownloadBarPolicy.canStartDownload(selectedCount: 2, isDownloading: true))
+    XCTAssertFalse(NativeGalleryDownloadBarPolicy.canToggleSelectAll(totalSelectableCount: 0, isDownloading: true))
+    XCTAssertFalse(NativeGalleryDownloadBarPolicy.canStartDownload(selectedCount: 0, isDownloading: true))
+  }
+
+  func testNativeGalleryPreviewDownloadPolicyKeepsPreviewOpenAfterSingleDownloadLikeAndroid() {
+    XCTAssertFalse(NativeGalleryPreviewDownloadPolicy.shouldDismissAfterStartingDownload)
+  }
+
+  func testNativeGalleryPostDownloadSelectionPolicyClearsSelectionLikeAndroid() {
+    XCTAssertTrue(
+      NativeGalleryPostDownloadSelectionPolicy.selectionAfterStartingDownload(selectedHandles: [1, 2, 3]).isEmpty
+    )
   }
 
   func testHomeRememberedCameraPresenceDetectsOnlineCameraFromScanResults() {
@@ -2639,13 +2946,47 @@ final class RunnerTests: XCTestCase {
       NativeHomeCameraCardCopyPolicy.pairedDetailText(for: .offline),
       "已配对 · 未在线"
     )
-    XCTAssertEqual(NativeHomeCameraCardCopyPolicy.pairedActionTitle, "传图")
+    XCTAssertEqual(NativeHomeCameraCardCopyPolicy.pairedActionTitle, "进入相机相册")
     XCTAssertEqual(NativeHomeCameraCardCopyPolicy.unpairedActionTitle, "配对")
   }
 
   func testHomeCameraSearchActionUsesRefreshLanguageAfterAutoScan() {
     XCTAssertEqual(NativeHomeCameraSearchActionPolicy.symbolName, "arrow.clockwise")
     XCTAssertEqual(NativeHomeCameraSearchActionPolicy.accessibilityLabel, "刷新搜索附近相机")
+  }
+
+  func testNativeHomeAndroidParityCopyMatchesConnectScreen() {
+    XCTAssertEqual(NativeHomeAndroidParityCopy.brandTitle, "CAMTRANSFER")
+    XCTAssertEqual(NativeHomeAndroidParityCopy.screenTitle, "连接相机")
+    XCTAssertEqual(NativeHomeAndroidParityCopy.idleModeLabel, "蓝牙配对")
+    XCTAssertEqual(NativeHomeAndroidParityCopy.pairedModeLabel, "已配对")
+    XCTAssertEqual(NativeHomeAndroidParityCopy.cameraProfileTitle, "CAMERA PROFILE")
+    XCTAssertEqual(NativeHomeAndroidParityCopy.savedCameraLabel, "已保存相机")
+    XCTAssertEqual(NativeHomeAndroidParityCopy.pairingPreparationTitles, ["进入配对注册界面", "取消旧的蓝牙配对"])
+    XCTAssertEqual(NativeHomeAndroidParityCopy.wiredAccessLabel, "有线接入")
+    XCTAssertEqual(NativeHomeAndroidParityCopy.auxiliaryActionLabels, ["诊断日志", "使用须知"])
+    XCTAssertNotEqual(NativeHomeAndroidParityCopy.cameraProfileTitle, "PAIRED CAMERA")
+  }
+
+  func testNativeHomePairingPreparationUsesCompactRows() {
+    XCTAssertTrue(NativeHomePairingPreparationLayoutPolicy.usesCompactRows)
+    XCTAssertLessThanOrEqual(NativeHomePairingPreparationLayoutPolicy.rowMinimumHeight, 72)
+    XCTAssertFalse(NativeHomePairingPreparationLayoutPolicy.showsLongInstructionBody)
+    XCTAssertFalse(NativeHomePairingPreparationLayoutPolicy.showsInlineDisclaimerText)
+    XCTAssertTrue(NativeHomePairingPreparationLayoutPolicy.hidesSystemNavigationBar)
+    XCTAssertTrue(NativeHomePairingPreparationLayoutPolicy.usesInlineBluetoothAction)
+  }
+
+  func testNativeHomeHeaderTemporarilyHidesProEntry() {
+    XCTAssertFalse(NativeHomeHeaderLayoutPolicy.showsProEntry)
+  }
+
+  func testNativeHomePairedCameraCardCentersGalleryAction() {
+    XCTAssertTrue(NativeHomePairedCameraCardLayoutPolicy.centersPrimaryGalleryAction)
+    XCTAssertGreaterThanOrEqual(NativeHomePairedCameraCardLayoutPolicy.primaryGalleryActionMinimumWidth, 150)
+    XCTAssertGreaterThanOrEqual(NativeHomePairedCameraCardLayoutPolicy.cardMinimumHeight, 240)
+    XCTAssertTrue(NativeHomePairedCameraCardLayoutPolicy.anchorsStatusPanelBelowCameraIdentity)
+    XCTAssertGreaterThanOrEqual(NativeHomePairedCameraCardLayoutPolicy.statusPanelTopSpacingAfterIdentity, 10)
   }
 
   func testNativeWiredImportEntryPolicyRequiresDetectedDevice() {
@@ -2678,6 +3019,7 @@ final class RunnerTests: XCTestCase {
       CameraVendorGalleryItem(handle: 1, filename: "A.JPG", formatLabel: "JPG", captureDate: "", byteSizeText: "1 MB"),
       CameraVendorGalleryItem(handle: 2, filename: "B.HEIC", formatLabel: "HEIF", captureDate: "", byteSizeText: "1 MB"),
       CameraVendorGalleryItem(handle: 3, filename: "C.RAF", formatLabel: "RAW", captureDate: "", byteSizeText: "1 MB"),
+      CameraVendorGalleryItem(handle: 4, filename: "0x00000004", formatLabel: "", captureDate: "", byteSizeText: ""),
     ]
 
     let filtered = NativeGalleryFilterPolicy.filteredItems(
@@ -2689,11 +3031,190 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(filtered.map(\.handle), [2])
   }
 
-  func testNativeGalleryFilterStateDefaultsToTodayAndJpgHeif() {
+  func testNativeGalleryFilterPolicyUsesAndroidFormatHintsForExpandedHeifRawPlaceholders() {
+    let items = [
+      CameraVendorGalleryItem(
+        handle: 9,
+        filename: "0x00000009",
+        formatLabel: "",
+        captureDate: "20260624",
+        byteSizeText: "",
+        formatHints: [.heif, .raw]
+      ),
+    ]
+
+    let heifFiltered = NativeGalleryFilterPolicy.filteredItems(
+      items,
+      state: NativeGalleryFilterState(format: .heif),
+      now: Date(timeIntervalSince1970: 0)
+    )
+    let rawFiltered = NativeGalleryFilterPolicy.filteredItems(
+      items,
+      state: NativeGalleryFilterState(format: .raw),
+      now: Date(timeIntervalSince1970: 0)
+    )
+
+    XCTAssertEqual(heifFiltered.map(\.handle), [9])
+    XCTAssertEqual(rawFiltered.map(\.handle), [9])
+  }
+
+  func testNativeGalleryFilterPolicyUsesResolvedFormatLabelBeforeAmbiguousHints() {
+    let items = [
+      CameraVendorGalleryItem(
+        handle: 11,
+        filename: "DSCF0011.HEIC",
+        formatLabel: "HEIF",
+        captureDate: "20260624",
+        byteSizeText: "8 MB",
+        formatHints: [.heif, .raw]
+      ),
+      CameraVendorGalleryItem(
+        handle: 12,
+        filename: "DSCF0012.RAF",
+        formatLabel: "RAW",
+        captureDate: "20260624",
+        byteSizeText: "42 MB",
+        formatHints: [.heif, .raw]
+      ),
+    ]
+
+    let rawFiltered = NativeGalleryFilterPolicy.filteredItems(
+      items,
+      state: NativeGalleryFilterState(format: .raw),
+      now: Date(timeIntervalSince1970: 0)
+    )
+    let heifFiltered = NativeGalleryFilterPolicy.filteredItems(
+      items,
+      state: NativeGalleryFilterState(format: .heif),
+      now: Date(timeIntervalSince1970: 0)
+    )
+
+    XCTAssertEqual(rawFiltered.map(\.handle), [12])
+    XCTAssertEqual(heifFiltered.map(\.handle), [11])
+  }
+
+  func testNativeGalleryFilterPerformancePolicyCachesCaptureDatesDuringFilter() {
+    XCTAssertTrue(NativeGalleryFilterPerformancePolicy.shouldBuildCaptureDateIndex)
+    XCTAssertTrue(NativeGalleryFilterPerformancePolicy.shouldDisableReloadAnimation)
+  }
+
+  func testNativeGalleryFilterPolicyDoesNotTreatUnresolvedPlaceholderAsJpg() {
+    let items = [
+      CameraVendorGalleryItem(handle: 1, filename: "0x00000001", formatLabel: "", captureDate: "", byteSizeText: ""),
+      CameraVendorGalleryItem(handle: 2, filename: "0x00000002", formatLabel: "0x3000", captureDate: "", byteSizeText: ""),
+      CameraVendorGalleryItem(handle: 3, filename: "A.JPG", formatLabel: "JPG", captureDate: "", byteSizeText: "1 MB"),
+    ]
+
+    let filtered = NativeGalleryFilterPolicy.filteredItems(
+      items,
+      state: NativeGalleryFilterState(format: .jpg),
+      now: Date(timeIntervalSince1970: 0)
+    )
+
+    XCTAssertEqual(filtered.map(\.handle), [3])
+  }
+
+  func testNativeGalleryFormatDisplayPolicyHidesUnresolvedPlaceholderFormat() {
+    let unresolvedEmpty = CameraVendorGalleryItem(handle: 1, filename: "0x00000001", formatLabel: "", captureDate: "", byteSizeText: "")
+    let unresolvedHex = CameraVendorGalleryItem(handle: 2, filename: "0x00000002", formatLabel: "0x3000", captureDate: "", byteSizeText: "")
+    let heif = CameraVendorGalleryItem(handle: 3, filename: "B.HEIC", formatLabel: "HEIF", captureDate: "", byteSizeText: "2 MB")
+
+    XCTAssertNil(NativeGalleryFormatDisplayPolicy.badgeText(for: unresolvedEmpty))
+    XCTAssertNil(NativeGalleryFormatDisplayPolicy.badgeText(for: unresolvedHex))
+    XCTAssertEqual(NativeGalleryFormatDisplayPolicy.badgeText(for: heif), " HEIF ")
+    XCTAssertEqual(
+      NativeGalleryFormatDisplayPolicy.previewSubtitle(index: 0, total: 3, item: unresolvedEmpty),
+      "1 / 3"
+    )
+  }
+
+  func testNativeGalleryFilterStateDefaultsToAllDatesAndFormats() {
     let state = NativeGalleryFilterState()
 
-    XCTAssertEqual(state.date, .today)
-    XCTAssertEqual(state.formats, [.jpg, .heif])
+    XCTAssertEqual(state.date, .all)
+    XCTAssertEqual(state.formats, [.all])
+    XCTAssertEqual(state.sort, .newest)
+  }
+
+  func testNativeGalleryFilterPolicySortsNewestAndOldestLikeAndroid() {
+    let items = [
+      CameraVendorGalleryItem(handle: 1, filename: "A.JPG", formatLabel: "JPG", captureDate: "2026:05:04 10:30:00", byteSizeText: "1 MB"),
+      CameraVendorGalleryItem(handle: 2, filename: "B.JPG", formatLabel: "JPG", captureDate: "2026:05:04 10:31:00", byteSizeText: "1 MB"),
+      CameraVendorGalleryItem(handle: 3, filename: "C.JPG", formatLabel: "JPG", captureDate: "2026:05:04 10:32:00", byteSizeText: "1 MB"),
+    ]
+
+    let newest = NativeGalleryFilterPolicy.filteredItems(
+      items,
+      state: NativeGalleryFilterState(sort: .newest),
+      now: Date(timeIntervalSince1970: 0)
+    )
+    let oldest = NativeGalleryFilterPolicy.filteredItems(
+      items,
+      state: NativeGalleryFilterState(sort: .oldest),
+      now: Date(timeIntervalSince1970: 0)
+    )
+
+    XCTAssertEqual(newest.map(\.handle), [3, 2, 1])
+    XCTAssertEqual(oldest.map(\.handle), [1, 2, 3])
+  }
+
+  func testNativeGalleryFilterPolicySortsNotDownloadedFirstLikeAndroid() {
+    let items = [
+      CameraVendorGalleryItem(handle: 1, filename: "A.JPG", formatLabel: "JPG", captureDate: "2026:05:04 10:34:00", byteSizeText: "1 MB"),
+      CameraVendorGalleryItem(handle: 2, filename: "B.JPG", formatLabel: "JPG", captureDate: "2026:05:04 10:33:00", byteSizeText: "1 MB"),
+      CameraVendorGalleryItem(handle: 3, filename: "C.JPG", formatLabel: "JPG", captureDate: "2026:05:04 10:32:00", byteSizeText: "1 MB"),
+    ]
+
+    let filtered = NativeGalleryFilterPolicy.filteredItems(
+      items,
+      state: NativeGalleryFilterState(sort: .notDownloaded),
+      downloadedHandles: [1],
+      now: Date(timeIntervalSince1970: 0)
+    )
+
+    XCTAssertEqual(filtered.map(\.handle), [2, 3, 1])
+  }
+
+  func testNativeGallerySectionPolicyGroupsFilesByCaptureDateLikeAndroid() {
+    let calendar = Calendar(identifier: .gregorian)
+    let now = calendar.date(from: DateComponents(year: 2026, month: 5, day: 4, hour: 12))!
+    let items = [
+      CameraVendorGalleryItem(handle: 3, filename: "C.JPG", formatLabel: "JPG", captureDate: "2026:05:04 10:32:00", byteSizeText: "1 MB"),
+      CameraVendorGalleryItem(handle: 2, filename: "B.HEIC", formatLabel: "HEIF", captureDate: "2026:05:04 10:31:00", byteSizeText: "1 MB"),
+      CameraVendorGalleryItem(handle: 1, filename: "A.RAF", formatLabel: "RAW", captureDate: "2026:05:03 10:30:00", byteSizeText: "1 MB"),
+      CameraVendorGalleryItem(handle: 9, filename: "Z.JPG", formatLabel: "JPG", captureDate: "", byteSizeText: "1 MB"),
+    ]
+
+    let sections = NativeGallerySectionPolicy.sections(from: items, now: now, calendar: calendar)
+
+    XCTAssertEqual(sections.map(\.title), ["今天 5月4日 2 张", "5月3日 1 张", "未知日期 1 张"])
+    XCTAssertEqual(sections.map { $0.items.map(\.handle) }, [[3, 2], [1], [9]])
+  }
+
+  func testNativeGalleryThumbnailRequestWindowPrioritizesVisibleHandlesLikeAndroid() {
+    let handles = Array(1...30)
+
+    let request = NativeGalleryThumbnailRequestWindowPolicy.handlesToRequest(
+      orderedHandles: handles,
+      visibleHandles: [10, 11, 12],
+      columnCount: 3
+    )
+
+    XCTAssertEqual(Array(request.prefix(3)), [10, 11, 12])
+    XCTAssertEqual(request, [10, 11, 12, 7, 8, 9, 13, 14, 15, 16, 17, 18])
+  }
+
+  func testNativeGalleryThumbnailRequestWindowSortsUnorderedVisibleHandlesByGalleryOrder() {
+    let handles = Array(1...30)
+
+    let request = NativeGalleryThumbnailRequestWindowPolicy.handlesToRequest(
+      orderedHandles: handles,
+      visibleHandles: [12, 10, 11],
+      columnCount: 3
+    )
+
+    XCTAssertEqual(Array(request.prefix(3)), [10, 11, 12])
+    XCTAssertEqual(request, [10, 11, 12, 7, 8, 9, 13, 14, 15, 16, 17, 18])
   }
 
   func testNativeGalleryFilterPolicyAllowsMultipleFormats() {
@@ -2711,7 +3232,7 @@ final class RunnerTests: XCTestCase {
       now: now
     )
 
-    XCTAssertEqual(filtered.map(\.handle), [1, 2])
+    XCTAssertEqual(filtered.map(\.handle), [2, 1])
   }
 
   func testNativeGalleryFilterPolicyFiltersTodayByCaptureDate() {
@@ -3077,9 +3598,49 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(CameraVendorLegacyGalleryObjectInfoPolicy.shouldResetSearchModeDuringColdStart)
     XCTAssertTrue(CameraVendorLegacyGalleryObjectInfoPolicy.shouldReadCurrentObjectHandleBeforeSpecifiedList)
     XCTAssertFalse(CameraVendorLegacyGalleryObjectInfoPolicy.shouldReadSearchModeAllDuringColdStart)
-    XCTAssertFalse(CameraVendorLegacyGalleryObjectInfoPolicy.shouldSetStillImageObjectFormatSearchMode)
+    XCTAssertTrue(CameraVendorLegacyGalleryObjectInfoPolicy.shouldReadFormatSpecificSpecifiedObjectHandles)
     XCTAssertTrue(CameraVendorLegacyGalleryObjectInfoPolicy.shouldRefreshGalleryContextBeforeSpecifiedList)
     XCTAssertFalse(CameraVendorLegacyGalleryObjectInfoPolicy.shouldResetCompressionModeBeforeObjectInfoList)
+  }
+
+  func testCameraVendorFormatSpecifiedObjectPolicyPromotesExpandedHeifAndRawListsLikeAndroid() {
+    let groups = [
+      CameraVendorSpecifiedObjectDateGroup(dateText: "20260624", objectCount: 2),
+      CameraVendorSpecifiedObjectDateGroup(dateText: "20260623", objectCount: 2),
+    ]
+
+    XCTAssertTrue(
+      CameraVendorFormatSpecifiedObjectPolicy.shouldPromoteToInitialHandles(
+        mask: CameraVendorSearchModeAllPayload.heifObjectFormatMask,
+        currentHandleCount: 3,
+        candidateHandleCount: 4,
+        dateGroups: groups
+      )
+    )
+    XCTAssertTrue(
+      CameraVendorFormatSpecifiedObjectPolicy.shouldPromoteToInitialHandles(
+        mask: CameraVendorSearchModeAllPayload.rawObjectFormatMask,
+        currentHandleCount: 3,
+        candidateHandleCount: 4,
+        dateGroups: groups
+      )
+    )
+    XCTAssertFalse(
+      CameraVendorFormatSpecifiedObjectPolicy.shouldPromoteToInitialHandles(
+        mask: CameraVendorSearchModeAllPayload.jpegObjectFormatMask,
+        currentHandleCount: 3,
+        candidateHandleCount: 4,
+        dateGroups: groups
+      )
+    )
+    XCTAssertFalse(
+      CameraVendorFormatSpecifiedObjectPolicy.shouldPromoteToInitialHandles(
+        mask: CameraVendorSearchModeAllPayload.heifObjectFormatMask,
+        currentHandleCount: 3,
+        candidateHandleCount: 4,
+        dateGroups: [CameraVendorSpecifiedObjectDateGroup(dateText: "20260624", objectCount: 3)]
+      )
+    )
   }
 
   func testCameraVendorLegacyGalleryPolicySkipsDefaultLatestProbeWhenEmptyListHasNoCurrentHandle() {
@@ -3277,11 +3838,435 @@ final class RunnerTests: XCTestCase {
     )
   }
 
-  func testCameraVendorThumbnailPolicyPrefersStandardGetThumbWithObjectInfoPreflight() {
+  func testCameraVendorThumbnailPolicyPrimesObjectContextBeforeStandardGetThumbLikeAndroid() {
     XCTAssertTrue(CameraVendorThumbnailFetchPolicy.shouldReadObjectInfoBeforeGetThumb)
     XCTAssertTrue(CameraVendorThumbnailFetchPolicy.shouldTryStandardGetThumbFirst)
+    XCTAssertEqual(CameraVendorThumbnailFetchPolicy.standardGetThumbReadTimeoutSeconds, 3)
     XCTAssertEqual(CameraVendorThumbnailFetchPolicy.minimumUsefulThumbnailBytes, 100)
-    XCTAssertTrue(CameraVendorThumbnailFetchPolicy.shouldUsePartialPreviewFallback)
+    XCTAssertFalse(CameraVendorThumbnailFetchPolicy.shouldUsePartialPreviewFallback)
+  }
+
+  func testGalleryFastInitialLoadBuildsPlaceholderItemsFromHandles() {
+    let items = CameraVendorGalleryFastInitialLoadPolicy.placeholderItems(from: [10, 12])
+
+    XCTAssertEqual(items.map(\.handle), [10, 12])
+    XCTAssertEqual(items[0].filename, "0x0000000A")
+    XCTAssertEqual(items[0].formatLabel, "")
+    XCTAssertEqual(items[0].captureDate, "")
+    XCTAssertEqual(items[0].byteSizeText, "")
+  }
+
+  func testGalleryFastInitialLoadBuildsAndroidFormatHintsFromExpandedD621Passes() {
+    let hints = CameraVendorGalleryFastInitialLoadPolicy.formatHintsByHandle(
+      handlesByFormatMask: [
+        CameraVendorSearchModeAllPayload.allObjectFormatMask: [1, 2],
+        CameraVendorSearchModeAllPayload.heifObjectFormatMask: [1, 2, 3, 4],
+        CameraVendorSearchModeAllPayload.rawObjectFormatMask: [1, 2, 3, 4],
+      ]
+    )
+
+    XCTAssertNil(hints[1])
+    XCTAssertEqual(hints[3], [.heif, .raw])
+    XCTAssertEqual(hints[4], [.heif, .raw])
+  }
+
+  func testGalleryStateMergesThumbnailMetadataLikeAndroidGetThumbnailWithInfo() {
+    let thumbnail = Data([0xFF, 0xD8, 0xFF])
+    let placeholder = CameraVendorGalleryItem(
+      handle: 7,
+      filename: "0x00000007",
+      formatLabel: "",
+      captureDate: "20260624",
+      byteSizeText: "",
+      formatHints: [.heif, .raw]
+    )
+    let heif = CameraVendorGalleryItem(
+      handle: 7,
+      filename: "DSCF0007.HEIC",
+      formatLabel: "HEIF",
+      captureDate: "2026:06:24 10:11:12",
+      byteSizeText: "6 MB"
+    )
+    var state = CameraVendorGalleryState(items: [placeholder])
+
+    state.updateThumbnail(handle: 7, data: thumbnail, resolvedItem: heif)
+
+    XCTAssertEqual(state.items[0].filename, "DSCF0007.HEIC")
+    XCTAssertEqual(state.items[0].formatLabel, "HEIF")
+    XCTAssertEqual(state.items[0].captureDate, "2026:06:24 10:11:12")
+    XCTAssertEqual(state.items[0].thumbnailData, thumbnail)
+  }
+
+  func testGalleryStateDoesNotDropInitialFormatHintsWhenThumbnailInfoIsStillUnresolved() {
+    let thumbnail = Data([0xFF, 0xD8, 0xFF])
+    let placeholder = CameraVendorGalleryItem(
+      handle: 7,
+      filename: "0x00000007",
+      formatLabel: "",
+      captureDate: "20260624",
+      byteSizeText: "",
+      formatHints: [.heif, .raw]
+    )
+    let unresolvedThumbnailInfo = CameraVendorGalleryItem(
+      handle: 7,
+      filename: "0x00000007",
+      formatLabel: "",
+      captureDate: "",
+      byteSizeText: ""
+    )
+    var state = CameraVendorGalleryState(items: [placeholder])
+
+    state.updateThumbnail(handle: 7, data: thumbnail, resolvedItem: unresolvedThumbnailInfo)
+
+    XCTAssertEqual(state.items[0].formatHints, [.heif, .raw])
+    XCTAssertEqual(NativeGalleryFormatDisplayPolicy.badgeText(for: state.items[0]), " HEIF/RAW ")
+  }
+
+  func testNativeGalleryThumbnailRetryPolicyStopsWhenBatchMakesNoProgress() {
+    XCTAssertFalse(
+      NativeGalleryThumbnailRetryPolicy.shouldContinueLoadingAfterBatch(
+        requestedCount: 6,
+        loadedCount: 0
+      )
+    )
+    XCTAssertTrue(
+      NativeGalleryThumbnailRetryPolicy.shouldContinueLoadingAfterBatch(
+        requestedCount: 6,
+        loadedCount: 1
+      )
+    )
+  }
+
+  func testNativeGalleryThumbnailDecodeCachePolicyUsesCacheOnlyWhenDataAndImageExist() {
+    XCTAssertTrue(
+      NativeGalleryThumbnailDecodeCachePolicy.shouldUseCachedImage(
+        thumbnailData: Data([0xFF, 0xD8, 0xFF]),
+        cachedImage: UIImage()
+      )
+    )
+    XCTAssertFalse(
+      NativeGalleryThumbnailDecodeCachePolicy.shouldUseCachedImage(
+        thumbnailData: nil,
+        cachedImage: UIImage()
+      )
+    )
+    XCTAssertFalse(
+      NativeGalleryThumbnailDecodeCachePolicy.shouldUseCachedImage(
+        thumbnailData: Data([0xFF, 0xD8, 0xFF]),
+        cachedImage: nil
+      )
+    )
+  }
+
+  func testVisibleThumbnailPolicyRehydratesCachedDataWhenImageCacheMisses() {
+    let thumbnailData = Data([0xFF, 0xD8, 0xFF])
+    XCTAssertEqual(
+      NativeGalleryVisibleThumbnailPolicy.action(
+        thumbnailData: thumbnailData,
+        cachedImage: UIImage(),
+        hasFailedThumbnailRequest: false
+      ),
+      .none
+    )
+    XCTAssertEqual(
+      NativeGalleryVisibleThumbnailPolicy.action(
+        thumbnailData: thumbnailData,
+        cachedImage: nil,
+        hasFailedThumbnailRequest: false
+      ),
+      .decodeCachedData
+    )
+    XCTAssertEqual(
+      NativeGalleryVisibleThumbnailPolicy.action(
+        thumbnailData: nil,
+        cachedImage: nil,
+        hasFailedThumbnailRequest: false
+      ),
+      .fetchFromCamera
+    )
+    XCTAssertEqual(
+      NativeGalleryVisibleThumbnailPolicy.action(
+        thumbnailData: nil,
+        cachedImage: nil,
+        hasFailedThumbnailRequest: true
+      ),
+      .none
+    )
+  }
+
+  func testGalleryFastInitialMetadataDoesNotStarveBehindThumbnailQueuePerHandle() {
+    XCTAssertEqual(CameraVendorGalleryFastInitialLoadPolicy.fullObjectInfoStartDelaySeconds, 3.0)
+    XCTAssertEqual(
+      CameraVendorGalleryFastInitialLoadPolicy.metadataWaitSecondsBeforeObjectInfo(resolvedCount: 0),
+      CameraVendorGalleryFastInitialLoadPolicy.maxInitialThumbnailLaneWaitSeconds
+    )
+    XCTAssertEqual(
+      CameraVendorGalleryFastInitialLoadPolicy.metadataWaitSecondsBeforeObjectInfo(resolvedCount: 1),
+      CameraVendorGalleryFastInitialLoadPolicy.activeThumbnailPollIntervalSeconds
+    )
+    XCTAssertLessThan(
+      CameraVendorGalleryFastInitialLoadPolicy.activeThumbnailPollIntervalSeconds,
+      CameraVendorGalleryFastInitialLoadPolicy.maxActiveThumbnailWaitSeconds
+    )
+    XCTAssertEqual(
+      CameraVendorGalleryFastInitialLoadPolicy.metadataWaitSecondsBeforeObjectInfo(
+        resolvedCount: 1,
+        hasPendingVisibleThumbnails: true
+      ),
+      CameraVendorGalleryFastInitialLoadPolicy.maxActiveThumbnailWaitSeconds
+    )
+  }
+
+  func testGalleryRequestSchedulerPrioritizesVisibleThumbnailBeforeBackgroundMetadata() async {
+    let scheduler = CameraVendorGalleryRequestScheduler()
+    let activeStarted = expectation(description: "active request started")
+    let releaseActive = DispatchSemaphore(value: 0)
+    let orderLock = NSLock()
+    var order: [String] = []
+
+    let active = Task {
+      try await scheduler.run(priority: .backgroundMetadata) {
+        activeStarted.fulfill()
+        releaseActive.wait()
+      }
+    }
+    await fulfillment(of: [activeStarted], timeout: 1)
+
+    let background = Task {
+      try await scheduler.run(priority: .backgroundMetadata) {
+        orderLock.lock()
+        order.append("background")
+        orderLock.unlock()
+      }
+    }
+    let thumbnail = Task {
+      try await scheduler.run(priority: .visibleThumbnail) {
+        orderLock.lock()
+        order.append("thumbnail")
+        orderLock.unlock()
+      }
+    }
+
+    releaseActive.signal()
+    _ = try? await active.value
+    _ = try? await thumbnail.value
+    _ = try? await background.value
+
+    XCTAssertEqual(order, ["thumbnail", "background"])
+  }
+
+  func testCameraVendorPlaceholderObjectInfoUsesUndefinedFormatLikeAndroid() {
+    let info = CameraVendorCameraObjectInfo.placeholder(handle: 10)
+
+    XCTAssertEqual(info.formatCode, 0x3000)
+    XCTAssertEqual(info.filename, "0x0000000A")
+    XCTAssertFalse(info.hasResolvedFormat)
+  }
+
+  func testGalleryFastInitialLoadAssignsDateGroupsToPlaceholdersLikeAndroid() {
+    let groups = [
+      CameraVendorSpecifiedObjectDateGroup(dateText: "20260624", objectCount: 2),
+      CameraVendorSpecifiedObjectDateGroup(dateText: "20260623", objectCount: 1),
+    ]
+
+    let items = CameraVendorGalleryFastInitialLoadPolicy.placeholderItems(
+      from: [100, 102, 101],
+      dateGroups: groups
+    )
+    let sections = NativeGallerySectionPolicy.sections(
+      from: items,
+      now: Calendar(identifier: .gregorian).date(from: DateComponents(year: 2026, month: 6, day: 24, hour: 12))!,
+      calendar: Calendar(identifier: .gregorian)
+    )
+
+    XCTAssertEqual(items.map(\.handle), [100, 102, 101])
+    XCTAssertEqual(items.map(\.captureDate), ["20260624", "20260624", "20260623"])
+    XCTAssertEqual(sections.map(\.title), ["今天 6月24日 2 张", "6月23日 1 张"])
+    XCTAssertEqual(sections.map { $0.items.map(\.handle) }, [[100, 102], [101]])
+  }
+
+  func testNativeGalleryMetadataMergePreservesInitialDateGroupWhenResolvedDateIsMissingOrWrong() {
+    let existing = CameraVendorGalleryItem(
+      handle: 1,
+      filename: "0x00000001",
+      formatLabel: "",
+      captureDate: "20260624",
+      byteSizeText: ""
+    )
+    let missingDate = CameraVendorGalleryItem(
+      handle: 1,
+      filename: "DSCF0001.JPG",
+      formatLabel: "JPG",
+      captureDate: "",
+      byteSizeText: "4 MB"
+    )
+    let sameDayWithTime = CameraVendorGalleryItem(
+      handle: 1,
+      filename: "DSCF0001.JPG",
+      formatLabel: "JPG",
+      captureDate: "2026:06:24 10:11:12",
+      byteSizeText: "4 MB"
+    )
+    let wrongDay = CameraVendorGalleryItem(
+      handle: 1,
+      filename: "DSCF0001.JPG",
+      formatLabel: "JPG",
+      captureDate: "2026:06:23 10:11:12",
+      byteSizeText: "4 MB"
+    )
+
+    XCTAssertEqual(
+      NativeGalleryMetadataMergePolicy.mergedItem(existingItem: existing, resolvedItem: missingDate).captureDate,
+      "20260624"
+    )
+    XCTAssertEqual(
+      NativeGalleryMetadataMergePolicy.mergedItem(existingItem: existing, resolvedItem: sameDayWithTime).captureDate,
+      "2026:06:24 10:11:12"
+    )
+    XCTAssertEqual(
+      NativeGalleryMetadataMergePolicy.mergedItem(existingItem: existing, resolvedItem: wrongDay).captureDate,
+      "20260624"
+    )
+  }
+
+  func testNativeGalleryMetadataMergeReplacesUnresolvedPlaceholderWithRawAndHeifMetadata() {
+    let placeholder = CameraVendorGalleryItem(
+      handle: 1,
+      filename: "0x00000001",
+      formatLabel: "",
+      captureDate: "20260624",
+      byteSizeText: "",
+      thumbnailData: Data([0xFF, 0xD8, 0xFF])
+    )
+    let raw = CameraVendorGalleryItem(
+      handle: 1,
+      filename: "DSCF0001.RAF",
+      formatLabel: "RAW",
+      captureDate: "2026:06:24 10:11:12",
+      byteSizeText: "42 MB"
+    )
+    let heif = CameraVendorGalleryItem(
+      handle: 2,
+      filename: "DSCF0002.HEIC",
+      formatLabel: "HEIF",
+      captureDate: "2026:06:24 10:12:12",
+      byteSizeText: "6 MB"
+    )
+
+    let mergedRaw = NativeGalleryMetadataMergePolicy.mergedItem(existingItem: placeholder, resolvedItem: raw)
+    let mergedHeif = NativeGalleryMetadataMergePolicy.mergedItem(existingItem: nil, resolvedItem: heif)
+
+    XCTAssertEqual(mergedRaw.filename, "DSCF0001.RAF")
+    XCTAssertEqual(mergedRaw.formatLabel, "RAW")
+    XCTAssertEqual(mergedRaw.thumbnailData, placeholder.thumbnailData)
+    XCTAssertEqual(mergedHeif.filename, "DSCF0002.HEIC")
+    XCTAssertEqual(mergedHeif.formatLabel, "HEIF")
+  }
+
+  func testNativeGalleryMetadataMergePreservesExistingHandleOrderForBackgroundBatches() {
+    let first = CameraVendorGalleryItem(
+      handle: 1,
+      filename: "0x00000001",
+      formatLabel: "",
+      captureDate: "20260624",
+      byteSizeText: ""
+    )
+    let second = CameraVendorGalleryItem(
+      handle: 2,
+      filename: "0x00000002",
+      formatLabel: "",
+      captureDate: "20260624",
+      byteSizeText: ""
+    )
+    let third = CameraVendorGalleryItem(
+      handle: 3,
+      filename: "0x00000003",
+      formatLabel: "",
+      captureDate: "20260624",
+      byteSizeText: ""
+    )
+    let resolvedSecond = CameraVendorGalleryItem(
+      handle: 2,
+      filename: "DSCF0002.HEIC",
+      formatLabel: "HEIF",
+      captureDate: "2026:06:24 10:12:12",
+      byteSizeText: "6 MB"
+    )
+
+    let merged = NativeGalleryMetadataMergePolicy.mergedItemsPreservingExistingOrder(
+      existingItems: [first, second, third],
+      resolvedItems: [resolvedSecond]
+    )
+
+    XCTAssertEqual(merged.map(\.handle), [1, 2, 3])
+    XCTAssertEqual(merged[1].filename, "DSCF0002.HEIC")
+    XCTAssertEqual(merged[1].formatLabel, "HEIF")
+  }
+
+  func testGalleryFastInitialLoadPublishesIncrementalMetadataLikeAndroid() {
+    XCTAssertEqual(CameraVendorGalleryFastInitialLoadPolicy.incrementalMetadataBatchSize, 12)
+    XCTAssertTrue(
+      CameraVendorGalleryFastInitialLoadPolicy.shouldPublishIncrementalMetadataBatch(
+        resolvedCount: 12,
+        isFinalBatch: false
+      )
+    )
+    XCTAssertFalse(
+      CameraVendorGalleryFastInitialLoadPolicy.shouldPublishIncrementalMetadataBatch(
+        resolvedCount: 11,
+        isFinalBatch: false
+      )
+    )
+    XCTAssertTrue(
+      CameraVendorGalleryFastInitialLoadPolicy.shouldPublishIncrementalMetadataBatch(
+        resolvedCount: 1,
+        isFinalBatch: true
+      )
+    )
+  }
+
+  func testNativeGalleryBackgroundMetadataUIRefreshPolicyUsesVisibleOnlyForDefaultAndroidGallery() {
+    XCTAssertTrue(NativeGalleryBackgroundMetadataUIRefreshPolicy.shouldApplyPublishedAndroidBatchImmediately)
+    XCTAssertTrue(
+      NativeGalleryBackgroundMetadataUIRefreshPolicy.canRefreshVisibleItemsOnly(
+        filterState: NativeGalleryFilterState()
+      )
+    )
+
+    XCTAssertFalse(
+      NativeGalleryBackgroundMetadataUIRefreshPolicy.canRefreshVisibleItemsOnly(
+        filterState: NativeGalleryFilterState(format: .heif)
+      )
+    )
+
+    XCTAssertFalse(
+      NativeGalleryBackgroundMetadataUIRefreshPolicy.canRefreshVisibleItemsOnly(
+        filterState: NativeGalleryFilterState(sort: .oldest)
+      )
+    )
+  }
+
+  func testHiddenStillBackgroundProbeSplitsGapAndForwardCandidatesLikeAndroid() {
+    let gapCandidates = CameraVendorHiddenObjectHandleProbePolicy.backgroundHiddenHandleCandidates(
+      from: [10, 12, 15]
+    )
+    let forwardCandidates = CameraVendorHiddenObjectHandleProbePolicy.forwardProbeCandidates(
+      from: [10, 12, 15]
+    )
+
+    XCTAssertEqual(gapCandidates, [11, 13, 14])
+    XCTAssertEqual(Array(forwardCandidates.prefix(5)), [16, 17, 18, 19, 20])
+    XCTAssertEqual(forwardCandidates.count, 20)
+    XCTAssertEqual(forwardCandidates.last, 35)
+  }
+
+  func testHiddenStillBackgroundGapProbeAbortsWhenGapCandidatesExceedAndroidLimit() {
+    let handles = Array(stride(from: UInt32(100), through: UInt32(980), by: 9))
+
+    XCTAssertEqual(
+      CameraVendorHiddenObjectHandleProbePolicy.backgroundHiddenHandleCandidates(from: handles),
+      []
+    )
   }
 
   func testRealtimeGalleryServiceCanPrepareForPriorityDownloads() {
@@ -3302,6 +4287,23 @@ final class RunnerTests: XCTestCase {
       XCTAssertEqual(nsError.domain, "CameraVendorRealtimeGalleryService")
       XCTAssertEqual(nsError.code, CameraVendorPriorityDownloadThumbnailGatePolicy.suspendedThumbnailErrorCode)
     }
+  }
+
+  func testNativeGalleryThumbnailFailurePolicyRetriesInteractionAndDownloadPauses() {
+    XCTAssertFalse(NativeGalleryThumbnailFailurePolicy.shouldRememberFailure(CancellationError()))
+    XCTAssertFalse(
+      NativeGalleryThumbnailFailurePolicy.shouldRememberFailure(
+        NSError(
+          domain: "CameraVendorRealtimeGalleryService",
+          code: CameraVendorPriorityDownloadThumbnailGatePolicy.suspendedThumbnailErrorCode
+        )
+      )
+    )
+    XCTAssertTrue(
+      NativeGalleryThumbnailFailurePolicy.shouldRememberFailure(
+        NSError(domain: "CameraVendorPtpSession", code: 0x100A)
+      )
+    )
   }
 
   func testPriorityDownloadOnlyInterruptsWhenThumbnailRequestIsInFlight() {
@@ -3622,7 +4624,7 @@ final class RunnerTests: XCTestCase {
         0x11, 0x00, 0x00, 0x00,
         0xCA, 0x03, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x40, 0x00,
+        0x00, 0x00, 0x10, 0x00,
       ]
     )
   }
@@ -3651,7 +4653,7 @@ final class RunnerTests: XCTestCase {
         0x10, 0x00, 0x00, 0x00,
         0xCA, 0x03, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x40, 0x00,
+        0x00, 0x00, 0x10, 0x00,
         0x00, 0x00, 0x00, 0x00,
       ]
     )
@@ -3700,18 +4702,16 @@ final class RunnerTests: XCTestCase {
     )
   }
 
-  func testCameraVendorSetSearchModeAllObjectFormatPayloadIncludesJpegHeifRaw() {
+  func testCameraVendorSetSearchModeAllObjectFormatPayloadIncludesAndroidAllFormats() {
     XCTAssertEqual(
       CameraVendorSearchModeAllPayload.objectFormatMaskPayload(
-        CameraVendorSearchModeAllPayload.jpegObjectFormatMask |
-        CameraVendorSearchModeAllPayload.heifObjectFormatMask |
-        CameraVendorSearchModeAllPayload.rawObjectFormatMask
+        CameraVendorSearchModeAllPayload.allObjectFormatMask
       ),
       Data([
         0x01, 0x00, 0x00, 0x00,
         0x08, 0x00, 0x00, 0x00,
         0x04, 0xD6,
-        0x13, 0x00,
+        0x1F, 0x00,
       ])
     )
   }
@@ -3975,24 +4975,24 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(CameraVendorReferenceAppGalleryReadyPollingPolicy.shouldPoll(marker: 0x0011, attempt: 6))
   }
 
-  func testConnectionSummaryGeneratesCameraWifiCandidates() {
+  func testConnectionSummaryDoesNotGenerateCameraWifiCandidatesWithoutOfficialCredential() {
     let summary = CameraVendorConnectionSummary(
       deviceName: "DEVICE-A",
       serialNumber: "221019F1932011003B",
       preferredWifiNetwork: nil
     )
 
-    XCTAssertEqual(summary.wifiCandidates, ["DEVICE-A-003B", "DEVICE-A"])
+    XCTAssertTrue(summary.wifiCandidates.isEmpty)
   }
 
-  func testConnectionSummaryDoesNotDuplicateSerialSuffixWhenNameAlreadyContainsIt() {
+  func testConnectionSummaryDoesNotUseDeviceNameAsWifiFallbackWhenNameContainsSerialSuffix() {
     let summary = CameraVendorConnectionSummary(
       deviceName: "DEVICE-A-003B",
       serialNumber: "221019F1932011003B",
       preferredWifiNetwork: nil
     )
 
-    XCTAssertEqual(summary.wifiCandidates, ["DEVICE-A-003B"])
+    XCTAssertTrue(summary.wifiCandidates.isEmpty)
   }
 
   func testReferenceAppWifiNetworkDecoderReadsHiddenSsidAndPassphrase() {
@@ -4033,14 +5033,7 @@ final class RunnerTests: XCTestCase {
           ssid: "CAMERA-DEVICE-A-003B",
           passphrase: "uQMggJcFEEBhCDjgkww0",
           isHidden: true
-        ),
-        CameraVendorWifiNetworkConfiguration(
-          ssid: "CAMERA-DEVICE-A-003B",
-          passphrase: "uQMggJcFEEBhCDjgkww0",
-          isHidden: false
-        ),
-        CameraVendorWifiNetworkConfiguration(ssid: "DEVICE-A-003B", passphrase: "00000000", isHidden: false),
-        CameraVendorWifiNetworkConfiguration(ssid: "DEVICE-A", passphrase: "00000000", isHidden: false),
+        )
       ]
     )
   }
@@ -4201,6 +5194,14 @@ final class RunnerTests: XCTestCase {
       NativeGalleryGridLayoutPolicy.columnCount(forCollectionWidth: 768),
       4
     )
+  }
+
+  func testNativeGalleryGridLayoutAllowsAndroidPinchRangeTwoThroughSix() {
+    XCTAssertEqual(NativeGalleryGridLayoutPolicy.clampedColumnCount(1), 2)
+    XCTAssertEqual(NativeGalleryGridLayoutPolicy.clampedColumnCount(2), 2)
+    XCTAssertEqual(NativeGalleryGridLayoutPolicy.clampedColumnCount(6), 6)
+    XCTAssertEqual(NativeGalleryGridLayoutPolicy.clampedColumnCount(7), 6)
+    XCTAssertEqual(NativeGalleryGridLayoutPolicy.androidGridSpacing, 2)
   }
 
   func testNativeGalleryGridLayoutComputesSquareItemSide() {
@@ -4387,17 +5388,7 @@ final class RunnerTests: XCTestCase {
           ssid: "CAMERA-DEVICE-A-003B",
           passphrase: "secret123",
           isHidden: true
-        ),
-        CameraVendorWifiNetworkConfiguration(
-          ssid: "CAMERA-DEVICE-A-003B",
-          passphrase: "secret123",
-          isHidden: false
-        ),
-        CameraVendorWifiNetworkConfiguration(
-          ssid: "CAMERA-DEVICE-A",
-          passphrase: "00000000",
-          isHidden: false
-        ),
+        )
       ]
     )
   }
@@ -4562,6 +5553,333 @@ final class RunnerTests: XCTestCase {
     access.resetForTesting()
   }
 
+  func testIOSCameraIdentityUsesStableCameraIDNotPeripheralID() {
+    let identity = IOSCameraIdentity(
+      cameraID: "12345678_X-T5",
+      displayName: "X-T5",
+      serialNumber: "12345678",
+      bleEndpoint: IOSCameraBleEndpoint(identifier: "core-bluetooth-uuid", address: "AA:BB:CC:DD:EE:FF")
+    )
+
+    XCTAssertEqual(identity.cameraID, "12345678_X-T5")
+    XCTAssertNotEqual(identity.cameraID, identity.bleEndpoint.identifier)
+  }
+
+  func testIOSOfficialWifiCredentialRejectsGuessedSSIDAndDefaultPassword() {
+    XCTAssertNil(
+      IOSCameraWifiCredential.official(
+        ssid: "X-T5-003B",
+        passphrase: "00000000",
+        bssid: nil,
+        source: .guessed
+      )
+    )
+    XCTAssertNotNil(
+      IOSCameraWifiCredential.official(
+        ssid: "FUJIFILM-X-T5-003B",
+        passphrase: "camera-secret",
+        bssid: "00:11:22:33:44:55",
+        source: .bleHandshake
+      )
+    )
+  }
+
+  func testIOSRegistrationGuardRequiresSystemBondCleanupForStaleBond() {
+    let issue = IOSCameraRegistrationGuard.evaluate(
+      localRecord: nil,
+      scannedEndpoint: IOSCameraBleEndpoint(identifier: "scan-id", address: "AA:BB:CC:DD:EE:FF"),
+      bondedAddresses: ["AA:BB:CC:DD:EE:FF"]
+    )
+
+    XCTAssertEqual(issue, .needsSystemBondCleanup(address: "AA:BB:CC:DD:EE:FF"))
+  }
+
+  func testIOSGalleryConnectionCoordinatorRunsAndroidStepOrder() async throws {
+    var executedSteps: [IOSCameraConnectionStep] = []
+    let coordinator = IOSCameraGalleryConnectionCoordinator(
+      runners: IOSCameraConnectionStep.officialGalleryOrder.map { step in
+        IOSCameraConnectionStepRunner(step: step) { context in
+          executedSteps.append(step)
+          return context
+        }
+      }
+    )
+
+    let result = try await coordinator.connect(
+      context: IOSCameraConnectionContext(
+        cameraID: "12345678_X-T5",
+        pairingRecord: nil,
+        wifiCredential: nil,
+        ptpSessionID: nil
+      )
+    )
+
+    XCTAssertEqual(executedSteps, IOSCameraConnectionStep.officialGalleryOrder)
+    XCTAssertEqual(result.cameraID, "12345678_X-T5")
+  }
+
+  func testIOSGalleryConnectionCoordinatorStopsAtFailedStep() async {
+    let coordinator = IOSCameraGalleryConnectionCoordinator(
+      runners: [
+        IOSCameraConnectionStepRunner(step: .reconnectPairedBle) { $0 },
+        IOSCameraConnectionStepRunner(step: .transferAuthorization) { _ in
+          throw IOSCameraConnectionIssue(step: .transferAuthorization, reason: "missing official Wi-Fi credential")
+        },
+        IOSCameraConnectionStepRunner(step: .activateCameraWifi) { $0 },
+      ]
+    )
+
+    do {
+      _ = try await coordinator.connect(
+        context: IOSCameraConnectionContext(
+          cameraID: "12345678_X-T5",
+          pairingRecord: nil,
+          wifiCredential: nil,
+          ptpSessionID: nil
+        )
+      )
+      XCTFail("Expected transferAuthorization failure")
+    } catch let issue as IOSCameraConnectionIssue {
+      XCTAssertEqual(issue.step, .transferAuthorization)
+    } catch {
+      XCTFail("Unexpected error: \(error)")
+    }
+  }
+
+  func testIOSAppFlowRunsRegistrationGuardBeforePairingAndStopsAfterPairing() async throws {
+    var guardCallCount = 0
+    var pairingCallCount = 0
+    var galleryCallCount = 0
+    let flow = IOSCameraAppFlowCoordinator(
+      registrationGuard: {
+        guardCallCount += 1
+        return .pass
+      },
+      pairingModule: IOSCameraPairingModule {
+        pairingCallCount += 1
+        return IOSCameraPairingResult(
+          record: IOSCameraPairingRecord(
+            identity: IOSCameraIdentity(
+              cameraID: "12345678_X-T5",
+              displayName: "X-T5",
+              serialNumber: "12345678",
+              bleEndpoint: IOSCameraBleEndpoint(identifier: "id", address: "AA:BB:CC:DD:EE:FF")
+            ),
+            wifiCredential: IOSCameraWifiCredential.official(
+              ssid: "FUJIFILM-X-T5-003B",
+              passphrase: "camera-secret",
+              bssid: nil,
+              source: .bleHandshake
+            )!
+          )
+        )
+      },
+      galleryConnector: { _ in
+        galleryCallCount += 1
+        return IOSCameraConnectionContext(cameraID: "12345678_X-T5", pairingRecord: nil, wifiCredential: nil, ptpSessionID: "ptp")
+      }
+    )
+
+    let result = try await flow.startPairing()
+
+    XCTAssertEqual(guardCallCount, 1)
+    XCTAssertEqual(pairingCallCount, 1)
+    XCTAssertEqual(galleryCallCount, 0)
+    XCTAssertEqual(result.record.identity.cameraID, "12345678_X-T5")
+  }
+
+  func testIOSGalleryFilterDefaultsMatchAndroidAllNewestPolicy() {
+    let state = IOSCameraGalleryFilterState()
+
+    XCTAssertEqual(state.date, .all)
+    XCTAssertEqual(state.format, .all)
+    XCTAssertEqual(state.sort, .newest)
+  }
+
+  func testNativeGalleryChromeCopyMatchesAndroidHeaderAndCollapsedFilter() {
+    XCTAssertEqual(NativeGalleryChromeCopy.title, "CAMERA GALLERY")
+    XCTAssertEqual(NativeGalleryChromeCopy.filterTitle, "筛选")
+    XCTAssertEqual(NativeGalleryChromeCopy.defaultFilterSummary, "全部日期 · 全部格式 · 最新优先")
+    XCTAssertEqual(NativeGalleryChromeCopy.sortOptionTitles, ["最新", "最早", "未下载"])
+    XCTAssertEqual(NativeGalleryChromeCopy.loadingText(activeDownloadCount: 2, isLoading: true, isTransferring: false), "下载中 2")
+    XCTAssertEqual(NativeGalleryChromeCopy.loadingText(activeDownloadCount: 0, isLoading: false, isTransferring: true), "正在下载")
+    XCTAssertEqual(NativeGalleryChromeCopy.loadingText(activeDownloadCount: 0, isLoading: true, isTransferring: false), "正在读取相机照片")
+    XCTAssertNil(NativeGalleryChromeCopy.loadingText(activeDownloadCount: 0, isLoading: false, isTransferring: false))
+  }
+
+  func testNativeGalleryTopChromeKeepsActionsInTopHeaderLikeAndroid() {
+    XCTAssertTrue(NativeGalleryTopChromePolicy.shouldHideSystemNavigationBar)
+    XCTAssertEqual(NativeGalleryTopChromePolicy.horizontalInset, 18)
+    XCTAssertEqual(NativeGalleryTopChromePolicy.topInset, 6)
+    XCTAssertEqual(NativeGalleryTopChromePolicy.bottomInset, 8)
+    XCTAssertEqual(NativeGalleryTopChromePolicy.actionRowHeight, 42)
+    XCTAssertEqual(NativeGalleryTopChromePolicy.actionSpacing, 8)
+    XCTAssertEqual(NativeGalleryTopChromePolicy.statusSpacing, 6)
+  }
+
+  func testNativeGalleryAndroidParityLayoutKeepsGridTightUnderFilter() {
+    XCTAssertEqual(NativeGalleryAndroidParityLayoutPolicy.filterToGridSpacing, 2)
+    XCTAssertFalse(NativeGalleryAndroidParityLayoutPolicy.shouldShowPinchHintBubble)
+    XCTAssertEqual(NativeGalleryAndroidParityLayoutPolicy.bottomBarHeight, 52)
+    XCTAssertEqual(NativeGalleryAndroidParityLayoutPolicy.bottomBarBottomInset, 10)
+  }
+
+  func testThumbnailTimingLogPolicyMatchesAndroidDiagnosticShape() {
+    XCTAssertEqual(
+      CameraVendorThumbnailTimingLogPolicy.successMessage(
+        handle: 0x123,
+        bytes: 4096,
+        ptpElapsedMs: 72,
+        decodeElapsedMs: 3,
+        totalElapsedMs: 81
+      ),
+      "[OBS] THUMBNAIL_TIMING_OK handle=0x00000123 bytes=4096 ptpMs=72 decodeMs=3 totalMs=81"
+    )
+    XCTAssertEqual(
+      CameraVendorThumbnailTimingLogPolicy.failureMessage(handle: 0x123, elapsedMs: 91, errorDescription: "boom"),
+      "[OBS] THUMBNAIL_TIMING_FAILED handle=0x00000123 totalMs=91 error=boom"
+    )
+  }
+
+  func testNativeGalleryCellDoesNotDecodeThumbnailDataOnMainThreadFallback() {
+    XCTAssertFalse(NativeGalleryCellThumbnailDecodePolicy.shouldDecodeDataDuringCellConfigure)
+  }
+
+  func testThumbnailPtpVerboseDiagnosticsAreSuppressedDuringSmoothGalleryScrolling() {
+    XCTAssertFalse(CameraVendorPtpDiagnosticLogPolicy.shouldEmit("[OBS] PTP_GET_THUMB_REQUEST handle=0x00000001"))
+    XCTAssertFalse(CameraVendorPtpDiagnosticLogPolicy.shouldEmit("[OBS] PTP_GET_THUMB_DATA bytes=123 handle=0x00000001 elapsedMs=8"))
+    XCTAssertFalse(CameraVendorPtpDiagnosticLogPolicy.shouldEmit("[OBS] PTP_GET_THUMB_CONTEXT_PRIMED_STANDARD handle=0x00000001 ms=3"))
+    XCTAssertFalse(CameraVendorPtpDiagnosticLogPolicy.shouldEmit("[OBS] PTP_THUMB_DATA source=standardGetThumb handle=0x00000001 rawBytes=123 normalizedBytes=123 rawHead=ffd8 normalizedHead=ffd8"))
+    XCTAssertFalse(CameraVendorPtpDiagnosticLogPolicy.shouldEmit("[OBS] THUMBNAIL_TIMING_OK handle=0x00000001 bytes=123 ptpMs=8 decodeMs=3 totalMs=11"))
+    XCTAssertTrue(CameraVendorPtpDiagnosticLogPolicy.shouldEmit("[OBS] THUMBNAIL_TIMING_FAILED handle=0x00000001 totalMs=80 error=boom"))
+  }
+
+  func testNativeGalleryThumbnailUISuccessLogsAreSuppressedDuringSmoothScrolling() {
+    XCTAssertFalse(NativeGalleryThumbnailUILogPolicy.shouldEmitSuccess(totalElapsedMs: 42))
+    XCTAssertTrue(NativeGalleryThumbnailUILogPolicy.shouldEmitFailure)
+  }
+
+  func testNativeGalleryDoesNotRebuildSectionsAfterEveryThumbnail() {
+    XCTAssertFalse(NativeGalleryThumbnailSectionRefreshPolicy.shouldRebuildSectionsAfterThumbnailLoad)
+  }
+
+  func testNativeDownloadCenterChromeMatchesAndroidHeaderSummaryAndGrid() {
+    XCTAssertEqual(NativeDownloadCenterChrome.title, "DOWNLOADS")
+    XCTAssertEqual(NativeDownloadCenterChrome.clearRecordsTitle, "清理记录")
+    XCTAssertEqual(NativeDownloadCenterChrome.emptyTitle, "下载中心为空")
+    XCTAssertEqual(
+      NativeDownloadCenterChrome.summary(totalCount: 8, doneCount: 5, activeCount: 2),
+      "8 张 · 已保存 5 · 进行中 2"
+    )
+    XCTAssertEqual(NativeDownloadCenterChrome.gridColumnCount, 3)
+    XCTAssertEqual(NativeDownloadCenterChrome.gridInsets, UIEdgeInsets(top: 8, left: 12, bottom: 24, right: 12))
+    XCTAssertEqual(NativeDownloadCenterChrome.gridHorizontalSpacing, 8)
+    XCTAssertEqual(NativeDownloadCenterChrome.gridVerticalSpacing, 12)
+  }
+
+  func testIOSGalleryFilterSupportsInclusiveDateRangeAndAllFormats() {
+    let calendar = Calendar(identifier: .gregorian)
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+    let middle = calendar.date(byAdding: .day, value: 2, to: start)!
+    let end = calendar.date(byAdding: .day, value: 4, to: start)!
+    let before = calendar.date(byAdding: .day, value: -1, to: start)!
+    let items = [
+      iosGalleryItem(handle: 1, formatLabel: "JPG", captureDate: before),
+      iosGalleryItem(handle: 2, formatLabel: "RAW", captureDate: middle),
+      iosGalleryItem(handle: 3, formatLabel: "HEIF", captureDate: end),
+    ]
+
+    let filtered = IOSCameraGalleryPolicy.filteredItems(
+      items,
+      state: IOSCameraGalleryFilterState(date: .range(end, start), format: .all, sort: .newest),
+      downloadedHandles: [],
+      now: start,
+      calendar: calendar
+    )
+
+    XCTAssertEqual(filtered.map(\.handle), [3, 2])
+  }
+
+  func testIOSGalleryFilterSortsNotDownloadedFirst() {
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+    let older = now.addingTimeInterval(-60)
+    let items = [
+      iosGalleryItem(handle: 1, formatLabel: "JPG", captureDate: now),
+      iosGalleryItem(handle: 2, formatLabel: "JPG", captureDate: older),
+      iosGalleryItem(handle: 3, formatLabel: "JPG", captureDate: now.addingTimeInterval(-120)),
+    ]
+
+    let filtered = IOSCameraGalleryPolicy.filteredItems(
+      items,
+      state: IOSCameraGalleryFilterState(date: .all, format: .jpg, sort: .notDownloaded),
+      downloadedHandles: [1],
+      now: now
+    )
+
+    XCTAssertEqual(filtered.map(\.handle), [2, 3, 1])
+  }
+
+  func testIOSDownloadHistoryPersistsObjectInfoAndThumbnailBytes() throws {
+    let record = IOSCameraDownloadHistoryRecord(
+      cameraID: "12345678_X-T5",
+      objectInfo: IOSCameraObjectInfo(
+        handle: 42,
+        filename: "DSCF0042.JPG",
+        formatLabel: "JPG",
+        captureDate: Date(timeIntervalSince1970: 1_800_000_000),
+        byteSize: 4_200_000,
+        orientation: 6
+      ),
+      thumbnailBytes: Data([0xFF, 0xD8, 0xFF]),
+      completedAt: Date(timeIntervalSince1970: 1_800_000_100)
+    )
+
+    let payload = IOSCameraDownloadHistoryPayload(records: [record])
+    let data = try JSONEncoder().encode(payload)
+    let decoded = try JSONDecoder().decode(IOSCameraDownloadHistoryPayload.self, from: data)
+
+    XCTAssertEqual(decoded.records.first?.objectInfo.filename, "DSCF0042.JPG")
+    XCTAssertEqual(decoded.records.first?.objectInfo.orientation, 6)
+    XCTAssertEqual(decoded.records.first?.thumbnailBytes, Data([0xFF, 0xD8, 0xFF]))
+  }
+
+  func testLegacyConnectionSummaryDoesNotGenerateGuessedWifiCandidates() {
+    let summary = CameraVendorConnectionSummary(
+      deviceName: "X-T5",
+      serialNumber: "12345678",
+      preferredWifiNetwork: nil
+    )
+
+    XCTAssertTrue(summary.wifiConfigurations.isEmpty)
+  }
+
+  func testLegacyConnectionSummaryKeepsOnlyOfficialWifiCredential() {
+    let summary = CameraVendorConnectionSummary(
+      deviceName: "X-T5",
+      serialNumber: "12345678",
+      preferredWifiNetwork: CameraVendorWifiNetworkConfiguration(
+        ssid: "FUJIFILM-X-T5-003B",
+        passphrase: "camera-secret",
+        isHidden: true
+      )
+    )
+
+    XCTAssertEqual(summary.wifiConfigurations.count, 1)
+    XCTAssertEqual(summary.wifiConfigurations.first?.ssid, "FUJIFILM-X-T5-003B")
+    XCTAssertEqual(summary.wifiConfigurations.first?.passphrase, "camera-secret")
+  }
+
+  func testLegacyPoliciesDisablePairingAutoGalleryAndPartialThumbnailFallback() {
+    XCTAssertFalse(CameraVendorPostPairingTransferPolicy.shouldAutomaticallyPrepareTransferAfterPairing)
+    XCTAssertFalse(
+      CameraVendorPostPairingTransferPolicy.canStartTransfer(
+        hasCompletedPairing: true,
+        hasUserInitiatedTransfer: false
+      )
+    )
+    XCTAssertFalse(CameraVendorThumbnailFetchPolicy.shouldUsePartialPreviewFallback)
+  }
+
   private func ptpString(_ string: String) -> Data {
     var data = Data([UInt8(string.count + 1)])
     for scalar in string.unicodeScalars {
@@ -4589,6 +5907,18 @@ final class RunnerTests: XCTestCase {
       formatLabel: formatLabel,
       captureDate: "2026:05:17 10:00:00",
       byteSizeText: "1.0 MB"
+    )
+  }
+
+  private func iosGalleryItem(handle: Int, formatLabel: String, captureDate: Date) -> IOSCameraGalleryItem {
+    IOSCameraGalleryItem(
+      handle: handle,
+      filename: "DSCF\(String(format: "%04d", handle)).\(formatLabel.lowercased())",
+      formatLabel: formatLabel,
+      captureDate: captureDate,
+      byteSize: 1_024,
+      orientation: nil,
+      thumbnailBytes: nil
     )
   }
 }

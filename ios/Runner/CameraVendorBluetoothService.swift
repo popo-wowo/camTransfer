@@ -150,43 +150,11 @@ struct CameraVendorConnectionSummary: Equatable {
   var wifiConfigurations: [CameraVendorWifiNetworkConfiguration] {
     var configurations: [CameraVendorWifiNetworkConfiguration] = []
     if let preferredWifiNetwork {
-      if preferredWifiNetwork.isHidden {
-        let visibleFallback = CameraVendorWifiNetworkConfiguration(
-          ssid: preferredWifiNetwork.ssid,
-          passphrase: preferredWifiNetwork.passphrase,
-          isHidden: false
-        )
-        configurations.append(preferredWifiNetwork)
-        configurations.append(visibleFallback)
-      } else {
-        configurations.append(preferredWifiNetwork)
-      }
-    }
-
-    let cleanedName = deviceName.trimmingCharacters(in: .whitespacesAndNewlines)
-    if !cleanedName.isEmpty {
-      if let suffix = CameraVendorGalleryDiagnostics.cameraWifiSuffix(from: serialNumber) {
-        let normalizedCleanedName = cleanedName.uppercased()
-        let normalizedSuffix = "-\(suffix.uppercased())"
-        let suffixedSSID = "\(cleanedName)-\(suffix)"
-        let hasExistingSuffixedSSID = configurations.contains {
-          $0.ssid.caseInsensitiveCompare(suffixedSSID) == .orderedSame
-        }
-        if !normalizedCleanedName.hasSuffix(normalizedSuffix), !hasExistingSuffixedSSID {
-          configurations.append(
-            CameraVendorWifiNetworkConfiguration(
-              ssid: suffixedSSID,
-              passphrase: "00000000",
-              isHidden: false
-            )
-          )
-        }
-      }
       configurations.append(
         CameraVendorWifiNetworkConfiguration(
-          ssid: cleanedName,
-          passphrase: "00000000",
-          isHidden: false
+          ssid: preferredWifiNetwork.ssid,
+          passphrase: preferredWifiNetwork.passphrase,
+          isHidden: preferredWifiNetwork.isHidden
         )
       )
     }
@@ -305,7 +273,7 @@ enum CameraVendorGalleryDiagnostics {
 }
 
 enum CameraVendorGalleryPreparationPolicy {
-  static let automaticWifiJoinEnabled = false
+  static let automaticWifiJoinEnabled = true
 
   static func shouldAttemptAutomaticWifiJoin(
     hasWifiConfigurations: Bool,
@@ -341,20 +309,20 @@ enum CameraVendorGalleryPreparationPolicy {
 
 enum CameraVendorGalleryPtpStartupPolicy {
   static func startupDelaySeconds(didCompleteWifiHandoff: Bool) -> TimeInterval {
-    3
+    0
   }
 }
 
 enum CameraVendorPtpConnectionStartupPolicy {
   static let commandConnectTimeoutSeconds: TimeInterval = 1.5
-  static let maxElapsedSeconds: TimeInterval = 45
+  static let maxAttempts = 5
 
   static func retryDelaySeconds(afterFailedAttempt attempt: Int) -> TimeInterval {
-    0.5
+    0.5 * TimeInterval(attempt)
   }
 
-  static func shouldContinueRetrying(elapsedSeconds: TimeInterval) -> Bool {
-    elapsedSeconds < maxElapsedSeconds
+  static func shouldRetry(afterFailedAttempt attempt: Int) -> Bool {
+    attempt < maxAttempts
   }
 }
 
@@ -414,10 +382,16 @@ enum CameraVendorSearchModeAllPayload {
   static let objectFormatPropertyCode: UInt16 = 0xD604
   static let jpegObjectFormatMask: UInt16 = 0x0001
   static let heifObjectFormatMask: UInt16 = 0x0002
+  static let movObjectFormatMask: UInt16 = 0x0004
+  static let mp4ObjectFormatMask: UInt16 = 0x0008
   static let rawObjectFormatMask: UInt16 = 0x0010
 
   static var stillImageObjectFormatMask: UInt16 {
     jpegObjectFormatMask | heifObjectFormatMask | rawObjectFormatMask
+  }
+
+  static var allObjectFormatMask: UInt16 {
+    jpegObjectFormatMask | heifObjectFormatMask | movObjectFormatMask | mp4ObjectFormatMask | rawObjectFormatMask
   }
 
   static func objectFormatMaskPayload(_ mask: UInt16) -> Data {
@@ -440,6 +414,33 @@ enum CameraVendorSearchModeAllPayload {
   }
 }
 
+enum CameraVendorFormatSpecifiedObjectPolicy {
+  static let formatPasses: [(label: String, mask: UInt16)] = [
+    ("ALL", CameraVendorSearchModeAllPayload.allObjectFormatMask),
+    ("JPG", CameraVendorSearchModeAllPayload.jpegObjectFormatMask),
+    ("HEIF", CameraVendorSearchModeAllPayload.heifObjectFormatMask),
+    ("MOV", CameraVendorSearchModeAllPayload.movObjectFormatMask),
+    ("MP4", CameraVendorSearchModeAllPayload.mp4ObjectFormatMask),
+    ("RAW", CameraVendorSearchModeAllPayload.rawObjectFormatMask),
+  ]
+
+  static func shouldPromoteToInitialHandles(
+    mask: UInt16,
+    currentHandleCount: Int,
+    candidateHandleCount: Int,
+    dateGroups: [CameraVendorSpecifiedObjectDateGroup]
+  ) -> Bool {
+    let isExpandedStillMask =
+      mask == CameraVendorSearchModeAllPayload.heifObjectFormatMask ||
+      mask == CameraVendorSearchModeAllPayload.rawObjectFormatMask
+    guard isExpandedStillMask, candidateHandleCount > currentHandleCount else {
+      return false
+    }
+    let dateGroupTotal = dateGroups.reduce(UInt32(0)) { $0 + $1.objectCount }
+    return Int(dateGroupTotal) == candidateHandleCount
+  }
+}
+
 enum CameraVendorPtpCommandSerializationPolicy {
   static let shouldSerializeCommandSocketAccess = true
 }
@@ -449,6 +450,43 @@ enum CameraVendorThumbnailLoadPolicy {
   static let shouldPauseWhileDownloading = true
   static let shouldInterruptInFlightRequestBeforeDownload = true
   static let shouldClosePtpSocketForPriorityDownloadInterruption = false
+}
+
+enum CameraVendorThumbnailTimingLogPolicy {
+  static func successMessage(
+    handle: Int,
+    bytes: Int,
+    ptpElapsedMs: Int,
+    decodeElapsedMs: Int,
+    totalElapsedMs: Int
+  ) -> String {
+    "[OBS] THUMBNAIL_TIMING_OK handle=0x\(String(format: "%08X", handle)) " +
+      "bytes=\(bytes) ptpMs=\(ptpElapsedMs) decodeMs=\(decodeElapsedMs) totalMs=\(totalElapsedMs)"
+  }
+
+  static func failureMessage(handle: Int, elapsedMs: Int, errorDescription: String) -> String {
+    "[OBS] THUMBNAIL_TIMING_FAILED handle=0x\(String(format: "%08X", handle)) " +
+      "totalMs=\(elapsedMs) error=\(errorDescription)"
+  }
+}
+
+enum CameraVendorPtpDiagnosticLogPolicy {
+  private static let suppressedPrefixes = [
+    "[OBS] PTP_GET_THUMB_REQUEST",
+    "[OBS] PTP_GET_THUMB_DATA",
+    "[OBS] PTP_THUMB_DATA",
+    "[OBS] PTP_GET_THUMB_CONTEXT_PRIMED",
+    "[OBS] PTP_GET_THUMB_CONTEXT_PRIMED_STANDARD",
+    "[OBS] PTP_GET_THUMB_CONTEXT_PRIME_FAILED",
+    "[OBS] PTP_GET_THUMB_VENDOR_CONTEXT_PRIME_FAILED",
+    "[OBS] PTP_GET_THUMB_FALLBACK_TO_PARTIAL",
+    "[OBS] PTP_STANDARD_PARTIAL_OBJECT_PREVIEW_EXPECTED",
+    "[OBS] THUMBNAIL_TIMING_OK",
+  ]
+
+  static func shouldEmit(_ message: String) -> Bool {
+    !suppressedPrefixes.contains { message.hasPrefix($0) }
+  }
 }
 
 enum CameraVendorThumbnailPriorityDownloadPolicy {
@@ -465,11 +503,12 @@ enum CameraVendorPriorityDownloadThumbnailGatePolicy {
 }
 
 enum CameraVendorPartialObjectRequestPolicy {
-  /// Reference-app reads start at 4 MB. Full-size downloads prefer 8 MB to
-  /// reduce PTP round trips, with a guarded fallback when the camera is slow.
-  static let referenceAppInitialReadSize: UInt32 = 4 * 1_048_576
-  static let fileDownloadReadSize: UInt32 = 8 * 1_048_576
+  /// Match the Android/reference-app large-file path: start file downloads at
+  /// 4 MB and only fall back to the 1 MB initial read size after a read error.
+  static let referenceAppInitialReadSize: UInt32 = 1 * 1_048_576
+  static let fileDownloadReadSize: UInt32 = 4 * 1_048_576
   static let fileDownloadFallbackReadSize = referenceAppInitialReadSize
+  static let fileDownloadReadTimeoutSeconds: TimeInterval = 60
   static let maxReadBytesWithoutKnownObjectSize = 128 * 1_024 * 1_024
 
   static func fileDownloadRequestSize(remaining: UInt64, useFallback: Bool = false) -> UInt32 {
@@ -548,13 +587,13 @@ struct CameraVendorAdaptiveDownloadChunkState: Equatable {
 }
 
 enum CameraVendorAdaptiveDownloadChunkPolicy {
-  static let isEnabled = true
+  static let isEnabled = false
   static let slowChunkBytesPerSecond: Double = 1.2 * 1_048_576
   static let fastChunkBytesPerSecond: Double = 2.5 * 1_048_576
   static let fastChunksRequiredForUpgrade = 2
   static let slowLargeChunksRequiredForDowngrade = 1
   static let fallbackImprovementFactor = 1.15
-  static let strategyName = "adaptive-probe"
+  static let strategyName = "android-fixed-4mb"
 
   static func requestSize(remaining: UInt64, state: CameraVendorAdaptiveDownloadChunkState) -> UInt32 {
     UInt32(min(UInt64(state.readSize), remaining))
@@ -660,6 +699,9 @@ enum CameraVendorImageDataNormalizer {
       Data("heix".utf8),
       Data("hevc".utf8),
       Data("hevx".utf8),
+      Data("heis".utf8),
+      Data("hevm".utf8),
+      Data("heif".utf8),
       Data("mif1".utf8),
       Data("msf1".utf8),
     ]
@@ -965,7 +1007,7 @@ enum CameraVendorConnectionResetPolicy {
 }
 
 enum CameraVendorGalleryLoadPolicy {
-  static let shouldLoadAutomaticallyOnEntry = false
+  static let shouldLoadAutomaticallyOnEntry = true
   static let shouldRetryAutomaticallyWhenAppBecomesActive = true
 
   static func shouldStartLoad(isLoading: Bool) -> Bool {
@@ -989,7 +1031,7 @@ enum CameraVendorGalleryLoadPolicy {
 }
 
 enum CameraVendorPostPairingTransferPolicy {
-  static let shouldAutomaticallyPrepareTransferAfterPairing = true
+  static let shouldAutomaticallyPrepareTransferAfterPairing = false
 
   static func canStartTransfer(
     hasCompletedPairing: Bool,
@@ -1190,6 +1232,10 @@ enum CameraVendorWifiJoinDiagnostics {
   }
 }
 
+enum CameraVendorWifiHandoffStabilizationPolicy {
+  static let delayAfterSSIDAssociationSeconds: TimeInterval = 0
+}
+
 enum CameraVendorWifiAssociationReadiness {
   static func isReadyToProceed(
     targetSSID: String,
@@ -1288,12 +1334,13 @@ struct CameraVendorGalleryRoute: Equatable {
 
 enum CameraVendorGalleryRoutePolicy {
   // ReferenceApp's WlanConnectImageImport retry path uses InCameraViewIng = 3
-  // before handing over to Wi-Fi for camera image browsing.
+  // before handing over to Wi-Fi for camera image browsing; PTP starts as soon
+  // as Wi-Fi is available.
   static let hiddenDiagnosticRoutes: [CameraVendorGalleryRoute] = [
     CameraVendorGalleryRoute(
       id: .strictReferenceApp,
       launchRequestPayload: Data([0x03, 0x00]),
-      ptpStartupDelaySeconds: 3,
+      ptpStartupDelaySeconds: 0,
       allowsUnverifiedWifiHandoffAfterRecoverableError: true
     ),
   ]
@@ -1617,6 +1664,11 @@ enum CameraVendorTransferActivationResizePolicy {
   }
 }
 
+enum CameraVendorTransferDownloadMode: Equatable {
+  case original
+  case compressed
+}
+
 enum CameraVendorReservedImageReceiveStateProbePlan {
   static let stagedWriteDelaySeconds: TimeInterval = 4
   static let writeRequests: [CameraVendorBleWriteRequest] = []
@@ -1700,13 +1752,244 @@ enum CameraVendorHandshakeCompletionPolicy {
   }
 }
 
+enum CameraVendorGalleryFormatHint: String, Equatable, Hashable {
+  case jpg
+  case heif
+  case raw
+  case video
+}
+
 struct CameraVendorGalleryItem: Equatable {
   let handle: Int
   let filename: String
   let formatLabel: String
   let captureDate: String
   let byteSizeText: String
+  let formatHints: Set<CameraVendorGalleryFormatHint>
   var thumbnailData: Data? = nil
+
+  init(
+    handle: Int,
+    filename: String,
+    formatLabel: String,
+    captureDate: String,
+    byteSizeText: String,
+    formatHints: Set<CameraVendorGalleryFormatHint> = [],
+    thumbnailData: Data? = nil
+  ) {
+    self.handle = handle
+    self.filename = filename
+    self.formatLabel = formatLabel
+    self.captureDate = captureDate
+    self.byteSizeText = byteSizeText
+    self.formatHints = formatHints
+    self.thumbnailData = thumbnailData
+  }
+}
+
+enum CameraVendorGalleryFastInitialLoadPolicy {
+  static let fullObjectInfoStartDelaySeconds: TimeInterval = 3.0
+  static let activeThumbnailPollIntervalSeconds: TimeInterval = 0.2
+  static let maxActiveThumbnailWaitSeconds: TimeInterval = 4.0
+  static let maxInitialThumbnailLaneWaitSeconds: TimeInterval = 0.8
+  static let metadataCommandYieldSeconds: TimeInterval = 0.05
+  static let thumbnailIdleGraceSeconds: TimeInterval = 0.35
+  static let incrementalMetadataBatchSize = 12
+
+  static func placeholderItems(
+    from handles: [UInt32],
+    dateGroups: [CameraVendorSpecifiedObjectDateGroup] = [],
+    handlesByFormatMask: [UInt16: [UInt32]] = [:]
+  ) -> [CameraVendorGalleryItem] {
+    let orderedHandles = initialPlaceholderHandles(from: handles)
+    let datesByHandle = captureDatesByHandle(
+      specifiedHandles: handles,
+      dateGroups: dateGroups
+    )
+    let formatHints = formatHintsByHandle(handlesByFormatMask: handlesByFormatMask)
+    return orderedHandles
+      .map { handle in
+        CameraVendorGalleryItem(
+          handle: Int(handle),
+          filename: String(format: "0x%08X", handle),
+          formatLabel: "",
+          captureDate: datesByHandle[handle] ?? "",
+          byteSizeText: "",
+          formatHints: formatHints[Int(handle), default: []]
+        )
+      }
+  }
+
+  static func initialPlaceholderHandles(from handles: [UInt32]) -> [UInt32] {
+    var seen = Set<UInt32>()
+    return handles.filter { seen.insert($0).inserted }
+  }
+
+  static func captureDatesByHandle(
+    specifiedHandles: [UInt32],
+    dateGroups: [CameraVendorSpecifiedObjectDateGroup]
+  ) -> [UInt32: String] {
+    guard !specifiedHandles.isEmpty, !dateGroups.isEmpty else { return [:] }
+    let handles = initialPlaceholderHandles(from: specifiedHandles)
+    var result: [UInt32: String] = [:]
+    var handleIndex = 0
+    for group in dateGroups {
+      for _ in 0..<Int(group.objectCount) {
+        guard handleIndex < handles.count else { return result }
+        result[handles[handleIndex]] = group.dateText
+        handleIndex += 1
+      }
+    }
+    return result
+  }
+
+  static func formatHintsByHandle(
+    handlesByFormatMask: [UInt16: [UInt32]]
+  ) -> [Int: Set<CameraVendorGalleryFormatHint>] {
+    guard !handlesByFormatMask.isEmpty else { return [:] }
+
+    var hints: [Int: Set<CameraVendorGalleryFormatHint>] = [:]
+    func add(_ handles: [UInt32], hint: CameraVendorGalleryFormatHint) {
+      for handle in handles {
+        hints[Int(handle), default: []].insert(hint)
+      }
+    }
+
+    add(handlesByFormatMask[CameraVendorSearchModeAllPayload.jpegObjectFormatMask] ?? [], hint: .jpg)
+    add(handlesByFormatMask[CameraVendorSearchModeAllPayload.movObjectFormatMask] ?? [], hint: .video)
+    add(handlesByFormatMask[CameraVendorSearchModeAllPayload.mp4ObjectFormatMask] ?? [], hint: .video)
+
+    let baselineHandles = Set(
+      handlesByFormatMask[CameraVendorSearchModeAllPayload.allObjectFormatMask] ?? []
+    )
+    let expandedStillHandles = [
+      handlesByFormatMask[CameraVendorSearchModeAllPayload.heifObjectFormatMask] ?? [],
+      handlesByFormatMask[CameraVendorSearchModeAllPayload.rawObjectFormatMask] ?? [],
+    ]
+      .max { $0.count < $1.count } ?? []
+
+    let hiddenStillHandles = expandedStillHandles.filter { !baselineHandles.contains($0) }
+    add(hiddenStillHandles, hint: .heif)
+    add(hiddenStillHandles, hint: .raw)
+
+    return hints
+  }
+
+  static func shouldPublishInitialItems(_ items: [CameraVendorGalleryItem]) -> Bool {
+    !items.isEmpty
+  }
+
+  static func shouldContinueFullObjectInfoAfterInitialPlaceholders(_ itemCount: Int) -> Bool {
+    itemCount > 0
+  }
+
+  static func shouldPublishIncrementalMetadataBatch(
+    resolvedCount: Int,
+    isFinalBatch: Bool
+  ) -> Bool {
+    resolvedCount > 0 && (isFinalBatch || resolvedCount >= incrementalMetadataBatchSize)
+  }
+
+  static func metadataWaitSecondsBeforeObjectInfo(
+    resolvedCount: Int,
+    hasPendingVisibleThumbnails: Bool = false
+  ) -> TimeInterval {
+    if hasPendingVisibleThumbnails {
+      return maxActiveThumbnailWaitSeconds
+    }
+    return resolvedCount == 0 ? maxInitialThumbnailLaneWaitSeconds : activeThumbnailPollIntervalSeconds
+  }
+}
+
+enum CameraVendorGalleryRequestPriority: Int {
+  case downloadOriginal = 0
+  case previewImage = 1
+  case visibleThumbnail = 2
+  case previewNeighborThumbnail = 3
+  case backgroundMetadata = 4
+}
+
+final class CameraVendorGalleryRequestScheduler {
+  private final class Waiter {
+    let priority: CameraVendorGalleryRequestPriority
+    let sequence: Int
+    let continuation: CheckedContinuation<Void, Never>
+
+    init(
+      priority: CameraVendorGalleryRequestPriority,
+      sequence: Int,
+      continuation: CheckedContinuation<Void, Never>
+    ) {
+      self.priority = priority
+      self.sequence = sequence
+      self.continuation = continuation
+    }
+  }
+
+  private let lock = NSLock()
+  private var isCameraReadActive = false
+  private var waiters: [Waiter] = []
+  private var nextSequence = 0
+
+  func run<T>(
+    priority: CameraVendorGalleryRequestPriority,
+    _ operation: () throws -> T
+  ) async throws -> T {
+    await acquire(priority: priority)
+    do {
+      let value = try operation()
+      releaseNext()
+      return value
+    } catch {
+      releaseNext()
+      throw error
+    }
+  }
+
+  private func acquire(priority: CameraVendorGalleryRequestPriority) async {
+    var shouldAcquireImmediately = false
+    await withCheckedContinuation { continuation in
+      lock.lock()
+      if !isCameraReadActive && waiters.isEmpty {
+        isCameraReadActive = true
+        shouldAcquireImmediately = true
+      } else {
+        waiters.append(
+          Waiter(
+            priority: priority,
+            sequence: nextSequence,
+            continuation: continuation
+          )
+        )
+        nextSequence += 1
+      }
+      lock.unlock()
+
+      if shouldAcquireImmediately {
+        continuation.resume()
+      }
+    }
+  }
+
+  private func releaseNext() {
+    let next: Waiter?
+    lock.lock()
+    if let index = waiters.indices.min(by: { left, right in
+      let leftWaiter = waiters[left]
+      let rightWaiter = waiters[right]
+      if leftWaiter.priority.rawValue != rightWaiter.priority.rawValue {
+        return leftWaiter.priority.rawValue < rightWaiter.priority.rawValue
+      }
+      return leftWaiter.sequence < rightWaiter.sequence
+    }) {
+      next = waiters.remove(at: index)
+    } else {
+      isCameraReadActive = false
+      next = nil
+    }
+    lock.unlock()
+    next?.continuation.resume()
+  }
 }
 
 enum CameraVendorDownloadedMediaType: Equatable {
@@ -1720,6 +2003,11 @@ struct CameraVendorDownloadedFile {
   let mediaType: CameraVendorDownloadedMediaType
 }
 
+struct CameraVendorDownloadedPhotoData {
+  let data: Data
+  let filename: String
+}
+
 enum CameraVendorGalleryDownloadPolicy {
   static func canDownloadOriginal(_ item: CameraVendorGalleryItem) -> Bool {
     item.formatLabel != "Video"
@@ -1731,7 +2019,7 @@ enum CameraVendorGalleryDownloadPolicy {
 }
 
 enum CameraVendorPhotoLibrarySaveInputPolicy {
-  static let shouldSavePhotoDownloadsFromTemporaryFile = true
+  static let shouldSavePhotoDownloadsFromTemporaryFile = false
 
   static func shouldSavePhotoDownloadFromData(
     filename: String,
@@ -1740,6 +2028,12 @@ enum CameraVendorPhotoLibrarySaveInputPolicy {
     guard mediaType == .photo else { return false }
     let ext = (filename as NSString).pathExtension.lowercased()
     return ext == "heic" || ext == "heif"
+  }
+}
+
+enum CameraVendorDownloadPipelinePolicy {
+  static func shouldUseDataFastPath(mediaType: CameraVendorDownloadedMediaType) -> Bool {
+    mediaType == .photo
   }
 }
 
@@ -1767,6 +2061,7 @@ struct CameraVendorGalleryState: Equatable {
   var errorMessage: String?
   private var downloadStates: [Int: CameraVendorDownloadState] = [:]
   private var downloadProgress: [Int: CameraVendorDownloadProgress] = [:]
+  private var downloadModes: [Int: CameraVendorTransferDownloadMode] = [:]
 
   init(items: [CameraVendorGalleryItem] = []) {
     self.items = items
@@ -1798,11 +2093,15 @@ struct CameraVendorGalleryState: Equatable {
     selectedHandles.removeAll()
   }
 
-  mutating func enqueueDownloads(for handles: [Int]) {
+  mutating func enqueueDownloads(
+    for handles: [Int],
+    mode: CameraVendorTransferDownloadMode = .original
+  ) {
     for handle in handles {
       guard downloadStates[handle] != .saved else { continue }
       downloadStates[handle] = .queued
       downloadProgress[handle] = nil
+      downloadModes[handle] = mode
     }
     selectedHandles.subtract(handles)
   }
@@ -1819,6 +2118,7 @@ struct CameraVendorGalleryState: Equatable {
   mutating func markDownloadFinished(handle: Int) {
     downloadStates[handle] = .saved
     downloadProgress[handle] = nil
+    downloadModes.removeValue(forKey: handle)
   }
 
   mutating func markDownloadFailed(handle: Int, message: String) {
@@ -1830,6 +2130,7 @@ struct CameraVendorGalleryState: Equatable {
     guard downloadStates[handle] == .saved else { return }
     downloadStates.removeValue(forKey: handle)
     downloadProgress.removeValue(forKey: handle)
+    downloadModes.removeValue(forKey: handle)
     selectedHandles.remove(handle)
   }
 
@@ -1841,20 +2142,48 @@ struct CameraVendorGalleryState: Equatable {
     for handle in savedHandles {
       downloadStates.removeValue(forKey: handle)
       downloadProgress.removeValue(forKey: handle)
+      downloadModes.removeValue(forKey: handle)
     }
     selectedHandles.subtract(savedHandles)
     return savedHandles.count
   }
 
-  mutating func updateThumbnail(handle: Int, data: Data) {
+  mutating func updateThumbnail(handle: Int, data: Data, resolvedItem: CameraVendorGalleryItem? = nil) {
     guard let index = items.firstIndex(where: { $0.handle == handle }) else {
       return
     }
-    items[index].thumbnailData = data
+    if var resolvedItem {
+      let existingItem = items[index]
+      if resolvedItem.formatHints.isEmpty, !existingItem.formatHints.isEmpty {
+        resolvedItem = CameraVendorGalleryItem(
+          handle: resolvedItem.handle,
+          filename: resolvedItem.filename,
+          formatLabel: resolvedItem.formatLabel,
+          captureDate: resolvedItem.captureDate.isEmpty ? existingItem.captureDate : resolvedItem.captureDate,
+          byteSizeText: resolvedItem.byteSizeText,
+          formatHints: existingItem.formatHints,
+          thumbnailData: resolvedItem.thumbnailData
+        )
+      }
+      resolvedItem.thumbnailData = data
+      items[index] = resolvedItem
+    } else {
+      items[index].thumbnailData = data
+    }
   }
 
   func downloadState(for handle: Int) -> CameraVendorDownloadState {
     downloadStates[handle] ?? .idle
+  }
+
+  func downloadMode(for handle: Int) -> CameraVendorTransferDownloadMode {
+    downloadModes[handle] ?? .original
+  }
+
+  func savedDownloadHandles() -> Set<Int> {
+    Set(downloadStates.compactMap { entry in
+      entry.value == .saved ? entry.key : nil
+    })
   }
 
   func downloadableHandles(from handles: [Int]) -> [Int] {
@@ -1887,8 +2216,45 @@ struct CameraVendorGalleryState: Equatable {
 protocol CameraVendorGalleryService {
   func fetchGallery() async throws -> [CameraVendorGalleryItem]
   func fetchThumbnail(for handle: Int) async throws -> Data
+  func fetchThumbnailWithInfo(for handle: Int) async throws -> CameraVendorGalleryThumbnail
   func downloadOriginal(for handle: Int) async throws -> Data
+  func downloadOriginalData(
+    for handle: Int,
+    mode: CameraVendorTransferDownloadMode
+  ) async throws -> CameraVendorDownloadedPhotoData
   func downloadOriginalFile(for handle: Int) async throws -> CameraVendorDownloadedFile
+  func downloadOriginalFile(
+    for handle: Int,
+    mode: CameraVendorTransferDownloadMode
+  ) async throws -> CameraVendorDownloadedFile
+}
+
+struct CameraVendorGalleryThumbnail {
+  let data: Data
+  let item: CameraVendorGalleryItem?
+}
+
+extension CameraVendorGalleryService {
+  func fetchThumbnailWithInfo(for handle: Int) async throws -> CameraVendorGalleryThumbnail {
+    CameraVendorGalleryThumbnail(data: try await fetchThumbnail(for: handle), item: nil)
+  }
+
+  func downloadOriginalData(
+    for handle: Int,
+    mode _: CameraVendorTransferDownloadMode
+  ) async throws -> CameraVendorDownloadedPhotoData {
+    CameraVendorDownloadedPhotoData(
+      data: try await downloadOriginal(for: handle),
+      filename: "CamTransfer-\(handle).jpg"
+    )
+  }
+
+  func downloadOriginalFile(
+    for handle: Int,
+    mode _: CameraVendorTransferDownloadMode
+  ) async throws -> CameraVendorDownloadedFile {
+    try await downloadOriginalFile(for: handle)
+  }
 }
 
 protocol CameraVendorGalleryConnectionTerminating: AnyObject {
@@ -1900,14 +2266,46 @@ protocol CameraVendorPriorityDownloadPreparing: AnyObject {
   func finishPriorityDownload()
 }
 
+protocol CameraVendorVisibleThumbnailLaneCoordinating: AnyObject {
+  func beginVisibleThumbnailBatch(handles: [Int])
+  func finishVisibleThumbnailBatch(handles: [Int])
+}
+
 /// A standalone PTP download worker that owns its own command socket so it
 /// can run in parallel with the main `CameraVendorGalleryService` session. Created
 /// via `CameraVendorParallelDownloadFactory.openWorker(...)`. Always call
 /// `disconnect()` when finished so the camera frees the slot.
 protocol CameraVendorParallelDownloadWorker: AnyObject {
   func downloadOriginal(for handle: Int) async throws -> Data
+  func downloadOriginalData(
+    for handle: Int,
+    mode: CameraVendorTransferDownloadMode
+  ) async throws -> CameraVendorDownloadedPhotoData
   func downloadOriginalFile(for handle: Int) async throws -> CameraVendorDownloadedFile
+  func downloadOriginalFile(
+    for handle: Int,
+    mode: CameraVendorTransferDownloadMode
+  ) async throws -> CameraVendorDownloadedFile
   func disconnect()
+}
+
+extension CameraVendorParallelDownloadWorker {
+  func downloadOriginalData(
+    for handle: Int,
+    mode _: CameraVendorTransferDownloadMode
+  ) async throws -> CameraVendorDownloadedPhotoData {
+    CameraVendorDownloadedPhotoData(
+      data: try await downloadOriginal(for: handle),
+      filename: "CamTransfer-\(handle).jpg"
+    )
+  }
+
+  func downloadOriginalFile(
+    for handle: Int,
+    mode _: CameraVendorTransferDownloadMode
+  ) async throws -> CameraVendorDownloadedFile {
+    try await downloadOriginalFile(for: handle)
+  }
 }
 
 protocol CameraVendorParallelDownloadFactory: AnyObject {
@@ -2014,12 +2412,40 @@ struct CameraVendorGalleryStubService: CameraVendorGalleryService {
   }
 
   private func sampleJPEGData(seed: Int) throws -> Data {
-    let variants: [String] = [
-      "/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxAQEBAQEA8QDw8PDw8PDw8PDw8QEA8QFREWFhURFRUYHSggGBolGxUVITEhJSkrLi4uFx8zODMsNygtLisBCgoKDg0OGxAQGy0mICYtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAAEAAgMBIgACEQEDEQH/xAAXAAADAQAAAAAAAAAAAAAAAAAAAQID/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEAMQAAAB6A//xAAVEQEBAAAAAAAAAAAAAAAAAAAAEf/aAAgBAQABBQKf/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAEP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAAAAAAAAAAEP/aAAgBAQABPyF//9k=",
-      "/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxAQDw8QDw8PDw8PDw8PDw8PDw8PDw8PFREWFhURFRUYHSggGBolGxUVITEhJSkrLi4uFx8zODMsNygtLisBCgoKDg0OGxAQGy0mICUtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAAEAAgMBIgACEQEDEQH/xAAXAAADAQAAAAAAAAAAAAAAAAAAAQID/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEAMQAAAB6B//xAAVEQEBAAAAAAAAAAAAAAAAAAAAEf/aAAgBAQABBQKf/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAwEBPwF//8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAEP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAAAAAAAAAAEP/aAAgBAQABPyF//9k="
+    let colors: [(background: UIColor, hill: UIColor, sun: UIColor)] = [
+      (
+        UIColor(red: 0.16, green: 0.37, blue: 0.50, alpha: 1),
+        UIColor(red: 0.62, green: 0.74, blue: 0.48, alpha: 1),
+        UIColor(red: 0.95, green: 0.78, blue: 0.32, alpha: 1)
+      ),
+      (
+        UIColor(red: 0.45, green: 0.31, blue: 0.21, alpha: 1),
+        UIColor(red: 0.74, green: 0.62, blue: 0.42, alpha: 1),
+        UIColor(red: 0.92, green: 0.83, blue: 0.56, alpha: 1)
+      ),
     ]
-    let base64 = variants[abs(seed) % variants.count]
-    guard let data = Data(base64Encoded: base64) else {
+    let palette = colors[abs(seed) % colors.count]
+    let renderer = UIGraphicsImageRenderer(size: CGSize(width: 80, height: 60))
+    let image = renderer.image { context in
+      palette.background.setFill()
+      context.fill(CGRect(x: 0, y: 0, width: 80, height: 60))
+      UIColor.white.withAlphaComponent(0.85).setStroke()
+      let frame = UIBezierPath(roundedRect: CGRect(x: 8, y: 8, width: 64, height: 44), cornerRadius: 6)
+      frame.lineWidth = 3
+      frame.stroke()
+      palette.sun.setFill()
+      UIBezierPath(ovalIn: CGRect(x: 52, y: 13, width: 14, height: 14)).fill()
+      palette.hill.setFill()
+      let hill = UIBezierPath()
+      hill.move(to: CGPoint(x: 10, y: 52))
+      hill.addLine(to: CGPoint(x: 31, y: 28))
+      hill.addLine(to: CGPoint(x: 45, y: 42))
+      hill.addLine(to: CGPoint(x: 56, y: 30))
+      hill.addLine(to: CGPoint(x: 72, y: 52))
+      hill.close()
+      hill.fill()
+    }
+    guard let data = image.jpegData(compressionQuality: 0.86) else {
       throw NSError(domain: "CameraVendorGalleryStubService", code: -1)
     }
     return data
@@ -2127,6 +2553,7 @@ enum CameraVendorLegacyGalleryObjectInfoPolicy {
   static let shouldResetSearchModeDuringColdStart = false
   static let shouldReadSearchModeAllDuringColdStart = false
   static let shouldSetStillImageObjectFormatSearchMode = false
+  static let shouldReadFormatSpecificSpecifiedObjectHandles = true
   static let shouldRefreshGalleryContextBeforeSpecifiedList = true
   static let shouldResetCompressionModeBeforeObjectInfoList = false
 
@@ -2198,6 +2625,8 @@ enum CameraVendorHiddenObjectHandleProbePolicy {
   static let maxContiguousGapRange: UInt32 = 8
   static let maxLowerBoundaryContinuationRange: UInt32 = 64
   static let maxLowerBoundaryConsecutiveFailures = 4
+  static let maxBackgroundCandidates = 96
+  static let backgroundForwardProbeRange: UInt32 = 20
 
   static func candidateHandles(from handles: [UInt32]) -> [UInt32] {
     let uniqueHandles = Set(handles)
@@ -2236,6 +2665,43 @@ enum CameraVendorHiddenObjectHandleProbePolicy {
       }
     }
     return candidates
+  }
+
+  static func backgroundCandidateHandles(from handles: [UInt32]) -> [UInt32] {
+    let gapCandidates = backgroundHiddenHandleCandidates(from: handles)
+    let forwardCandidates = forwardProbeCandidates(from: handles)
+    var seenCandidates = Set<UInt32>()
+    return (gapCandidates + forwardCandidates).filter { handle in
+      seenCandidates.insert(handle).inserted
+    }
+  }
+
+  static func backgroundHiddenHandleCandidates(from handles: [UInt32]) -> [UInt32] {
+    let uniqueHandles = Set(handles)
+    let sortedHandles = uniqueHandles.sorted()
+    guard sortedHandles.count >= 2 else { return [] }
+    var candidates: [UInt32] = []
+
+    for (lowerHandle, upperHandle) in zip(sortedHandles, sortedHandles.dropFirst()) {
+      guard upperHandle > lowerHandle + 1 else { continue }
+      let gapSize = upperHandle - lowerHandle - 1
+      guard gapSize <= maxContiguousGapRange else { continue }
+      for handle in (lowerHandle + 1)..<upperHandle {
+        candidates.append(handle)
+        if candidates.count > maxBackgroundCandidates {
+          return []
+        }
+      }
+    }
+    return candidates
+  }
+
+  static func forwardProbeCandidates(from handles: [UInt32]) -> [UInt32] {
+    guard let maxHandle = Set(handles).max(),
+          maxHandle < UInt32.max - backgroundForwardProbeRange else {
+      return []
+    }
+    return Array((maxHandle + 1)...(maxHandle + backgroundForwardProbeRange))
   }
 
   static func lowerBoundaryContinuationHandles(
@@ -2360,10 +2826,75 @@ enum CameraVendorOriginalDownloadPolicy {
   }
 }
 
+enum CameraVendorDevicePropertyWidth: Equatable {
+  case uint16
+  case uint32
+}
+
+struct CameraVendorDownloadModeProperty: Equatable {
+  let code: UInt32
+  let value: UInt32
+  let width: CameraVendorDevicePropertyWidth
+}
+
+enum CameraVendorDownloadModePolicy {
+  private static let resizeRateS: UInt32 = 1
+  private static let forceCompressed: UInt32 = 1
+  private static let forceOriginal: UInt32 = 2
+  private static let forceReset: UInt32 = 0
+
+  static func prepareProperties(
+    mode: CameraVendorTransferDownloadMode
+  ) -> [CameraVendorDownloadModeProperty] {
+    switch mode {
+    case .compressed:
+      return [
+        CameraVendorDownloadModeProperty(
+          code: CameraVendorDevicePropCode.objectCompressionSetting,
+          value: resizeRateS,
+          width: .uint16
+        ),
+        imageForceCompression(forceCompressed),
+      ]
+    case .original:
+      return [imageForceCompression(forceOriginal)]
+    }
+  }
+
+  static func resetProperty(
+    for property: CameraVendorDownloadModeProperty
+  ) -> CameraVendorDownloadModeProperty? {
+    guard property.code == CameraVendorDevicePropCode.imageForceCompression else {
+      return nil
+    }
+    return imageForceCompression(forceReset)
+  }
+
+  static func payload(for property: CameraVendorDownloadModeProperty) -> Data {
+    switch property.width {
+    case .uint16:
+      var value = UInt16(property.value).littleEndian
+      return withUnsafeBytes(of: &value) { Data($0) }
+    case .uint32:
+      var value = UInt32(property.value).littleEndian
+      return withUnsafeBytes(of: &value) { Data($0) }
+    }
+  }
+
+  private static func imageForceCompression(_ value: UInt32) -> CameraVendorDownloadModeProperty {
+    CameraVendorDownloadModeProperty(
+      code: CameraVendorDevicePropCode.imageForceCompression,
+      value: value,
+      width: .uint16
+    )
+  }
+}
+
 enum CameraVendorThumbnailFetchPolicy {
   static let shouldReadObjectInfoBeforeGetThumb = true
   static let shouldTryStandardGetThumbFirst = true
-  static let shouldUsePartialPreviewFallback = true
+  static let shouldUsePartialPreviewFallback = false
+  static let standardGetThumbReadTimeoutSeconds: TimeInterval = 3
   static let partialPreviewReadSize: UInt32 = 256 * 1_024
   static let minimumUsefulThumbnailBytes = 100
 }
@@ -2423,6 +2954,7 @@ enum CameraVendorDevicePropCode {
   static let referenceAppGalleryReadyMarker: UInt32 = 0xD222
   static let imageForceCompression: UInt32 = 0xD226
   static let imageCompressionRealInfo: UInt32 = 0xD227
+  static let objectCompressionSetting: UInt32 = 0xD22E
   static let currentObjectHandle: UInt32 = 0xD22B
   static let compressionCutOff: UInt32 = 0xD235
   static let referenceAppGalleryAccessState: UInt32 = 0xD244
@@ -2498,7 +3030,14 @@ struct CameraVendorPtpPacket {
   let payload: Data
 }
 
+struct CameraVendorThumbnailFetchResult {
+  let data: Data
+  let objectInfo: CameraVendorCameraObjectInfo?
+}
+
 struct CameraVendorCameraObjectInfo: Equatable {
+  static let undefinedFormatCode: UInt16 = 0x3000
+
   let handle: Int
   let storageID: UInt32
   let formatCode: UInt16
@@ -2506,6 +3045,23 @@ struct CameraVendorCameraObjectInfo: Equatable {
   let thumbCompressedSize: UInt32
   let filename: String
   let captureDate: String
+
+  var hasResolvedFormat: Bool {
+    formatCode != Self.undefinedFormatCode
+  }
+
+  var galleryFormatLabel: String {
+    hasResolvedFormat ? formatLabel : ""
+  }
+
+  var reliableDownloadMetadata: CameraVendorCameraObjectInfo? {
+    guard hasResolvedFormat,
+          !filename.isEmpty,
+          !filename.hasPrefix("0x") else {
+      return nil
+    }
+    return self
+  }
 
   var formatLabel: String {
     switch formatCode {
@@ -2522,15 +3078,15 @@ struct CameraVendorCameraObjectInfo: Equatable {
     }
   }
 
-  static func placeholder(handle: UInt32) -> CameraVendorCameraObjectInfo {
+  static func placeholder(handle: UInt32, captureDate: String = "") -> CameraVendorCameraObjectInfo {
     CameraVendorCameraObjectInfo(
       handle: Int(handle),
       storageID: 0,
-      formatCode: 0x3801,
+      formatCode: undefinedFormatCode,
       compressedSize: 0,
       thumbCompressedSize: 0,
-      filename: String(format: "0x%08X.JPG", handle),
-      captureDate: ""
+      filename: String(format: "0x%08X", handle),
+      captureDate: captureDate
     )
   }
 }
@@ -3049,6 +3605,7 @@ private final class CameraVendorPtpSession {
   private var hasReadReferenceAppContextDuringCurrentPriorityDownload = false
   private var cameraVendorSpecifiedObjectHandles: [UInt32] = []
   private var cameraVendorSpecifiedObjectDateGroups: [CameraVendorSpecifiedObjectDateGroup] = []
+  private var cameraVendorSpecifiedObjectHandlesByFormatMask: [UInt16: [UInt32]] = [:]
   private var cameraVendorCurrentSlotStatus: UInt8?
 
   func connect(
@@ -3061,6 +3618,8 @@ private final class CameraVendorPtpSession {
     disconnect()
     transactionID = 0
     cameraVendorSpecifiedObjectHandles = []
+    cameraVendorSpecifiedObjectDateGroups = []
+    cameraVendorSpecifiedObjectHandlesByFormatMask = [:]
     self.diagnosticHandler = diagnosticHandler
 
     report("准备连接 PTP 命令端口 \(host):\(CameraVendorPtpConstants.commandPort)")
@@ -3274,7 +3833,11 @@ private final class CameraVendorPtpSession {
       try setCameraVendorStillImageObjectFormatSearchMode()
       try requestCameraVendorSearchModeAll(stage: "after-still-format-search-mode")
     }
-    try requestCameraVendorSpecifiedObjectSnapshot(stage: "referenceApp-cold-start")
+    if CameraVendorLegacyGalleryObjectInfoPolicy.shouldReadFormatSpecificSpecifiedObjectHandles {
+      try requestCameraVendorFormatSpecificSpecifiedObjectSnapshotsForInitialList()
+    } else {
+      try requestCameraVendorSpecifiedObjectSnapshot(stage: "referenceApp-cold-start")
+    }
     if CameraVendorLegacyGalleryObjectInfoPolicy.shouldResetSearchModeDuringColdStart {
       try resetCameraVendorSearchModeAll(stage: "cold-start-empty-search-mode")
       try requestCameraVendorSearchModeAll(stage: "after-empty-search-mode")
@@ -3605,9 +4168,14 @@ private final class CameraVendorPtpSession {
 
   private func setCameraVendorStillImageObjectFormatSearchMode() throws {
     let mask = CameraVendorSearchModeAllPayload.stillImageObjectFormatMask
+    try setCameraVendorObjectFormatSearchMode(mask: mask, label: "STILL")
+  }
+
+  private func setCameraVendorObjectFormatSearchMode(mask: UInt16, label: String) throws {
     let payload = CameraVendorSearchModeAllPayload.objectFormatMaskPayload(mask)
     report(
       "[OBS] PTP_SET_SEARCH_MODE_OBJECT_FORMAT_BEGIN " +
+      "label=\(label) " +
       "property=0x\(String(format: "%04X", CameraVendorSearchModeAllPayload.objectFormatPropertyCode)) " +
       "mask=0x\(String(format: "%04X", mask)) payload=\(payload.map { String(format: "%02x", $0) }.joined())"
     )
@@ -3615,7 +4183,7 @@ private final class CameraVendorPtpSession {
       operationCode: UInt16(CameraVendorPtpOperationCode.cameraVendorSetSearchModeAll),
       data: payload
     )
-    report("[OBS] PTP_SET_SEARCH_MODE_OBJECT_FORMAT response=0x\(String(format: "%04X", response.responseCode))")
+    report("[OBS] PTP_SET_SEARCH_MODE_OBJECT_FORMAT label=\(label) response=0x\(String(format: "%04X", response.responseCode))")
   }
 
   func resetCameraVendorCompressionMode() throws {
@@ -3638,9 +4206,30 @@ private final class CameraVendorPtpSession {
     let response = try sendCommandWithData(
       operationCode: UInt16(CameraVendorPtpOperationCode.setDevicePropValue),
       parameters: [CameraVendorDevicePropCode.imageForceCompression],
-      data: littleEndianData(mode)
+      data: littleEndianData(UInt16(mode))
     )
     report("[OBS] PTP_SET_IMAGE_FORCE_COMPRESSION mode=\(mode) reason=\(reason) response=0x\(String(format: "%04X", response.responseCode))")
+    return response
+  }
+
+  @discardableResult
+  private func setCameraVendorDownloadModeProperty(
+    _ property: CameraVendorDownloadModeProperty,
+    handle: UInt32,
+    mode: CameraVendorTransferDownloadMode,
+    reason: String
+  ) throws -> CameraVendorOperationResponse {
+    let response = try sendCommandWithData(
+      operationCode: UInt16(CameraVendorPtpOperationCode.setDevicePropValue),
+      parameters: [property.code],
+      data: CameraVendorDownloadModePolicy.payload(for: property)
+    )
+    report(
+      "[OBS] PTP_DOWNLOAD_MODE_PROPERTY " +
+      "handle=0x\(String(format: "%08X", handle)) mode=\(mode) reason=\(reason) " +
+      "prop=0x\(String(format: "%04X", property.code)) value=\(property.value) " +
+      "width=\(property.width) response=0x\(String(format: "%04X", response.responseCode))"
+    )
     return response
   }
 
@@ -3705,6 +4294,70 @@ private final class CameraVendorPtpSession {
         requestCameraVendorCurrentObjectHandleSnapshot(stage: "\(stage)-empty-recovery")
       }
     }
+  }
+
+  private func requestCameraVendorFormatSpecificSpecifiedObjectSnapshotsForInitialList() throws {
+    var selectedHandles: [UInt32] = []
+    var selectedDateGroups: [CameraVendorSpecifiedObjectDateGroup] = []
+    var selectedLabel = "none"
+
+    for pass in CameraVendorFormatSpecifiedObjectPolicy.formatPasses {
+      do {
+        try setCameraVendorObjectFormatSearchMode(mask: pass.mask, label: pass.label)
+        try requestCameraVendorSpecifiedObjectSnapshot(stage: "format-\(pass.label.lowercased())")
+        let candidateHandles = cameraVendorSpecifiedObjectHandles
+        let candidateDateGroups = cameraVendorSpecifiedObjectDateGroups
+        cameraVendorSpecifiedObjectHandlesByFormatMask[pass.mask] = candidateHandles
+
+        if pass.mask == CameraVendorSearchModeAllPayload.allObjectFormatMask {
+          selectedHandles = candidateHandles
+          selectedDateGroups = candidateDateGroups
+          selectedLabel = pass.label
+          report(
+            "[OBS] PTP_FORMAT_SPECIFIED_HANDLES_BASELINE " +
+            "label=\(pass.label) count=\(candidateHandles.count)"
+          )
+          continue
+        }
+
+        if CameraVendorFormatSpecifiedObjectPolicy.shouldPromoteToInitialHandles(
+          mask: pass.mask,
+          currentHandleCount: selectedHandles.count,
+          candidateHandleCount: candidateHandles.count,
+          dateGroups: candidateDateGroups
+        ) {
+          let previousCount = selectedHandles.count
+          selectedHandles = candidateHandles
+          selectedDateGroups = candidateDateGroups
+          selectedLabel = pass.label
+          report(
+            "[OBS] PTP_FORMAT_SPECIFIED_HANDLES_PROMOTED " +
+            "label=\(pass.label) count=\(candidateHandles.count) previous=\(previousCount)"
+          )
+        } else {
+          report(
+            "[OBS] PTP_FORMAT_SPECIFIED_HANDLES_NOT_PROMOTED " +
+            "label=\(pass.label) count=\(candidateHandles.count) selected=\(selectedHandles.count)"
+          )
+        }
+      } catch {
+        report("[OBS] PTP_FORMAT_SPECIFIED_HANDLES_FAILED label=\(pass.label) error=\(error.localizedDescription)")
+      }
+    }
+
+    if selectedHandles.isEmpty {
+      report("[OBS] PTP_FORMAT_SPECIFIED_HANDLES_FALLBACK reason=no-selected-list")
+      try requestCameraVendorSpecifiedObjectSnapshot(stage: "referenceApp-cold-start")
+      return
+    }
+
+    cameraVendorSpecifiedObjectHandles = selectedHandles
+    cameraVendorSpecifiedObjectDateGroups = selectedDateGroups
+    report(
+      "[OBS] PTP_FORMAT_SPECIFIED_HANDLES_SELECTED " +
+      "label=\(selectedLabel) count=\(selectedHandles.count) " +
+      "formatMasks=\(cameraVendorSpecifiedObjectHandlesByFormatMask.keys.sorted().map { String(format: "0x%04X", $0) }.joined(separator: ","))"
+    )
   }
 
   private func requestCameraVendorSpecifiedObjectCountGroupByDate(stage: String = "default") throws {
@@ -4013,6 +4666,42 @@ private final class CameraVendorPtpSession {
     )
   }
 
+  func fastInitialGalleryObjectInfos() throws -> [CameraVendorCameraObjectInfo] {
+    switch operationTransport {
+    case .standardPtpIp:
+      let storageIDs = try storageIDs()
+      var handles: [UInt32] = []
+      for storageID in storageIDs {
+        handles.append(contentsOf: try objectHandles(storageID: storageID))
+      }
+      report("[OBS] PTP_FAST_INITIAL_STANDARD_HANDLES count=\(handles.count)")
+      return handles
+        .sorted(by: >)
+        .map { CameraVendorCameraObjectInfo.placeholder(handle: $0) }
+    case .cameraVendorLegacy:
+      guard !cameraVendorSpecifiedObjectHandles.isEmpty else {
+        report("[OBS] PTP_FAST_INITIAL_LEGACY_HANDLES_SKIPPED reason=empty-specified-handles")
+        return []
+      }
+      let datesByHandle = CameraVendorGalleryFastInitialLoadPolicy.captureDatesByHandle(
+        specifiedHandles: cameraVendorSpecifiedObjectHandles,
+        dateGroups: cameraVendorSpecifiedObjectDateGroups
+      )
+      report(
+        "[OBS] PTP_FAST_INITIAL_LEGACY_HANDLES count=\(cameraVendorSpecifiedObjectHandles.count) " +
+        "dateGroups=\(cameraVendorSpecifiedObjectDateGroups.count) datedPlaceholders=\(datesByHandle.count)"
+      )
+      return CameraVendorGalleryFastInitialLoadPolicy.initialPlaceholderHandles(from: cameraVendorSpecifiedObjectHandles)
+        .map { CameraVendorCameraObjectInfo.placeholder(handle: $0, captureDate: datesByHandle[$0] ?? "") }
+    }
+  }
+
+  func cameraVendorInitialPlaceholderFormatHintsByHandle() -> [Int: Set<CameraVendorGalleryFormatHint>] {
+    CameraVendorGalleryFastInitialLoadPolicy.formatHintsByHandle(
+      handlesByFormatMask: cameraVendorSpecifiedObjectHandlesByFormatMask
+    )
+  }
+
   func galleryObjectInfos() throws -> [CameraVendorCameraObjectInfo] {
     switch operationTransport {
     case .standardPtpIp:
@@ -4256,6 +4945,88 @@ private final class CameraVendorPtpSession {
     return infos
   }
 
+  func hiddenStillObjectInfos(knownHandles: [UInt32]) -> [CameraVendorCameraObjectInfo] {
+    let gapCandidates = CameraVendorHiddenObjectHandleProbePolicy.backgroundHiddenHandleCandidates(from: knownHandles)
+    let forwardCandidates = CameraVendorHiddenObjectHandleProbePolicy.forwardProbeCandidates(from: knownHandles)
+    var seenCandidates = Set<UInt32>()
+    let candidates = (gapCandidates + forwardCandidates).filter { handle in
+      seenCandidates.insert(handle).inserted
+    }
+    guard !candidates.isEmpty else {
+      report("[OBS] PTP_HIDDEN_STILL_BACKGROUND_SKIPPED reason=no-candidates")
+      return []
+    }
+
+    report(
+      "[OBS] PTP_HIDDEN_STILL_BACKGROUND_BEGIN candidates=\(candidates.count) " +
+      "gaps=\(gapCandidates.count) forward=\(forwardCandidates.count) " +
+      "sample=\(candidates.prefix(20).map { String(format: "0x%08X", $0) }.joined(separator: ","))"
+    )
+    let known = Set(knownHandles)
+    var infos: [CameraVendorCameraObjectInfo] = []
+    var consecutiveForwardFailures = 0
+    let forwardCandidateSet = Set(forwardCandidates)
+
+    for handle in candidates where !known.contains(handle) {
+      do {
+        let info = try objectInfo(handle: handle)
+        consecutiveForwardFailures = 0
+        if info.formatLabel == "HEIF" || info.formatLabel == "RAW" || info.formatLabel == "Video" {
+          infos.append(info)
+          report(
+            "[OBS] PTP_HIDDEN_STILL_BACKGROUND_FOUND handle=0x\(String(format: "%08X", handle)) " +
+            "format=\(info.formatLabel) filename=\(info.filename)"
+          )
+        }
+      } catch {
+        consecutiveForwardFailures += 1
+        report("[OBS] PTP_HIDDEN_STILL_BACKGROUND_FAILED handle=0x\(String(format: "%08X", handle)) error=\(error.localizedDescription)")
+        if forwardCandidateSet.contains(handle),
+           consecutiveForwardFailures >= CameraVendorForwardObjectHandleProbePolicy.maxConsecutiveFailures {
+          report("[OBS] PTP_HIDDEN_STILL_BACKGROUND_FORWARD_STOP failures=\(consecutiveForwardFailures)")
+          break
+        }
+      }
+    }
+
+    let continuationCandidates = CameraVendorHiddenObjectHandleProbePolicy.lowerBoundaryContinuationHandles(
+      from: knownHandles,
+      discoveredHiddenHandles: infos.map { UInt32($0.handle) }
+    )
+    if !continuationCandidates.isEmpty {
+      report(
+        "[OBS] PTP_HIDDEN_STILL_BACKGROUND_LOWER_BEGIN candidates=" +
+        continuationCandidates.prefix(20).map { String(format: "0x%08X", $0) }.joined(separator: ",")
+      )
+      var consecutiveLowerFailures = 0
+      for handle in continuationCandidates where !known.contains(handle) {
+        do {
+          let info = try objectInfo(handle: handle)
+          consecutiveLowerFailures = 0
+          if info.formatLabel == "HEIF" || info.formatLabel == "RAW" || info.formatLabel == "Video" {
+            infos.append(info)
+            report(
+              "[OBS] PTP_HIDDEN_STILL_BACKGROUND_LOWER_FOUND handle=0x\(String(format: "%08X", handle)) " +
+              "format=\(info.formatLabel) filename=\(info.filename)"
+            )
+          }
+        } catch {
+          consecutiveLowerFailures += 1
+          report(
+            "[OBS] PTP_HIDDEN_STILL_BACKGROUND_LOWER_FAILED handle=0x\(String(format: "%08X", handle)) " +
+            "failures=\(consecutiveLowerFailures) error=\(error.localizedDescription)"
+          )
+          if consecutiveLowerFailures >= CameraVendorHiddenObjectHandleProbePolicy.maxLowerBoundaryConsecutiveFailures {
+            break
+          }
+        }
+      }
+    }
+    let merged = mergeObjectInfos(infos)
+    report("[OBS] PTP_HIDDEN_STILL_BACKGROUND_END selected=\(merged.count)")
+    return merged
+  }
+
   private func mergeObjectInfos(_ infos: [CameraVendorCameraObjectInfo]) -> [CameraVendorCameraObjectInfo] {
     var byHandle: [Int: CameraVendorCameraObjectInfo] = [:]
     for info in infos {
@@ -4420,12 +5191,19 @@ private final class CameraVendorPtpSession {
   }
 
   func thumb(handle: UInt32, expectedSize: UInt32?) throws -> Data {
+    try thumbWithInfo(handle: handle, expectedSize: expectedSize).data
+  }
+
+  func thumbWithInfo(handle: UInt32, expectedSize: UInt32?) throws -> CameraVendorThumbnailFetchResult {
     let operationInterruptionGeneration = priorityDownloadInterruptionGeneration
     var standardGetThumbError: Error?
     if CameraVendorThumbnailFetchPolicy.shouldTryStandardGetThumbFirst {
       do {
-        let data = try readStandardThumbnailObject(handle: handle)
-        return normalizedThumbnailData(data, handle: handle, source: "standardGetThumb")
+        let result = try readStandardThumbnailObjectWithInfo(handle: handle)
+        return CameraVendorThumbnailFetchResult(
+          data: normalizedThumbnailData(result.data, handle: handle, source: "standardGetThumb"),
+          objectInfo: result.objectInfo
+        )
       } catch {
         standardGetThumbError = error
         report("[OBS] PTP_GET_THUMB_FALLBACK_TO_PARTIAL handle=0x\(String(format: "%08X", handle)) error=\(error.localizedDescription)")
@@ -4454,20 +5232,35 @@ private final class CameraVendorPtpSession {
 
     let data = try readPreviewObject(handle: handle)
     report("[OBS] PTP_STANDARD_PARTIAL_OBJECT_PREVIEW_EXPECTED handle=0x\(String(format: "%08X", handle)) expectedSize=\(expectedSize ?? 0) bytes=\(data.count)")
-    return normalizedThumbnailData(data, handle: handle, source: "standardPartialPreview")
+    return CameraVendorThumbnailFetchResult(
+      data: normalizedThumbnailData(data, handle: handle, source: "standardPartialPreview"),
+      objectInfo: nil
+    )
   }
 
   private func readStandardThumbnailObject(handle: UInt32) throws -> Data {
+    try readStandardThumbnailObjectWithInfo(handle: handle).data
+  }
+
+  private func readStandardThumbnailObjectWithInfo(handle: UInt32) throws -> CameraVendorThumbnailFetchResult {
+    let contextInfo: CameraVendorCameraObjectInfo?
     if CameraVendorThumbnailFetchPolicy.shouldReadObjectInfoBeforeGetThumb {
-      _ = try objectInfo(handle: handle)
+      contextInfo = primeThumbnailObjectContext(handle: handle)
+    } else {
+      contextInfo = nil
     }
 
     report("[OBS] PTP_GET_THUMB_REQUEST handle=0x\(String(format: "%08X", handle))")
+    let startedAt = Date()
     let data = try sendCommandForData(
       operationCode: UInt16(CameraVendorPtpOperationCode.getThumb),
-      parameters: [handle]
+      parameters: [handle],
+      readTimeout: CameraVendorThumbnailFetchPolicy.standardGetThumbReadTimeoutSeconds
     )
-    report("[OBS] PTP_GET_THUMB_DATA bytes=\(data.count) handle=0x\(String(format: "%08X", handle))")
+    report(
+      "[OBS] PTP_GET_THUMB_DATA bytes=\(data.count) handle=0x\(String(format: "%08X", handle)) " +
+      "elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1000))"
+    )
     guard data.count >= CameraVendorThumbnailFetchPolicy.minimumUsefulThumbnailBytes else {
       throw NSError(
         domain: "CameraVendorPtpSession",
@@ -4477,7 +5270,41 @@ private final class CameraVendorPtpSession {
         ]
       )
     }
-    return data
+    return CameraVendorThumbnailFetchResult(data: data, objectInfo: contextInfo)
+  }
+
+  private func primeThumbnailObjectContext(handle: UInt32) -> CameraVendorCameraObjectInfo? {
+    let startedAt = Date()
+    do {
+      let info = try cameraVendorLatestObjectInfo(preferredHandle: handle)
+      report(
+        "[OBS] PTP_GET_THUMB_CONTEXT_PRIMED handle=0x\(String(format: "%08X", handle)) " +
+        "format=0x\(String(format: "%04X", info.formatCode)) thumbBytes=\(info.thumbCompressedSize) " +
+        "elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1000))"
+      )
+      return info
+    } catch {
+      report(
+        "[OBS] PTP_GET_THUMB_VENDOR_CONTEXT_PRIME_FAILED handle=0x\(String(format: "%08X", handle)) " +
+        "elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1000)) error=\(error.localizedDescription)"
+      )
+      do {
+        let fallbackStartedAt = Date()
+        let info = try objectInfo(handle: handle)
+        report(
+          "[OBS] PTP_GET_THUMB_CONTEXT_PRIMED_STANDARD handle=0x\(String(format: "%08X", handle)) " +
+          "format=0x\(String(format: "%04X", info.formatCode)) thumbBytes=\(info.thumbCompressedSize) " +
+          "elapsedMs=\(Int(Date().timeIntervalSince(fallbackStartedAt) * 1000))"
+        )
+        return info
+      } catch {
+        report(
+          "[OBS] PTP_GET_THUMB_CONTEXT_PRIME_FAILED handle=0x\(String(format: "%08X", handle)) " +
+          "elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1000)) error=\(error.localizedDescription)"
+        )
+        return nil
+      }
+    }
   }
 
   private func readPreviewObject(handle: UInt32) throws -> Data {
@@ -4518,7 +5345,8 @@ private final class CameraVendorPtpSession {
   private func readObjectByPartialObjects(
     handle: UInt32,
     expectedSize: UInt32?,
-    purpose: String
+    purpose: String,
+    usesFileDownloadChunks: Bool = false
   ) throws -> Data {
     var received = Data()
     if let expected = expectedSize, expected > 0 {
@@ -4535,20 +5363,29 @@ private final class CameraVendorPtpSession {
 
     while offset < maxByteCount {
       let remaining = maxByteCount - offset
-      let requestSize = UInt32(min(UInt64(CameraVendorPartialObjectRequestPolicy.referenceAppInitialReadSize), remaining))
+      let requestSize = usesFileDownloadChunks
+        ? CameraVendorPartialObjectRequestPolicy.fileDownloadRequestSize(remaining: remaining)
+        : UInt32(min(UInt64(CameraVendorPartialObjectRequestPolicy.referenceAppInitialReadSize), remaining))
       let chunkStartedAt = Date()
       report(
         "[OBS] PTP_STANDARD_PARTIAL_OBJECT_REQUEST purpose=\(purpose) " +
         "handle=0x\(String(format: "%08X", handle)) offset=\(offset) size=\(requestSize) expected=\(expectedSize ?? 0)"
       )
-      let chunk = try sendCommandForData(
-        operationCode: UInt16(CameraVendorPtpOperationCode.getPartialObject),
-        parameters: CameraVendorPartialObjectRequestPolicy.standardPartialObjectParameters(
-          handle: handle,
-          offset: offset,
-          size: requestSize
-        )
+      let parameters = CameraVendorPartialObjectRequestPolicy.standardPartialObjectParameters(
+        handle: handle,
+        offset: offset,
+        size: requestSize
       )
+      let chunk = usesFileDownloadChunks
+        ? try sendCommandForData(
+          operationCode: UInt16(CameraVendorPtpOperationCode.getPartialObject),
+          parameters: parameters,
+          readTimeout: CameraVendorPartialObjectRequestPolicy.fileDownloadReadTimeoutSeconds
+        )
+        : try sendCommandForData(
+          operationCode: UInt16(CameraVendorPtpOperationCode.getPartialObject),
+          parameters: parameters
+        )
       guard !chunk.isEmpty else {
         report("[OBS] PTP_STANDARD_PARTIAL_OBJECT_EMPTY handle=0x\(String(format: "%08X", handle)) offset=\(offset)")
         break
@@ -4633,7 +5470,8 @@ private final class CameraVendorPtpSession {
             handle: handle,
             offset: offset,
             size: requestSize
-          )
+          ),
+          readTimeout: CameraVendorPartialObjectRequestPolicy.fileDownloadReadTimeoutSeconds
         )
       } catch {
         if chunkState.readSize > CameraVendorPartialObjectRequestPolicy.fileDownloadFallbackReadSize {
@@ -4865,11 +5703,98 @@ private final class CameraVendorPtpSession {
     }
   }
 
+  func objectData(
+    handle: UInt32,
+    expectedSize: UInt32?,
+    formatLabel: String = "JPG",
+    downloadMode: CameraVendorTransferDownloadMode = .original
+  ) throws -> (data: Data, info: CameraVendorCameraObjectInfo?) {
+    let cachedExpectedSize = expectedSize
+    let startedAt = Date()
+    var resetProperties: [CameraVendorDownloadModeProperty] = []
+    defer {
+      for resetProperty in resetProperties.reversed() {
+        do {
+          try setCameraVendorDownloadModeProperty(
+            resetProperty,
+            handle: handle,
+            mode: downloadMode,
+            reason: "download-data-reset"
+          )
+        } catch {
+          report(
+            "[OBS] PTP_DOWNLOAD_DATA_RESET_MODE_FAILED " +
+            "handle=0x\(String(format: "%08X", handle)) mode=\(downloadMode) " +
+            "prop=0x\(String(format: "%04X", resetProperty.code)) error=\(error.localizedDescription)"
+          )
+        }
+      }
+    }
+    do {
+      report(
+        "[OBS] PTP_DOWNLOAD_DATA_PREPARE_BEGIN " +
+        "handle=0x\(String(format: "%08X", handle)) mode=\(downloadMode) " +
+        "cachedFormat=\(formatLabel) cachedExpectedSize=\(expectedSize ?? 0)"
+      )
+      if CameraVendorOriginalDownloadPolicy.shouldReadReferenceAppContextBeforeFileDownload(
+        hasReadContextDuringCurrentPriorityDownload: hasReadReferenceAppContextDuringCurrentPriorityDownload
+      ) {
+        _ = try readCameraVendorDeviceProperty(
+          code: CameraVendorDevicePropCode.referenceAppGalleryObjectContext,
+          name: "CameraVendor/ReferenceApp EventsList before data download (0xD212)"
+        )
+        hasReadReferenceAppContextDuringCurrentPriorityDownload = true
+      } else {
+        report("[OBS] PTP_DOWNLOAD_DATA_SKIP_D212_CONTEXT reason=current-priority-batch-already-prepared")
+      }
+      _ = try? readCameraVendorDeviceProperty(
+        code: CameraVendorDevicePropCode.compressionCutOff,
+        name: "CameraVendor CompressionCutOff/PartialSize (0xD235)"
+      )
+      for prepareProperty in CameraVendorDownloadModePolicy.prepareProperties(mode: downloadMode) {
+        try setCameraVendorDownloadModeProperty(
+          prepareProperty,
+          handle: handle,
+          mode: downloadMode,
+          reason: "download-data-prepare"
+        )
+        if let resetProperty = CameraVendorDownloadModePolicy.resetProperty(for: prepareProperty) {
+          resetProperties.append(resetProperty)
+        }
+      }
+      let info = try objectInfo(handle: handle)
+      let expectedSize = info.compressedSize.nonzero ?? cachedExpectedSize
+      let sizeSource = info.compressedSize.nonzero != nil ? "fresh-object-info" : "cached-after-empty-fresh"
+      report(
+        "[OBS] PTP_DOWNLOAD_DATA_INFO " +
+        "handle=0x\(String(format: "%08X", handle)) mode=\(downloadMode) format=\(info.formatLabel) " +
+        "filename=\(info.filename) expectedSize=\(expectedSize ?? 0) cachedExpectedSize=\(cachedExpectedSize ?? 0) " +
+        "freshSize=\(info.compressedSize) sizeSource=\(sizeSource) freshProbe=true"
+      )
+      let data = try readObjectByPartialObjects(
+        handle: handle,
+        expectedSize: expectedSize,
+        purpose: "download-data",
+        usesFileDownloadChunks: true
+      )
+      let normalizedData = CameraVendorImageDataNormalizer.imageData(from: data)
+      report(
+        "[OBS] PTP_DOWNLOAD_DATA_COMPLETE " +
+        "handle=0x\(String(format: "%08X", handle)) mode=\(downloadMode) bytes=\(normalizedData.count) " +
+        "elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1000))"
+      )
+      return (normalizedData, info)
+    } catch {
+      throw error
+    }
+  }
+
   func objectFile(
     handle: UInt32,
     expectedSize: UInt32?,
     filename: String,
-    formatLabel: String = "JPG"
+    formatLabel: String = "JPG",
+    downloadMode: CameraVendorTransferDownloadMode = .original
   ) throws -> URL {
     let cachedExpectedSize = expectedSize
     let fileExtension = ((filename as NSString).pathExtension.isEmpty ? "bin" : (filename as NSString).pathExtension)
@@ -4877,131 +5802,67 @@ private final class CameraVendorPtpSession {
       .appendingPathComponent(UUID().uuidString)
       .appendingPathExtension(fileExtension)
     let startedAt = Date()
-    var shouldResetRealInfo = false
-    var shouldResetForceCompression = false
+    var resetProperties: [CameraVendorDownloadModeProperty] = []
     defer {
-      if shouldResetRealInfo {
+      for resetProperty in resetProperties.reversed() {
         do {
-          let resetResponse = try sendCommandWithData(
-            operationCode: UInt16(CameraVendorPtpOperationCode.setDevicePropValue),
-            parameters: [CameraVendorDevicePropCode.imageCompressionRealInfo],
-            data: CameraVendorOriginalDownloadPolicy.correctFileSizePayload(enabled: false)
+          try setCameraVendorDownloadModeProperty(
+            resetProperty,
+            handle: handle,
+            mode: downloadMode,
+            reason: "download-file-reset"
           )
-          report("[OBS] PTP_DOWNLOAD_FILE_RESET_REAL_INFO_ZERO response=0x\(String(format: "%04X", resetResponse.responseCode))")
         } catch {
-          report("[OBS] PTP_DOWNLOAD_FILE_RESET_REAL_INFO_ZERO_FAILED error=\(error.localizedDescription)")
-        }
-      }
-      if shouldResetForceCompression {
-        do {
-          try setCameraVendorImageForceCompression(0, reason: "download-file-reset")
-        } catch {
-          report("[OBS] PTP_DOWNLOAD_FILE_RESET_FORCE_COMPRESSION_ZERO_FAILED error=\(error.localizedDescription)")
+          report(
+            "[OBS] PTP_DOWNLOAD_FILE_RESET_MODE_FAILED " +
+            "handle=0x\(String(format: "%08X", handle)) mode=\(downloadMode) " +
+            "prop=0x\(String(format: "%04X", resetProperty.code)) error=\(error.localizedDescription)"
+          )
         }
       }
     }
     do {
       report(
         "[OBS] PTP_DOWNLOAD_FILE_PREPARE_BEGIN " +
-        "handle=0x\(String(format: "%08X", handle)) cachedExpectedSize=\(expectedSize ?? 0)"
+        "handle=0x\(String(format: "%08X", handle)) mode=\(downloadMode) " +
+        "cachedExpectedSize=\(expectedSize ?? 0)"
       )
-      let shouldSkipFreshInfoProbe = CameraVendorOriginalDownloadPolicy.shouldSkipFreshFileInfoProbe(
-        formatLabel: formatLabel,
-        cachedExpectedSize: cachedExpectedSize
-      )
-      if CameraVendorOriginalDownloadPolicy.shouldPrepareTransferStateBeforeFileDownload(
-        formatLabel: formatLabel,
-        cachedExpectedSize: cachedExpectedSize
-      ) {
-        if CameraVendorOriginalDownloadPolicy.shouldReadReferenceAppContextBeforeFileDownload(
-          hasReadContextDuringCurrentPriorityDownload: hasReadReferenceAppContextDuringCurrentPriorityDownload
-        ) {
-          _ = try readCameraVendorDeviceProperty(
-            code: CameraVendorDevicePropCode.referenceAppGalleryObjectContext,
-            name: "CameraVendor/ReferenceApp EventsList before file download (0xD212)"
-          )
-          hasReadReferenceAppContextDuringCurrentPriorityDownload = true
-        } else {
-          report("[OBS] PTP_DOWNLOAD_FILE_SKIP_D212_CONTEXT reason=current-priority-batch-already-prepared")
-        }
-        if CameraVendorOriginalDownloadPolicy.shouldSetForceCompressionBeforeFileDownload(
-          formatLabel: formatLabel,
-          cachedExpectedSize: cachedExpectedSize
-        ) {
-          try setCameraVendorImageForceCompression(
-            CameraVendorOriginalDownloadPolicy.referenceAppFileDownloadForceCompressionMode,
-            reason: "download-file-prepare"
-          )
-          shouldResetForceCompression = true
-        }
-        if CameraVendorOriginalDownloadPolicy.shouldReadCompressionCutOffBeforeFreshFileInfo(
-          formatLabel: formatLabel,
-          cachedExpectedSize: cachedExpectedSize
-        ) {
-          _ = try readCameraVendorDeviceProperty(
-            code: CameraVendorDevicePropCode.compressionCutOff,
-            name: "CameraVendor CompressionCutOff/PartialSize (0xD235)"
-          )
-        }
-        if CameraVendorOriginalDownloadPolicy.shouldSetCorrectFileSizeBeforeFileDownload(
-          formatLabel: formatLabel,
-          cachedExpectedSize: cachedExpectedSize
-        ) {
-          let realInfoResponse = try sendCommandWithData(
-            operationCode: UInt16(CameraVendorPtpOperationCode.setDevicePropValue),
-            parameters: [CameraVendorDevicePropCode.imageCompressionRealInfo],
-            data: CameraVendorOriginalDownloadPolicy.correctFileSizePayload(enabled: true)
-          )
-          shouldResetRealInfo = true
-          report("[OBS] PTP_DOWNLOAD_FILE_SET_REAL_INFO_ONE response=0x\(String(format: "%04X", realInfoResponse.responseCode))")
-        } else {
-          report("[OBS] PTP_DOWNLOAD_FILE_SKIP_REAL_INFO_ONE reason=reference-app-fast-start")
-        }
-      } else {
-        report(
-          "[OBS] PTP_DOWNLOAD_FILE_PREPARE_SKIPPED " +
-          "reason=policy-disabled " +
-          "handle=0x\(String(format: "%08X", handle)) cachedExpectedSize=\(cachedExpectedSize ?? 0)"
-        )
-      }
-
-      let info: CameraVendorCameraObjectInfo?
-      if shouldSkipFreshInfoProbe {
-        report(
-          "[OBS] PTP_DOWNLOAD_FILE_FRESH_INFO_SKIPPED " +
-          "reason=cached-\(formatLabel.lowercased())-size " +
-          "handle=0x\(String(format: "%08X", handle)) cachedExpectedSize=\(cachedExpectedSize ?? 0)"
-        )
-        info = nil
-      } else {
-        info = try objectInfo(handle: handle)
-      }
-      let downloadFormatLabel = info?.formatLabel ?? formatLabel
-      let downloadFilename = info?.filename ?? filename
-      if CameraVendorOriginalDownloadPolicy.shouldReadCompressionCutOffAfterFreshFileInfo(
-        formatLabel: downloadFormatLabel,
-        cachedExpectedSize: cachedExpectedSize
+      if CameraVendorOriginalDownloadPolicy.shouldReadReferenceAppContextBeforeFileDownload(
+        hasReadContextDuringCurrentPriorityDownload: hasReadReferenceAppContextDuringCurrentPriorityDownload
       ) {
         _ = try readCameraVendorDeviceProperty(
-          code: CameraVendorDevicePropCode.compressionCutOff,
-          name: "CameraVendor CompressionCutOff/PartialSize (0xD235)"
+          code: CameraVendorDevicePropCode.referenceAppGalleryObjectContext,
+          name: "CameraVendor/ReferenceApp EventsList before file download (0xD212)"
         )
+        hasReadReferenceAppContextDuringCurrentPriorityDownload = true
+      } else {
+        report("[OBS] PTP_DOWNLOAD_FILE_SKIP_D212_CONTEXT reason=current-priority-batch-already-prepared")
       }
-      let expectedSize = shouldSkipFreshInfoProbe
-        ? cachedExpectedSize
-        : CameraVendorOriginalDownloadPolicy.expectedDownloadSize(
-            formatLabel: downloadFormatLabel,
-            freshCompressedSize: info?.compressedSize.nonzero,
-          cachedExpectedSize: cachedExpectedSize
+      _ = try? readCameraVendorDeviceProperty(
+        code: CameraVendorDevicePropCode.compressionCutOff,
+        name: "CameraVendor CompressionCutOff/PartialSize (0xD235)"
+      )
+      for prepareProperty in CameraVendorDownloadModePolicy.prepareProperties(mode: downloadMode) {
+        try setCameraVendorDownloadModeProperty(
+          prepareProperty,
+          handle: handle,
+          mode: downloadMode,
+          reason: "download-file-prepare"
         )
-      let sizeSource = shouldSkipFreshInfoProbe
-        ? "cached-skip-fresh"
-        : (info?.compressedSize.nonzero != nil ? "fresh-object-info" : "cached-after-empty-fresh")
+        if let resetProperty = CameraVendorDownloadModePolicy.resetProperty(for: prepareProperty) {
+          resetProperties.append(resetProperty)
+        }
+      }
+      let info = try objectInfo(handle: handle)
+      let downloadFormatLabel = info.formatLabel
+      let downloadFilename = info.filename
+      let expectedSize = info.compressedSize.nonzero ?? cachedExpectedSize
+      let sizeSource = info.compressedSize.nonzero != nil ? "fresh-object-info" : "cached-after-empty-fresh"
       report(
         "[OBS] PTP_DOWNLOAD_FILE_INFO " +
-        "handle=0x\(String(format: "%08X", handle)) format=\(downloadFormatLabel) " +
+        "handle=0x\(String(format: "%08X", handle)) mode=\(downloadMode) format=\(downloadFormatLabel) " +
         "filename=\(downloadFilename) expectedSize=\(expectedSize ?? 0) cachedExpectedSize=\(cachedExpectedSize ?? 0) " +
-        "freshSize=\(info?.compressedSize ?? 0) sizeSource=\(sizeSource) freshProbe=\(!shouldSkipFreshInfoProbe)"
+        "freshSize=\(info.compressedSize) sizeSource=\(sizeSource) freshProbe=true"
       )
       let bytes = try readObjectByPartialObjectsToFile(
         handle: handle,
@@ -5011,7 +5872,7 @@ private final class CameraVendorPtpSession {
       )
       report(
         "[OBS] PTP_DOWNLOAD_FILE_COMPLETE " +
-        "handle=0x\(String(format: "%08X", handle)) bytes=\(bytes) " +
+        "handle=0x\(String(format: "%08X", handle)) mode=\(downloadMode) bytes=\(bytes) " +
         "elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1000))"
       )
       return fileURL
@@ -5108,7 +5969,11 @@ private final class CameraVendorPtpSession {
     }
   }
 
-  private func sendCommandForData(operationCode: UInt16, parameters: [UInt32] = []) throws -> Data {
+  private func sendCommandForData(
+    operationCode: UInt16,
+    parameters: [UInt32] = [],
+    readTimeout: TimeInterval = 15
+  ) throws -> Data {
     try withSerializedCommand {
       transactionID += 1
       let request: Data
@@ -5130,7 +5995,7 @@ private final class CameraVendorPtpSession {
 
       var received = Data()
       while true {
-        let packet = try readOperationPacket(timeout: 15)
+        let packet = try readOperationPacket(timeout: readTimeout)
         switch packet.type {
         case CameraVendorPtpPacketType.startDataPacket:
           report("收到 StartDataPacket (\(packet.payload.count) bytes)")
@@ -5296,6 +6161,7 @@ private final class CameraVendorPtpSession {
   }
 
   private func report(_ message: String) {
+    guard CameraVendorPtpDiagnosticLogPolicy.shouldEmit(message) else { return }
     CameraVendorGalleryDiagnostics.log(message)
     diagnosticHandler?(message)
   }
@@ -5420,9 +6286,11 @@ private enum CameraVendorCameraWifiConnector {
       if let currentSSID, currentSSID == targetSSID {
         diagnosticHandler?("Wi-Fi 已切换到相机热点: \(targetSSID)")
         diagnosticHandler?("[OBS] WIFI_ASSOCIATED ssid=\(targetSSID)")
-        // Brief stabilization delay — gives the camera's TCP listener
-        // time to settle after the phone finishes WiFi association.
-        try await Task.sleep(nanoseconds: 2_000_000_000)
+        let stabilizationDelay = CameraVendorWifiHandoffStabilizationPolicy.delayAfterSSIDAssociationSeconds
+        if stabilizationDelay > 0 {
+          let nanoseconds = UInt64(stabilizationDelay * 1_000_000_000)
+          try await Task.sleep(nanoseconds: nanoseconds)
+        }
         return
       }
       if CameraVendorWifiAssociationReadiness.isReadyToProceed(
@@ -5590,17 +6458,53 @@ final class CameraVendorPtpDownloadWorker: CameraVendorParallelDownloadWorker {
   }
 
   func downloadOriginal(for handle: Int) async throws -> Data {
-    let expectedSize = objectInfoLookup(handle)?.compressedSize.nonzero
+    let expectedSize = objectInfoLookup(handle)?.reliableDownloadMetadata?.compressedSize.nonzero
     return try await Task.detached(priority: .userInitiated) {
       try self.session.object(handle: UInt32(handle), expectedSize: expectedSize)
     }.value
   }
 
+  func downloadOriginalData(
+    for handle: Int,
+    mode: CameraVendorTransferDownloadMode
+  ) async throws -> CameraVendorDownloadedPhotoData {
+    let cachedInfo = objectInfoLookup(handle)?.reliableDownloadMetadata
+    let result = try await Task.detached(priority: .userInitiated) { () -> (Data, CameraVendorCameraObjectInfo?) in
+      let info = try (cachedInfo ?? self.session.objectInfo(handle: UInt32(handle)).reliableDownloadMetadata)
+      let expectedSize = info?.compressedSize.nonzero
+      let formatLabel = info?.galleryFormatLabel ?? ""
+      let objectData = try self.session.objectData(
+        handle: UInt32(handle),
+        expectedSize: expectedSize,
+        formatLabel: formatLabel,
+        downloadMode: mode
+      )
+      return (objectData.data, objectData.info ?? info)
+    }.value
+    return CameraVendorDownloadedPhotoData(
+      data: result.0,
+      filename: result.1?.filename ?? "CamTransfer-\(handle).jpg"
+    )
+  }
+
   func downloadOriginalFile(for handle: Int) async throws -> CameraVendorDownloadedFile {
-    let info = objectInfoLookup(handle)
+    try await downloadOriginalFile(for: handle, mode: .original)
+  }
+
+  func downloadOriginalFile(
+    for handle: Int,
+    mode: CameraVendorTransferDownloadMode
+  ) async throws -> CameraVendorDownloadedFile {
+    let cachedInfo = objectInfoLookup(handle)?.reliableDownloadMetadata
+    let info = try await Task.detached(priority: .userInitiated) { () -> CameraVendorCameraObjectInfo? in
+      if let cachedInfo {
+        return cachedInfo
+      }
+      return try self.session.objectInfo(handle: UInt32(handle)).reliableDownloadMetadata
+    }.value
     let expectedSize = info?.compressedSize.nonzero
-    let filename = info?.filename ?? "CamTransfer-\(handle).jpg"
-    let formatLabel = info?.formatLabel ?? "JPG"
+    let filename = info?.filename ?? "CamTransfer-\(handle).bin"
+    let formatLabel = info?.galleryFormatLabel ?? ""
     let captureDate = info?.captureDate ?? ""
     let item = CameraVendorGalleryItem(
       handle: handle,
@@ -5615,7 +6519,8 @@ final class CameraVendorPtpDownloadWorker: CameraVendorParallelDownloadWorker {
         handle: UInt32(handle),
         expectedSize: expectedSize,
         filename: filename,
-        formatLabel: formatLabel
+        formatLabel: formatLabel,
+        downloadMode: mode
       )
     }.value
     return CameraVendorDownloadedFile(fileURL: fileURL, filename: filename, mediaType: mediaType)
@@ -5626,8 +6531,9 @@ final class CameraVendorPtpDownloadWorker: CameraVendorParallelDownloadWorker {
   }
 }
 
-final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVendorPriorityDownloadPreparing {
+final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVendorPriorityDownloadPreparing, CameraVendorVisibleThumbnailLaneCoordinating {
   private let session = CameraVendorPtpSession()
+  private let requestScheduler = CameraVendorGalleryRequestScheduler()
   private var objectInfoCache: [Int: CameraVendorCameraObjectInfo] = [:]
   var diagnosticHandler: ((String) -> Void)?
   private var wifiConfigurations: [CameraVendorWifiNetworkConfiguration] = []
@@ -5642,6 +6548,8 @@ final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVend
   private let priorityDownloadLock = NSLock()
   private var isPriorityDownloadActive = false
   private var activeThumbnailRequestCount = 0
+  private var visibleThumbnailBatchHandles = Set<Int>()
+  private var lastThumbnailActivityAt: Date = .distantPast
 
   func configure(connectionSummary: CameraVendorConnectionSummary) {
     wifiConfigurations = connectionSummary.wifiConfigurations
@@ -5689,6 +6597,24 @@ final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVend
     priorityDownloadLock.unlock()
     session.finishPriorityDownloadBatch()
     report("[OBS] PRIORITY_DOWNLOAD_FINISH")
+  }
+
+  func beginVisibleThumbnailBatch(handles: [Int]) {
+    priorityDownloadLock.lock()
+    visibleThumbnailBatchHandles.formUnion(handles)
+    lastThumbnailActivityAt = Date()
+    let pendingCount = visibleThumbnailBatchHandles.count
+    priorityDownloadLock.unlock()
+    report("[OBS] THUMBNAIL_VISIBLE_BATCH_BEGIN count=\(handles.count) pending=\(pendingCount)")
+  }
+
+  func finishVisibleThumbnailBatch(handles: [Int]) {
+    priorityDownloadLock.lock()
+    visibleThumbnailBatchHandles.subtract(handles)
+    lastThumbnailActivityAt = Date()
+    let pendingCount = visibleThumbnailBatchHandles.count
+    priorityDownloadLock.unlock()
+    report("[OBS] THUMBNAIL_VISIBLE_BATCH_END count=\(handles.count) pending=\(pendingCount)")
   }
 
   func fetchGallery() async throws -> [CameraVendorGalleryItem] {
@@ -5969,6 +6895,7 @@ final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVend
       )
     }
     activeThumbnailRequestCount += 1
+    lastThumbnailActivityAt = Date()
     let activeCount = activeThumbnailRequestCount
     priorityDownloadLock.unlock()
     report("[OBS] THUMBNAIL_REQUEST_BEGIN handle=0x\(String(format: "%08X", handle)) active=\(activeCount)")
@@ -5977,26 +6904,78 @@ final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVend
   private func endThumbnailRequest(handle: Int) {
     priorityDownloadLock.lock()
     activeThumbnailRequestCount = max(0, activeThumbnailRequestCount - 1)
+    visibleThumbnailBatchHandles.remove(handle)
+    lastThumbnailActivityAt = Date()
     let activeCount = activeThumbnailRequestCount
+    let pendingCount = visibleThumbnailBatchHandles.count
     priorityDownloadLock.unlock()
-    report("[OBS] THUMBNAIL_REQUEST_END handle=0x\(String(format: "%08X", handle)) active=\(activeCount)")
+    report(
+      "[OBS] THUMBNAIL_REQUEST_END handle=0x\(String(format: "%08X", handle)) " +
+      "active=\(activeCount) pending=\(pendingCount)"
+    )
+  }
+
+  private func currentThumbnailLaneState() -> (activeCount: Int, pendingCount: Int, lastActivityAt: Date) {
+    priorityDownloadLock.lock()
+    let state = (activeThumbnailRequestCount, visibleThumbnailBatchHandles.count, lastThumbnailActivityAt)
+    priorityDownloadLock.unlock()
+    return state
   }
 
   func fetchThumbnail(for handle: Int) async throws -> Data {
+    try await fetchThumbnailWithInfo(for: handle).data
+  }
+
+  func fetchThumbnailWithInfo(for handle: Int) async throws -> CameraVendorGalleryThumbnail {
     let expectedSize = objectInfoCache[handle]?.compressedSize.nonzero
     try beginThumbnailRequest(handle: handle)
     defer { endThumbnailRequest(handle: handle) }
-    return try await Task.detached(priority: .userInitiated) {
-      try self.session.thumb(handle: UInt32(handle), expectedSize: expectedSize)
-    }.value
+    let result = try await requestScheduler.run(priority: .visibleThumbnail) {
+      try self.session.thumbWithInfo(handle: UInt32(handle), expectedSize: expectedSize)
+    }
+    let item: CameraVendorGalleryItem?
+    if let info = result.objectInfo {
+      cacheObjectInfos([info])
+      item = galleryItem(from: info)
+    } else {
+      item = nil
+    }
+    return CameraVendorGalleryThumbnail(data: result.data, item: item)
   }
 
   func downloadOriginal(for handle: Int) async throws -> Data {
     let expectedSize = objectInfoCache[handle]?.compressedSize.nonzero
-    return try await Task.detached(priority: .userInitiated) {
+    return try await requestScheduler.run(priority: .downloadOriginal) {
       try self.session.ensureConnectedForPriorityDownload()
       return try self.session.object(handle: UInt32(handle), expectedSize: expectedSize)
-    }.value
+    }
+  }
+
+  func downloadOriginalData(
+    for handle: Int,
+    mode: CameraVendorTransferDownloadMode
+  ) async throws -> CameraVendorDownloadedPhotoData {
+    let cachedInfo = objectInfoCache[handle]?.reliableDownloadMetadata
+    let result = try await requestScheduler.run(priority: .downloadOriginal) { () -> (Data, CameraVendorCameraObjectInfo?) in
+      try self.session.ensureConnectedForPriorityDownload()
+      let info = try (cachedInfo ?? self.session.objectInfo(handle: UInt32(handle)).reliableDownloadMetadata)
+      let expectedSize = info?.compressedSize.nonzero
+      let formatLabel = info?.galleryFormatLabel ?? ""
+      let objectData = try self.session.objectData(
+        handle: UInt32(handle),
+        expectedSize: expectedSize,
+        formatLabel: formatLabel,
+        downloadMode: mode
+      )
+      return (objectData.data, objectData.info ?? info)
+    }
+    if let info = result.1 {
+      cacheObjectInfos([info])
+    }
+    return CameraVendorDownloadedPhotoData(
+      data: result.0,
+      filename: result.1?.filename ?? "CamTransfer-\(handle).jpg"
+    )
   }
 
   func openParallelDownloadWorker() async throws -> CameraVendorParallelDownloadWorker {
@@ -6027,26 +7006,42 @@ final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVend
   }
 
   func downloadOriginalFile(for handle: Int) async throws -> CameraVendorDownloadedFile {
-    let info = objectInfoCache[handle]
-    let expectedSize = info?.compressedSize.nonzero
-    let filename = info?.filename ?? "CamTransfer-\(handle).jpg"
-    let item = CameraVendorGalleryItem(
-      handle: handle,
-      filename: filename,
-      formatLabel: info?.formatLabel ?? "JPG",
-      captureDate: info?.captureDate ?? "",
-      byteSizeText: ""
-    )
-    let mediaType = CameraVendorGalleryDownloadPolicy.mediaType(for: item)
-    let fileURL = try await Task.detached(priority: .userInitiated) {
+    try await downloadOriginalFile(for: handle, mode: .original)
+  }
+
+  func downloadOriginalFile(
+    for handle: Int,
+    mode: CameraVendorTransferDownloadMode
+  ) async throws -> CameraVendorDownloadedFile {
+    let cachedInfo = objectInfoCache[handle]?.reliableDownloadMetadata
+    let result = try await requestScheduler.run(priority: .downloadOriginal) { () -> (URL, CameraVendorCameraObjectInfo?) in
       try self.session.ensureConnectedForPriorityDownload()
-      return try self.session.objectFile(
+      let info = try (cachedInfo ?? self.session.objectInfo(handle: UInt32(handle)).reliableDownloadMetadata)
+      let filename = info?.filename ?? "CamTransfer-\(handle).bin"
+      let formatLabel = info?.galleryFormatLabel ?? ""
+      let expectedSize = info?.compressedSize.nonzero
+      let fileURL = try self.session.objectFile(
         handle: UInt32(handle),
         expectedSize: expectedSize,
         filename: filename,
-        formatLabel: info?.formatLabel ?? "JPG"
+        formatLabel: formatLabel,
+        downloadMode: mode
       )
-    }.value
+      return (fileURL, info)
+    }
+    if let info = result.1 {
+      cacheObjectInfos([info])
+    }
+    let filename = result.1?.filename ?? "CamTransfer-\(handle).bin"
+    let item = CameraVendorGalleryItem(
+      handle: handle,
+      filename: filename,
+      formatLabel: result.1?.galleryFormatLabel ?? "",
+      captureDate: result.1?.captureDate ?? "",
+      byteSizeText: ""
+    )
+    let mediaType = CameraVendorGalleryDownloadPolicy.mediaType(for: item)
+    let fileURL = result.0
     return CameraVendorDownloadedFile(fileURL: fileURL, filename: filename, mediaType: mediaType)
   }
 
@@ -6159,27 +7154,32 @@ final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVend
           recorder("[OBS] GALLERY_OBJECT_INFO_COMPRESSION_RESET_FAILED error=\(error.localizedDescription)")
         }
       }
+      let fastInitialInfos = try session.fastInitialGalleryObjectInfos()
+      let fastInitialItems = galleryItems(
+        from: fastInitialInfos,
+        formatHintsByHandle: session.cameraVendorInitialPlaceholderFormatHintsByHandle()
+      )
+      if CameraVendorGalleryFastInitialLoadPolicy.shouldPublishInitialItems(fastInitialItems) {
+        cacheObjectInfos(fastInitialInfos)
+        recorder("[OBS] GALLERY_FAST_INITIAL_ITEMS count=\(fastInitialItems.count)")
+        if CameraVendorGalleryFastInitialLoadPolicy.shouldContinueFullObjectInfoAfterInitialPlaceholders(fastInitialItems.count) {
+          scheduleFullObjectInfoRefreshAfterInitialPlaceholders(
+            handles: fastInitialItems.map(\.handle),
+            recorder: recorder
+          )
+        }
+        recorder("图库占位列表加载完成，共 \(fastInitialItems.count) 个对象")
+        return fastInitialItems
+      }
       let objectInfosStartedAt = Date()
       let infos = try session.galleryObjectInfos()
       recorder(
         "[OBS] GALLERY_TIMING_OBJECT_INFOS count=\(infos.count) seconds=" +
         String(format: "%.3f", Date().timeIntervalSince(objectInfosStartedAt))
       )
-      for info in infos {
-        objectInfoCache[info.handle] = info
-      }
+      cacheObjectInfos(infos)
 
-      let items = infos
-        .sorted { $0.captureDate > $1.captureDate }
-        .map {
-          CameraVendorGalleryItem(
-            handle: $0.handle,
-            filename: $0.filename,
-            formatLabel: $0.formatLabel,
-            captureDate: $0.captureDate,
-            byteSizeText: ByteCountFormatter.string(fromByteCount: Int64($0.compressedSize), countStyle: .file)
-          )
-        }
+      let items = galleryItems(from: infos)
       recorder("图库加载完成，共 \(items.count) 个对象")
       return items
     } catch {
@@ -6192,18 +7192,144 @@ final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVend
     }
   }
 
+  private func cacheObjectInfos(_ infos: [CameraVendorCameraObjectInfo]) {
+    for info in infos {
+      objectInfoCache[info.handle] = info
+    }
+  }
+
+  private func galleryItem(
+    from info: CameraVendorCameraObjectInfo,
+    formatHints: Set<CameraVendorGalleryFormatHint> = []
+  ) -> CameraVendorGalleryItem {
+    CameraVendorGalleryItem(
+      handle: info.handle,
+      filename: info.filename,
+      formatLabel: info.galleryFormatLabel,
+      captureDate: info.captureDate,
+      byteSizeText: info.compressedSize > 0
+        ? ByteCountFormatter.string(fromByteCount: Int64(info.compressedSize), countStyle: .file)
+        : "",
+      formatHints: formatHints
+    )
+  }
+
+  private func galleryItems(
+    from infos: [CameraVendorCameraObjectInfo],
+    formatHintsByHandle: [Int: Set<CameraVendorGalleryFormatHint>] = [:]
+  ) -> [CameraVendorGalleryItem] {
+    infos
+      .sorted {
+        if $0.captureDate != $1.captureDate {
+          return $0.captureDate > $1.captureDate
+        }
+        return $0.handle > $1.handle
+      }
+      .map { info in
+        galleryItem(from: info, formatHints: formatHintsByHandle[info.handle, default: []])
+      }
+  }
+
+  private func scheduleFullObjectInfoRefreshAfterInitialPlaceholders(
+    handles: [Int],
+    recorder: @escaping (String) -> Void
+  ) {
+    Task.detached(priority: .utility) { [weak self] in
+      guard let self else { return }
+      try? await Task.sleep(
+        nanoseconds: UInt64(CameraVendorGalleryFastInitialLoadPolicy.fullObjectInfoStartDelaySeconds * 1_000_000_000)
+      )
+      let objectInfosStartedAt = Date()
+      var resolvedBatch: [CameraVendorCameraObjectInfo] = []
+      var resolvedCount = 0
+      for handle in handles {
+        await self.waitForThumbnailLaneBeforeBackgroundMetadata(resolvedCount: resolvedCount)
+        do {
+          let info = try await self.requestScheduler.run(priority: .backgroundMetadata) {
+            try self.session.objectInfo(handle: UInt32(handle))
+          }
+          self.cacheObjectInfos([info])
+          resolvedBatch.append(info)
+          resolvedCount += 1
+        } catch {
+          recorder("[OBS] GALLERY_BACKGROUND_OBJECT_INFO_FAILED handle=0x\(String(format: "%08X", handle)) error=\(error.localizedDescription)")
+        }
+        if CameraVendorGalleryFastInitialLoadPolicy.shouldPublishIncrementalMetadataBatch(
+          resolvedCount: resolvedBatch.count,
+          isFinalBatch: false
+        ) {
+          self.publishBackgroundMetadataBatch(resolvedBatch, recorder: recorder, label: "incremental")
+          resolvedBatch.removeAll(keepingCapacity: true)
+        }
+        try? await Task.sleep(
+          nanoseconds: UInt64(CameraVendorGalleryFastInitialLoadPolicy.metadataCommandYieldSeconds * 1_000_000_000)
+        )
+      }
+      if CameraVendorGalleryFastInitialLoadPolicy.shouldPublishIncrementalMetadataBatch(
+        resolvedCount: resolvedBatch.count,
+        isFinalBatch: true
+      ) {
+        self.publishBackgroundMetadataBatch(resolvedBatch, recorder: recorder, label: "final")
+      }
+
+      await self.waitForThumbnailLaneBeforeBackgroundMetadata(resolvedCount: resolvedCount)
+      let hiddenInfos = (try? await self.requestScheduler.run(priority: .backgroundMetadata) {
+        self.session.hiddenStillObjectInfos(knownHandles: handles.map(UInt32.init))
+      }) ?? []
+      if !hiddenInfos.isEmpty {
+        self.cacheObjectInfos(hiddenInfos)
+        self.publishBackgroundMetadataBatch(hiddenInfos, recorder: recorder, label: "hidden-still")
+      }
+      recorder(
+        "[OBS] GALLERY_TIMING_OBJECT_INFOS_BACKGROUND_INCREMENTAL count=\(resolvedCount) seconds=" +
+        String(format: "%.3f", Date().timeIntervalSince(objectInfosStartedAt))
+      )
+    }
+  }
+
+  private func waitForThumbnailLaneBeforeBackgroundMetadata(resolvedCount: Int) async {
+    let waitStartedAt = Date()
+    while true {
+      let state = currentThumbnailLaneState()
+      let maxWaitSeconds = CameraVendorGalleryFastInitialLoadPolicy.metadataWaitSecondsBeforeObjectInfo(
+        resolvedCount: resolvedCount,
+        hasPendingVisibleThumbnails: state.pendingCount > 0
+      )
+      let recentlyActive = Date().timeIntervalSince(state.lastActivityAt) <
+        CameraVendorGalleryFastInitialLoadPolicy.thumbnailIdleGraceSeconds
+      guard state.activeCount > 0 || state.pendingCount > 0 || recentlyActive else {
+        return
+      }
+      guard Date().timeIntervalSince(waitStartedAt) < maxWaitSeconds else {
+        return
+      }
+      try? await Task.sleep(
+        nanoseconds: UInt64(CameraVendorGalleryFastInitialLoadPolicy.activeThumbnailPollIntervalSeconds * 1_000_000_000)
+      )
+    }
+  }
+
+  private func publishBackgroundMetadataBatch(
+    _ infos: [CameraVendorCameraObjectInfo],
+    recorder: (String) -> Void,
+    label: String
+  ) {
+    let items = galleryItems(from: infos)
+    recorder("[OBS] GALLERY_BACKGROUND_METADATA_BATCH label=\(label) count=\(items.count)")
+    NotificationCenter.default.post(
+      name: .nativeGalleryMetadataDidUpdate,
+      object: nil,
+      userInfo: ["items": items]
+    )
+  }
+
   private func connectWithRetry(
-    maxAttempts: Int = 5,
-    maxElapsedSeconds: TimeInterval = CameraVendorPtpConnectionStartupPolicy.maxElapsedSeconds,
+    maxAttempts: Int = CameraVendorPtpConnectionStartupPolicy.maxAttempts,
     recorder: ((String) -> Void)? = nil
   ) throws {
     var lastError: Error?
     let startedAt = Date()
-    var attempt = 1
-    while attempt <= maxAttempts ||
-      CameraVendorPtpConnectionStartupPolicy.shouldContinueRetrying(
-        elapsedSeconds: Date().timeIntervalSince(startedAt)
-      ) {
+    for attempt in 1...maxAttempts {
       do {
         try session.connect(clientName: ptpClientName, diagnosticHandler: recorder)
         return
@@ -6215,16 +7341,14 @@ final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVend
 
         lastError = error
         let elapsed = Date().timeIntervalSince(startedAt)
-        if attempt < maxAttempts ||
-          CameraVendorPtpConnectionStartupPolicy.shouldContinueRetrying(elapsedSeconds: elapsed) {
+        if attempt < maxAttempts {
           let delay = CameraVendorPtpConnectionStartupPolicy.retryDelaySeconds(afterFailedAttempt: attempt)
           recorder?(
             "PTP 连接失败 (第 \(attempt) 次，已等待 \(String(format: "%.1f", elapsed))s/" +
-            "\(Int(maxElapsedSeconds))s)，\(String(format: "%.1f", delay))s 后重试: \(error.localizedDescription)"
+            "最多 \(maxAttempts) 次)，\(String(format: "%.1f", delay))s 后重试: \(error.localizedDescription)"
           )
           Thread.sleep(forTimeInterval: delay)
         }
-        attempt += 1
       }
     }
     throw lastError ?? NSError(
@@ -6262,6 +7386,7 @@ final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVend
   }
 
   private func report(_ message: String) {
+    guard CameraVendorPtpDiagnosticLogPolicy.shouldEmit(message) else { return }
     CameraVendorGalleryDiagnostics.log(message)
     diagnosticHandler?(message)
   }
@@ -6717,7 +7842,7 @@ protocol CameraVendorBluetoothServiceDelegate: AnyObject {
 }
 
 final class CameraVendorBluetoothService: NSObject {
-  private let buildMarker = "BUILD_MARK_20260524_FIX163_TRANSFER_SIZE_INLINE_SWITCH"
+  private let buildMarker = "BUILD_MARK_20260623_IOS_ANDROID_PARITY_UI"
   private let pairServiceUUID = CBUUID(string: "91F1DE68-DFF6-466E-8B65-FF13B0F16FB8")
   private let pairingCharacteristicUUID = CBUUID(string: "ABA356EB-9633-4E60-B73F-F52516DBD671")
   private let connectedDeviceNameCharacteristicUUID = CBUUID(string: "85B9163E-62D1-49FF-A6F5-054B4630D4A1")
@@ -6932,6 +8057,17 @@ final class CameraVendorBluetoothService: NSObject {
     }
 
     return true
+  }
+
+  @discardableResult
+  func beginUserInitiatedGalleryFlow(peripheralID: UUID) -> Bool {
+    let order = IOSCameraConnectionStep.officialGalleryOrder
+      .map(\.androidDisplayName)
+      .joined(separator: " -> ")
+    appendLog("用户点击进入相机相册，按 Android 主链路编排执行: \(order)")
+    updateStatus("准备进入相机相册", isBusy: true)
+    approveNextRememberedCameraConnection()
+    return connectPairedCamera(peripheralID: peripheralID)
   }
 
   func approveNextRememberedCameraConnection() {
