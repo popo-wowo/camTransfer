@@ -559,6 +559,44 @@ enum CameraVendorJpegDataPolicy {
   }
 }
 
+enum CameraVendorPreviewImageValidationPolicy {
+  private static let heifBrands: Set<Data> = [
+    Data("heic".utf8),
+    Data("heix".utf8),
+    Data("hevc".utf8),
+    Data("hevx".utf8),
+    Data("heis".utf8),
+    Data("hevm".utf8),
+    Data("heif".utf8),
+    Data("mif1".utf8),
+    Data("msf1".utf8),
+  ]
+
+  static func isValidPreviewImageData(_ data: Data) -> Bool {
+    isLikelyImageData(data) && !shouldRejectIncompletePartialPreview(data)
+  }
+
+  static func shouldRejectIncompletePartialPreview(_ data: Data) -> Bool {
+    CameraVendorJpegDataPolicy.hasStartMarker(data) && !CameraVendorJpegDataPolicy.hasEndMarker(data)
+  }
+
+  private static func isLikelyImageData(_ data: Data) -> Bool {
+    if CameraVendorJpegDataPolicy.hasStartMarker(data) { return true }
+    guard data.count >= 12 else { return false }
+    let ftyp = Data("ftyp".utf8)
+    for index in data.indices.dropFirst(4) where index + 8 <= data.count {
+      guard data[index..<(index + 4)] == ftyp else {
+        continue
+      }
+      let brandStart = index + 4
+      if heifBrands.contains(Data(data[brandStart..<(brandStart + 4)])) {
+        return true
+      }
+    }
+    return false
+  }
+}
+
 enum CameraVendorDownloadDataDiagnosticPolicy {
   static let headByteCount = 32
 
@@ -5437,7 +5475,7 @@ private final class CameraVendorPtpSession {
       )
     }
 
-    let data = try readPreviewObject(handle: handle)
+    let data = try readPreviewObject(handle: handle, size: CameraVendorThumbnailFetchPolicy.partialPreviewReadSize)
     report("[OBS] PTP_STANDARD_PARTIAL_OBJECT_PREVIEW_EXPECTED handle=0x\(String(format: "%08X", handle)) expectedSize=\(expectedSize ?? 0) bytes=\(data.count)")
     return CameraVendorThumbnailFetchResult(
       data: normalizedThumbnailData(data, handle: handle, source: "standardPartialPreview"),
@@ -5514,8 +5552,7 @@ private final class CameraVendorPtpSession {
     }
   }
 
-  private func readPreviewObject(handle: UInt32) throws -> Data {
-    let previewReadSize = CameraVendorThumbnailFetchPolicy.partialPreviewReadSize
+  private func readPreviewObject(handle: UInt32, size previewReadSize: UInt32) throws -> Data {
     report(
       "[OBS] PTP_STANDARD_PARTIAL_OBJECT_REQUEST purpose=preview " +
       "handle=0x\(String(format: "%08X", handle)) offset=0 size=\(previewReadSize)"
@@ -5534,8 +5571,48 @@ private final class CameraVendorPtpSession {
 
   func previewImage(handle: UInt32) throws -> Data {
     report("[OBS] PTP_PREVIEW_IMAGE_REQUEST handle=0x\(String(format: "%08X", handle))")
-    let data = try readPreviewObject(handle: handle)
-    return CameraVendorImageDataNormalizer.imageData(from: data)
+    let initialInfo = try objectInfo(handle: handle)
+    guard initialInfo.formatLabel == "JPG" || initialInfo.formatLabel == "HEIF" else {
+      throw NSError(
+        domain: "CameraVendorPtpSession",
+        code: 21,
+        userInfo: [NSLocalizedDescriptionKey: "Compressed preview unavailable handle=\(handle) format=\(initialInfo.formatLabel)"]
+      )
+    }
+    try setCameraVendorImageForceCompression(1, reason: "previewImage")
+    defer {
+      do {
+        try setCameraVendorImageForceCompression(0, reason: "previewImageReset")
+      } catch {
+        report("[OBS] PTP_PREVIEW_IMAGE_RESET_FAILED handle=0x\(String(format: "%08X", handle)) error=\(error.localizedDescription)")
+      }
+    }
+    let previewInfo = try objectInfo(handle: handle)
+    guard previewInfo.compressedSize > 0,
+          previewInfo.compressedSize <= 8 * 1024 * 1024 else {
+      throw NSError(
+        domain: "CameraVendorPtpSession",
+        code: 22,
+        userInfo: [NSLocalizedDescriptionKey: "Compressed preview size unavailable handle=\(handle) size=\(previewInfo.compressedSize)"]
+      )
+    }
+    let data = try readPreviewObject(handle: handle, size: previewInfo.compressedSize)
+    let image = CameraVendorImageDataNormalizer.imageData(from: data)
+    guard CameraVendorPreviewImageValidationPolicy.isValidPreviewImageData(image) else {
+      throw NSError(
+        domain: "CameraVendorPtpSession",
+        code: 23,
+        userInfo: [
+          NSLocalizedDescriptionKey: "Preview image invalid handle=\(handle) bytes=\(image.count) head=\(CameraVendorDownloadDataDiagnosticPolicy.headHex(from: image))"
+        ]
+      )
+    }
+    report(
+      "[OBS] PTP_PREVIEW_IMAGE_COMPRESSED handle=0x\(String(format: "%08X", handle)) " +
+      "rawBytes=\(data.count) imageBytes=\(image.count) readSize=\(previewInfo.compressedSize) " +
+      "object=\(previewInfo.formatLabel)"
+    )
+    return image
   }
 
   private func readObjectSample(handle: UInt32, byteCount: UInt32) throws -> Data {

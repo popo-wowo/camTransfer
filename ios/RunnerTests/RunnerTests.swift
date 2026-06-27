@@ -1697,6 +1697,21 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(CameraVendorJpegDataPolicy.hasStartMarker(Data([0x00, 0x00, 0xFF, 0xD8])))
   }
 
+  func testCameraVendorPreviewImageValidationRejectsIncompleteJpegLikeAndroid() {
+    let completeJpeg = Data([0xFF, 0xD8, 0x01, 0x02, 0xFF, 0xD9])
+    let incompleteJpeg = Data([0xFF, 0xD8, 0x01, 0x02])
+
+    XCTAssertTrue(CameraVendorPreviewImageValidationPolicy.isValidPreviewImageData(completeJpeg))
+    XCTAssertFalse(CameraVendorPreviewImageValidationPolicy.isValidPreviewImageData(incompleteJpeg))
+    XCTAssertTrue(CameraVendorPreviewImageValidationPolicy.shouldRejectIncompletePartialPreview(incompleteJpeg))
+  }
+
+  func testCameraVendorPreviewImageValidationRejectsUnknownHeifBrandLikeAndroid() {
+    let unknownBrand = Data([0x00, 0x00, 0x00, 0x18]) + Data("ftypzzzz".utf8) + Data([0x00, 0x00])
+
+    XCTAssertFalse(CameraVendorPreviewImageValidationPolicy.isValidPreviewImageData(unknownBrand))
+  }
+
   func testImageDataNormalizerStripsCameraVendorPrefixBeforeJpegHeader() {
     let data = Data([0x15, 0x00, 0x10, 0x00, 0xFF, 0xD8, 0xFF, 0xE1, 0x01])
 
