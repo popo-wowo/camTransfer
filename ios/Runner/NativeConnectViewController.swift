@@ -76,6 +76,16 @@ enum NativeGalleryPreviewImageLoadPolicy {
   }
 }
 
+enum NativePhotoPreviewInitialImagePolicy {
+  static func initialImage(item: CameraVendorGalleryItem, cachedThumbnailImage: UIImage?) -> UIImage? {
+    if let data = item.thumbnailData,
+       let image = CameraVendorGalleryThumbnailRenderer.decoded(from: data, objectOrientation: item.orientation) {
+      return image
+    }
+    return cachedThumbnailImage
+  }
+}
+
 enum NativePhotoPreviewImageRenderer {
   static func rendered(image: UIImage, manualRotationDegrees: Int) -> UIImage {
     let normalized = normalized(image)
@@ -7198,6 +7208,9 @@ extension NativeGalleryViewController {
           isDownloading: self?.isDownloading == true
         )
       },
+      cachedThumbnailImageProvider: { [weak self] handle in
+        self?.thumbnailImageCache.object(forKey: NSNumber(value: handle))
+      },
       isSelected: { [weak self] handle in
         self?.galleryState.selectedHandles.contains(handle) ?? false
       },
@@ -8328,6 +8341,7 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
   private let items: [CameraVendorGalleryItem]
   private let galleryService: CameraVendorGalleryService
   private let shouldLoadPreviewThumbnail: () -> Bool
+  private let cachedThumbnailImageProvider: (Int) -> UIImage?
   private let isSelected: (Int) -> Bool
   private let downloadStateProvider: (Int) -> CameraVendorDownloadState
   private let onSelectionToggle: (CameraVendorGalleryItem) -> Void
@@ -8426,6 +8440,7 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
     initialIndex: Int,
     galleryService: CameraVendorGalleryService,
     shouldLoadPreviewThumbnail: @escaping () -> Bool,
+    cachedThumbnailImageProvider: @escaping (Int) -> UIImage?,
     isSelected: @escaping (Int) -> Bool,
     downloadStateProvider: @escaping (Int) -> CameraVendorDownloadState,
     onSelectionToggle: @escaping (CameraVendorGalleryItem) -> Void,
@@ -8437,6 +8452,7 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
     self.currentIndex = min(max(initialIndex, 0), max(items.count - 1, 0))
     self.galleryService = galleryService
     self.shouldLoadPreviewThumbnail = shouldLoadPreviewThumbnail
+    self.cachedThumbnailImageProvider = cachedThumbnailImageProvider
     self.isSelected = isSelected
     self.downloadStateProvider = downloadStateProvider
     self.onSelectionToggle = onSelectionToggle
@@ -8589,6 +8605,7 @@ private final class NativePhotoPreviewViewController: UIViewController, UIPageVi
       item: item,
       index: index,
       galleryService: galleryService,
+      cachedThumbnailImage: cachedThumbnailImageProvider(item.handle),
       canDismiss: { [weak self] in
         guard let self else { return true }
         return NativeGalleryNavigationPolicy.canDismissPreview(isDownloading: self.isTransferLocked())
@@ -8790,6 +8807,7 @@ private final class NativePhotoPreviewPageController: UIViewController, UIScroll
   let index: Int
   let item: CameraVendorGalleryItem
   private let galleryService: CameraVendorGalleryService
+  private let cachedThumbnailImage: UIImage?
   private let canDismiss: () -> Bool
   private let shouldLoadPreviewThumbnail: () -> Bool
   private let onDismissDrag: (CGFloat) -> Void
@@ -8847,6 +8865,7 @@ private final class NativePhotoPreviewPageController: UIViewController, UIScroll
     item: CameraVendorGalleryItem,
     index: Int,
     galleryService: CameraVendorGalleryService,
+    cachedThumbnailImage: UIImage?,
     canDismiss: @escaping () -> Bool,
     shouldLoadPreviewThumbnail: @escaping () -> Bool,
     onDismissDrag: @escaping (CGFloat) -> Void,
@@ -8857,6 +8876,7 @@ private final class NativePhotoPreviewPageController: UIViewController, UIScroll
     self.item = item
     self.index = index
     self.galleryService = galleryService
+    self.cachedThumbnailImage = cachedThumbnailImage
     self.canDismiss = canDismiss
     self.shouldLoadPreviewThumbnail = shouldLoadPreviewThumbnail
     self.onDismissDrag = onDismissDrag
@@ -8930,8 +8950,10 @@ private final class NativePhotoPreviewPageController: UIViewController, UIScroll
   }
 
   private func loadImage() {
-    if let data = item.thumbnailData,
-       let image = CameraVendorGalleryThumbnailRenderer.decoded(from: data, objectOrientation: item.orientation) {
+    if let image = NativePhotoPreviewInitialImagePolicy.initialImage(
+      item: item,
+      cachedThumbnailImage: cachedThumbnailImage
+    ) {
       setSourceImage(image)
     } else {
       spinner.startAnimating()

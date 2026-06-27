@@ -357,6 +357,32 @@ final class RunnerTests: XCTestCase {
     )
   }
 
+  func testGalleryThumbnailRendererKeepsPixelsVisibleAfterObjectOrientationRotation() throws {
+    let data = try jpegData(
+      size: CGSize(width: 24, height: 12),
+      fill: UIColor.red
+    )
+
+    let image = try XCTUnwrap(CameraVendorGalleryThumbnailRenderer.decoded(from: data, objectOrientation: 2))
+
+    XCTAssertLessThan(image.size.width, image.size.height)
+    XCTAssertGreaterThan(try dominantRedValue(in: image), 180)
+  }
+
+  func testNativePhotoPreviewInitialImagePolicyUsesGridCachedThumbnailWhenItemDataIsMissing() {
+    let cached = UIImage()
+    let item = CameraVendorGalleryItem(
+      handle: 11,
+      filename: "DSCF0011.JPG",
+      formatLabel: "JPG",
+      captureDate: "2026:06:27 16:35:00",
+      byteSizeText: "4 MB",
+      thumbnailData: nil
+    )
+
+    XCTAssertTrue(NativePhotoPreviewInitialImagePolicy.initialImage(item: item, cachedThumbnailImage: cached) === cached)
+  }
+
   func testNativeGalleryPreviewImageLoadPolicyMatchesAndroidJpegAndHeifOnly() {
     XCTAssertTrue(NativeGalleryPreviewImageLoadPolicy.shouldRequestPreviewImage(
       item: CameraVendorGalleryItem(handle: 1, filename: "A.JPG", formatLabel: "JPG", captureDate: "", byteSizeText: ""),
@@ -6256,10 +6282,7 @@ final class RunnerTests: XCTestCase {
   }
 
   private func jpegDataWithExifOrientation(_ orientation: CGImagePropertyOrientation) throws -> Data {
-    let image = UIGraphicsImageRenderer(size: CGSize(width: 16, height: 12)).image { context in
-      UIColor.red.setFill()
-      context.fill(CGRect(x: 0, y: 0, width: 16, height: 12))
-    }
+    let image = solidImage(size: CGSize(width: 16, height: 12), fill: .red)
     let output = NSMutableData()
     let destination = try XCTUnwrap(CGImageDestinationCreateWithData(
       output,
@@ -6274,6 +6297,45 @@ final class RunnerTests: XCTestCase {
     )
     XCTAssertTrue(CGImageDestinationFinalize(destination))
     return output as Data
+  }
+
+  private func jpegData(size: CGSize, fill: UIColor) throws -> Data {
+    let image = solidImage(size: size, fill: fill)
+    return try XCTUnwrap(image.jpegData(compressionQuality: 1))
+  }
+
+  private func solidImage(size: CGSize, fill: UIColor) -> UIImage {
+    UIGraphicsImageRenderer(size: size).image { context in
+      fill.setFill()
+      context.fill(CGRect(origin: .zero, size: size))
+    }
+  }
+
+  private func dominantRedValue(in image: UIImage) throws -> Int {
+    let cgImage = try XCTUnwrap(image.cgImage)
+    let width = cgImage.width
+    let height = cgImage.height
+    let bytesPerPixel = 4
+    let bytesPerRow = width * bytesPerPixel
+    var pixels = [UInt8](repeating: 0, count: width * height * bytesPerPixel)
+    let colorSpace = CGColorSpaceCreateDeviceRGB()
+    let context = try XCTUnwrap(CGContext(
+      data: &pixels,
+      width: width,
+      height: height,
+      bitsPerComponent: 8,
+      bytesPerRow: bytesPerRow,
+      space: colorSpace,
+      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ))
+    context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+    var redTotal = 0
+    var sampleCount = 0
+    stride(from: 0, to: pixels.count, by: bytesPerPixel).forEach { offset in
+      redTotal += Int(pixels[offset])
+      sampleCount += 1
+    }
+    return redTotal / max(sampleCount, 1)
   }
 
   private func fixedDate() -> Date {
