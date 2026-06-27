@@ -195,16 +195,18 @@ enum NativeDownloadCenterChrome {
 enum NativeGalleryTopChromePolicy {
   static let shouldHideSystemNavigationBar = true
   static let horizontalInset: CGFloat = 18
-  static let topInset: CGFloat = 6
-  static let bottomInset: CGFloat = 8
+  static let topInset: CGFloat = 0
+  static let bottomInset: CGFloat = 0
   static let actionRowHeight: CGFloat = 42
   static let actionSpacing: CGFloat = 8
-  static let statusSpacing: CGFloat = 6
+  static let statusSpacing: CGFloat = 0
   static let cornerRadius: CGFloat = 24
 }
 
 enum NativeGalleryAndroidParityLayoutPolicy {
   static let filterToGridSpacing: CGFloat = 2
+  static let filterHeaderHeight: CGFloat = 42
+  static let filterTopSpacing: CGFloat = 6
   static let shouldShowPinchHintBubble = false
   static let bottomBarHeight: CGFloat = 52
   static let bottomBarBottomInset: CGFloat = 10
@@ -263,6 +265,13 @@ private enum NativeGalleryHeaderIcon {
   case downloads
 }
 
+enum NativeTopChromeIconButtonStylePolicy {
+  static let sideLength: CGFloat = 42
+  static let usesFilledBackground = false
+  static let usesBorder = false
+  static let usesShadow = false
+}
+
 private final class NativeTopHeaderFrameView: UIView {
   override init(frame: CGRect) {
     super.init(frame: frame)
@@ -286,19 +295,23 @@ private final class NativeGalleryHeaderIconButton: UIButton {
     configuration = .plain()
     configuration?.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0)
     tintColor = NativeLuxuryTheme.ink
-    backgroundColor = NativeLuxuryTheme.warmFill
-    layer.cornerRadius = 21
-    layer.borderWidth = 1
-    layer.borderColor = NativeLuxuryTheme.hairline.cgColor
+    backgroundColor = NativeTopChromeIconButtonStylePolicy.usesFilledBackground
+      ? NativeLuxuryTheme.warmFill
+      : .clear
+    layer.cornerRadius = NativeTopChromeIconButtonStylePolicy.sideLength / 2
+    layer.borderWidth = NativeTopChromeIconButtonStylePolicy.usesBorder ? 1 : 0
+    layer.borderColor = NativeTopChromeIconButtonStylePolicy.usesBorder
+      ? NativeLuxuryTheme.hairline.cgColor
+      : UIColor.clear.cgColor
     layer.shadowColor = UIColor.black.cgColor
-    layer.shadowOpacity = 0.05
-    layer.shadowRadius = 8
-    layer.shadowOffset = CGSize(width: 0, height: 2)
+    layer.shadowOpacity = NativeTopChromeIconButtonStylePolicy.usesShadow ? 0.05 : 0
+    layer.shadowRadius = NativeTopChromeIconButtonStylePolicy.usesShadow ? 8 : 0
+    layer.shadowOffset = NativeTopChromeIconButtonStylePolicy.usesShadow ? CGSize(width: 0, height: 2) : .zero
     self.accessibilityLabel = accessibilityLabel
     setImage(Self.image(for: icon), for: .normal)
     NSLayoutConstraint.activate([
-      widthAnchor.constraint(equalToConstant: 42),
-      heightAnchor.constraint(equalToConstant: 42),
+      widthAnchor.constraint(equalToConstant: NativeTopChromeIconButtonStylePolicy.sideLength),
+      heightAnchor.constraint(equalToConstant: NativeTopChromeIconButtonStylePolicy.sideLength),
     ])
   }
 
@@ -652,6 +665,23 @@ enum NativeGalleryCellThumbnailDecodePolicy {
   static let shouldDecodeDataDuringCellConfigure = false
 }
 
+enum NativeDownloadCenterThumbnailPolicy {
+  static let shouldRehydratePersistedThumbnailData = true
+
+  static func action(
+    thumbnailData: Data?,
+    cachedImage: UIImage?
+  ) -> NativeGalleryVisibleThumbnailAction {
+    if thumbnailData != nil && cachedImage != nil {
+      return .none
+    }
+    if shouldRehydratePersistedThumbnailData && thumbnailData != nil {
+      return .decodeCachedData
+    }
+    return .none
+  }
+}
+
 enum NativeGalleryVisibleThumbnailAction: Equatable {
   case none
   case decodeCachedData
@@ -734,10 +764,22 @@ enum NativeGalleryMetadataMergePolicy {
         resolvedCaptureDate: resolvedItem.captureDate
       ),
       byteSizeText: item.byteSizeText,
-      formatHints: item.formatHints.isEmpty ? existingItem.formatHints : item.formatHints,
+      formatHints: shouldPreserveExistingFormatHints(
+        existingItem: existingItem,
+        resolvedItem: item
+      ) ? existingItem.formatHints : item.formatHints,
       thumbnailData: item.thumbnailData
     )
     return item
+  }
+
+  private static func shouldPreserveExistingFormatHints(
+    existingItem: CameraVendorGalleryItem,
+    resolvedItem: CameraVendorGalleryItem
+  ) -> Bool {
+    resolvedItem.formatHints.isEmpty &&
+      !existingItem.formatHints.isEmpty &&
+      !CameraVendorGalleryFormatResolutionPolicy.isResolvedStillOrVideoFormat(resolvedItem.formatLabel)
   }
 
   static func resolvedCaptureDate(existingCaptureDate: String, resolvedCaptureDate: String) -> String {
@@ -804,10 +846,31 @@ enum NativeGalleryFormatDisplayPolicy {
 
 enum CameraVendorDownloadHistoryStore {
   private static let storageKey = "camtransfer.downloadHistory.v1"
+  private static let recordStorageKey = "camtransfer.downloadHistory.records.v1"
+
+  private struct Record: Codable {
+    let handle: Int
+    let filename: String
+    let formatLabel: String
+    let captureDate: String
+    let byteSizeText: String
+    let thumbnailData: Data?
+
+    var item: CameraVendorGalleryItem {
+      CameraVendorGalleryItem(
+        handle: handle,
+        filename: filename,
+        formatLabel: formatLabel,
+        captureDate: captureDate,
+        byteSizeText: byteSizeText,
+        thumbnailData: thumbnailData
+      )
+    }
+  }
 
   static func savedHandles(for cameraID: String) -> Set<Int> {
     let dict = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: [Int]] ?? [:]
-    return Set(dict[cameraID] ?? [])
+    return Set(dict[cameraID] ?? []).union(historyItems(for: cameraID).map(\.handle))
   }
 
   static func markSaved(handle: Int, for cameraID: String) {
@@ -816,6 +879,41 @@ enum CameraVendorDownloadHistoryStore {
     existing.insert(handle)
     dict[cameraID] = Array(existing).sorted()
     UserDefaults.standard.set(dict, forKey: storageKey)
+  }
+
+  static func markSaved(item: CameraVendorGalleryItem, for cameraID: String) {
+    markSaved(handle: item.handle, for: cameraID)
+    var dict = UserDefaults.standard.dictionary(forKey: recordStorageKey) as? [String: [String]] ?? [:]
+    var records = dict[cameraID] ?? []
+    records.removeAll { encoded in
+      decodedRecord(from: encoded)?.handle == item.handle
+    }
+    let record = Record(
+      handle: item.handle,
+      filename: item.filename,
+      formatLabel: item.formatLabel,
+      captureDate: item.captureDate,
+      byteSizeText: item.byteSizeText,
+      thumbnailData: item.thumbnailData
+    )
+    if let encoded = encodedRecord(record) {
+      records.append(encoded)
+    }
+    dict[cameraID] = records
+    UserDefaults.standard.set(dict, forKey: recordStorageKey)
+  }
+
+  static func historyItems(for cameraID: String) -> [CameraVendorGalleryItem] {
+    let dict = UserDefaults.standard.dictionary(forKey: recordStorageKey) as? [String: [String]] ?? [:]
+    return (dict[cameraID] ?? [])
+      .compactMap(decodedRecord(from:))
+      .map(\.item)
+      .sorted {
+        if $0.captureDate != $1.captureDate {
+          return $0.captureDate > $1.captureDate
+        }
+        return $0.handle > $1.handle
+      }
   }
 
   static func removeSaved(handle: Int, for cameraID: String) {
@@ -828,12 +926,37 @@ enum CameraVendorDownloadHistoryStore {
       dict[cameraID] = Array(existing).sorted()
     }
     UserDefaults.standard.set(dict, forKey: storageKey)
+
+    var recordDict = UserDefaults.standard.dictionary(forKey: recordStorageKey) as? [String: [String]] ?? [:]
+    var records = recordDict[cameraID] ?? []
+    records.removeAll { encoded in
+      decodedRecord(from: encoded)?.handle == handle
+    }
+    if records.isEmpty {
+      recordDict.removeValue(forKey: cameraID)
+    } else {
+      recordDict[cameraID] = records
+    }
+    UserDefaults.standard.set(recordDict, forKey: recordStorageKey)
   }
 
   static func clear(for cameraID: String) {
     var dict = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: [Int]] ?? [:]
     dict.removeValue(forKey: cameraID)
     UserDefaults.standard.set(dict, forKey: storageKey)
+
+    var recordDict = UserDefaults.standard.dictionary(forKey: recordStorageKey) as? [String: [String]] ?? [:]
+    recordDict.removeValue(forKey: cameraID)
+    UserDefaults.standard.set(recordDict, forKey: recordStorageKey)
+  }
+
+  private static func encodedRecord(_ record: Record) -> String? {
+    try? JSONEncoder().encode(record).base64EncodedString()
+  }
+
+  private static func decodedRecord(from encoded: String) -> Record? {
+    guard let data = Data(base64Encoded: encoded) else { return nil }
+    return try? JSONDecoder().decode(Record.self, from: data)
   }
 }
 
@@ -915,6 +1038,32 @@ enum NativeGalleryDownloadBarPolicy {
 
   static func canStartDownload(selectedCount: Int, isDownloading: Bool) -> Bool {
     selectedCount > 0
+  }
+}
+
+enum NativeGalleryDownloadFailurePolicy {
+  static let connectionLostQueueStopMessage = "相机连接已断开，请重新进入相册后重试"
+
+  static func shouldStopQueueAfterFailure(_ error: Error) -> Bool {
+    if (error as NSError).domain == NSPOSIXErrorDomain {
+      return true
+    }
+    return errorChainMessages(error).contains { message in
+      message.range(of: "Not connected to camera", options: .caseInsensitive) != nil ||
+        message.range(of: "Socket is closed", options: .caseInsensitive) != nil ||
+        message.range(of: "Broken pipe", options: .caseInsensitive) != nil ||
+        message.range(of: "Connection reset", options: .caseInsensitive) != nil
+    }
+  }
+
+  private static func errorChainMessages(_ error: Error) -> [String] {
+    var messages: [String] = []
+    var current: NSError? = error as NSError
+    while let nsError = current {
+      messages.append(nsError.localizedDescription)
+      current = nsError.userInfo[NSUnderlyingErrorKey] as? NSError
+    }
+    return messages
   }
 }
 
@@ -1042,9 +1191,11 @@ enum NativeHomeHeaderLayoutPolicy {
 enum NativeHomePairedCameraCardLayoutPolicy {
   static let centersPrimaryGalleryAction = true
   static let primaryGalleryActionMinimumWidth: CGFloat = 158
-  static let cardMinimumHeight: CGFloat = 248
+  static let cardMinimumHeight: CGFloat = 168
   static let anchorsStatusPanelBelowCameraIdentity = true
-  static let statusPanelTopSpacingAfterIdentity: CGFloat = 12
+  static let statusPanelTopSpacingAfterIdentity: CGFloat = 8
+  static let showsDecorativeProfileHeader = false
+  static let showsStatusPanelFrame = false
 }
 
 enum NativeHomeCameraSearchActionPolicy {
@@ -4091,6 +4242,7 @@ private final class NativePairedCameraCard: UIView {
     let profileHeader = UIView()
     profileHeader.translatesAutoresizingMaskIntoConstraints = false
     profileHeader.backgroundColor = NativeLuxuryTheme.accentSoft.withAlphaComponent(0.32)
+    profileHeader.isHidden = !NativeHomePairedCameraCardLayoutPolicy.showsDecorativeProfileHeader
 
     let profileLabel = NativeLuxuryTheme.makeBrandLabel(NativeHomeAndroidParityCopy.cameraProfileTitle, size: 9)
     profileLabel.textColor = NativeLuxuryTheme.secondaryInk.withAlphaComponent(0.78)
@@ -4106,6 +4258,7 @@ private final class NativePairedCameraCard: UIView {
     let divider = UIView()
     divider.translatesAutoresizingMaskIntoConstraints = false
     divider.backgroundColor = NativeLuxuryTheme.accent.withAlphaComponent(0.10)
+    divider.isHidden = !NativeHomePairedCameraCardLayoutPolicy.showsDecorativeProfileHeader
 
     let badge = UILabel()
     badge.translatesAutoresizingMaskIntoConstraints = false
@@ -4160,10 +4313,14 @@ private final class NativePairedCameraCard: UIView {
 
     let statusPanel = UIView()
     statusPanel.translatesAutoresizingMaskIntoConstraints = false
-    statusPanel.backgroundColor = NativeLuxuryTheme.warmFill
-    statusPanel.layer.cornerRadius = 16
-    statusPanel.layer.borderWidth = 1
-    statusPanel.layer.borderColor = NativeLuxuryTheme.hairline.cgColor
+    statusPanel.backgroundColor = NativeHomePairedCameraCardLayoutPolicy.showsStatusPanelFrame
+      ? NativeLuxuryTheme.warmFill
+      : .clear
+    statusPanel.layer.cornerRadius = NativeHomePairedCameraCardLayoutPolicy.showsStatusPanelFrame ? 16 : 0
+    statusPanel.layer.borderWidth = NativeHomePairedCameraCardLayoutPolicy.showsStatusPanelFrame ? 1 : 0
+    statusPanel.layer.borderColor = NativeHomePairedCameraCardLayoutPolicy.showsStatusPanelFrame
+      ? NativeLuxuryTheme.hairline.cgColor
+      : UIColor.clear.cgColor
 
     let statusLabel = UILabel()
     statusLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -4228,7 +4385,9 @@ private final class NativePairedCameraCard: UIView {
       profileHeader.topAnchor.constraint(equalTo: contentView.topAnchor),
       profileHeader.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
       profileHeader.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-      profileHeader.heightAnchor.constraint(equalToConstant: 46),
+      profileHeader.heightAnchor.constraint(
+        equalToConstant: NativeHomePairedCameraCardLayoutPolicy.showsDecorativeProfileHeader ? 46 : 0
+      ),
 
       profileLabel.leadingAnchor.constraint(equalTo: profileHeader.leadingAnchor, constant: 17),
       profileLabel.centerYAnchor.constraint(equalTo: profileHeader.centerYAnchor),
@@ -4991,11 +5150,14 @@ private final class NativeGalleryViewController: UIViewController, UIGestureReco
       diagnosticsView.trailingAnchor.constraint(equalTo: headerFrame.trailingAnchor),
       diagnosticsView.heightAnchor.constraint(equalToConstant: 0),
 
-      filterStack.topAnchor.constraint(equalTo: diagnosticsView.bottomAnchor, constant: 10),
+      filterStack.topAnchor.constraint(
+        equalTo: diagnosticsView.bottomAnchor,
+        constant: NativeGalleryAndroidParityLayoutPolicy.filterTopSpacing
+      ),
       filterStack.leadingAnchor.constraint(equalTo: headerFrame.leadingAnchor),
       filterStack.trailingAnchor.constraint(equalTo: headerFrame.trailingAnchor),
 
-      filterHeaderView.heightAnchor.constraint(equalToConstant: 48),
+      filterHeaderView.heightAnchor.constraint(equalToConstant: NativeGalleryAndroidParityLayoutPolicy.filterHeaderHeight),
       filterTitleLabel.leadingAnchor.constraint(equalTo: filterHeaderView.leadingAnchor, constant: 42),
       filterTitleLabel.centerYAnchor.constraint(equalTo: filterHeaderView.centerYAnchor),
       filterSummaryLabel.leadingAnchor.constraint(equalTo: filterTitleLabel.trailingAnchor, constant: 10),
@@ -6172,7 +6334,11 @@ private final class NativeGalleryViewController: UIViewController, UIGestureReco
                 "totalMs=\(totalElapsedMs) speedMBps=\(speed)"
               )
               self.galleryState.markDownloadFinished(handle: handle)
-              CameraVendorDownloadHistoryStore.markSaved(handle: handle, for: self.cameraHistoryKey)
+              if let item {
+                CameraVendorDownloadHistoryStore.markSaved(item: item, for: self.cameraHistoryKey)
+              } else {
+                CameraVendorDownloadHistoryStore.markSaved(handle: handle, for: self.cameraHistoryKey)
+              }
               await counter.bumpSuccess()
               self.refreshStatusText()
               self.refreshVisibleCells(forHandles: [handle])
@@ -6223,7 +6389,11 @@ private final class NativeGalleryViewController: UIViewController, UIGestureReco
               "totalMs=\(totalElapsedMs) speedMBps=\(speed)"
             )
             self.galleryState.markDownloadFinished(handle: handle)
-            CameraVendorDownloadHistoryStore.markSaved(handle: handle, for: self.cameraHistoryKey)
+            if let item {
+              CameraVendorDownloadHistoryStore.markSaved(item: item, for: self.cameraHistoryKey)
+            } else {
+              CameraVendorDownloadHistoryStore.markSaved(handle: handle, for: self.cameraHistoryKey)
+            }
             await counter.bumpSuccess()
             self.refreshStatusText()
             self.refreshVisibleCells(forHandles: [handle])
@@ -6256,6 +6426,19 @@ private final class NativeGalleryViewController: UIViewController, UIGestureReco
         }
         appendDiagnostic("[\(label)] 下载失败 handle=\(handle): \(error.localizedDescription)")
         galleryState.markDownloadFailed(handle: handle, message: error.localizedDescription)
+        if NativeGalleryDownloadFailurePolicy.shouldStopQueueAfterFailure(error) {
+          let stoppedHandles = galleryState.markPendingDownloadsFailedAfterFatalFailure(
+            message: NativeGalleryDownloadFailurePolicy.connectionLostQueueStopMessage
+          )
+          appendDiagnostic(
+            "[\(label)] 检测到相机连接已断开，停止剩余下载队列，重新进入相册后可重试"
+          )
+          refreshStatusText()
+          refreshVisibleCells(forHandles: stoppedHandles.union([handle]))
+          refreshVisibleSectionHeaders()
+          notifyDownloadStateChanged()
+          return
+        }
       }
       refreshStatusText()
       refreshVisibleCells(forHandles: [handle])
@@ -6390,11 +6573,22 @@ extension NativeGalleryViewController {
   }
 
   private func downloadListItems() -> [CameraVendorGalleryItem] {
+    let historyItems = CameraVendorDownloadHistoryStore.historyItems(for: cameraHistoryKey)
+    let historyHandles = Set(historyItems.map(\.handle))
     let activeItems = allGalleryItems.filter { item in
       switch galleryState.downloadState(for: item.handle) {
       case .idle: return false
       case .queued, .downloading, .saved, .failed: return true
       }
+    }
+    let activeHandles = Set(activeItems.map(\.handle))
+    let mergedItems = activeItems + historyItems.filter { !activeHandles.contains($0.handle) }
+    func displayState(for handle: Int) -> CameraVendorDownloadState {
+      let state = galleryState.downloadState(for: handle)
+      if state == .idle, historyHandles.contains(handle) {
+        return .saved
+      }
+      return state
     }
     func priority(_ state: CameraVendorDownloadState) -> Int {
       switch state {
@@ -6405,9 +6599,9 @@ extension NativeGalleryViewController {
       case .idle: return 4
       }
     }
-    return activeItems.sorted { lhs, rhs in
-      let lp = priority(galleryState.downloadState(for: lhs.handle))
-      let rp = priority(galleryState.downloadState(for: rhs.handle))
+    return mergedItems.sorted { lhs, rhs in
+      let lp = priority(displayState(for: lhs.handle))
+      let rp = priority(displayState(for: rhs.handle))
       if lp != rp { return lp < rp }
       return lhs.handle < rhs.handle
     }
@@ -7136,6 +7330,8 @@ private final class NativeDownloadListViewController: UIViewController {
   private let progressProvider: (Int) -> String?
   private let onClearDownloadCache: (CameraVendorGalleryItem) -> Void
   private var previousNavigationBarHidden: Bool?
+  private let thumbnailImageCache = NSCache<NSNumber, UIImage>()
+  private var thumbnailRehydrateTasks: [Int: Task<Void, Never>] = [:]
 
   private let backButton = NativeGalleryHeaderIconButton(icon: .back, accessibilityLabel: "返回")
   private let headerTitleLabel: UILabel = {
@@ -7326,6 +7522,7 @@ private final class NativeDownloadListViewController: UIViewController {
 
   deinit {
     NotificationCenter.default.removeObserver(self)
+    cancelThumbnailRehydrateTasks()
   }
 
   override func viewWillAppear(_ animated: Bool) {
@@ -7418,6 +7615,61 @@ private final class NativeDownloadListViewController: UIViewController {
     clearRecordsButton.isEnabled = total > 0 && active == 0
     clearRecordsButton.alpha = clearRecordsButton.isEnabled ? 1 : 0.48
   }
+
+  private func configure(_ cell: NativeGalleryGridCell, with item: CameraVendorGalleryItem) {
+    cell.configure(
+      item: item,
+      isSelected: false,
+      downloadState: stateProvider(item.handle),
+      thumbnailImage: thumbnailImageCache.object(forKey: NSNumber(value: item.handle)),
+      showsSelection: false,
+      dimsUndownloaded: true
+    )
+    rehydrateCachedThumbnailIfNeeded(for: item)
+  }
+
+  private func rehydrateCachedThumbnailIfNeeded(for item: CameraVendorGalleryItem) {
+    switch NativeDownloadCenterThumbnailPolicy.action(
+      thumbnailData: item.thumbnailData,
+      cachedImage: thumbnailImageCache.object(forKey: NSNumber(value: item.handle))
+    ) {
+    case .none, .fetchFromCamera:
+      return
+    case .decodeCachedData:
+      guard thumbnailRehydrateTasks[item.handle] == nil,
+            let data = item.thumbnailData else { return }
+      let handle = item.handle
+      thumbnailRehydrateTasks[handle] = Task { [weak self] in
+        let decodedImage = await NativeGalleryThumbnailDecodePipeline.decodedImage(from: data)
+        await MainActor.run { [weak self] in
+          guard let self else { return }
+          self.thumbnailRehydrateTasks.removeValue(forKey: handle)
+          guard !Task.isCancelled, let decodedImage else { return }
+          self.thumbnailImageCache.setObject(decodedImage, forKey: NSNumber(value: handle))
+          self.refreshVisibleCell(forHandle: handle)
+        }
+      }
+    }
+  }
+
+  private func refreshVisibleCell(forHandle handle: Int) {
+    UIView.performWithoutAnimation {
+      for indexPath in collectionView.indexPathsForVisibleItems {
+        let items = itemsProvider()
+        guard items.indices.contains(indexPath.item),
+              items[indexPath.item].handle == handle,
+              let cell = collectionView.cellForItem(at: indexPath) as? NativeGalleryGridCell else {
+          continue
+        }
+        configure(cell, with: items[indexPath.item])
+      }
+    }
+  }
+
+  private func cancelThumbnailRehydrateTasks() {
+    thumbnailRehydrateTasks.values.forEach { $0.cancel() }
+    thumbnailRehydrateTasks.removeAll()
+  }
 }
 
 extension NativeDownloadListViewController: UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
@@ -7436,13 +7688,7 @@ extension NativeDownloadListViewController: UICollectionViewDataSource, UICollec
       return UICollectionViewCell()
     }
     let item = itemsProvider()[indexPath.item]
-    cell.configure(
-      item: item,
-      isSelected: false,
-      downloadState: stateProvider(item.handle),
-      showsSelection: false,
-      dimsUndownloaded: true
-    )
+    configure(cell, with: item)
     cell.onClearCacheTapped = { [weak self, weak collectionView, weak cell] in
       guard let self,
             let cell,

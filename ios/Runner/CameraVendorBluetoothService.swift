@@ -1759,6 +1759,17 @@ enum CameraVendorGalleryFormatHint: String, Equatable, Hashable {
   case video
 }
 
+enum CameraVendorGalleryFormatResolutionPolicy {
+  static func isResolvedStillOrVideoFormat(_ formatLabel: String) -> Bool {
+    switch formatLabel.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
+    case "JPG", "JPEG", "HEIF", "HEIC", "HIF", "RAW", "RAF", "VIDEO", "MOV", "MP4":
+      return true
+    default:
+      return false
+    }
+  }
+}
+
 struct CameraVendorGalleryItem: Equatable {
   let handle: Int
   let filename: String
@@ -1901,6 +1912,33 @@ enum CameraVendorGalleryFastInitialLoadPolicy {
   }
 }
 
+enum CameraVendorGalleryItemOrderingPolicy {
+  static func galleryItems(
+    from infos: [CameraVendorCameraObjectInfo],
+    formatHintsByHandle: [Int: Set<CameraVendorGalleryFormatHint>] = [:],
+    preserveInputOrder: Bool = false
+  ) -> [CameraVendorGalleryItem] {
+    let orderedInfos = preserveInputOrder ? infos : infos.sorted {
+      if $0.captureDate != $1.captureDate {
+        return $0.captureDate > $1.captureDate
+      }
+      return $0.handle > $1.handle
+    }
+    return orderedInfos.map { info in
+      CameraVendorGalleryItem(
+        handle: info.handle,
+        filename: info.filename,
+        formatLabel: info.galleryFormatLabel,
+        captureDate: info.captureDate,
+        byteSizeText: info.compressedSize > 0
+          ? ByteCountFormatter.string(fromByteCount: Int64(info.compressedSize), countStyle: .file)
+          : "",
+        formatHints: formatHintsByHandle[info.handle, default: []]
+      )
+    }
+  }
+}
+
 enum CameraVendorGalleryRequestPriority: Int {
   case downloadOriginal = 0
   case previewImage = 1
@@ -1910,16 +1948,41 @@ enum CameraVendorGalleryRequestPriority: Int {
 }
 
 final class CameraVendorGalleryRequestScheduler {
+  private final class WaiterToken {
+    private let lock = NSLock()
+    private var waiterID: Int?
+    private var isCancelled = false
+
+    func register(waiterID: Int) -> Bool {
+      lock.lock()
+      self.waiterID = waiterID
+      let cancelled = isCancelled
+      lock.unlock()
+      return cancelled
+    }
+
+    func cancel() -> Int? {
+      lock.lock()
+      isCancelled = true
+      let id = waiterID
+      lock.unlock()
+      return id
+    }
+  }
+
   private final class Waiter {
+    let id: Int
     let priority: CameraVendorGalleryRequestPriority
     let sequence: Int
-    let continuation: CheckedContinuation<Void, Never>
+    let continuation: CheckedContinuation<Void, Error>
 
     init(
+      id: Int,
       priority: CameraVendorGalleryRequestPriority,
       sequence: Int,
-      continuation: CheckedContinuation<Void, Never>
+      continuation: CheckedContinuation<Void, Error>
     ) {
+      self.id = id
       self.priority = priority
       self.sequence = sequence
       self.continuation = continuation
@@ -1930,12 +1993,17 @@ final class CameraVendorGalleryRequestScheduler {
   private var isCameraReadActive = false
   private var waiters: [Waiter] = []
   private var nextSequence = 0
+  private var nextWaiterID = 0
 
   func run<T>(
     priority: CameraVendorGalleryRequestPriority,
     _ operation: () throws -> T
   ) async throws -> T {
-    await acquire(priority: priority)
+    try await acquire(priority: priority)
+    if Task.isCancelled {
+      releaseNext()
+      throw CancellationError()
+    }
     do {
       let value = try operation()
       releaseNext()
@@ -1946,28 +2014,49 @@ final class CameraVendorGalleryRequestScheduler {
     }
   }
 
-  private func acquire(priority: CameraVendorGalleryRequestPriority) async {
-    var shouldAcquireImmediately = false
-    await withCheckedContinuation { continuation in
-      lock.lock()
-      if !isCameraReadActive && waiters.isEmpty {
-        isCameraReadActive = true
-        shouldAcquireImmediately = true
-      } else {
-        waiters.append(
-          Waiter(
-            priority: priority,
-            sequence: nextSequence,
-            continuation: continuation
+  private func acquire(priority: CameraVendorGalleryRequestPriority) async throws {
+    if Task.isCancelled {
+      throw CancellationError()
+    }
+    let token = WaiterToken()
+    try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { continuation in
+        var shouldAcquireImmediately = false
+        var shouldResumeCancelled = false
+        lock.lock()
+        if Task.isCancelled {
+          shouldResumeCancelled = true
+        } else if !isCameraReadActive && waiters.isEmpty {
+          isCameraReadActive = true
+          shouldAcquireImmediately = true
+        } else {
+          let waiterID = nextWaiterID
+          nextWaiterID += 1
+          waiters.append(
+            Waiter(
+              id: waiterID,
+              priority: priority,
+              sequence: nextSequence,
+              continuation: continuation
+            )
           )
-        )
-        nextSequence += 1
-      }
-      lock.unlock()
+          nextSequence += 1
+          if token.register(waiterID: waiterID) {
+            waiters.removeAll { $0.id == waiterID }
+            shouldResumeCancelled = true
+          }
+        }
+        lock.unlock()
 
-      if shouldAcquireImmediately {
-        continuation.resume()
+        if shouldAcquireImmediately {
+          continuation.resume()
+        } else if shouldResumeCancelled {
+          continuation.resume(throwing: CancellationError())
+        }
       }
+    } onCancel: { [weak self] in
+      guard let waiterID = token.cancel() else { return }
+      self?.cancelWaiter(id: waiterID)
     }
   }
 
@@ -1989,6 +2078,18 @@ final class CameraVendorGalleryRequestScheduler {
     }
     lock.unlock()
     next?.continuation.resume()
+  }
+
+  private func cancelWaiter(id: Int) {
+    let continuation: CheckedContinuation<Void, Error>?
+    lock.lock()
+    if let index = waiters.firstIndex(where: { $0.id == id }) {
+      continuation = waiters.remove(at: index).continuation
+    } else {
+      continuation = nil
+    }
+    lock.unlock()
+    continuation?.resume(throwing: CancellationError())
   }
 }
 
@@ -2062,6 +2163,7 @@ struct CameraVendorGalleryState: Equatable {
   private var downloadStates: [Int: CameraVendorDownloadState] = [:]
   private var downloadProgress: [Int: CameraVendorDownloadProgress] = [:]
   private var downloadModes: [Int: CameraVendorTransferDownloadMode] = [:]
+  private var downloadQueue: [Int] = []
 
   init(items: [CameraVendorGalleryItem] = []) {
     self.items = items
@@ -2099,6 +2201,9 @@ struct CameraVendorGalleryState: Equatable {
   ) {
     for handle in handles {
       guard downloadStates[handle] != .saved else { continue }
+      if downloadStates[handle] != .queued, !downloadQueue.contains(handle) {
+        downloadQueue.append(handle)
+      }
       downloadStates[handle] = .queued
       downloadProgress[handle] = nil
       downloadModes[handle] = mode
@@ -2107,23 +2212,39 @@ struct CameraVendorGalleryState: Equatable {
   }
 
   mutating func markDownloadStarted(handle: Int) {
+    downloadQueue.removeAll { $0 == handle }
     downloadStates[handle] = .downloading
   }
 
   mutating func markDownloadStarted(handle: Int, position: Int, total: Int) {
+    downloadQueue.removeAll { $0 == handle }
     downloadStates[handle] = .downloading
     downloadProgress[handle] = CameraVendorDownloadProgress(position: position, total: total)
   }
 
   mutating func markDownloadFinished(handle: Int) {
+    downloadQueue.removeAll { $0 == handle }
     downloadStates[handle] = .saved
     downloadProgress[handle] = nil
     downloadModes.removeValue(forKey: handle)
   }
 
   mutating func markDownloadFailed(handle: Int, message: String) {
+    downloadQueue.removeAll { $0 == handle }
     downloadStates[handle] = .failed(message)
     downloadProgress[handle] = nil
+  }
+
+  @discardableResult
+  mutating func markPendingDownloadsFailedAfterFatalFailure(message: String) -> Set<Int> {
+    var changedHandles = Set<Int>()
+    for handle in downloadQueue where downloadStates[handle] == .queued {
+      downloadStates[handle] = .failed(message)
+      downloadProgress[handle] = nil
+      changedHandles.insert(handle)
+    }
+    downloadQueue.removeAll { changedHandles.contains($0) }
+    return changedHandles
   }
 
   mutating func clearSavedDownloadCache(handle: Int) {
@@ -2131,6 +2252,7 @@ struct CameraVendorGalleryState: Equatable {
     downloadStates.removeValue(forKey: handle)
     downloadProgress.removeValue(forKey: handle)
     downloadModes.removeValue(forKey: handle)
+    downloadQueue.removeAll { $0 == handle }
     selectedHandles.remove(handle)
   }
 
@@ -2144,6 +2266,7 @@ struct CameraVendorGalleryState: Equatable {
       downloadProgress.removeValue(forKey: handle)
       downloadModes.removeValue(forKey: handle)
     }
+    downloadQueue.removeAll { savedHandles.contains($0) }
     selectedHandles.subtract(savedHandles)
     return savedHandles.count
   }
@@ -2154,7 +2277,9 @@ struct CameraVendorGalleryState: Equatable {
     }
     if var resolvedItem {
       let existingItem = items[index]
-      if resolvedItem.formatHints.isEmpty, !existingItem.formatHints.isEmpty {
+      if resolvedItem.formatHints.isEmpty,
+         !existingItem.formatHints.isEmpty,
+         !CameraVendorGalleryFormatResolutionPolicy.isResolvedStillOrVideoFormat(resolvedItem.formatLabel) {
         resolvedItem = CameraVendorGalleryItem(
           handle: resolvedItem.handle,
           filename: resolvedItem.filename,
@@ -2198,10 +2323,7 @@ struct CameraVendorGalleryState: Equatable {
   }
 
   func queuedDownloadHandles() -> [Int] {
-    downloadStates
-      .filter { $0.value == .queued }
-      .map(\.key)
-      .sorted()
+    downloadQueue.filter { downloadStates[$0] == .queued }
   }
 
   func nextQueuedDownloadHandle() -> Int? {
@@ -7157,7 +7279,8 @@ final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVend
       let fastInitialInfos = try session.fastInitialGalleryObjectInfos()
       let fastInitialItems = galleryItems(
         from: fastInitialInfos,
-        formatHintsByHandle: session.cameraVendorInitialPlaceholderFormatHintsByHandle()
+        formatHintsByHandle: session.cameraVendorInitialPlaceholderFormatHintsByHandle(),
+        preserveInputOrder: true
       )
       if CameraVendorGalleryFastInitialLoadPolicy.shouldPublishInitialItems(fastInitialItems) {
         cacheObjectInfos(fastInitialInfos)
@@ -7216,18 +7339,14 @@ final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVend
 
   private func galleryItems(
     from infos: [CameraVendorCameraObjectInfo],
-    formatHintsByHandle: [Int: Set<CameraVendorGalleryFormatHint>] = [:]
+    formatHintsByHandle: [Int: Set<CameraVendorGalleryFormatHint>] = [:],
+    preserveInputOrder: Bool = false
   ) -> [CameraVendorGalleryItem] {
-    infos
-      .sorted {
-        if $0.captureDate != $1.captureDate {
-          return $0.captureDate > $1.captureDate
-        }
-        return $0.handle > $1.handle
-      }
-      .map { info in
-        galleryItem(from: info, formatHints: formatHintsByHandle[info.handle, default: []])
-      }
+    CameraVendorGalleryItemOrderingPolicy.galleryItems(
+      from: infos,
+      formatHintsByHandle: formatHintsByHandle,
+      preserveInputOrder: preserveInputOrder
+    )
   }
 
   private func scheduleFullObjectInfoRefreshAfterInitialPlaceholders(

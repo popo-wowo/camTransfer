@@ -7,6 +7,7 @@ enum IOSCameraConnectionStep: String, CaseIterable, Equatable {
   case waitCameraWifiReady
   case joinCameraWifi
   case connectPtp
+  case confirmGalleryMode
   case loadGallery
 
   static let officialGalleryOrder: [IOSCameraConnectionStep] = [
@@ -16,6 +17,7 @@ enum IOSCameraConnectionStep: String, CaseIterable, Equatable {
     .waitCameraWifiReady,
     .joinCameraWifi,
     .connectPtp,
+    .confirmGalleryMode,
     .loadGallery,
   ]
 
@@ -33,6 +35,8 @@ enum IOSCameraConnectionStep: String, CaseIterable, Equatable {
       return "JoinCameraWifi"
     case .connectPtp:
       return "ConnectPtp"
+    case .confirmGalleryMode:
+      return "ConfirmGalleryMode"
     case .loadGallery:
       return "LoadGallery"
     }
