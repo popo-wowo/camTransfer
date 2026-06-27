@@ -1,0 +1,268 @@
+ios/Runner/CameraCore/Orchestration/CameraAppFlowCoordinator.swift
+  9bafd00506acbc05 1-38
+ios/project.yml
+  9bafd00506acbc05 22,34-36,41
+ios/RunnerTests/RunnerTests.swift
+  9bafd00506acbc05 4,1157,1206-1207,1266,1269,1273,1277-1281,1283,1285-1290,1320-1327,1330,1333,1356-1361,1371,1376,1515-1565,1648-1663,1712-1713,1786-1787,1792-1794,1844,1851,1906-1911,1967-1968,2032-2078,2132-2157,2331-2334,2410,2421-2422,2444-2462,2549-2683,2709-2722,2873-2874,2878-2894,2949,2958-2991,3022,3034,3036-3043,3046,3048-3054,3057-3058,3061,3063-3078,3081,3083-3089,3092-3093,3096-3256,3601,3606-3645,3841,3844,3846-4269,4292-4308,4627,4656,4705,4708,4714,4978,4985,4988,4995,5036,5199-5206,5391,5556-5882,5912-5921
+ios/Runner.xcodeproj/project.pbxproj
+  9bafd00506acbc05 11-12,15,18-20,22-24,26-29,45,48-49,54-56,58-59,62,64,66,68,70,88,91,96-98,100,105-113,149-178,188-219,228,271-278,306-316,332-339,343,347-349,386,388,551,553
+docs/superpowers/specs/2026-06-23-ios-android-architecture-parity-design.md
+  9bafd00506acbc05 1-200
+ios/Runner/NativeConnectViewController.swift
+  9bafd00506acbc05 154-212,228-233,237,240-242,246,249-253,256-384,392,396-406,408-426,435-437,439,443,447,451,457-473,475,481,496-500,508-802,903,911-930,964,985-1049,1066,1070-1072,1074,1076-1077,1079,1120-1137,1215,1473-1474,1488-1489,1494-1501,1518-1523,1584-1587,1700-1702,1707-1729,1744-1806,1820-1863,1878,1940-1942,1947-1955,1995-1996,2027-2029,2039-2046,2054-2112,2133-2152,2155,2157,2159-2188,2191,2196,2199-2202,2204-2207,2209-2210,2214-2217,2219-2238,2241-2259,2274-2301,2317,2429,2433,2436,2453,2597-2601,2616-2617,2647-2648,2718,2746-2749,2754-2757,2761,2765,3803-3930,4091-4109,4121-4130,4142,4161-4177,4192-4195,4197,4200-4202,4216,4228-4245,4247,4251-4255,4257,4264-4283,4501,4505-4510,4513-4515,4524,4526-4527,4536-4548,4595-4644,4647-4649,4680,4687,4689-4690,4694-4709,4715,4721,4761-4765,4793-4804,4824-4828,4834,4846-4848,4857,4861,4869-4871,4874-4882,4888,4891,4894,4899-4904,4906-4917,4919-4925,4934,4936,4939-4942,4944-4949,4960-4987,4990-4991,4995-5011,5018-5031,5036-5040,5049-5112,5114-5120,5123-5127,5148-5168,5170-5172,5186-5187,5190,5193,5221,5280,5303-5304,5307-5310,5312-5357,5361-5365,5373,5375,5379-5381,5383-5386,5390,5393-5399,5403-5405,5413-5417,5422,5427,5432,5440-5449,5452-5465,5484,5513,5613-5614,5621-5629,5653-5659,5662-5665,5667,5674-5677,5679-5680,5727-5732,5779-5787,5799-5800,5815-5816,5837-5872,5874-5882,5885,5887,5889-5891,5894-5899,5902-5903,5905-5917,5919-5930,5932-5936,5939-5954,5959-5960,5962,5965-5968,5971,5983-5994,6001-6002,6009-6010,6018,6097-6098,6134-6136,6141-6142,6147-6199,6208,6229-6230,6237-6238,6249,6252-6253,6261-6262,6322-6335,6337-6338,6420-6421,6439,6449,6454-6796,6798,6800-6811,6814-6815,6818-6822,6824,6827-6834,6836-6855,6859-6866,6868-6877,6879,6884-6901,6905-6918,6952-6954,7138,7140-7182,7196-7198,7214,7221,7227,7258-7259,7262-7272,7275-7277,7279,7284-7285,7287-7307,7310,7323,7334,7336,7340-7346,7351-7383,7386,7396,7400,7404,7408-7414,7416,7418-7419,7468-7470,7481-7484,7486-7487,7500,7503-7520,7524-7531,7533-7534,7537,7541,7545,7568-7578,7596-7670,7735,7738-7739,7805,7811-7816,7829-7836,7882-7883
+  687dbfa99ff0e3d8 8276-8280
+ios/Runner/CameraVendorBluetoothService.swift
+  9bafd00506acbc05 385-386,393-396,417-443,455-491,506-509,511,590,596,702-704,1010,1034,1235-1238,1337-1338,1343,1667-1671,1755-1761,1768,1770-1992,2006-2010,2022,2034-2039,2064,2096-2099,2104,2121,2133,2145,2151,2155-2172,2179-2188,2219,2221-2224,2226-2257,2269-2273,2280-2283,2285-2288,2292-2310,2415-2425,2427-2448,2556,2628-2629,2670-2706,2829-2892,2896-2897,2957,3033-3037,3039-3040,3049-3065,3081,3085,3088-3089,3608,3621-3622,3836-3840,4171-4174,4178,4186,4209,4215-4235,4299-4362,4669,4673,4675-4713,4948-5029,5194-5197,5202-5206,5235-5238,5242-5246,5248-5250,5254,5257-5262,5273-5307,5348-5349,5366-5368,5374-5377,5379-5388,5473-5474,5706-5791,5796-5797,5805,5807,5809-5813,5816-5820,5827-5828,5830-5831,5833-5835,5837,5839,5841-5850,5852-5854,5856-5860,5863,5865,5875,5972-5976,5998,6164,6289-6293,6461,6467-6489,6491-6504,6506-6507,6522-6523,6534,6536,6551-6552,6602-6619,6898,6907-6908,6910-6920,6922,6926-6929,6933-6943,6948,6951-6978,7009-7035,7039-7040,7044,7157-7173,7180-7182,7195-7325,7327,7332,7344,7348,7389
+ios/Runner/CameraCore/Pairing/CameraPairingModule.swift
+  9bafd00506acbc05 1-18
+ios/Runner/Assets.xcassets/Contents.json
+  9bafd00506acbc05 1-6
+ios/Runner/CameraCore/Registration/CameraRegistrationGuard.swift
+  9bafd00506acbc05 1-45
+ios/Runner/CameraCore/Connection/CameraGalleryConnectionCoordinator.swift
+  9bafd00506acbc05 1-18
+ios/Runner/CameraCore/Download/CameraDownloadModule.swift
+  9bafd00506acbc05 1-12
+ios/Runner/Assets.xcassets/AppIcon.appiconset/Contents.json
+  9bafd00506acbc05 1-116
+ios/Runner/Info.plist
+  9bafd00506acbc05 13-14,24,32-35,40-41,47-49
+docs/superpowers/plans/2026-06-23-ios-android-architecture-parity.md
+  9bafd00506acbc05 1-73
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "8da7c01243ac9b4fbef70cd2c09d5810a632d8d2",
+  "prompts": {
+    "0308f55b974059ea": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ed5c9-3118-74f1-a38a-4a0c9a0e7dca",
+        "model": "gpt-5.5"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 0,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/4610c750b35fce033ec51dc059af228b1c597fa3d3afd4e8348a2493bf695794"
+    },
+    "20798f43cfba4117": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cfe9bf44-ae21-407f-a83b-544f5af19690",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 550,
+      "total_deletions": 3502,
+      "accepted_lines": 19307,
+      "overriden_lines": 5,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/b40f40ab8cf0ebbe9c8cd70dcb8dcaba837ecbf1a9ce8c712fab20e6e3b853de"
+    },
+    "23255b7480704ebd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ef000-b24b-7a42-b112-77004bc534bc",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 76,
+      "total_deletions": 5,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    },
+    "247ba1264ceefdeb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019eef18-fd1d-7561-8b2a-6a45bfb8081e",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 4,
+      "overriden_lines": 0
+    },
+    "421c9da65e12f280": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019edf4a-dcb3-7262-8419-1038b1be1ad9",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    },
+    "44b8adb767d26068": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ee5c7-3584-7c43-a9dd-59e5a8a635ab",
+        "model": "gpt-5.5"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 0,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/d20b50204f4fc76914f1ad56015becb4883814c6babddfe762197d954d625d41"
+    },
+    "4af0a2ded9c014fd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019eef04-1434-7ad2-a889-d9c5692b5884",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    },
+    "687dbfa99ff0e3d8": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ee972-68b9-75a3-b8a0-9b3b19272efa",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 6909,
+      "total_deletions": 1822,
+      "accepted_lines": 4593,
+      "overriden_lines": 6,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/a6b21c2f80006b96305f3edc41e42be254726ce9e7462adf7c298c3ae05ae767"
+    },
+    "983e931dae46869e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019e8daa-1aee-7bb3-9a69-d36426d30591",
+        "model": "gpt-5.5"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 0,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/c2b1731a72df944d82376be2fd2797b6967dbe4cad379b14f0a28b06ee978c26"
+    },
+    "9857825ebccb647e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ef4bd-c2e0-7c12-bacd-e955ed7d7951",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 571,
+      "total_deletions": 277,
+      "accepted_lines": 506,
+      "overriden_lines": 0
+    },
+    "9bafd00506acbc05": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019eeea1-73e4-7dc1-a86b-52d87193710c",
+        "model": "gpt-5.5"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 5817,
+      "total_deletions": 855,
+      "accepted_lines": 5915,
+      "overriden_lines": 4,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/1a60a845e155989e5bbd0aabaea0ee40ec7ce13b10ecbc39f79bb1d1dd32396d"
+    },
+    "a7c371912b34a4e1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019edf4a-8905-7551-80e8-696054deafd5",
+        "model": "gpt-5.5"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 0,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/731e106fa50535de03ed6cfb5db44b31cd9511d46d813b5839c94104f1761b9a"
+    },
+    "b4c46d00cd7b4f79": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019eef6a-b39b-7243-bfb5-d2d8e96891fa",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 10,
+      "overriden_lines": 5
+    },
+    "ded8c6060dbbb413": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ef329-a941-7c90-bb36-28d45e43f4a3",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 8,
+      "total_deletions": 8,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "df865d53bb9b61e7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019eeab5-9ebb-7ba1-9a34-9751dc9fe15a",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 31063,
+      "overriden_lines": 0
+    },
+    "f00b4809faa99afd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ee82a-2111-77f0-b7b5-69973b04c892",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    },
+    "fbc1fde1cf86fa38": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f03fc-49e3-72d3-835d-08e5102977e4",
+        "model": "gpt-5.5"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 332,
+      "total_deletions": 60,
+      "accepted_lines": 332,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/18dd26d1ee3d7f31ddfb96225afe2a42fb6bf63bf4dd0c87218bcfd40f5f6c71"
+    }
+  }
+}
