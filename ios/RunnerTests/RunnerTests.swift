@@ -343,6 +343,27 @@ final class RunnerTests: XCTestCase {
     )
   }
 
+  func testNativePhotoPreviewRotationPolicyDoesNotDoubleRotateAlreadyAppliedObjectOrientationLikeAndroid() {
+    XCTAssertEqual(
+      NativePhotoPreviewRotationPolicy.autoRotationDegrees(
+        objectOrientation: 2,
+        decodedWidth: 120,
+        decodedHeight: 160,
+        imageData: nil
+      ),
+      0
+    )
+    XCTAssertEqual(
+      NativePhotoPreviewRotationPolicy.autoRotationDegrees(
+        objectOrientation: 4,
+        decodedWidth: 120,
+        decodedHeight: 160,
+        imageData: nil
+      ),
+      0
+    )
+  }
+
   func testNativePhotoPreviewRotationPolicyFallsBackToJpegExifOrientation() throws {
     let data = try jpegDataWithExifOrientation(.right)
 
@@ -354,6 +375,20 @@ final class RunnerTests: XCTestCase {
         imageData: data
       ),
       90
+    )
+  }
+
+  func testNativePhotoPreviewRotationPolicyDoesNotDoubleRotateAlreadyAppliedExifLikeAndroid() throws {
+    let data = try jpegDataWithExifOrientation(.right)
+
+    XCTAssertEqual(
+      NativePhotoPreviewRotationPolicy.autoRotationDegrees(
+        objectOrientation: nil,
+        decodedWidth: 120,
+        decodedHeight: 160,
+        imageData: data
+      ),
+      0
     )
   }
 

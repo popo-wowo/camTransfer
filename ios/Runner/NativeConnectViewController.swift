@@ -17,27 +17,51 @@ enum NativePhotoPreviewRotationPolicy {
 
   static func autoRotationDegrees(
     objectOrientation: Int?,
-    decodedWidth _: Int,
-    decodedHeight _: Int,
+    decodedWidth: Int,
+    decodedHeight: Int,
     imageData: Data?
   ) -> Int {
-    if let objectOrientation {
-      switch objectOrientation {
-      case 2:
-        return 90
-      case 3:
-        return 180
-      case 4:
-        return 270
-      default:
+    if let imageData,
+       let exifDegrees = exifRotationDegrees(imageData) {
+      if rotationAlreadyApplied(exifDegrees, decodedWidth: decodedWidth, decodedHeight: decodedHeight) {
         return 0
       }
+      return exifDegrees
     }
-    guard let imageData,
-          let source = CGImageSourceCreateWithData(imageData as CFData, nil),
+    if let objectOrientation {
+      if let metadataDegrees = cameraVendorOrientationRotationDegrees(objectOrientation) {
+        if rotationAlreadyApplied(metadataDegrees, decodedWidth: decodedWidth, decodedHeight: decodedHeight) {
+          return 0
+        }
+        return metadataDegrees
+      }
+    }
+    return 0
+  }
+
+  private static func rotationAlreadyApplied(_ degrees: Int, decodedWidth: Int, decodedHeight: Int) -> Bool {
+    guard decodedWidth > 0, decodedHeight > 0 else { return false }
+    return (degrees == 90 || degrees == 270) && decodedHeight > decodedWidth
+  }
+
+  private static func cameraVendorOrientationRotationDegrees(_ orientation: Int) -> Int? {
+    switch orientation {
+    case 2:
+      return 90
+    case 3:
+      return 180
+    case 4:
+      return 270
+    default:
+      return nil
+    }
+  }
+
+  private static func exifRotationDegrees(_ imageData: Data) -> Int? {
+    guard let source = CGImageSourceCreateWithData(imageData as CFData, nil),
           let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
           let rawOrientation = properties[kCGImagePropertyOrientation] as? UInt32 else {
-      return 0
+      return nil
     }
     switch rawOrientation {
     case 6, 7:
@@ -47,7 +71,7 @@ enum NativePhotoPreviewRotationPolicy {
     case 5, 8:
       return 270
     default:
-      return 0
+      return nil
     }
   }
 
