@@ -569,7 +569,7 @@ internal object CameraConnectionRetryPolicy {
         when (step) {
             CameraConnectionStep.PairingConfirmation -> CameraConnectionRetryTarget.PairingConfirmation
             CameraConnectionStep.JoinCameraWifi -> CameraConnectionRetryTarget.WifiHandoffWithoutBle
-            CameraConnectionStep.LoadGallery -> CameraConnectionRetryTarget.ExistingPtpProbe
+            CameraConnectionStep.LoadGallery -> CameraConnectionRetryTarget.GalleryEntryWithBle
             CameraConnectionStep.ConnectPtp,
             CameraConnectionStep.RegistrationConsistencyCheck -> CameraConnectionRetryTarget.ResetConnection
             CameraConnectionStep.StaleBondCheck,

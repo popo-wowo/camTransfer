@@ -75,9 +75,9 @@ class CameraVendorBleTransferActivationPolicyTest {
     fun officialImportImageLaunchRequestUsesImportImageFunction() {
         assertTrue(
             CameraVendorBleTransferActivationPolicy.importImageLaunchRequestPayload()
-                .contentEquals(byteArrayOf(0x01, 0x00))
+                .contentEquals(byteArrayOf(0x03, 0x00))
         )
-        assertEquals("0100", CameraVendorBleTransferActivationPolicy.importImageLaunchRequestHex())
+        assertEquals("0300", CameraVendorBleTransferActivationPolicy.importImageLaunchRequestHex())
     }
 
     @Test

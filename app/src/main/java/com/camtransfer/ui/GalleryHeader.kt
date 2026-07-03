@@ -111,6 +111,7 @@ internal fun GalleryHeader(
     isTransferring: Boolean,
     onBack: () -> Unit,
     onOpenLocalProofing: () -> Unit,
+    onOpenDownloadFolderSettings: () -> Unit,
     onOpenDownloads: () -> Unit,
 ) {
     Column(
@@ -140,6 +141,12 @@ internal fun GalleryHeader(
                 icon = GalleryHeaderIcon.Share,
                 contentDescription = "现场分享",
                 onClick = onOpenLocalProofing,
+            )
+            Spacer(Modifier.width(8.dp))
+            GalleryIconButton(
+                icon = GalleryHeaderIcon.Folder,
+                contentDescription = "下载文件夹",
+                onClick = onOpenDownloadFolderSettings,
             )
             Spacer(Modifier.width(8.dp))
             GalleryIconButton(
@@ -173,6 +180,7 @@ internal fun GalleryHeader(
 private enum class GalleryHeaderIcon {
     Back,
     Share,
+    Folder,
     Downloads,
 }
 
@@ -242,6 +250,68 @@ private fun GalleryIconButton(
                             color = CamTransferColors.Ink,
                             start = Offset(size.width * 0.44f, size.height * 0.66f),
                             end = Offset(size.width * 0.57f, size.height * 0.70f),
+                            strokeWidth = stroke.width,
+                            cap = StrokeCap.Round,
+                        )
+                    }
+                    GalleryHeaderIcon.Folder -> {
+                        val left = size.width * 0.18f
+                        val right = size.width * 0.82f
+                        val top = size.height * 0.32f
+                        val bottom = size.height * 0.74f
+                        drawLine(
+                            color = CamTransferColors.Ink,
+                            start = Offset(left, bottom),
+                            end = Offset(right, bottom),
+                            strokeWidth = stroke.width,
+                            cap = StrokeCap.Round,
+                        )
+                        drawLine(
+                            color = CamTransferColors.Ink,
+                            start = Offset(left, bottom),
+                            end = Offset(left, top),
+                            strokeWidth = stroke.width,
+                            cap = StrokeCap.Round,
+                        )
+                        drawLine(
+                            color = CamTransferColors.Ink,
+                            start = Offset(left, top),
+                            end = Offset(size.width * 0.34f, top),
+                            strokeWidth = stroke.width,
+                            cap = StrokeCap.Round,
+                        )
+                        drawLine(
+                            color = CamTransferColors.Ink,
+                            start = Offset(size.width * 0.34f, top),
+                            end = Offset(size.width * 0.42f, size.height * 0.22f),
+                            strokeWidth = stroke.width,
+                            cap = StrokeCap.Round,
+                        )
+                        drawLine(
+                            color = CamTransferColors.Ink,
+                            start = Offset(size.width * 0.42f, size.height * 0.22f),
+                            end = Offset(size.width * 0.54f, size.height * 0.22f),
+                            strokeWidth = stroke.width,
+                            cap = StrokeCap.Round,
+                        )
+                        drawLine(
+                            color = CamTransferColors.Ink,
+                            start = Offset(size.width * 0.54f, size.height * 0.22f),
+                            end = Offset(size.width * 0.62f, top + size.height * 0.08f),
+                            strokeWidth = stroke.width,
+                            cap = StrokeCap.Round,
+                        )
+                        drawLine(
+                            color = CamTransferColors.Ink,
+                            start = Offset(size.width * 0.62f, top + size.height * 0.08f),
+                            end = Offset(right, top + size.height * 0.08f),
+                            strokeWidth = stroke.width,
+                            cap = StrokeCap.Round,
+                        )
+                        drawLine(
+                            color = CamTransferColors.Ink,
+                            start = Offset(right, top + size.height * 0.08f),
+                            end = Offset(right, bottom),
                             strokeWidth = stroke.width,
                             cap = StrokeCap.Round,
                         )

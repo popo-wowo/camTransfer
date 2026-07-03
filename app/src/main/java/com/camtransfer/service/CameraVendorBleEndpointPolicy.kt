@@ -1,9 +1,12 @@
 package com.camtransfer.service
 
+import android.bluetooth.BluetoothDevice
+
 object CameraVendorBleEndpointPolicy {
     data class SystemBond(
         val name: String,
         val address: String,
+        val type: Int? = null,
     )
 
     data class Candidate(
@@ -21,10 +24,26 @@ object CameraVendorBleEndpointPolicy {
         systemBonds: List<SystemBond>,
     ): List<Candidate> {
         val candidates = linkedMapOf<String, Candidate>()
-        systemBonds
+        val matchedNameBonds = systemBonds
             .filter { it.address.isNotBlank() && nameMatches(it.name, remembered.deviceName) }
-            .forEach { bond ->
-                val normalized = bond.address.normalizedAddress()
+        matchedNameBonds.forEach { bond ->
+            val normalized = bond.address.normalizedAddress()
+            candidates.putIfAbsent(
+                normalized,
+                Candidate(
+                    address = normalized,
+                    source = CandidateSource.SystemBond,
+                ),
+            )
+        }
+
+        if (matchedNameBonds.isEmpty() && remembered.cameraId.contains("_")) {
+            val soleLeBond = systemBonds
+                .filter { it.address.isNotBlank() && it.type == BluetoothDevice.DEVICE_TYPE_LE }
+                .distinctBy { it.address.normalizedAddress() }
+                .singleOrNull()
+            if (soleLeBond != null) {
+                val normalized = soleLeBond.address.normalizedAddress()
                 candidates.putIfAbsent(
                     normalized,
                     Candidate(
@@ -33,6 +52,7 @@ object CameraVendorBleEndpointPolicy {
                     ),
                 )
             }
+        }
 
         remembered.bluetoothAddress
             ?.takeIf { it.isNotBlank() }

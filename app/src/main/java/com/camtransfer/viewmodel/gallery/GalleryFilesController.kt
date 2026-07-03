@@ -20,6 +20,7 @@ class GalleryFilesController(
     private val scope: CoroutineScope,
     private val requestScheduler: GalleryRequestScheduler,
     private val thumbnailCache: () -> Map<Int, ByteArray>,
+    private val hasActiveThumbnailWork: () -> Boolean = { false },
 ) {
     private val _files = MutableStateFlow<List<CameraFile>>(emptyList())
     val files: StateFlow<List<CameraFile>> = _files.asStateFlow()
@@ -170,6 +171,9 @@ class GalleryFilesController(
                 for (handle in handles) {
                     if (loadedSource !== cameraSource) return@launch
                     if (fullObjectInfoPausedForExclusiveOperation) return@launch
+                    waitForThumbnailDrain(cameraSource)
+                    if (loadedSource !== cameraSource) return@launch
+                    if (fullObjectInfoPausedForExclusiveOperation) return@launch
                     val file = requestScheduler.run(GalleryRequestPriority.BackgroundMetadata) {
                         cameraSource.resolveFile(handle)
                     }
@@ -214,6 +218,23 @@ class GalleryFilesController(
             } finally {
                 _isLoadingHiddenFormats.value = false
             }
+        }
+    }
+
+    private suspend fun waitForThumbnailDrain(cameraSource: CameraFileSource) {
+        var loggedWait = false
+        while (GalleryFastInitialLoadPolicy.shouldWaitForThumbnailDrainBeforeFullObjectInfo(hasActiveThumbnailWork())) {
+            if (loadedSource !== cameraSource) return
+            if (fullObjectInfoPausedForExclusiveOperation) return
+            if (!loggedWait) {
+                DiagnosticLog.append(
+                    cameraSource.context,
+                    "Gallery",
+                    "Deferring full object info while thumbnails are active",
+                )
+                loggedWait = true
+            }
+            delay(GalleryFastInitialLoadPolicy.FULL_OBJECT_INFO_WAIT_FOR_THUMBNAILS_DELAY_MS)
         }
     }
 
@@ -271,6 +292,7 @@ internal object GalleryFileLoadPolicy {
 internal object GalleryFastInitialLoadPolicy {
     const val MAX_INITIAL_THUMBNAIL_REQUESTS = 8
     const val FULL_OBJECT_INFO_AFTER_PLACEHOLDERS_DELAY_MS = 3_000L
+    const val FULL_OBJECT_INFO_WAIT_FOR_THUMBNAILS_DELAY_MS = 50L
     const val INCREMENTAL_METADATA_BATCH_SIZE = 12
     private const val LARGE_GALLERY_PLACEHOLDER_COUNT = 500
 
@@ -282,6 +304,9 @@ internal object GalleryFastInitialLoadPolicy {
 
     fun shouldContinueFullObjectInfoAfterInitialPlaceholders(initialFileCount: Int): Boolean =
         initialFileCount > 0
+
+    fun shouldWaitForThumbnailDrainBeforeFullObjectInfo(hasActiveThumbnailWork: Boolean): Boolean =
+        hasActiveThumbnailWork
 
     fun shouldPublishIncrementalMetadataBatch(
         resolvedCount: Int,
@@ -307,10 +332,15 @@ internal object GalleryFastInitialLoadPolicy {
         isLoadingFullObjectInfo: Boolean,
         hasThumbnail: Boolean,
         activeOrPendingThumbnailCount: Int,
+        isExplicitVisibleWindow: Boolean = false,
     ): Boolean {
         if (isTransferPreparingOrActive) return false
         if (hasThumbnail) return false
-        if (isLoadingFullObjectInfo && activeOrPendingThumbnailCount >= MAX_INITIAL_THUMBNAIL_REQUESTS) {
+        if (
+            isLoadingFullObjectInfo &&
+            !isExplicitVisibleWindow &&
+            activeOrPendingThumbnailCount >= MAX_INITIAL_THUMBNAIL_REQUESTS
+        ) {
             return false
         }
         return true

@@ -51,9 +51,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -94,6 +96,9 @@ import com.camtransfer.model.CameraFile
 import com.camtransfer.model.TransferItem
 import com.camtransfer.model.TransferState
 import com.camtransfer.service.CameraFileSource
+import com.camtransfer.service.DownloadFolderPathPolicy
+import com.camtransfer.service.DownloadFolderSaveMode
+import com.camtransfer.service.DownloadFolderSettings
 import com.camtransfer.viewmodel.BrowseViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -101,6 +106,219 @@ import java.nio.ByteBuffer
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import kotlin.math.hypot
+
+@Composable
+internal fun DownloadFolderSettingsDialog(
+    settings: DownloadFolderSettings,
+    cameraDisplayName: String?,
+    sampleCaptureDate: String,
+    onPickCustomFolder: () -> Unit,
+    onDismiss: () -> Unit,
+    onSave: (DownloadFolderSettings) -> Unit,
+) {
+    var saveMode by remember(settings) { mutableStateOf(settings.saveMode) }
+    var rootFolderName by remember(settings) { mutableStateOf(settings.rootFolderName) }
+    var includeCameraName by remember(settings) { mutableStateOf(settings.includeCameraName) }
+    var includeDateFolder by remember(settings) { mutableStateOf(settings.includeDateFolder) }
+    var customTreeUri by remember(settings) { mutableStateOf(settings.customTreeUri) }
+    var customTreeLabel by remember(settings) { mutableStateOf(settings.customTreeLabel) }
+    val composedSettings = DownloadFolderSettings(
+        saveMode = saveMode,
+        rootFolderName = rootFolderName,
+        includeCameraName = includeCameraName,
+        includeDateFolder = includeDateFolder,
+        customTreeUri = customTreeUri,
+        customTreeLabel = customTreeLabel,
+    )
+    val previewPath = DownloadFolderPathPolicy.previewRelativePath(
+        settings = composedSettings,
+        cameraDisplayName = cameraDisplayName,
+        sampleCaptureDate = sampleCaptureDate,
+    )
+    val canSave = when (saveMode) {
+        DownloadFolderSaveMode.RULE_MEDIASTORE -> true
+        DownloadFolderSaveMode.CUSTOM_TREE -> !customTreeUri.isNullOrBlank()
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(
+                enabled = canSave,
+                onClick = {
+                    onSave(composedSettings)
+                },
+            ) {
+                Text("保存")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+        title = { Text("下载文件夹") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                DownloadFolderModeOptionRow(
+                    selected = saveMode == DownloadFolderSaveMode.RULE_MEDIASTORE,
+                    title = "相册文件夹",
+                    subtitle = "继续写入系统相册，可按相机名和日期自动分层",
+                    onClick = { saveMode = DownloadFolderSaveMode.RULE_MEDIASTORE },
+                )
+                DownloadFolderModeOptionRow(
+                    selected = saveMode == DownloadFolderSaveMode.CUSTOM_TREE,
+                    title = "选择手机文件夹",
+                    subtitle = DownloadFolderPathPolicy.customFolderSummary(
+                        DownloadFolderSettings(
+                            saveMode = DownloadFolderSaveMode.CUSTOM_TREE,
+                            customTreeUri = customTreeUri,
+                            customTreeLabel = customTreeLabel,
+                        )
+                    ),
+                    onClick = { saveMode = DownloadFolderSaveMode.CUSTOM_TREE },
+                )
+                if (DownloadFolderPathPolicy.shouldShowRuleOptions(composedSettings)) {
+                    OutlinedTextField(
+                        value = rootFolderName,
+                        onValueChange = { rootFolderName = it },
+                        singleLine = true,
+                        label = { Text("根文件夹名") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    DownloadFolderOptionRow(
+                        checked = includeCameraName,
+                        title = "包含相机名",
+                        subtitle = cameraDisplayName?.takeIf { it.isNotBlank() } ?: "当前没有可用相机名时会省略这一层",
+                        onCheckedChange = { includeCameraName = it },
+                    )
+                    DownloadFolderOptionRow(
+                        checked = includeDateFolder,
+                        title = "包含日期",
+                        subtitle = "格式固定为 YYYY-MM-DD",
+                        onCheckedChange = { includeDateFolder = it },
+                    )
+                } else {
+                    Button(
+                        onClick = onPickCustomFolder,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = CamTransferColors.Ink,
+                            contentColor = CamTransferColors.Card,
+                        ),
+                    ) {
+                        Text(if (customTreeUri.isNullOrBlank()) "选择手机文件夹" else "重新选择文件夹")
+                    }
+                    Text(
+                        "自选模式会直接写入你选择的目录，不再自动追加相机名或日期子文件夹。",
+                        color = CamTransferColors.SecondaryInk,
+                        fontSize = 12.sp,
+                    )
+                }
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(
+                        "保存位置预览",
+                        color = CamTransferColors.SecondaryInk,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        previewPath,
+                        color = CamTransferColors.Ink,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+            }
+        },
+    )
+}
+
+@Composable
+private fun DownloadFolderModeOptionRow(
+    selected: Boolean,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(12.dp),
+        color = if (selected) CamTransferColors.MutedFill else CamTransferColors.Card,
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (selected) CamTransferColors.Ink else CamTransferColors.Hairline,
+        ),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(18.dp)
+                    .clip(CircleShape)
+                    .background(if (selected) CamTransferColors.Ink else Color.Transparent)
+                    .border(1.5.dp, CamTransferColors.Ink, CircleShape),
+            )
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                Text(
+                    title,
+                    color = CamTransferColors.Ink,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    subtitle,
+                    color = CamTransferColors.SecondaryInk,
+                    fontSize = 12.sp,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DownloadFolderOptionRow(
+    checked: Boolean,
+    title: String,
+    subtitle: String,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .clickable { onCheckedChange(!checked) }
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Checkbox(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(
+                title,
+                color = CamTransferColors.Ink,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                subtitle,
+                color = CamTransferColors.SecondaryInk,
+                fontSize = 12.sp,
+            )
+        }
+    }
+}
 
 @Composable
 internal fun DisconnectConfirmDialog(
@@ -171,8 +389,9 @@ internal fun DateRangePickerDialog(
 ) {
     var startDay by remember(initialRange) { mutableStateOf(initialRange?.start) }
     var endDay by remember(initialRange) { mutableStateOf(initialRange?.end) }
-    val normalizedStart = startDay?.let { start -> endDay?.let { minOf(start, it) } ?: start }
-    val normalizedEnd = startDay?.let { start -> endDay?.let { maxOf(start, it) } ?: start }
+    var activeEndpoint by remember(initialRange) { mutableStateOf(GalleryDateRangeEndpoint.Start) }
+    val normalizedStart = GalleryDateRangePickerPolicy.normalizedStart(startDay, endDay)
+    val normalizedEnd = GalleryDateRangePickerPolicy.normalizedEnd(startDay, endDay)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -193,6 +412,7 @@ internal fun DateRangePickerDialog(
                     onClick = {
                         startDay = null
                         endDay = null
+                        activeEndpoint = GalleryDateRangeEndpoint.Start
                     },
                 ) { Text("清除") }
                 TextButton(onClick = onDismiss) { Text("取消") }
@@ -200,38 +420,55 @@ internal fun DateRangePickerDialog(
         },
         title = { Text("选择时间范围") },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    when {
-                        startDay == null -> "先选开始日期"
-                        endDay == null -> "再选结束日期；只选一天也可以确定"
-                        else -> "已选 ${rangeLabel(startDay!!, endDay!!)}"
-                    },
-                    color = CamTransferColors.SecondaryInk,
-                    style = MaterialTheme.typography.bodySmall,
-                )
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    DateRangeField(
+                        label = "开始时间",
+                        value = GalleryDateRangePickerPolicy.fieldValue(startDay),
+                        selected = activeEndpoint == GalleryDateRangeEndpoint.Start,
+                        onClick = { activeEndpoint = GalleryDateRangeEndpoint.Start },
+                        modifier = Modifier.weight(1f),
+                    )
+                    DateRangeField(
+                        label = "结束时间",
+                        value = GalleryDateRangePickerPolicy.fieldValue(endDay),
+                        selected = activeEndpoint == GalleryDateRangeEndpoint.End,
+                        onClick = { activeEndpoint = GalleryDateRangeEndpoint.End },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
                 LazyColumn(modifier = Modifier.height(280.dp)) {
                     items(days) { day ->
                         val selected = normalizedStart != null &&
                             normalizedEnd != null &&
                             day in normalizedStart..normalizedEnd
+                        val isStart = day == startDay
+                        val isEnd = day == endDay
                         Text(
                             day.format(DateTimeFormatter.ofPattern("yyyy-MM-dd")),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(8.dp))
-                                .background(if (selected) CamTransferColors.MutedFill else Color.Transparent)
-                                .clickable {
-                                    if (startDay == null || endDay != null) {
-                                        startDay = day
-                                        endDay = null
-                                    } else {
-                                        endDay = day
+                                .background(
+                                    when {
+                                        isStart || isEnd -> CamTransferColors.Ink.copy(alpha = 0.12f)
+                                        selected -> CamTransferColors.MutedFill
+                                        else -> Color.Transparent
                                     }
+                                )
+                                .clickable {
+                                    when (activeEndpoint) {
+                                        GalleryDateRangeEndpoint.Start -> startDay = day
+                                        GalleryDateRangeEndpoint.End -> endDay = day
+                                    }
+                                    activeEndpoint = GalleryDateRangePickerPolicy.nextEndpointAfterDate(activeEndpoint)
                                 }
                                 .padding(horizontal = 10.dp, vertical = 14.dp),
                             color = CamTransferColors.Ink,
-                            fontWeight = if (selected) FontWeight.Black else FontWeight.SemiBold,
+                            fontWeight = if (isStart || isEnd) FontWeight.Black else FontWeight.SemiBold,
                         )
                     }
                 }
@@ -240,10 +477,49 @@ internal fun DateRangePickerDialog(
     )
 }
 
+@Composable
+private fun DateRangeField(
+    label: String,
+    value: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(10.dp),
+        color = if (selected) CamTransferColors.MutedFill else CamTransferColors.Card,
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (selected) CamTransferColors.Ink else CamTransferColors.Hairline,
+        ),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                label,
+                color = CamTransferColors.SecondaryInk,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+            )
+            Text(
+                value,
+                color = CamTransferColors.Ink,
+                fontWeight = FontWeight.Black,
+                fontSize = 14.sp,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
 internal object GalleryDatePickerPolicy {
     fun selectableDays(today: LocalDate): List<LocalDate> =
         generateSequence(today) { it.minusDays(1) }
             .take(365 * 5 + 2)
             .toList()
 }
-

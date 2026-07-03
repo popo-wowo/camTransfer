@@ -102,6 +102,8 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import kotlin.math.hypot
 
+private val PreviewActionColor = Color(0xFF177C6D)
+
 @Composable
 internal fun PhotoPreviewDialog(
     files: List<CameraFile>,
@@ -275,7 +277,278 @@ private fun PreviewSelectionButton(
 }
 
 @Composable
-private fun ZoomablePreviewImage(
+private fun PreviewActionBar(
+    file: CameraFile,
+    downloadState: TransferState?,
+    isSelected: Boolean,
+    canDownload: Boolean,
+    hasHighDefinitionPreview: Boolean,
+    isLoadingHighDefinitionPreview: Boolean,
+    preferCompressedDownloads: Boolean,
+    canChangeTransferMode: Boolean,
+    onRequestHighDefinitionPreview: () -> Unit,
+    onToggleSelection: () -> Unit,
+    onPreferenceChanged: (Boolean) -> Unit,
+    onDownload: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(start = 18.dp, top = 14.dp, end = 18.dp, bottom = 108.dp),
+        shape = RoundedCornerShape(30.dp),
+        color = CamTransferColors.WarmFill.copy(alpha = 0.86f),
+        border = BorderStroke(1.dp, CamTransferColors.Hairline.copy(alpha = 0.62f)),
+        shadowElevation = 8.dp,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(58.dp)
+                .padding(horizontal = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            PreviewSelectionBox(
+                checked = isSelected,
+                enabled = canDownload,
+                onClick = onToggleSelection,
+            )
+            Spacer(Modifier.width(10.dp))
+            TransferModeCapsule(
+                preferCompressedDownloads = preferCompressedDownloads,
+                enabled = canChangeTransferMode,
+                onPreferenceChanged = onPreferenceChanged,
+            )
+            Spacer(Modifier.width(10.dp))
+            HighDefinitionPreviewCapsule(
+                visible = GalleryPreviewActionBarPolicy.canRequestHighDefinitionPreview(file),
+                hasHighDefinitionPreview = hasHighDefinitionPreview,
+                isLoadingHighDefinitionPreview = isLoadingHighDefinitionPreview,
+                onClick = onRequestHighDefinitionPreview,
+            )
+            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.width(10.dp))
+            Button(
+                onClick = onDownload,
+                enabled = canDownload,
+                modifier = Modifier
+                    .height(38.dp)
+                    .requiredWidth(88.dp),
+                shape = RoundedCornerShape(21.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = PreviewActionColor,
+                    contentColor = CamTransferColors.Card,
+                    disabledContainerColor = CamTransferColors.MutedFill,
+                    disabledContentColor = CamTransferColors.SecondaryInk,
+                ),
+                contentPadding = PaddingValues(horizontal = 0.dp),
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp, pressedElevation = 0.dp),
+            ) {
+                Text(
+                    GalleryPreviewActionBarPolicy.downloadLabel(downloadState),
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HighDefinitionPreviewCapsule(
+    visible: Boolean,
+    hasHighDefinitionPreview: Boolean,
+    isLoadingHighDefinitionPreview: Boolean,
+    onClick: () -> Unit,
+) {
+    if (!visible) return
+
+    val label = GalleryPreviewActionBarPolicy.highDefinitionPreviewLabel(
+        hasPreview = hasHighDefinitionPreview,
+        isLoading = isLoadingHighDefinitionPreview,
+    )
+    val enabled = !hasHighDefinitionPreview && !isLoadingHighDefinitionPreview
+    Surface(
+        modifier = Modifier
+            .height(32.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(enabled = enabled, onClick = onClick),
+        shape = RoundedCornerShape(16.dp),
+        color = if (hasHighDefinitionPreview) {
+            PreviewActionColor.copy(alpha = 0.12f)
+        } else {
+            Color.White.copy(alpha = 0.08f)
+        },
+        border = BorderStroke(
+            1.dp,
+            if (hasHighDefinitionPreview) PreviewActionColor.copy(alpha = 0.54f) else Color.White.copy(alpha = 0.26f),
+        ),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            if (isLoadingHighDefinitionPreview) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    strokeWidth = 1.6.dp,
+                    color = Color.White.copy(alpha = 0.85f),
+                )
+            } else {
+                Text(
+                    if (hasHighDefinitionPreview) "HD" else "预",
+                    color = if (hasHighDefinitionPreview) PreviewActionColor else Color.White.copy(alpha = 0.85f),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp,
+                )
+            }
+            Text(
+                label,
+                color = if (hasHighDefinitionPreview) PreviewActionColor else Color.White.copy(alpha = if (enabled) 0.92f else 0.56f),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PreviewSelectionBox(
+    checked: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(32.dp)
+            .clip(CircleShape)
+            .background(
+                when {
+                    checked -> PreviewActionColor
+                    enabled -> PreviewActionColor.copy(alpha = 0.12f)
+                    else -> CamTransferColors.MutedFill.copy(alpha = 0.55f)
+                }
+            )
+            .border(
+                width = if (enabled) 1.8.dp else 1.5.dp,
+                color = when {
+                    checked -> PreviewActionColor
+                    enabled -> PreviewActionColor.copy(alpha = 0.48f)
+                    else -> CamTransferColors.Hairline.copy(alpha = 0.55f)
+                },
+                shape = CircleShape,
+            )
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (checked) {
+            Text(
+                "✓",
+                color = CamTransferColors.Card,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Black,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PreviewFileInfoButton(
+    onClick: () -> Unit,
+) {
+    PreviewTopBarCircleButton(
+        label = "!",
+        contentDescription = "图片信息",
+        size = 30.dp,
+        onClick = onClick,
+    )
+}
+
+@Composable
+private fun PreviewTopBarCircleButton(
+    label: String,
+    contentDescription: String,
+    size: androidx.compose.ui.unit.Dp,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .size(size)
+            .clickable { onClick() }
+            .semantics { this.contentDescription = contentDescription },
+        shape = CircleShape,
+        color = Color.White.copy(alpha = 0.12f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.46f)),
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(
+                label,
+                color = Color.White,
+                fontSize = if (size <= 30.dp) 15.sp else 18.sp,
+                fontWeight = FontWeight.Black,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PreviewFileInfoDialog(
+    file: CameraFile,
+    onDismiss: () -> Unit,
+) {
+    val rows = remember(file.info) { GalleryPreviewFileInfoPolicy.rows(file) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                file.info.filename,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        },
+        text = {
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(rows) { row ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            row.label,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 13.sp,
+                            modifier = Modifier.weight(0.38f),
+                        )
+                        Text(
+                            row.value,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(0.62f),
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("关闭")
+            }
+        },
+    )
+}
+
+@Composable
+internal fun ZoomablePreviewImage(
     file: CameraFile,
     previewImage: ByteArray?,
     manualRotationDegrees: Int,

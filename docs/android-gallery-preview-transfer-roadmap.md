@@ -1,8 +1,172 @@
 # Android Gallery Preview And Transfer Roadmap
 
-更新日期: 2026-06-19
+更新日期: 2026-06-27
 
 本文记录 2026-06-19 原厂 XApp 抓包后，Android 相册缩略图、高清预览、原图导入和缓存的后续改造计划。执行前以 `docs/android-official-xapp-connection-analysis.md` 的证据等级为准，不把未证明的 fallback 放进主链路。
+
+## 当前未提交实验改动
+
+以下内容是当前 Android diagnostics worktree 里还没有提交的改动，目的是把“产品功能改动”和“协议诊断改动”分开记录，避免后续排查时混在一起。
+
+### 1. 下载目录配置
+
+目标:
+
+- 下载到系统相册时支持按规则落到独立目录，降低直接混入大相册的隐私问题。
+- 支持用户改成 SAF 自选目录。
+
+实现:
+
+- 新增 `DownloadFolderSettingsStore` 持久化下载目录配置，保存:
+  - 保存模式: `RULE_MEDIASTORE` 或 `CUSTOM_TREE`
+  - 根目录名
+  - 是否按相机名创建子目录
+  - 是否按日期创建子目录
+  - SAF tree uri / label
+- `GalleryService` 下载保存前先读取设置:
+  - `RULE_MEDIASTORE` 走 `MediaStore`，通过 `RELATIVE_PATH` 生成 `相机名/日期` 目录。
+  - `CUSTOM_TREE` 走 `DocumentsContract.createDocument` 写入用户选择的树目录。
+- `BrowseScreen` 接入 `OpenDocumentTree`。
+- `GalleryDialogs` 新增下载目录设置弹窗。
+- `GalleryHeader` 新增目录设置入口。
+- `TransferViewModel` 把当前相机展示名传给 `GalleryService` 用于目录命名。
+
+### 2. 单图高清预览页和预览弹层改造
+
+目标:
+
+- 把单图打开和列表缩略图区分开。
+- 单图支持走高清预览协议，不再只放大缩略图。
+
+实现:
+
+- 新增 `HighDefinitionPreviewScreen`，作为单独“高清预览模式”页面。
+- `GalleryPreviewController` 新增:
+  - 已加载高清预览 handle 集合
+  - 正在加载高清预览 handle 集合
+  - 强制加载请求
+  - 更大的预览缓存容量
+- `BrowseViewModel` 暴露高清预览状态和强制触发接口。
+- `GalleryPreviewDialog` 改成底部悬浮操作条样式，承载:
+  - 选择
+  - 原图/压缩状态
+  - 下载动作
+  - 图片信息入口
+- 文件信息优先显示当前已知 `ObjectInfo` 字段，不为了展示信息额外重走相机主链路。
+
+### 3. 相册页交互和筛选 UI 调整
+
+目标:
+
+- 让日期范围筛选和相册顶部工具更清晰。
+- 让缩略图请求更偏向当前可见区域。
+
+实现:
+
+- `GalleryUiPolicy` / `GalleryDialogs` 把日期范围筛选改成开始、结束两个明确输入框。
+- `GalleryThumbnailController` 调整首屏与可见窗口请求规则:
+  - 当前没有可见项时，主动给一个首屏窗口，而不是直接返回空。
+  - 可见窗口请求优先于后台补齐。
+- `GalleryFilesController` 调整完整 `ObjectInfo` 的节流，让首屏与可见区域优先。
+
+### 4. 相机名与配对辅助信息
+
+目标:
+
+- 下载目录、连接页和有线导入都能拿到更稳定的展示名。
+- 配对清理时能更明确判断系统 bond 是否还残留。
+
+实现:
+
+- `CameraFileSource` 增加 `displayName`。
+- `WiredCameraService` 从 USB manufacturer / product string 生成展示名。
+- `CameraVendorPairingForgetPolicy` 增加剩余 bonded address 检查辅助方法。
+
+### 5. Android 图库启动协议诊断改动
+
+目标:
+
+- 把“正在读取相机照片数量”卡住的问题缩小到具体协议步骤。
+- 只记录和主链路有关的底层证据，不再靠 UI 重试掩盖。
+
+实现:
+
+- BLE 图库启动 payload 从 `0100` 改成 `0300`，对齐当前已验证的 Android ReferenceApp 激活序列。
+- `PtpConnection` 在 `9050 / D22B / 9053 / D620 / D621` 增加 packet-level trace。
+- 从主链路 `loadCameraVendorGalleryObjectHandles()` 去掉稳定版里会主动写入的:
+  - `setOfficialDefaultSearchModeForDiagnostic()`
+  - `setOfficialAllFormatSearchModeForDiagnostic()`
+- 给 `9053 / D620 / D621 / D22B` 增加更长的读取超时，避免还没收完包就直接按默认超时断掉。
+- 针对当前机型 `9053` 首包出现“嵌套 legacy envelope”的现象，加入首包 normalize 和窄范围 header resync 诊断。
+
+注意:
+
+- 这一组改动属于协议诊断，不应直接视为稳定主链路定稿。
+- 2026-07-02 已闭环“进图库卡在照片数量”的主 blocker：根因是 `9053 GetSpecifiedObjectCountGroupByDate` 首包 framing 错误，不是配对、Wi-Fi、PTP open 或 `9050/D22B`。
+- 但 `D604=HEIF/RAW` 扩展阶段的第二种 `9053` 首包 shape 仍未完全闭环。
+
+### 6. 当前阻塞点
+
+截至当前 worktree，已确认:
+
+- BLE 重连、相机 Wi-Fi 激活、Wi-Fi handoff、PTP INIT、`D212/DF01/DF28/D244/D226/D227` 已能走通。
+- `loadCameraVendorGalleryObjectHandles()` 的第一个 blocker 已经定位并修复在 `9053`。
+- 2026-07-02 成功日志证据:
+  - `23:29:53.972` `9053` 开始
+  - `23:30:00.393` `Legacy packet decoded ... payloadBytes=533 normalizedBytes=517`
+  - `23:30:00.395` `Legacy command complete label=9053-count-group-by-date`
+  - `23:30:00.479` `D620` 完成
+  - `23:30:00.495` `D621` 完成
+- 这证明旧问题不是连接失败，而是旧代码把 `9053` 首包当成普通 legacy data packet 处理，导致日期字符串 UTF-16 字节被误读成下一包包头。
+- 当前剩余问题:
+  - 后续 `D604=HEIF` 或 `D604=RAW` 扩展阶段再次读取 `9053` 时，日志出现第二种 shape：`length=664`
+  - 当前样本里这类包仍会在首包 body 读取阶段超时
+  - 因此后续协议工作要继续盯 `HEIF/RAW` 扩展 `9053`，而不是再回头怀疑配对/主链路
+
+### 7. 2026-07-03 二次卡住与当前修正
+
+状态: 已确认根因并已落到当前 Android 包。
+
+现象:
+
+- 2026-07-03 晚上的实机日志里，主链路已经走到:
+  - `ReconnectPairedBle` 成功
+  - `TransferAuthorization` 成功
+  - `ActivateCameraWifi` 成功
+  - `WaitCameraWifiReady` 成功
+  - `JoinCameraWifi` 成功
+  - `ConnectPtp` 成功
+  - `ConfirmGalleryMode` 成功
+- 但 `LoadGallery` 一开始连续卡在:
+  - `9054-current-image-info` 超时 `7000 ms`
+  - `9055-current-thumb` 超时 `7000 ms`
+  - `9050-search-mode-desc-all` 再超时 `15000 ms`
+- 最终“正在读取相机照片数量”阶段大约 `29 s` 后失败。
+
+结论:
+
+- 这次失败已经不是 BLE、Wi-Fi、PTP open 或 `9053` framing。
+- 失败点收窄到 `LoadGallery` 最前面的 current-image context prime。
+- `9054/9055` 在 Android 当前首屏链路里不是必需步骤；它们超时会污染首屏稳定性。
+
+处理:
+
+- 从 `PtpConnection.loadCameraVendorGalleryObjectHandles()` 的阻塞主链路中移除:
+  - `9054 GetLatestObjectInfo(handle=0x10000001)`
+  - `9055 GetExtensionThumb(handle=0x10000001)`
+- 保留并继续依赖:
+  - `9050 -> D22B -> 9053 -> D620 -> D621`
+  - 以及必要的 `D604=HEIF/RAW` 扩展 `9053/D620/D621`
+
+结果:
+
+- 当前包已经恢复“可以进入相册”。
+- 进入相册仍然偏慢，但慢点已经重新收敛为:
+  - BLE 重连
+  - 相机 AP ready 等待
+  - Android 系统加入相机 Wi-Fi
+  - `9050/9053` 本身的读取
+- 这比之前“先被 `9054/9055` 白白耗掉 14 秒再失败”更接近可继续优化的状态。
 
 ## 已确定结论
 
@@ -36,7 +200,7 @@
 
 ### P0.2 高清预览协议
 
-状态: 待讨论后实现。
+状态: Android 已按原厂路径实现，仍需更多机型实机复测。
 
 “高清预览协议”指的是原厂单图打开时使用的 PTP 顺序:
 
@@ -71,6 +235,15 @@
 - 只先支持 JPEG/HEIF 的 screen preview。
 - 不把这条路径当缩略图 fallback。
 - 失败时 UI 继续显示缩略图，但记录明确诊断日志。
+
+已落地行为:
+
+- 单图打开触发 `GalleryPreviewController` 的 `PreviewImage` 优先级请求，并暂停缩略图队列，避免并发污染 PTP 状态。
+- 协议层先确认对象是 JPEG/HEIF，再设置 `IMAGE_FORCE_COMPRESSION(0xD226)=1`。
+- 设置后重新 `GET_OBJECT_INFO(handle)`，使用 fresh `ObjectInfo.compressedSize` 读取 screen preview，不再使用旧的 `256KB` 截断。
+- screen preview 设置了 `8MB` 上限，异常尺寸直接失败并保留缩略图显示。
+- JPEG 预览必须通过 SOI/EOI 完整性校验；退出时在 `finally` 中 reset `D226=0`。
+- 预览页新增 `!` 信息入口，字段来自当前 `ObjectInfo`，包括文件名、格式、尺寸、缩略图尺寸、大小、拍摄时间、handle、存储、方向等；这个入口不触发新的相机请求。
 
 ### P0.3 原图/压缩导入模式
 

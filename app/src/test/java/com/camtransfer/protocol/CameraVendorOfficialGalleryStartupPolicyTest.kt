@@ -33,4 +33,12 @@ class CameraVendorOfficialGalleryStartupPolicyTest {
             CameraVendorOfficialGalleryStartupPolicy.initialObjectFormatMask(),
         )
     }
+
+    @Test
+    fun expandedGalleryStartupPassOnlyChecksStillExpansionFormats() {
+        assertEquals(
+            listOf(CameraVendorSearchMode.FORMAT_HEIF, CameraVendorSearchMode.FORMAT_RAW),
+            CameraVendorOfficialGalleryStartupPolicy.expandedStillFormatMasks(),
+        )
+    }
 }

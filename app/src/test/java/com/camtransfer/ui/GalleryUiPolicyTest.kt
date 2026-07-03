@@ -10,6 +10,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 import java.time.LocalDate
 
 class GalleryUiPolicyTest {
@@ -473,6 +474,34 @@ class GalleryUiPolicyTest {
     }
 
     @Test
+    fun thumbnailRequestWindowFallsBackToFirstRowsWhenVisibleHandlesAreStaleAfterFiltering() {
+        val filteredHandles = listOf(30, 29, 28, 27, 26, 25, 24, 23, 22, 21)
+
+        assertEquals(
+            listOf(30, 29, 28, 27, 26, 25, 24, 23, 22),
+            GalleryThumbnailRequestWindowPolicy.handlesToRequest(
+                orderedHandles = filteredHandles,
+                visibleHandles = listOf(10, 9, 8),
+                columnCount = 3,
+            ),
+        )
+    }
+
+    @Test
+    fun thumbnailRequestWindowFallsBackToFirstRowsBeforeLazyGridReportsVisibility() {
+        val filteredHandles = listOf(40, 39, 38, 37, 36)
+
+        assertEquals(
+            listOf(40, 39, 38, 37, 36),
+            GalleryThumbnailRequestWindowPolicy.handlesToRequest(
+                orderedHandles = filteredHandles,
+                visibleHandles = emptyList(),
+                columnCount = 3,
+            ),
+        )
+    }
+
+    @Test
     fun offscreenThumbnailRequestsDoNotStartFromLazyGridPrefetch() {
         assertFalse(
             GalleryThumbnailVisibilityPolicy.shouldRequestThumbnail(
@@ -551,6 +580,19 @@ class GalleryUiPolicyTest {
     }
 
     @Test
+    fun dateRangePickerPolicyUsesSeparateStartAndEndFields() {
+        val start = LocalDate.of(2026, 5, 20)
+        val end = LocalDate.of(2026, 5, 28)
+
+        assertEquals("选择日期", GalleryDateRangePickerPolicy.fieldValue(null))
+        assertEquals("2026-05-20", GalleryDateRangePickerPolicy.fieldValue(start))
+        assertEquals(GalleryDateRangeEndpoint.End, GalleryDateRangePickerPolicy.nextEndpointAfterDate(GalleryDateRangeEndpoint.Start))
+        assertEquals(GalleryDateRangeEndpoint.End, GalleryDateRangePickerPolicy.nextEndpointAfterDate(GalleryDateRangeEndpoint.End))
+        assertEquals(start, GalleryDateRangePickerPolicy.normalizedStart(start, end))
+        assertEquals(end, GalleryDateRangePickerPolicy.normalizedEnd(end, start))
+    }
+
+    @Test
     fun activeAndSavedDownloadsAreNotSelectableAgain() {
         assertTrue(GalleryDownloadUiPolicy.canSelect(TransferState.ERROR))
         assertTrue(GalleryDownloadUiPolicy.canSelect(null))
@@ -592,6 +634,40 @@ class GalleryUiPolicyTest {
     fun downloadRecordCleanupLivesInDownloadCenterNotGalleryHeader() {
         assertFalse(GalleryHeaderActionPolicy.shouldShowClearDownloadRecords)
         assertEquals("清理记录", DownloadCenterActionPolicy.clearDownloadRecordsLabel)
+    }
+
+    @Test
+    fun galleryHeaderAddsDownloadFolderAction() {
+        val source = listOf(
+            File("src/main/java/com/camtransfer/ui/GalleryHeader.kt"),
+            File("app/src/main/java/com/camtransfer/ui/GalleryHeader.kt"),
+        ).first { it.exists() }.readText()
+
+        assertTrue(source.contains("GalleryHeaderIcon.Folder"))
+        assertTrue(source.contains("contentDescription = \"下载文件夹\""))
+    }
+
+    @Test
+    fun browseScreenShowsDownloadFolderSettingsDialog() {
+        val source = listOf(
+            File("src/main/java/com/camtransfer/ui/BrowseScreen.kt"),
+            File("app/src/main/java/com/camtransfer/ui/BrowseScreen.kt"),
+        ).first { it.exists() }.readText()
+
+        assertTrue(source.contains("DownloadFolderSettingsDialog("))
+        assertTrue(source.contains("downloadFolderSettingsStore.save("))
+    }
+
+    @Test
+    fun downloadFolderDialogIncludesCustomFolderPickerAction() {
+        val source = listOf(
+            File("src/main/java/com/camtransfer/ui/GalleryDialogs.kt"),
+            File("app/src/main/java/com/camtransfer/ui/GalleryDialogs.kt"),
+        ).first { it.exists() }.readText()
+
+        assertTrue(source.contains("选择手机文件夹"))
+        assertTrue(source.contains("DownloadFolderModeOptionRow("))
+        assertTrue(source.contains("onPickCustomFolder"))
     }
 
     @Test
@@ -760,6 +836,24 @@ class GalleryUiPolicyTest {
     }
 
     @Test
+    fun cameraGalleryKeepsPinchColumnsAndThumbnailPrefetchUsesCurrentColumnCount() {
+        val source = listOf(
+            File("src/main/java/com/camtransfer/ui/BrowseScreen.kt"),
+            File("app/src/main/java/com/camtransfer/ui/BrowseScreen.kt"),
+        ).first { it.exists() }.readText()
+        val thumbnailRequestBlock = source.substring(
+            source.indexOf("val thumbnailRequestHandles"),
+            source.indexOf("val visibleGridHandleSet"),
+        )
+
+        assertTrue(source.contains("var columnCount by remember"))
+        assertTrue(source.contains("prefs.getInt(\"columnCount\""))
+        assertTrue(source.contains("prefs.edit().putInt(\"columnCount\", newCount).apply()"))
+        assertTrue(thumbnailRequestBlock.contains("columnCount = columnCount"))
+        assertFalse(thumbnailRequestBlock.contains("GalleryColumnLayoutPolicy.DEFAULT_COLUMNS"))
+    }
+
+    @Test
     fun galleryGridSpacingKeepsPhotoGapsCompact() {
         assertEquals(2, GalleryGridSpacingPolicy.HORIZONTAL_DP)
         assertEquals(2, GalleryGridSpacingPolicy.VERTICAL_DP)
@@ -822,6 +916,78 @@ class GalleryUiPolicyTest {
                 maxDecodedSide = GalleryPreviewImagePolicy.FULL_IMAGE_MAX_DECODED_SIDE,
             ),
         )
+    }
+
+    @Test
+    fun previewFileInfoPolicyReportsCameraObjectMetadata() {
+        val file = file(
+            handle = 42,
+            format = PtpObjectFormat.HEIF,
+            captureDate = "20260529T111530",
+            imageWidth = 7728,
+            imageHeight = 5152,
+            orientation = 2,
+        )
+
+        val rows = GalleryPreviewFileInfoPolicy.rows(file)
+
+        assertEquals("DSCF0042.JPG", rows.first { it.label == "文件" }.value)
+        assertEquals("HEIF", rows.first { it.label == "格式" }.value)
+        assertEquals("7728 x 5152", rows.first { it.label == "尺寸" }.value)
+        assertEquals("160 x 120", rows.first { it.label == "缩略图" }.value)
+        assertEquals("1 KB", rows.first { it.label == "大小" }.value)
+        assertEquals("2026-05-29 11:15:30", rows.first { it.label == "拍摄时间" }.value)
+        assertEquals("42", rows.first { it.label == "Handle" }.value)
+        assertEquals("2", rows.first { it.label == "方向" }.value)
+    }
+
+    @Test
+    fun previewActionBarPolicyMatchesDownloadStateLabels() {
+        assertEquals("下载", GalleryPreviewActionBarPolicy.downloadLabel(null))
+        assertEquals("排队", GalleryPreviewActionBarPolicy.downloadLabel(TransferState.PENDING))
+        assertEquals("下载中", GalleryPreviewActionBarPolicy.downloadLabel(TransferState.DOWNLOADING))
+        assertEquals("保存中", GalleryPreviewActionBarPolicy.downloadLabel(TransferState.SAVING))
+        assertEquals("已保存", GalleryPreviewActionBarPolicy.downloadLabel(TransferState.DONE))
+        assertEquals("重试", GalleryPreviewActionBarPolicy.downloadLabel(TransferState.ERROR))
+        assertEquals("原图", GalleryPreviewActionBarPolicy.downloadModeLabel(preferCompressedDownloads = false))
+        assertEquals("压缩", GalleryPreviewActionBarPolicy.downloadModeLabel(preferCompressedDownloads = true))
+    }
+
+    @Test
+    fun previewDialogKeepsOnlySelectionTransferModeAndDownloadInBottomBar() {
+        val source = listOf(
+            File("src/main/java/com/camtransfer/ui/GalleryPreviewDialog.kt"),
+            File("app/src/main/java/com/camtransfer/ui/GalleryPreviewDialog.kt"),
+        ).first { it.exists() }.readText()
+        val topBarBlock = source.substring(
+            source.indexOf("Row("),
+            source.indexOf("PreviewActionBar("),
+        )
+        val bottomBarBlock = source.substring(
+            source.indexOf("private fun PreviewActionBar("),
+            source.indexOf("private fun PreviewSelectionBox("),
+        )
+
+        assertFalse(topBarBlock.contains("Text(\"旋转\""))
+        assertFalse(bottomBarBlock.contains("RotateLeftPreviewButton("))
+        assertFalse(bottomBarBlock.contains("RotateRightPreviewButton("))
+        assertTrue(bottomBarBlock.contains("TransferModeCapsule("))
+        assertFalse(bottomBarBlock.contains("file.info.filename"))
+    }
+
+    @Test
+    fun browseScreenForwardsTransferModeToggleIntoPreviewDialog() {
+        val source = listOf(
+            File("src/main/java/com/camtransfer/ui/BrowseScreen.kt"),
+            File("app/src/main/java/com/camtransfer/ui/BrowseScreen.kt"),
+        ).first { it.exists() }.readText()
+        val previewDialogCall = source.substring(
+            source.indexOf("PhotoPreviewDialog("),
+            source.indexOf("        )\n    }\n\n    Scaffold("),
+        )
+
+        assertTrue(previewDialogCall.contains("canChangeTransferMode = canChangeTransferMode"))
+        assertTrue(previewDialogCall.contains("onPreferenceChanged = onPreferenceChanged"))
     }
 
     @Test

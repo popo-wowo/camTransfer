@@ -112,10 +112,38 @@ class ThumbnailRequestTrackerTest {
 
     @Test
     fun fullPreviewRequestsOnlyJpegAndHeifImagesThatAreNotCached() {
-        assertTrue(GalleryPreviewFullImageLoadPolicy.shouldRequestFullImagePreview(file(PtpObjectFormat.JPEG), false))
-        assertTrue(GalleryPreviewFullImageLoadPolicy.shouldRequestFullImagePreview(file(PtpObjectFormat.HEIF), false))
-        assertFalse(GalleryPreviewFullImageLoadPolicy.shouldRequestFullImagePreview(file(PtpObjectFormat.CAMERA_VENDOR_RAF), false))
-        assertFalse(GalleryPreviewFullImageLoadPolicy.shouldRequestFullImagePreview(file(PtpObjectFormat.JPEG), true))
+        assertTrue(
+            GalleryPreviewFullImageLoadPolicy.shouldRequestFullImagePreview(
+                file = file(PtpObjectFormat.JPEG),
+                hasPreviewImage = false,
+                isAlreadyLoading = false,
+                force = false,
+            )
+        )
+        assertTrue(
+            GalleryPreviewFullImageLoadPolicy.shouldRequestFullImagePreview(
+                file = file(PtpObjectFormat.HEIF),
+                hasPreviewImage = false,
+                isAlreadyLoading = false,
+                force = false,
+            )
+        )
+        assertFalse(
+            GalleryPreviewFullImageLoadPolicy.shouldRequestFullImagePreview(
+                file = file(PtpObjectFormat.CAMERA_VENDOR_RAF),
+                hasPreviewImage = false,
+                isAlreadyLoading = false,
+                force = false,
+            )
+        )
+        assertFalse(
+            GalleryPreviewFullImageLoadPolicy.shouldRequestFullImagePreview(
+                file = file(PtpObjectFormat.JPEG),
+                hasPreviewImage = true,
+                isAlreadyLoading = false,
+                force = false,
+            )
+        )
     }
 
     private fun file(format: Int): CameraFile = CameraFile(

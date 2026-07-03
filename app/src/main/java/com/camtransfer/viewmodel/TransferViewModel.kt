@@ -26,12 +26,12 @@ class TransferViewModel(app: Application) : AndroidViewModel(app) {
 
     fun init(cameraSource: CameraFileSource) {
         if (transferService != null) return
-        val gallery = GalleryService(getApplication())
+        val gallery = GalleryService(getApplication()) { cameraSource.displayName }
         transferService = TransferService(cameraSource, gallery)
     }
 
     fun switchSource(cameraSource: CameraFileSource) {
-        val gallery = GalleryService(getApplication())
+        val gallery = GalleryService(getApplication()) { cameraSource.displayName }
         transferService = TransferService(cameraSource, gallery)
     }
 

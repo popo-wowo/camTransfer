@@ -64,4 +64,11 @@ class CameraConnectionStatusPolicyTest {
 
         assertEquals(CameraConnectionRetryTarget.ResetConnection, target)
     }
+
+    @Test
+    fun galleryLoadFailureRetriesGalleryEntryWithBleInsteadOfPtpProbe() {
+        val target = CameraConnectionRetryPolicy.targetForStep(CameraConnectionStep.LoadGallery)
+
+        assertEquals(CameraConnectionRetryTarget.GalleryEntryWithBle, target)
+    }
 }

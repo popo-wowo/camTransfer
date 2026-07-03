@@ -305,6 +305,7 @@ class CameraService(override val context: Context) : CameraFileSource {
                     CameraVendorBleEndpointPolicy.SystemBond(
                         name = device.name.orEmpty(),
                         address = device.address.orEmpty(),
+                        type = device.type,
                     )
                 }
                 .orEmpty()

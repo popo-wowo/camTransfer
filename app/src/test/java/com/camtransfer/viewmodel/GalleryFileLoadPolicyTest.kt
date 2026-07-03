@@ -263,6 +263,21 @@ class GalleryFileLoadPolicyTest {
     }
 
     @Test
+    fun fullObjectInfoWaitsWhileVisibleThumbnailsAreStillActive() {
+        assertTrue(
+            GalleryFastInitialLoadPolicy.shouldWaitForThumbnailDrainBeforeFullObjectInfo(
+                hasActiveThumbnailWork = true,
+            )
+        )
+        assertFalse(
+            GalleryFastInitialLoadPolicy.shouldWaitForThumbnailDrainBeforeFullObjectInfo(
+                hasActiveThumbnailWork = false,
+            )
+        )
+        assertTrue(GalleryFastInitialLoadPolicy.FULL_OBJECT_INFO_WAIT_FOR_THUMBNAILS_DELAY_MS in 1L..100L)
+    }
+
+    @Test
     fun publishesIncrementalMetadataBatchesBeforeFullGalleryMetadataCompletes() {
         assertFalse(
             GalleryFastInitialLoadPolicy.shouldPublishIncrementalMetadataBatch(
@@ -396,6 +411,35 @@ class GalleryFileLoadPolicyTest {
                 isLoadingFullObjectInfo = false,
                 hasThumbnail = true,
                 activeOrPendingThumbnailCount = 0,
+            )
+        )
+    }
+
+    @Test
+    fun visibleWindowThumbnailRequestsBypassInitialBackgroundMetadataCap() {
+        assertTrue(
+            GalleryFastInitialLoadPolicy.shouldLoadThumbnail(
+                isLoadingFullObjectInfo = true,
+                hasThumbnail = false,
+                activeOrPendingThumbnailCount = GalleryFastInitialLoadPolicy.MAX_INITIAL_THUMBNAIL_REQUESTS + 20,
+                isExplicitVisibleWindow = true,
+            )
+        )
+        assertFalse(
+            GalleryFastInitialLoadPolicy.shouldLoadThumbnail(
+                isLoadingFullObjectInfo = true,
+                hasThumbnail = true,
+                activeOrPendingThumbnailCount = GalleryFastInitialLoadPolicy.MAX_INITIAL_THUMBNAIL_REQUESTS + 20,
+                isExplicitVisibleWindow = true,
+            )
+        )
+        assertFalse(
+            GalleryFastInitialLoadPolicy.shouldLoadThumbnail(
+                isTransferPreparingOrActive = true,
+                isLoadingFullObjectInfo = true,
+                hasThumbnail = false,
+                activeOrPendingThumbnailCount = GalleryFastInitialLoadPolicy.MAX_INITIAL_THUMBNAIL_REQUESTS + 20,
+                isExplicitVisibleWindow = true,
             )
         )
     }

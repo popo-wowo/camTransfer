@@ -6,6 +6,9 @@ import android.graphics.ImageDecoder
 import android.graphics.Matrix
 import android.os.Build
 import android.util.Log
+import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
@@ -101,6 +104,10 @@ import com.camtransfer.localproofing.LocalProofingRequestRouter
 import com.camtransfer.localproofing.LocalProofingServer
 import com.camtransfer.localproofing.LocalProofingSessionToken
 import com.camtransfer.service.CameraFileSource
+import com.camtransfer.service.DownloadFolderPathPolicy
+import com.camtransfer.service.DownloadFolderSaveMode
+import com.camtransfer.service.DownloadFolderSettings
+import com.camtransfer.service.DownloadFolderSettingsStore
 import com.camtransfer.service.DiagnosticLog
 import com.camtransfer.viewmodel.BrowseViewModel
 import kotlinx.coroutines.Dispatchers
@@ -130,6 +137,7 @@ fun BrowseScreen(
     val prefs = remember(context) {
         context.getSharedPreferences("camtransfer.gallery", android.content.Context.MODE_PRIVATE)
     }
+    val downloadFolderSettingsStore = remember(context) { DownloadFolderSettingsStore(context) }
     val files by viewModel.files.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val isLoadingHiddenFormats by viewModel.isLoadingHiddenFormats.collectAsState()
@@ -147,11 +155,31 @@ fun BrowseScreen(
     var localProofingServer by remember { mutableStateOf<LocalProofingServer?>(null) }
     var localProofingState by remember { mutableStateOf<LocalProofingShareUiState?>(null) }
     var localProofingError by remember { mutableStateOf<String?>(null) }
+    var showsDownloadFolderSettings by remember { mutableStateOf(false) }
+    var downloadFolderSettings by remember { mutableStateOf(downloadFolderSettingsStore.load()) }
     var columnCount by remember {
         mutableStateOf(
             prefs.getInt("columnCount", GalleryColumnLayoutPolicy.DEFAULT_COLUMNS)
                 .coerceIn(GalleryColumnLayoutPolicy.MIN_COLUMNS, GalleryColumnLayoutPolicy.MAX_COLUMNS)
         )
+    }
+    val customFolderPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+            }
+            val updated = downloadFolderSettings.copy(
+                saveMode = DownloadFolderSaveMode.CUSTOM_TREE,
+                customTreeUri = uri.toString(),
+                customTreeLabel = DownloadFolderPathPolicy.customTreeLabel(uri),
+            )
+            downloadFolderSettings = updated
+        }
     }
     val gridState = rememberLazyGridState()
     val today = remember { LocalDate.now() }
@@ -317,6 +345,20 @@ fun BrowseScreen(
             },
         )
     }
+    if (showsDownloadFolderSettings) {
+        DownloadFolderSettingsDialog(
+            settings = downloadFolderSettings,
+            cameraDisplayName = cameraSource.displayName,
+            sampleCaptureDate = files.firstOrNull { !it.info.isFolder }?.info?.captureDate.orEmpty(),
+            onPickCustomFolder = { customFolderPicker.launch(null) },
+            onDismiss = { showsDownloadFolderSettings = false },
+            onSave = { updated ->
+                downloadFolderSettings = updated
+                downloadFolderSettingsStore.save(updated)
+                showsDownloadFolderSettings = false
+            },
+        )
+    }
     BackHandler(enabled = previewFile == null) {
         if (GalleryDisconnectPolicy.shouldConfirmBeforeDisconnect()) {
             showsDisconnectConfirm = true
@@ -427,6 +469,7 @@ fun BrowseScreen(
                 isTransferring = isTransferring,
                 onBack = { showsDisconnectConfirm = true },
                 onOpenLocalProofing = { startLocalProofing() },
+                onOpenDownloadFolderSettings = { showsDownloadFolderSettings = true },
                 onOpenDownloads = onOpenDownloads,
             )
             GalleryFilterPanel(

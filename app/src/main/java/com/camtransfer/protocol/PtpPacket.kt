@@ -165,9 +165,9 @@ object PtpPacketBuilder {
 }
 
 object CameraVendorLegacyPacketDecoder {
-    fun decode(raw: ByteArray): PtpPacket {
+    fun decode(raw: ByteArray, packetLength: Int? = null): PtpPacket {
         require(raw.size >= 6) { "Legacy packet too short: ${raw.size} bytes" }
-        val length = ByteBuffer.wrap(raw, 0, 4).order(ByteOrder.LITTLE_ENDIAN).int
+        val length = packetLength ?: ByteBuffer.wrap(raw, 0, 4).order(ByteOrder.LITTLE_ENDIAN).int
         require(length >= 6 && raw.size >= length) { "Invalid legacy packet length: $length" }
         val kind = ByteBuffer.wrap(raw, 4, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
         val body = raw.copyOfRange(6, length)
@@ -184,4 +184,72 @@ object CameraVendorLegacyPacketDecoder {
             else -> PtpPacket(kind, body)
         }
     }
+}
+
+internal object CameraVendorLegacyPacketNormalizer {
+    fun additionalTailBytesForDataPayload(opCode: Int, packetIndex: Int, payload: ByteArray): Int {
+        if (opCode != PtpOpCode.CAMERA_VENDOR_GET_SPECIFIED_OBJECT_COUNT_GROUP_BY_DATE) return 0
+        if (packetIndex != 0) return 0
+        if (payload.size < 20) return 0
+
+        val nestedLength = uint32(payload, 4)
+        val nestedKind = uint16(payload, 8)
+        val nestedOpCode = uint16(payload, 10)
+        val firstCount = uint32(payload, 0)
+        val secondCount = uint32(payload, 16)
+        if (
+            nestedLength == payload.size + 12 &&
+            nestedKind == 2 &&
+            nestedOpCode == opCode &&
+            firstCount == secondCount
+        ) {
+            return 4 + nestedLength - payload.size
+        }
+        return 0
+    }
+
+    fun normalizeDataPayload(opCode: Int, packetIndex: Int, payload: ByteArray): ByteArray {
+        if (opCode != PtpOpCode.CAMERA_VENDOR_GET_SPECIFIED_OBJECT_COUNT_GROUP_BY_DATE) return payload
+        if (packetIndex != 0) return payload
+        if (payload.size < 20) return payload
+
+        val nestedLength = uint32(payload, 4)
+        val nestedKind = uint16(payload, 8)
+        val nestedOpCode = uint16(payload, 10)
+        val firstCount = uint32(payload, 0)
+        val secondCount = uint32(payload, 16)
+        if (
+            nestedLength == payload.size - 4 &&
+            nestedKind == 2 &&
+            nestedOpCode == opCode &&
+            firstCount == secondCount
+        ) {
+            return CameraVendorLegacyPacketDecoder.decode(
+                raw = payload.copyOfRange(4, payload.size),
+                packetLength = nestedLength,
+            ).payload
+        }
+        if (payload.size >= 12) {
+            val duplicatedCount = uint32(payload, 4)
+            val firstRecordLength = uint32(payload, 8)
+            if (firstCount == duplicatedCount && firstRecordLength in 6..128) {
+                return payload.copyOfRange(4, payload.size)
+            }
+        }
+        if (
+            nestedLength == payload.size + 12 &&
+            nestedKind == 2 &&
+            nestedOpCode == opCode &&
+            firstCount == secondCount
+        ) {
+            return payload.copyOfRange(16, payload.size)
+        }
+        return payload
+    }
+
+    private fun uint16(data: ByteArray, offset: Int): Int =
+        ByteBuffer.wrap(data, offset, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
+
+    private fun uint32(data: ByteArray, offset: Int): Int =
+        ByteBuffer.wrap(data, offset, 4).order(ByteOrder.LITTLE_ENDIAN).int
 }

@@ -15,8 +15,15 @@ enum class CameraVendorOfficialGalleryStartupOperation {
 
 object CameraVendorOfficialGalleryStartupPolicy {
     const val REMOTE_PHOTO_VIEW_EX_FUNCTION_VERSION = 3
+    const val OPTIONAL_CONTEXT_PRIME_TIMEOUT_MS = 7_000
 
     fun initialObjectFormatMask(): Int = CameraVendorSearchMode.ALL_FORMATS
+
+    fun expandedStillFormatMasks(): List<Int> =
+        listOf(
+            CameraVendorSearchMode.FORMAT_HEIF,
+            CameraVendorSearchMode.FORMAT_RAW,
+        )
 
     fun connectionStageOperations(): List<CameraVendorOfficialGalleryStartupOperation> =
         listOf(

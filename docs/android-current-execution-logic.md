@@ -83,10 +83,28 @@
 6. `ConnectPtp`: 在相机 Wi-Fi 对应 `Network` 上打开 PTP/IP；socket 必须绑定到相机 Wi-Fi Network。Wi-Fi 可用后立即尝试 PTP，不再固定等待 3 秒。X-T5 当前实机稳定路径先发送带本机 `192.168.0.x` 的 CameraVendor legacy INIT 变体；未 ACK 时再 fallback 到官方 XApp native 内置的 plain legacy INIT 模板，plain 模板 GUID 后 4 字节保持 `0`。Kotlin PTP open 窗口保持单次 socket connect 1.5 秒，最多 5 次，失败间隔 500ms/1000ms/1500ms...；INIT ACK 读取窗口 15 秒。
 7. `LoadGallery`: PTP 连通后进入相册列表和缩略图读取。
 
+`LoadGallery` 当前已确认的 `9053` 规则:
+
+- `9053 GetSpecifiedObjectCountGroupByDate` 的职责是按当前搜索条件返回“每个日期有多少张”，它不是缩略图接口，也不是文件下载接口。
+- 进入图库卡在“正在读取相机照片数量”时，应先看 `9050 -> D22B -> 9053 -> D620 -> D621` 这条链是否完整，而不是先怀疑配对、Wi-Fi 或 PTP open。
+- 2026-07-02 X-T5 实机日志已证明：旧 Kotlin 代码把 `9053` 首包按普通 legacy data packet 处理会误读包边界，随后把 UTF-16 日期字符串字节当成“下一包头”，最终 `Read timed out`。
+- 本次成功进入图库的修复点不是改主链路，而是修正 `9053` 首包 framing：该首包带有额外嵌套的 legacy envelope，必须先完整读出，再解出内层 payload。
+- 旧“稳定版”并不是主链路坏了，而是一直带着这个潜在 `9053` 解包缺陷；当相机返回到这类首包 shape 时，同样会卡在照片数量阶段。
+- `9054/9055` current-image context prime 不属于首屏必需数据；如果它们和首屏稳定性冲突，Android 主链路应直接进入 `9050 -> D22B -> 9053 -> D620 -> D621`，不要让这两个可选 prime 挡住进入相册。
+- 2026-07-03 X-T5 + Android 实机再次确认：在当前设备环境里，`9054` 与 `9055` 连续各超时 7 秒、`9050` 再超时 15 秒，会把“正在读取相机照片数量”阶段整体拖到约 29 秒并最终失败；移除阻塞路径里的 `9054/9055` 后，可以恢复进入相册。
+- 因此 Android 主链路当前规则是：`9054/9055` 只保留为诊断/可选 prime，不再作为进入相册前的必经阻塞步骤。首屏真正必需的是 `9050 -> D22B -> 9053 -> D620 -> D621`，以及必要的 `HEIF/RAW` 扩展 `9053/D620/D621`。
+
 连接耗时诊断:
 
 - 每个官方连接步骤都会在诊断日志中记录 `Official gallery step confirmed step=... elapsedMs=...`。
 - 如果用户反馈“连接慢”，先按 `ReconnectPairedBle`、`WaitCameraWifiReady`、`JoinCameraWifi`、`ConnectPtp` 四个阶段定位最大耗时，再决定优化点。
+- 2026-07-03 当前样本的进入相册耗时主要分布是：
+  - `ReconnectPairedBle`: 约 `9877 ms`（直连 BLE 失败后走短扫描成功）
+  - `WaitCameraWifiReady`: 约 `5974 ms`
+  - `JoinCameraWifi`: 约 `4999 ms`
+  - `ConnectPtp`: 约 `104 ms`
+  - `ConfirmGalleryMode`: 约 `451 ms`
+- 所以“现在还能进但还是慢”时，优先看 BLE 重连、相机 AP ready、系统 Wi-Fi handoff，再看 `9050/9053`；不要先怀疑缩略图线程或下载逻辑。
 
 连接保活规则:
 
@@ -109,6 +127,9 @@ BLE session 复用规则:
 
 - 优先使用官方/厂商扩展拿到的 handle 列表发布占位网格，避免完整 `ObjectInfo` 枚举阻塞首屏。
 - Android X-T5 实测不能把 `D604=31` 视为全格式。`D604=31` 只返回 `JPG + MOV` 的 `D621` 列表；必须额外设置 `D604=HEIF` 或 `D604=RAW` 并重新读取 `9053/D620/D621`，如果相机返回更大的列表，则把这个扩展列表作为初始占位符来源。
+- 进入相册前的阻塞路径只允许保留这一次基线读取和必要的 `HEIF/RAW` 扩展读取；`JPG/MOV/MP4` 额外格式轮询、标准 `GetStorageIDs/GetObjectHandles` 诊断、SearchMode restore/快照读取都不能混进首屏主链路。
+- `9054/9055` current-image prime 也不能再挡在首屏前；它们是否成功，不影响首批占位符和后续 `D621` handle 列表生成。
+- 2026-07-02 实机进一步确认：`D604=31` 的基线 `9053` 已能稳定走通并继续到 `D620/D621`；但切到 `D604=HEIF` 或 `D604=RAW` 后，`9053` 还会出现第二种首包 shape（当前日志样本 `length=664`），这属于扩展列表阶段的后续协议问题，不是“进不去图库”的主 blocker。
 - 初始占位符必须保留相机返回的 `D621` 顺序，不要按 handle 数字倒序重排。同一天内 RAW/HEIF/JPG 可能以 `1267,1268,1265,1266...` 这种顺序出现，数字排序会破坏原厂时间线。
 - 可见缩略图按需加载，保持受控节流，避免和 PTP metadata 命令抢通道。
 - 如果完整信息后续补齐，应合并回现有列表并保留已加载缩略图。

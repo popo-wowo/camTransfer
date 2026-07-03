@@ -28,9 +28,13 @@ import kotlin.coroutines.resumeWithException
 private const val WIRED_USB_PERMISSION_ACTION = "com.camtransfer.USB_PERMISSION"
 
 class WiredCameraService(override val context: Context) : CameraFileSource {
+    override val displayName: String?
+        get() = connectedDeviceDisplayName
+
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
     private var mtpDevice: MtpDevice? = null
     private var objectHandleBySyntheticHandle: Map<Int, Int> = emptyMap()
+    private var connectedDeviceDisplayName: String? = null
 
     suspend fun connectFirstAvailableDevice() {
         withContext(Dispatchers.IO) {
@@ -46,6 +50,10 @@ class WiredCameraService(override val context: Context) : CameraFileSource {
                 throw IllegalStateException("USB 相机没有以 MTP/PTP 文件模式响应，请检查相机 USB 设置")
             }
             mtpDevice = mtp
+            connectedDeviceDisplayName = listOfNotNull(device.manufacturerName, device.productName)
+                .joinToString(" ")
+                .trim()
+                .ifBlank { "USB Camera" }
             DiagnosticLog.append(context, "WiredCamera", "USB MTP camera connected")
         }
     }
@@ -93,6 +101,7 @@ class WiredCameraService(override val context: Context) : CameraFileSource {
             runCatching { mtpDevice?.close() }
             mtpDevice = null
             objectHandleBySyntheticHandle = emptyMap()
+            connectedDeviceDisplayName = null
         }
     }
 

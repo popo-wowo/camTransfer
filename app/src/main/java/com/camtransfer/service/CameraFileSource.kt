@@ -7,6 +7,7 @@ import java.io.OutputStream
 
 interface CameraFileSource {
     val context: Context
+    val displayName: String? get() = null
 
     suspend fun fastInitialFiles(): List<CameraFile> = emptyList()
 

@@ -182,7 +182,7 @@ internal fun GalleryDownloadBar(
 }
 
 @Composable
-private fun TransferModeCapsule(
+internal fun TransferModeCapsule(
     preferCompressedDownloads: Boolean,
     enabled: Boolean,
     onPreferenceChanged: (Boolean) -> Unit,

@@ -3,7 +3,7 @@ package com.camtransfer.ble
 object CameraVendorBleTransferActivationPolicy {
     private val ResizeDisabledPayload = byteArrayOf(0x00)
     private val ResizeEnabledPayload = byteArrayOf(0x01)
-    private val ImportImageLaunchRequestPayload = byteArrayOf(0x01, 0x00)
+    private val ImportImageLaunchRequestPayload = byteArrayOf(0x03, 0x00)
 
     fun isReadyToJoinWifi(apState: ByteArray?): Boolean {
         val value = apStateValue(apState) ?: return false
@@ -30,7 +30,7 @@ object CameraVendorBleTransferActivationPolicy {
 
     fun importImageLaunchRequestPayload(): ByteArray = ImportImageLaunchRequestPayload
 
-    fun importImageLaunchRequestHex(): String = "0100"
+    fun importImageLaunchRequestHex(): String = "0300"
 
     fun statusText(preferCompressedDownloads: Boolean): String =
         if (preferCompressedDownloads) {

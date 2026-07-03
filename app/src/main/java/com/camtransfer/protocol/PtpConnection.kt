@@ -168,12 +168,29 @@ class PtpConnection {
                 val originalTimeout = socket.soTimeout
                 if (readTimeoutMs != null) socket.soTimeout = readTimeoutMs
                 val tid = nextTransactionId
+                val traceLabel = legacyPacketTraceLabel(opCode, params)
                 try {
+                    if (traceLabel != null) {
+                        Log.d(
+                            TAG,
+                            "Legacy command start label=$traceLabel op=0x${opCode.toString(16)} " +
+                                "tid=$tid timeoutMs=${readTimeoutMs ?: originalTimeout} params=$params",
+                        )
+                    }
                     socket.getOutputStream().write(
                         PtpPacketBuilder.buildCameraVendorLegacyOperationRequest(opCode, tid, params)
                     )
                     socket.getOutputStream().flush()
-                    readDataPhase(socket.getInputStream(), opCode)
+                    readDataPhase(socket.getInputStream(), opCode, traceLabel)
+                } catch (error: Throwable) {
+                    if (traceLabel != null) {
+                        Log.d(
+                            TAG,
+                            "Legacy command failed label=$traceLabel op=0x${opCode.toString(16)} " +
+                                "tid=$tid timeoutMs=${readTimeoutMs ?: originalTimeout} error=${error.message}",
+                        )
+                    }
+                    throw error
                 } finally {
                     if (readTimeoutMs != null) socket.soTimeout = originalTimeout
                 }
@@ -206,6 +223,10 @@ class PtpConnection {
         readDevicePropertyForDiagnostic(
             label = "Gallery setup D212 before DF01 set",
             code = CameraVendorDevicePropCode.REFERENCE_APP_GALLERY_OBJECT_CONTEXT,
+        )
+        readDevicePropertyForDiagnostic(
+            label = "Gallery setup DF01 current client state",
+            code = CameraVendorDevicePropCode.INIT_SEQUENCE,
         )
         Log.d(
             TAG,
@@ -245,23 +266,8 @@ class PtpConnection {
     suspend fun loadCameraVendorGalleryObjectHandles() {
         readDeviceProperty(CameraVendorDevicePropCode.REFERENCE_APP_GALLERY_OBJECT_CONTEXT)
         readDeviceProperty(CameraVendorDevicePropCode.REFERENCE_APP_GALLERY_ACCESS_STATE)
-        resetOfficialCompressionModeForDiagnostic()
-        runCatching {
-            sendCommandGetData(
-                PtpOpCode.CAMERA_VENDOR_GET_LATEST_OBJECT_INFO,
-                listOf(CameraVendorReferenceApp.CURRENT_IMAGE_HANDLE),
-            )
-        }.onFailure { Log.d(TAG, "Current image context prime failed: ${it.message}") }
-        runCatching {
-            sendCommandGetData(
-                PtpOpCode.CAMERA_VENDOR_GET_EXTENSION_THUMB,
-                listOf(CameraVendorReferenceApp.CURRENT_IMAGE_HANDLE),
-            )
-        }.onFailure { Log.d(TAG, "Current thumbnail context prime failed: ${it.message}") }
+        resetOfficialCompressionModeForGalleryStartup()
         retrySearchModeDescAll()
-        readSearchModeAllForDiagnostic("SearchModeAll before official empty reset")
-        setOfficialDefaultSearchModeForDiagnostic()
-        setOfficialAllFormatSearchModeForDiagnostic()
         readCurrentObjectHandleSnapshot()
         val objectCountGroupData = sendCommandGetData(
             PtpOpCode.CAMERA_VENDOR_GET_SPECIFIED_OBJECT_COUNT_GROUP_BY_DATE,
@@ -296,9 +302,7 @@ class PtpConnection {
         )
         specifiedObjectHandlesByFormatMask = specifiedObjectHandlesByFormatMask +
             (CameraVendorOfficialGalleryStartupPolicy.initialObjectFormatMask() to specifiedObjectHandles)
-        readStandardObjectHandlesForDiagnostic()
-        readFormatSpecificSpecifiedHandlesForDiagnostic()
-        setOfficialAllFormatSearchModeForDiagnostic()
+        readExpandedStillSpecifiedHandlesForOfficialStartup()
     }
 
     private suspend fun retrySearchModeDescAll() {
@@ -335,29 +339,7 @@ class PtpConnection {
         return data
     }
 
-    private suspend fun readSearchModeAllForDiagnostic(label: String): ByteArray? {
-        return runCatching {
-            sendCommandGetData(PtpOpCode.CAMERA_VENDOR_GET_SEARCH_MODE_ALL)
-        }.onSuccess { data ->
-            Log.d(
-                TAG,
-                "$label bytes=${data.size} head=${data.headHex()} " +
-                    "snapshot=${CameraVendorPtpDataParser.searchModeSnapshot(data)}",
-            )
-        }.onFailure {
-            Log.d(TAG, "$label read failed: ${it.message}")
-        }.getOrNull()
-    }
-
-    private suspend fun resetOfficialCompressionModeForDiagnostic() {
-        readDevicePropertyForDiagnosticIfAvailable(
-            label = "Gallery setup D226 before compression reset",
-            code = CameraVendorDevicePropCode.IMAGE_FORCE_COMPRESSION,
-        )
-        readDevicePropertyForDiagnosticIfAvailable(
-            label = "Gallery setup D227 before compression reset",
-            code = CameraVendorDevicePropCode.IMAGE_COMPRESSION_REAL_INFO,
-        )
+    private suspend fun resetOfficialCompressionModeForGalleryStartup() {
         runCatching {
             setDevicePropertyUInt16(CameraVendorDevicePropCode.IMAGE_FORCE_COMPRESSION, 0)
         }.onSuccess {
@@ -372,152 +354,80 @@ class PtpConnection {
         }.onFailure {
             Log.d(TAG, "Gallery setup D227 compression reset failed: ${it.message}")
         }
-        readDevicePropertyForDiagnosticIfAvailable(
-            label = "Gallery setup D226 after compression reset",
-            code = CameraVendorDevicePropCode.IMAGE_FORCE_COMPRESSION,
-        )
-        readDevicePropertyForDiagnosticIfAvailable(
-            label = "Gallery setup D227 after compression reset",
-            code = CameraVendorDevicePropCode.IMAGE_COMPRESSION_REAL_INFO,
-        )
     }
 
-    private suspend fun setOfficialDefaultSearchModeForDiagnostic() {
-        val payload = CameraVendorPtpDataParser.emptySearchModeAllPayload()
-        Log.d(
-            TAG,
-            "SearchModeAll official empty reset attempting " +
-                "payloadBytes=${payload.size} head=${payload.headHex()} " +
-                "snapshot=${CameraVendorPtpDataParser.searchModeSnapshot(payload)}",
-        )
-        runCatching {
-            sendCommandWithData(PtpOpCode.CAMERA_VENDOR_SET_SEARCH_MODE_ALL, data = payload)
-        }.onSuccess {
-            Log.d(TAG, "SearchModeAll official empty reset response=0x${it.responseCode.toString(16)}")
-        }.onFailure {
-            Log.d(TAG, "SearchModeAll official empty reset failed: ${it.message}")
-        }
-        readSearchModeAllForDiagnostic("SearchModeAll after official empty reset")
-    }
-
-    private suspend fun setOfficialAllFormatSearchModeForDiagnostic() {
-        val payload = CameraVendorPtpDataParser.officialObjectFormatSearchModeAllPayload(
-            CameraVendorOfficialGalleryStartupPolicy.initialObjectFormatMask(),
-        )
-        Log.d(
-            TAG,
-            "SearchModeAll explicit all-format attempting " +
-                "payloadBytes=${payload.size} head=${payload.headHex()} " +
-                "snapshot=${CameraVendorPtpDataParser.searchModeSnapshot(payload)}",
-        )
-        runCatching {
-            sendCommandWithData(PtpOpCode.CAMERA_VENDOR_SET_SEARCH_MODE_ALL, data = payload)
-        }.onSuccess {
-            Log.d(TAG, "SearchModeAll explicit all-format response=0x${it.responseCode.toString(16)}")
-        }.onFailure {
-            Log.d(TAG, "SearchModeAll explicit all-format failed: ${it.message}")
-        }
-        readSearchModeAllForDiagnostic("SearchModeAll after explicit all-format")
-    }
-
-    private suspend fun readStandardObjectHandlesForDiagnostic() {
-        runCatching {
-            val storageIdsData = sendCommandGetData(PtpOpCode.GET_STORAGE_IDS)
-            val storageIds = CameraVendorPtpDataParser.uint32Array(storageIdsData)
-            Log.d(
-                TAG,
-                "StandardObjectHandles storageIds=${storageIds.joinToString { "0x${it.toString(16)}" }} " +
-                    "bytes=${storageIdsData.size} head=${storageIdsData.headHex()}",
-            )
-            val allHandles = mutableListOf<Int>()
-            for (storageId in storageIds) {
-                val handlesData = sendCommandGetData(
-                    PtpOpCode.GET_OBJECT_HANDLES,
-                    listOf(storageId, CameraVendorConst.ALL_FORMATS, CameraVendorConst.ALL_HANDLES),
-                )
-                val handles = CameraVendorPtpDataParser.uint32Array(handlesData)
-                allHandles += handles
-                Log.d(
-                    TAG,
-                    "StandardObjectHandles storageId=0x${storageId.toString(16)} " +
-                        CameraVendorGalleryDiagnosticPolicy.handleSummary(
-                            handles = handles,
-                            expectedCount = null,
-                        ) + " bytes=${handlesData.size} head=${handlesData.headHex()}",
-                )
+    private suspend fun readExpandedStillSpecifiedHandlesForOfficialStartup() {
+        for (mask in CameraVendorOfficialGalleryStartupPolicy.expandedStillFormatMasks()) {
+            val label = when (mask) {
+                CameraVendorSearchMode.FORMAT_HEIF -> "HEIF"
+                CameraVendorSearchMode.FORMAT_RAW -> "RAW"
+                else -> "0x${mask.toString(16)}"
             }
-            Log.d(
-                TAG,
-                "StandardObjectHandles all " +
-                    CameraVendorGalleryDiagnosticPolicy.handleSummary(
-                        handles = allHandles,
-                        expectedCount = null,
-                    ),
-            )
-        }.onFailure {
-            Log.d(TAG, "StandardObjectHandles diagnostic failed: ${it.message}")
-        }
-    }
-
-    private suspend fun readFormatSpecificSpecifiedHandlesForDiagnostic() {
-        val formats = listOf(
-            "JPG" to CameraVendorSearchMode.FORMAT_JPEG,
-            "HEIF" to CameraVendorSearchMode.FORMAT_HEIF,
-            "MOV" to CameraVendorSearchMode.FORMAT_MOV,
-            "MP4" to CameraVendorSearchMode.FORMAT_MP4,
-            "RAW" to CameraVendorSearchMode.FORMAT_RAW,
-        )
-        for ((label, mask) in formats) {
             runCatching {
-                val payload = CameraVendorPtpDataParser.officialObjectFormatSearchModeAllPayload(mask)
-                val response = sendCommandWithData(PtpOpCode.CAMERA_VENDOR_SET_SEARCH_MODE_ALL, data = payload)
-                Log.d(
-                    TAG,
-                    "FormatSpecifiedHandles $label setSearchMode response=0x${response.responseCode.toString(16)} " +
-                        "mask=$mask payload=${payload.headHex()}",
-                )
-                val groupsData = sendCommandGetData(
-                    PtpOpCode.CAMERA_VENDOR_GET_SPECIFIED_OBJECT_COUNT_GROUP_BY_DATE,
-                    listOf(0, CameraVendorReferenceApp.SPECIFIED_OBJECT_COUNT_LIMIT),
-                )
-                val groups = CameraVendorPtpDataParser.objectCountsByDate(groupsData)
-                val countData = readDeviceProperty(CameraVendorDevicePropCode.SPECIFIED_OBJECT_COUNT)
-                val count = countData.uint32OrNull()
-                val handlesData = readDeviceProperty(CameraVendorDevicePropCode.SPECIFIED_OBJECT_HANDLES)
-                val handles = CameraVendorPtpDataParser.uint32Array(handlesData)
-                specifiedObjectHandlesByFormatMask = specifiedObjectHandlesByFormatMask + (mask to handles)
+                val snapshot = readSpecifiedHandlesForFormatMask(label, mask)
                 if (
-                    (mask == CameraVendorSearchMode.FORMAT_HEIF || mask == CameraVendorSearchMode.FORMAT_RAW) &&
-                    handles.size > specifiedObjectHandles.size &&
-                    groups.sumOf { it.numberOfImages } == handles.size
+                    snapshot.handles.size > specifiedObjectHandles.size &&
+                    snapshot.groups.sumOf { it.numberOfImages } == snapshot.handles.size
                 ) {
                     val previousCount = specifiedObjectHandles.size
-                    specifiedObjectHandles = handles
-                    specifiedObjectCount = count
-                    specifiedObjectCountsByDate = groups
+                    specifiedObjectHandles = snapshot.handles
+                    specifiedObjectCount = snapshot.count
+                    specifiedObjectCountsByDate = snapshot.groups
                     Log.d(
                         TAG,
                         "FormatSpecifiedHandles $label promotedToInitial " +
-                            "count=${handles.size} previous=$previousCount",
+                            "count=${snapshot.handles.size} previous=$previousCount",
                     )
+                    return
                 }
-                Log.d(
-                    TAG,
-                    "FormatSpecifiedHandles $label " +
-                        "${CameraVendorGalleryDiagnosticPolicy.dateGroupSummary(groups)} " +
-                        CameraVendorGalleryDiagnosticPolicy.handleSummary(
-                            handles = handles,
-                            expectedCount = count,
-                        ) + " countHead=${countData.headHex()} handlesHead=${handlesData.headHex()}",
-                )
             }.onFailure {
                 Log.d(TAG, "FormatSpecifiedHandles $label failed: ${it.message}")
             }
         }
     }
 
-    suspend fun readDeviceProperty(code: Int): ByteArray =
-        sendCommandGetData(PtpOpCode.GET_DEVICE_PROP_VALUE, listOf(code))
+    private suspend fun readSpecifiedHandlesForFormatMask(label: String, mask: Int): SpecifiedHandleSnapshot {
+        val payload = CameraVendorPtpDataParser.officialObjectFormatSearchModeAllPayload(mask)
+        val response = sendCommandWithData(PtpOpCode.CAMERA_VENDOR_SET_SEARCH_MODE_ALL, data = payload)
+        Log.d(
+            TAG,
+            "FormatSpecifiedHandles $label setSearchMode response=0x${response.responseCode.toString(16)} " +
+                "mask=$mask payload=${payload.headHex()}",
+        )
+        val groupsData = sendCommandGetData(
+            PtpOpCode.CAMERA_VENDOR_GET_SPECIFIED_OBJECT_COUNT_GROUP_BY_DATE,
+            listOf(0, CameraVendorReferenceApp.SPECIFIED_OBJECT_COUNT_LIMIT),
+        )
+        val groups = CameraVendorPtpDataParser.objectCountsByDate(groupsData)
+        val countData = readDeviceProperty(CameraVendorDevicePropCode.SPECIFIED_OBJECT_COUNT)
+        val count = countData.uint32OrNull()
+        val handlesData = readDeviceProperty(CameraVendorDevicePropCode.SPECIFIED_OBJECT_HANDLES)
+        val handles = CameraVendorPtpDataParser.uint32Array(handlesData)
+        specifiedObjectHandlesByFormatMask = specifiedObjectHandlesByFormatMask + (mask to handles)
+        Log.d(
+            TAG,
+            "FormatSpecifiedHandles $label " +
+                "${CameraVendorGalleryDiagnosticPolicy.dateGroupSummary(groups)} " +
+                CameraVendorGalleryDiagnosticPolicy.handleSummary(
+                    handles = handles,
+                    expectedCount = count,
+                ) + " countHead=${countData.headHex()} handlesHead=${handlesData.headHex()}",
+        )
+        return SpecifiedHandleSnapshot(
+            groups = groups,
+            count = count,
+            handles = handles,
+        )
+    }
+
+    private data class SpecifiedHandleSnapshot(
+        val groups: List<CameraVendorObjectCountByDate>,
+        val count: Int?,
+        val handles: List<Int>,
+    )
+
+    suspend fun readDeviceProperty(code: Int, readTimeoutMs: Int? = null): ByteArray =
+        sendCommandGetData(PtpOpCode.GET_DEVICE_PROP_VALUE, listOf(code), readTimeoutMs)
 
     private suspend fun readDevicePropertyForDiagnosticIfAvailable(label: String, code: Int): ByteArray? =
         runCatching { readDevicePropertyForDiagnostic(label, code) }
@@ -531,21 +441,40 @@ class PtpConnection {
         sendCommandWithData(PtpOpCode.SET_DEVICE_PROP_VALUE, listOf(code), littleEndianUInt32(value))
 
     private fun readOperationResponse(input: InputStream, opCode: Int): PtpOperationResponse {
-        val packet = readLegacyPacket(input)
+        val packet = readLegacyPacket(input, traceLabel = null, packetIndex = 0, opCode = opCode)
         if (packet.type != PtpPacketType.OPERATION_RESPONSE) {
             throw IllegalStateException("Expected OperationResponse, got 0x${packet.type.toString(16)}")
         }
         return parseOperationResponse(packet.payload, opCode)
     }
 
-    private fun readDataPhase(input: InputStream, opCode: Int): ByteArray {
+    private fun readDataPhase(input: InputStream, opCode: Int, traceLabel: String?): ByteArray {
         val chunks = mutableListOf<ByteArray>()
+        var packetIndex = 0
         while (true) {
-            val packet = readLegacyPacket(input)
+            val packet = readLegacyPacket(input, traceLabel, packetIndex++, opCode)
             when (packet.type) {
-                PtpPacketType.START_DATA_PACKET -> Unit
+                PtpPacketType.START_DATA_PACKET -> {
+                    if (traceLabel != null) {
+                        Log.d(TAG, "Legacy packet decoded label=$traceLabel index=${packetIndex - 1} type=start")
+                    }
+                }
                 PtpPacketType.DATA_PACKET, PtpPacketType.END_DATA_PACKET -> {
-                    chunks.add(packet.payload)
+                    val normalizedPayload = CameraVendorLegacyPacketNormalizer.normalizeDataPayload(
+                        opCode = opCode,
+                        packetIndex = packetIndex - 1,
+                        payload = packet.payload,
+                    )
+                    chunks.add(normalizedPayload)
+                    if (traceLabel != null) {
+                        Log.d(
+                            TAG,
+                            "Legacy packet decoded label=$traceLabel index=${packetIndex - 1} " +
+                                "type=${if (packet.type == PtpPacketType.DATA_PACKET) "data" else "end"} " +
+                                "payloadBytes=${packet.payload.size} normalizedBytes=${normalizedPayload.size} " +
+                                "head=${normalizedPayload.headHex(48)}",
+                        )
+                    }
                 }
                 PtpPacketType.OPERATION_RESPONSE -> {
                     parseOperationResponse(packet.payload, opCode)
@@ -555,6 +484,13 @@ class PtpConnection {
                     for (chunk in chunks) {
                         chunk.copyInto(data, offset)
                         offset += chunk.size
+                    }
+                    if (traceLabel != null) {
+                        Log.d(
+                            TAG,
+                            "Legacy command complete label=$traceLabel packets=$packetIndex dataBytes=${data.size} " +
+                                "head=${data.headHex(64)}",
+                        )
                     }
                     return data
                 }
@@ -596,13 +532,92 @@ class PtpConnection {
         return PtpPacket(type, payload)
     }
 
-    private fun readLegacyPacket(input: InputStream): PtpPacket {
-        val header = input.readExactly(4)
+    private fun readLegacyPacket(input: InputStream, traceLabel: String?, packetIndex: Int, opCode: Int): PtpPacket {
+        val header = try {
+            input.readExactly(4)
+        } catch (error: Throwable) {
+            if (traceLabel != null) {
+                Log.d(TAG, "Legacy packet read failed label=$traceLabel index=$packetIndex stage=header error=${error.message}")
+            }
+            throw error
+        }
         val length = ByteBuffer.wrap(header, 0, 4).order(ByteOrder.LITTLE_ENDIAN).int
+        if (traceLabel != null) {
+            Log.d(
+                TAG,
+                "Legacy packet header label=$traceLabel index=$packetIndex length=$length raw=${header.headHex(8)}",
+            )
+        }
         require(length >= 6) { "Invalid legacy PTP packet length: $length" }
-        val rest = input.readExactly(length - 4)
-        return CameraVendorLegacyPacketDecoder.decode(header + rest)
+        val remainingLength = length - 4
+        val rest = try {
+            input.readExactly(remainingLength)
+        } catch (error: Throwable) {
+            if (traceLabel != null) {
+                Log.d(
+                    TAG,
+                    "Legacy packet read failed label=$traceLabel index=$packetIndex stage=body " +
+                        "length=$length remaining=$remainingLength error=${error.message}",
+                )
+            }
+            throw error
+        }
+        val raw = header + rest
+        if (traceLabel != null) {
+            val kind = ByteBuffer.wrap(raw, 4, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt() and 0xFFFF
+            Log.d(
+                TAG,
+                "Legacy packet raw label=$traceLabel index=$packetIndex length=$length kind=0x${kind.toString(16)} " +
+                    "head=${raw.headHex(64)}",
+            )
+        }
+        val packet = CameraVendorLegacyPacketDecoder.decode(raw)
+        if (packet.type == PtpPacketType.DATA_PACKET) {
+            val additionalTailBytes = CameraVendorLegacyPacketNormalizer.additionalTailBytesForDataPayload(
+                opCode = opCode,
+                packetIndex = packetIndex,
+                payload = packet.payload,
+            )
+            if (additionalTailBytes > 0) {
+                val tail = try {
+                    input.readExactly(additionalTailBytes)
+                } catch (error: Throwable) {
+                    if (traceLabel != null) {
+                        Log.d(
+                            TAG,
+                            "Legacy packet read failed label=$traceLabel index=$packetIndex stage=tail " +
+                                "length=$length remaining=$additionalTailBytes error=${error.message}",
+                        )
+                    }
+                    throw error
+                }
+                if (traceLabel != null) {
+                    Log.d(
+                        TAG,
+                        "Legacy packet tail label=$traceLabel index=$packetIndex bytes=$additionalTailBytes " +
+                            "head=${tail.headHex(32)}",
+                    )
+                }
+                return PtpPacket(packet.type, packet.payload + tail)
+            }
+        }
+        return packet
     }
+
+    private fun legacyPacketTraceLabel(opCode: Int, params: List<Int>): String? =
+        when {
+            opCode == PtpOpCode.CAMERA_VENDOR_GET_LATEST_OBJECT_INFO -> "9054-current-image-info"
+            opCode == PtpOpCode.CAMERA_VENDOR_GET_EXTENSION_THUMB -> "9055-current-thumb"
+            opCode == PtpOpCode.CAMERA_VENDOR_GET_SEARCH_MODE_DESC_ALL -> "9050-search-mode-desc-all"
+            opCode == PtpOpCode.CAMERA_VENDOR_GET_SPECIFIED_OBJECT_COUNT_GROUP_BY_DATE -> "9053-count-group-by-date"
+            opCode == PtpOpCode.GET_DEVICE_PROP_VALUE &&
+                params.firstOrNull() == CameraVendorDevicePropCode.CURRENT_OBJECT_HANDLE -> "D22B-current-object-handle"
+            opCode == PtpOpCode.GET_DEVICE_PROP_VALUE &&
+                params.firstOrNull() == CameraVendorDevicePropCode.SPECIFIED_OBJECT_COUNT -> "D620-specified-object-count"
+            opCode == PtpOpCode.GET_DEVICE_PROP_VALUE &&
+                params.firstOrNull() == CameraVendorDevicePropCode.SPECIFIED_OBJECT_HANDLES -> "D621-specified-object-handles"
+            else -> null
+        }
 
     private fun InputStream.readExactly(length: Int): ByteArray {
         val data = ByteArray(length)

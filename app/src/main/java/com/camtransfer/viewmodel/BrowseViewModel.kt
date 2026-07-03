@@ -15,10 +15,12 @@ class BrowseViewModel : ViewModel() {
     private val requestScheduler = GalleryRequestScheduler()
     private val selectionController = GallerySelectionController()
     private var thumbnailCacheProvider: () -> Map<Int, ByteArray> = { emptyMap() }
+    private var hasActiveThumbnailWorkProvider: () -> Boolean = { false }
     private val filesController = GalleryFilesController(
         scope = viewModelScope,
         requestScheduler = requestScheduler,
         thumbnailCache = { thumbnailCacheProvider() },
+        hasActiveThumbnailWork = { hasActiveThumbnailWorkProvider() },
     )
     private val thumbnailController = GalleryThumbnailController(
         scope = viewModelScope,
@@ -36,10 +38,13 @@ class BrowseViewModel : ViewModel() {
     val isLoadingHiddenFormats = filesController.isLoadingHiddenFormats
     val selectedHandles = selectionController.selectedHandles
     val previewImages = previewController.previewImages
+    val loadedPreviewHandles = previewController.loadedPreviewHandles
+    val loadingPreviewHandles = previewController.loadingPreviewHandles
     val error = filesController.error
 
     init {
         thumbnailCacheProvider = thumbnailController::cachedThumbnails
+        hasActiveThumbnailWorkProvider = thumbnailController::hasActiveThumbnailWork
     }
 
     fun loadFilesIfNeeded(cameraSource: CameraFileSource) {
@@ -64,6 +69,10 @@ class BrowseViewModel : ViewModel() {
 
     fun loadPreviewImage(cameraSource: CameraFileSource, file: CameraFile) {
         previewController.loadPreviewImage(cameraSource, file)
+    }
+
+    fun requestPreviewImage(cameraSource: CameraFileSource, file: CameraFile) {
+        previewController.loadPreviewImage(cameraSource, file, force = true)
     }
 
     fun toggleSelection(handle: Int) {

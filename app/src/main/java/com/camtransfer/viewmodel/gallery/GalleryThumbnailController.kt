@@ -27,12 +27,24 @@ class GalleryThumbnailController(
 
     fun cachedThumbnails(): Map<Int, ByteArray> = thumbnailCache.toMap()
 
+    fun hasActiveThumbnailWork(): Boolean =
+        thumbnailQueue.trackedCount > 0
+
     fun loadThumbnail(cameraSource: CameraFileSource, handle: Int) {
+        loadThumbnail(cameraSource, handle, isExplicitVisibleWindow = false)
+    }
+
+    private fun loadThumbnail(
+        cameraSource: CameraFileSource,
+        handle: Int,
+        isExplicitVisibleWindow: Boolean,
+    ) {
         if (!GalleryFastInitialLoadPolicy.shouldLoadThumbnail(
                 isTransferPreparingOrActive = thumbnailLoadingPaused,
                 isLoadingFullObjectInfo = filesController.isLoadingHiddenFormats.value,
                 hasThumbnail = filesController.hasThumbnail(handle),
                 activeOrPendingThumbnailCount = activeOrPendingThumbnailCount(),
+                isExplicitVisibleWindow = isExplicitVisibleWindow,
             )
         ) {
             return
@@ -47,7 +59,9 @@ class GalleryThumbnailController(
         if (handles.isEmpty()) return
         val visibleHandles = handles.toSet()
         thumbnailQueue.retain(visibleHandles)
-        handles.forEach { handle -> loadThumbnail(cameraSource, handle) }
+        handles.forEach { handle ->
+            loadThumbnail(cameraSource, handle, isExplicitVisibleWindow = true)
+        }
     }
 
     fun loadPreviewThumbnails(cameraSource: CameraFileSource, handles: List<Int>) {

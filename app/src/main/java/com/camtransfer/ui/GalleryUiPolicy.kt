@@ -6,6 +6,7 @@ import com.camtransfer.model.TransferState
 import com.camtransfer.protocol.PtpObjectFormat
 import java.nio.ByteOrder
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import kotlin.math.abs
 import kotlin.math.hypot
@@ -276,6 +277,30 @@ object GalleryDateDialogPolicy {
         }
 }
 
+enum class GalleryDateRangeEndpoint {
+    Start,
+    End,
+}
+
+object GalleryDateRangePickerPolicy {
+    private val fullDateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
+
+    fun fieldValue(day: LocalDate?): String =
+        day?.format(fullDateFormatter) ?: "选择日期"
+
+    fun nextEndpointAfterDate(endpoint: GalleryDateRangeEndpoint): GalleryDateRangeEndpoint =
+        when (endpoint) {
+            GalleryDateRangeEndpoint.Start -> GalleryDateRangeEndpoint.End
+            GalleryDateRangeEndpoint.End -> GalleryDateRangeEndpoint.End
+        }
+
+    fun normalizedStart(start: LocalDate?, end: LocalDate?): LocalDate? =
+        start?.let { startDay -> end?.let { minOf(startDay, it) } ?: startDay }
+
+    fun normalizedEnd(start: LocalDate?, end: LocalDate?): LocalDate? =
+        start?.let { startDay -> end?.let { maxOf(startDay, it) } ?: startDay }
+}
+
 object GallerySortPolicy {
     fun sortedFiles(
         files: List<CameraFile>,
@@ -326,12 +351,15 @@ object GalleryThumbnailRequestWindowPolicy {
         visibleHandles: List<Int>,
         columnCount: Int,
     ): List<Int> {
-        if (orderedHandles.isEmpty() || visibleHandles.isEmpty()) return emptyList()
+        if (orderedHandles.isEmpty()) return emptyList()
         val indexByHandle = orderedHandles.withIndex().associate { it.value to it.index }
-        val visibleIndexes = visibleHandles.mapNotNull(indexByHandle::get)
-        if (visibleIndexes.isEmpty()) return emptyList()
-
         val normalizedColumnCount = columnCount.coerceAtLeast(1)
+        val visibleIndexes = visibleHandles.mapNotNull(indexByHandle::get)
+        if (visibleIndexes.isEmpty()) {
+            val initialWindowSize = normalizedColumnCount * (1 + PREFETCH_ROWS_AFTER)
+            return orderedHandles.take(initialWindowSize)
+        }
+
         val start = (visibleIndexes.minOrNull()!! - normalizedColumnCount * PREFETCH_ROWS_BEFORE).coerceAtLeast(0)
         val end = (visibleIndexes.maxOrNull()!! + normalizedColumnCount * PREFETCH_ROWS_AFTER)
             .coerceAtMost(orderedHandles.lastIndex)
@@ -581,6 +609,9 @@ object GalleryPreviewThumbnailPolicy {
 }
 
 object GalleryPreviewRotationPolicy {
+    fun previousManualRotationDegrees(currentDegrees: Int): Int =
+        normalizedDegrees(currentDegrees - 90)
+
     fun nextManualRotationDegrees(currentDegrees: Int): Int =
         normalizedDegrees(currentDegrees + 90)
 
@@ -800,4 +831,88 @@ internal object GalleryPreviewImagePolicy {
 
     fun displayBytes(previewImage: ByteArray?, thumbnail: ByteArray?): ByteArray? =
         previewImage ?: thumbnail
+}
+
+internal object GalleryPreviewActionBarPolicy {
+    fun downloadLabel(state: TransferState?): String =
+        when (state) {
+            TransferState.PENDING -> "排队"
+            TransferState.DOWNLOADING -> "下载中"
+            TransferState.SAVING -> "保存中"
+            TransferState.DONE -> "已保存"
+            TransferState.ERROR -> "重试"
+            null -> "下载"
+        }
+
+    fun downloadModeLabel(preferCompressedDownloads: Boolean): String =
+        if (preferCompressedDownloads) "压缩" else "原图"
+
+    fun canRequestHighDefinitionPreview(file: CameraFile): Boolean =
+        file.info.isJpeg || file.info.isHeif
+
+    fun highDefinitionPreviewLabel(hasPreview: Boolean, isLoading: Boolean): String =
+        when {
+            isLoading -> "加载中"
+            hasPreview -> "已加载"
+            else -> "高清预览"
+        }
+}
+
+data class GalleryPreviewFileInfoRow(
+    val label: String,
+    val value: String,
+)
+
+internal object GalleryPreviewFileInfoPolicy {
+    private val inputFormatter = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss")
+    private val outputFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+
+    fun rows(file: CameraFile): List<GalleryPreviewFileInfoRow> {
+        val info = file.info
+        return buildList {
+            add(GalleryPreviewFileInfoRow("文件", info.filename))
+            add(GalleryPreviewFileInfoRow("格式", info.formatLabel))
+            dimensionLabel(info.imagePixWidth, info.imagePixHeight)?.let {
+                add(GalleryPreviewFileInfoRow("尺寸", it))
+            }
+            dimensionLabel(info.thumbPixWidth, info.thumbPixHeight)?.let {
+                add(GalleryPreviewFileInfoRow("缩略图", it))
+            }
+            formatBytes(info.compressedSize)?.let {
+                add(GalleryPreviewFileInfoRow("大小", it))
+            }
+            captureDateLabel(info.captureDate)?.let {
+                add(GalleryPreviewFileInfoRow("拍摄时间", it))
+            }
+            add(GalleryPreviewFileInfoRow("Handle", info.handle.toString()))
+            add(GalleryPreviewFileInfoRow("存储", "0x%08X".format(info.storageId)))
+            if (info.parentObject > 0) {
+                add(GalleryPreviewFileInfoRow("文件夹", info.parentObject.toString()))
+            }
+            info.orientation?.let {
+                add(GalleryPreviewFileInfoRow("方向", it.toString()))
+            }
+        }
+    }
+
+    private fun dimensionLabel(width: Int, height: Int): String? =
+        if (width > 0 && height > 0) "$width x $height" else null
+
+    private fun captureDateLabel(value: String): String? {
+        if (value.length < 15) return null
+        return runCatching {
+            LocalDateTime.parse(value.take(15), inputFormatter).format(outputFormatter)
+        }.getOrNull()
+    }
+
+    private fun formatBytes(bytes: Int): String? {
+        if (bytes <= 0) return null
+        val kib = 1024.0
+        val mib = kib * 1024.0
+        return when {
+            bytes < 1024 -> "$bytes B"
+            bytes < 1024 * 1024 -> "${(bytes / kib).toInt()} KB"
+            else -> "%.1f MB".format(bytes / mib).replace(".0 MB", " MB")
+        }
+    }
 }

@@ -458,6 +458,7 @@ class CameraGalleryConnectionCoordinator(
                     CameraVendorBleEndpointPolicy.SystemBond(
                         name = device.name.orEmpty(),
                         address = device.address.orEmpty(),
+                        type = device.type,
                     )
                 }
                 .orEmpty()

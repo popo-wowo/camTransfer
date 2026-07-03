@@ -7,6 +7,8 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DownloadedFileStoreTest {
@@ -74,6 +76,12 @@ class DownloadedFileStoreTest {
 
         assertEquals(original.info, restored.info)
         assertNull(restored.thumbnail)
+    }
+
+    @Test
+    fun savedMediaPathMatchingFollowsConfiguredRootFolderName() {
+        assertTrue(DownloadedFileMediaPathPolicy.matchesManagedFolder("Pictures/My Imports/X-T5/2026-06-27/", "My Imports"))
+        assertFalse(DownloadedFileMediaPathPolicy.matchesManagedFolder("Pictures/CamTransfer/X-T5/2026-06-27/", "My Imports"))
     }
 
     private fun file(

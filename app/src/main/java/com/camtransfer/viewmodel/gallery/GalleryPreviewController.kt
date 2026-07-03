@@ -22,18 +22,33 @@ class GalleryPreviewController(
     private val previewImageCache = LinkedHashMap<Int, ByteArray>()
     private val _previewImages = MutableStateFlow<Map<Int, ByteArray>>(emptyMap())
     val previewImages: StateFlow<Map<Int, ByteArray>> = _previewImages.asStateFlow()
+    private val _loadedPreviewHandles = MutableStateFlow<Set<Int>>(emptySet())
+    val loadedPreviewHandles: StateFlow<Set<Int>> = _loadedPreviewHandles.asStateFlow()
+    private val _loadingPreviewHandles = MutableStateFlow<Set<Int>>(emptySet())
+    val loadingPreviewHandles: StateFlow<Set<Int>> = _loadingPreviewHandles.asStateFlow()
 
     private var previewImageJob: Job? = null
 
     @Volatile
     private var pendingPreviewFile: CameraFile? = null
 
-    fun loadPreviewImage(cameraSource: CameraFileSource, file: CameraFile) {
+    fun loadPreviewImage(
+        cameraSource: CameraFileSource,
+        file: CameraFile,
+        force: Boolean = false,
+    ) {
         val handle = file.info.handle
-        if (!GalleryPreviewFullImageLoadPolicy.shouldRequestFullImagePreview(file, previewImageCache.containsKey(handle))) {
+        if (!GalleryPreviewFullImageLoadPolicy.shouldRequestFullImagePreview(
+                file = file,
+                hasPreviewImage = previewImageCache.containsKey(handle),
+                isAlreadyLoading = handle in _loadingPreviewHandles.value,
+                force = force,
+            )
+        ) {
             return
         }
         pendingPreviewFile = file
+        _loadingPreviewHandles.value = _loadingPreviewHandles.value + handle
         if (previewImageJob?.isActive == true) return
         previewImageJob = scope.launch(Dispatchers.IO) {
             while (true) {
@@ -51,11 +66,16 @@ class GalleryPreviewController(
         previewImageCache.clear()
         pendingPreviewFile = null
         _previewImages.value = emptyMap()
+        _loadedPreviewHandles.value = emptySet()
+        _loadingPreviewHandles.value = emptySet()
     }
 
     private suspend fun loadPreviewImageNow(cameraSource: CameraFileSource, file: CameraFile) {
         val handle = file.info.handle
-        if (previewImageCache.containsKey(handle)) return
+        if (previewImageCache.containsKey(handle)) {
+            _loadingPreviewHandles.value = _loadingPreviewHandles.value - handle
+            return
+        }
         DiagnosticLog.append(cameraSource.context, TAG, "Preview image request handle=$handle")
         thumbnailController.pauseForExclusiveOperation(cameraSource, reason = "preview")
         try {
@@ -65,6 +85,7 @@ class GalleryPreviewController(
             val decodedSize = data.decodedBounds()
             cachePreviewImage(handle, data)
             _previewImages.value = previewImageCache.toMap()
+            _loadedPreviewHandles.value = _loadedPreviewHandles.value + handle
             DiagnosticLog.append(
                 cameraSource.context,
                 TAG,
@@ -74,6 +95,7 @@ class GalleryPreviewController(
         } catch (e: Exception) {
             DiagnosticLog.append(cameraSource.context, TAG, "Preview image failed handle=$handle", e)
         } finally {
+            _loadingPreviewHandles.value = _loadingPreviewHandles.value - handle
             thumbnailController.resumeAfterExclusiveOperation(cameraSource, reason = "preview")
         }
     }
@@ -98,7 +120,7 @@ class GalleryPreviewController(
 
     private companion object {
         const val TAG = "GalleryPreviewController"
-        const val MAX_CACHED_PREVIEW_IMAGES = 2
+        const val MAX_CACHED_PREVIEW_IMAGES = 30
     }
 }
 
@@ -108,8 +130,14 @@ private data class PreviewDecodedBounds(
 )
 
 internal object GalleryPreviewFullImageLoadPolicy {
-    fun shouldRequestFullImagePreview(file: CameraFile, hasPreviewImage: Boolean): Boolean {
-        if (hasPreviewImage) return false
+    fun shouldRequestFullImagePreview(
+        file: CameraFile,
+        hasPreviewImage: Boolean,
+        isAlreadyLoading: Boolean,
+        force: Boolean,
+    ): Boolean {
+        if (hasPreviewImage && !force) return false
+        if (isAlreadyLoading) return false
         return file.info.isJpeg || file.info.isHeif
     }
 }
