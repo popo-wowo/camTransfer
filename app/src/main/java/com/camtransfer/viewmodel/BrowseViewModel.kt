@@ -12,6 +12,7 @@ import com.camtransfer.viewmodel.gallery.GalleryPreviewController
 import com.camtransfer.viewmodel.gallery.GalleryRequestScheduler
 import com.camtransfer.viewmodel.gallery.GallerySelectionController
 import com.camtransfer.viewmodel.gallery.GalleryThumbnailController
+import com.camtransfer.viewmodel.gallery.GalleryThumbnailStore
 import com.camtransfer.viewmodel.gallery.HighDefinitionPreviewSessionPolicy
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -22,6 +23,7 @@ class BrowseViewModel : ViewModel() {
     private val requestScheduler = GalleryRequestScheduler()
     private val browseModeController = GalleryBrowseModeController()
     private val selectionController = GallerySelectionController()
+    private val thumbnailStore = GalleryThumbnailStore()
     private var thumbnailCacheProvider: () -> Map<Int, ByteArray> = { emptyMap() }
     private var hasActiveThumbnailWorkProvider: () -> Boolean = { false }
     private var highDefinitionPreviewPrepareJob: Job? = null
@@ -36,6 +38,7 @@ class BrowseViewModel : ViewModel() {
         scope = viewModelScope,
         requestScheduler = requestScheduler,
         filesController = filesController,
+        thumbnailStore = thumbnailStore,
     )
     private val previewController = GalleryPreviewController(
         scope = viewModelScope,
@@ -48,6 +51,7 @@ class BrowseViewModel : ViewModel() {
     val isLoadingHiddenFormats = filesController.isLoadingHiddenFormats
     val browseModeState = browseModeController.state
     val selectedHandles = selectionController.selectedHandles
+    val thumbnailsByHandle = thumbnailStore.thumbnails
     val previewImages = previewController.previewImages
     val loadedPreviewHandles = previewController.loadedPreviewHandles
     val loadingPreviewHandles = previewController.loadingPreviewHandles
@@ -55,7 +59,7 @@ class BrowseViewModel : ViewModel() {
     val error = filesController.error
 
     init {
-        thumbnailCacheProvider = thumbnailController::cachedThumbnails
+        thumbnailCacheProvider = thumbnailStore::snapshot
         hasActiveThumbnailWorkProvider = thumbnailController::hasActiveThumbnailWork
     }
 

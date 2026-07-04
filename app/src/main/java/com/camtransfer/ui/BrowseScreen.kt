@@ -157,6 +157,7 @@ fun BrowseScreen(
     val isLoadingHiddenFormats by viewModel.isLoadingHiddenFormats.collectAsState()
     val browseModeState by viewModel.browseModeState.collectAsState()
     val selectedHandles by viewModel.selectedHandles.collectAsState()
+    val thumbnailsByHandle by viewModel.thumbnailsByHandle.collectAsState()
     val previewImages by viewModel.previewImages.collectAsState()
     val loadedPreviewHandles by viewModel.loadedPreviewHandles.collectAsState()
     val loadingPreviewHandles by viewModel.loadingPreviewHandles.collectAsState()
@@ -682,6 +683,7 @@ fun BrowseScreen(
                                 gridState = gridState,
                                 selectedHandles = selectedHandles,
                                 downloadStates = downloadStates,
+                                thumbnailsByHandle = thumbnailsByHandle,
                                 isLoadingFullObjectInfo = isLoading,
                                 visibleGridHandleSet = visibleGridHandleSet,
                                 onColumnCountChange = { newCount ->

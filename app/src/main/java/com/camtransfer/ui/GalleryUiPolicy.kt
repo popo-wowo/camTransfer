@@ -801,6 +801,9 @@ object GalleryPreviewRotationPolicy {
 }
 
 object GalleryThumbnailDisplayPolicy {
+    fun thumbnailFor(file: CameraFile, thumbnailsByHandle: Map<Int, ByteArray>): ByteArray? =
+        thumbnailsByHandle[file.info.handle] ?: file.thumbnail
+
     fun rotationDegrees(
         file: CameraFile,
         decodedWidth: Int,

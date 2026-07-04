@@ -5,8 +5,7 @@ import com.camtransfer.model.ObjectInfo
 import com.camtransfer.protocol.PtpObjectFormat
 import com.camtransfer.viewmodel.gallery.GalleryFastInitialLoadPolicy
 import com.camtransfer.viewmodel.gallery.GalleryFileLoadPolicy
-import com.camtransfer.viewmodel.gallery.GalleryThumbnailMerge
-import com.camtransfer.viewmodel.gallery.GalleryThumbnailPublishPolicy
+import com.camtransfer.viewmodel.gallery.GalleryThumbnailStore
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
@@ -226,32 +225,44 @@ class GalleryFileLoadPolicyTest {
     }
 
     @Test
-    fun thumbnailPublishPolicyMergesMultipleUpdatesInOnePass() {
+    fun thumbnailStoreUpdateDoesNotMutateCatalogFiles() {
         val thumb10 = byteArrayOf(0x10)
-        val thumb11 = byteArrayOf(0x11)
-        val existing = listOf(
+        val catalogFiles = listOf(
             cameraFile(handle = 10, filename = "0x0000000A.JPG"),
             cameraFile(handle = 11, filename = "0x0000000B.JPG"),
-            cameraFile(handle = 12, filename = "0x0000000C.JPG"),
         )
-        val updates = mapOf(
-            10 to GalleryThumbnailMerge(
-                thumbnail = thumb10,
-                updatedFile = cameraFile(handle = 10, filename = "DSCF0010.JPG"),
-            ),
-            11 to GalleryThumbnailMerge(
-                thumbnail = thumb11,
-                updatedFile = cameraFile(handle = 11, filename = "DSCF0011.JPG"),
-            ),
-        )
+        val store = GalleryThumbnailStore()
 
-        val merged = GalleryThumbnailPublishPolicy.mergeThumbnails(existing, updates)
+        store.put(10, thumb10)
 
-        assertArrayEquals(thumb10, merged[0].thumbnail)
-        assertArrayEquals(thumb11, merged[1].thumbnail)
-        assertEquals(null, merged[2].thumbnail)
-        assertEquals("DSCF0010.JPG", merged[0].info.filename)
-        assertEquals("DSCF0011.JPG", merged[1].info.filename)
+        assertArrayEquals(thumb10, store.thumbnails.value[10])
+        assertEquals(listOf("0x0000000A.JPG", "0x0000000B.JPG"), catalogFiles.map { it.info.filename })
+        assertEquals(listOf(null, null), catalogFiles.map { it.thumbnail })
+    }
+
+    @Test
+    fun thumbnailStorePublishesByHandleWithoutCatalogMutation() {
+        val store = GalleryThumbnailStore()
+        val thumb = byteArrayOf(0x01, 0x02)
+
+        store.put(10, thumb)
+
+        assertArrayEquals(thumb, store.thumbnails.value[10])
+        assertTrue(store.hasThumbnail(10))
+    }
+
+    @Test
+    fun thumbnailStoreRetainsNewestEntriesWithinMemoryLimit() {
+        val store = GalleryThumbnailStore(maxEntries = 2)
+
+        store.put(10, byteArrayOf(0x10))
+        store.put(11, byteArrayOf(0x11))
+        store.put(12, byteArrayOf(0x12))
+
+        assertFalse(store.hasThumbnail(10))
+        assertTrue(store.hasThumbnail(11))
+        assertTrue(store.hasThumbnail(12))
+        assertEquals(listOf(11, 12), store.thumbnails.value.keys.toList())
     }
 
     @Test

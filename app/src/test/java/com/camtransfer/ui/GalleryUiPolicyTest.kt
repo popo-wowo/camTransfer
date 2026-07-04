@@ -1012,6 +1012,22 @@ class GalleryUiPolicyTest {
     }
 
     @Test
+    fun thumbnailDisplayPolicyPrefersStoreThumbnailByHandle() {
+        val oldThumbnail = byteArrayOf(0x01)
+        val storeThumbnail = byteArrayOf(0x02)
+        val item = file(10, PtpObjectFormat.JPEG, "20260529T081500").copy(thumbnail = oldThumbnail)
+
+        assertArrayEquals(
+            storeThumbnail,
+            GalleryThumbnailDisplayPolicy.thumbnailFor(item, mapOf(10 to storeThumbnail)),
+        )
+        assertArrayEquals(
+            oldThumbnail,
+            GalleryThumbnailDisplayPolicy.thumbnailFor(item, emptyMap()),
+        )
+    }
+
+    @Test
     fun previewImagePolicyDecodesFullObjectLargerThanThumbnailPreview() {
         assertTrue(
             GalleryPreviewImagePolicy.FULL_IMAGE_MAX_DECODED_SIDE >

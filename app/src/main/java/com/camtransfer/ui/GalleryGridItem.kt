@@ -109,6 +109,7 @@ private val GalleryActionColor = Color(0xFF177C6D)
 @Composable
 internal fun GalleryGridItem(
     file: CameraFile,
+    thumbnail: ByteArray?,
     modifier: Modifier = Modifier,
     isSelected: Boolean,
     downloadState: TransferState?,
@@ -118,12 +119,12 @@ internal fun GalleryGridItem(
     onToggleSelection: () -> Unit,
     onVisible: () -> Unit,
 ) {
-    LaunchedEffect(file.info.handle, file.thumbnail, isLoadingFullObjectInfo, isItemVisible) {
+    LaunchedEffect(file.info.handle, thumbnail, isLoadingFullObjectInfo, isItemVisible) {
         if (
             GalleryThumbnailVisibilityPolicy.shouldRequestThumbnail(
                 isItemVisible = isItemVisible,
                 isLoadingFullObjectInfo = isLoadingFullObjectInfo,
-                hasThumbnail = file.thumbnail != null,
+                hasThumbnail = thumbnail != null,
             )
         ) {
             onVisible()
@@ -156,7 +157,7 @@ internal fun GalleryGridItem(
             .background(Color(0xFFEDEBE5))
             .clickable { onOpen() }
     ) {
-        val thumb = file.thumbnail
+        val thumb = thumbnail
         if (thumb != null) {
             val bitmap by produceState<Bitmap?>(initialValue = null, thumb, file.info) {
                 value = withContext(Dispatchers.Default) {

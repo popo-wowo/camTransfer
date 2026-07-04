@@ -15,7 +15,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
-import java.util.LinkedHashMap
 
 class GalleryFilesController(
     private val scope: CoroutineScope,
@@ -37,9 +36,6 @@ class GalleryFilesController(
 
     private var loadJob: Job? = null
     private var fullObjectInfoJob: Job? = null
-    private var thumbnailPublishJob: Job? = null
-    private val pendingThumbnailMerges = LinkedHashMap<Int, GalleryThumbnailMerge>()
-    private val pendingThumbnailMergeLock = Any()
     private var loadedSource: CameraFileSource? = null
     private var fullObjectInfoPausedForExclusiveOperation = false
 
@@ -110,57 +106,19 @@ class GalleryFilesController(
         }
     }
 
-    fun mergeThumbnail(handle: Int, thumbnail: ByteArray, updatedFile: CameraFile?) {
-        synchronized(pendingThumbnailMergeLock) {
-            pendingThumbnailMerges[handle] = GalleryThumbnailMerge(
-                thumbnail = thumbnail,
-                updatedFile = updatedFile,
-            )
-            if (thumbnailPublishJob?.isActive == true) return
-            thumbnailPublishJob = scope.launch(Dispatchers.Default) {
-                delay(GalleryThumbnailPublishPolicy.PUBLISH_DELAY_MS)
-                flushPendingThumbnails()
-            }
-        }
-    }
-
     fun hasThumbnail(handle: Int): Boolean =
-        synchronized(pendingThumbnailMergeLock) {
-            handle in pendingThumbnailMerges
-        } || _files.value.any { it.info.handle == handle && it.thumbnail != null }
+        _files.value.any { it.info.handle == handle && it.thumbnail != null }
 
     fun reset() {
         loadJob?.cancel()
         fullObjectInfoJob?.cancel()
-        thumbnailPublishJob?.cancel()
         loadJob = null
         fullObjectInfoJob = null
-        thumbnailPublishJob = null
-        synchronized(pendingThumbnailMergeLock) {
-            pendingThumbnailMerges.clear()
-        }
         fullObjectInfoPausedForExclusiveOperation = false
         _files.value = emptyList()
         _isLoading.value = false
         _error.value = null
         loadedSource = null
-    }
-
-    private fun flushPendingThumbnails() {
-        val updates = synchronized(pendingThumbnailMergeLock) {
-            if (pendingThumbnailMerges.isEmpty()) {
-                thumbnailPublishJob = null
-                return
-            }
-            LinkedHashMap(pendingThumbnailMerges).also {
-                pendingThumbnailMerges.clear()
-                thumbnailPublishJob = null
-            }
-        }
-        _files.value = GalleryThumbnailPublishPolicy.mergeThumbnails(
-            files = _files.value,
-            updates = updates,
-        )
     }
 
     suspend fun pauseForExclusiveOperation(cameraSource: CameraFileSource, reason: String) {
@@ -467,28 +425,5 @@ internal object GalleryFastInitialLoadPolicy {
             LocalDate.parse(day, DateTimeFormatter.BASIC_ISO_DATE)
             day
         }.getOrNull()
-    }
-}
-
-internal data class GalleryThumbnailMerge(
-    val thumbnail: ByteArray,
-    val updatedFile: CameraFile?,
-)
-
-internal object GalleryThumbnailPublishPolicy {
-    const val PUBLISH_DELAY_MS = 60L
-
-    fun mergeThumbnails(
-        files: List<CameraFile>,
-        updates: Map<Int, GalleryThumbnailMerge>,
-    ): List<CameraFile> {
-        if (updates.isEmpty()) return files
-        return files.map { file ->
-            val update = updates[file.info.handle] ?: return@map file
-            GalleryFastInitialLoadPolicy.mergeThumbnailMetadata(
-                existingFile = file,
-                thumbnailFile = update.updatedFile,
-            ).copy(thumbnail = update.thumbnail)
-        }
     }
 }

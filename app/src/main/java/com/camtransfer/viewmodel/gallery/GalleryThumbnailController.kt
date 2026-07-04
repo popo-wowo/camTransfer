@@ -20,10 +20,10 @@ class GalleryThumbnailController(
     private val scope: CoroutineScope,
     private val requestScheduler: GalleryRequestScheduler,
     private val filesController: GalleryFilesController,
+    private val thumbnailStore: GalleryThumbnailStore,
 ) {
     private val thumbnailQueue = ThumbnailLoadQueue()
     private val thumbnailWorkers = mutableSetOf<Job>()
-    private val thumbnailCache = ThumbnailMemoryCache()
     private val thumbnailPauseLock = Any()
     private var exclusiveThumbnailPauseCount = 0
     private var thumbnailDiskWriteCount = 0
@@ -33,7 +33,7 @@ class GalleryThumbnailController(
     @Volatile
     private var thumbnailLoadingPaused = false
 
-    fun cachedThumbnails(): Map<Int, ByteArray> = thumbnailCache.snapshot()
+    fun cachedThumbnails(): Map<Int, ByteArray> = thumbnailStore.snapshot()
 
     fun hasActiveThumbnailWork(): Boolean =
         thumbnailQueue.trackedCount > 0
@@ -50,14 +50,14 @@ class GalleryThumbnailController(
         if (!GalleryFastInitialLoadPolicy.shouldLoadThumbnail(
                 isTransferPreparingOrActive = thumbnailLoadingPaused,
                 isLoadingFullObjectInfo = filesController.isLoadingHiddenFormats.value,
-                hasThumbnail = filesController.hasThumbnail(handle),
+                hasThumbnail = hasThumbnail(handle),
                 activeOrPendingThumbnailCount = activeOrPendingThumbnailCount(),
                 isExplicitVisibleWindow = isExplicitVisibleWindow,
             )
         ) {
             return
         }
-        if (filesController.hasThumbnail(handle)) return
+        if (hasThumbnail(handle)) return
         if (!thumbnailQueue.offer(handle)) return
         startThumbnailWorkers(cameraSource)
     }
@@ -121,7 +121,7 @@ class GalleryThumbnailController(
         }
         thumbnailDiskTrimJob?.cancel()
         thumbnailDiskTrimJob = null
-        thumbnailCache.clear()
+        thumbnailStore.clear()
         synchronized(thumbnailPauseLock) {
             exclusiveThumbnailPauseCount = 0
             thumbnailLoadingPaused = false
@@ -133,13 +133,13 @@ class GalleryThumbnailController(
         if (!GalleryFastInitialLoadPolicy.shouldLoadThumbnail(
                 isTransferPreparingOrActive = thumbnailLoadingPaused,
                 isLoadingFullObjectInfo = filesController.isLoadingHiddenFormats.value,
-                hasThumbnail = filesController.hasThumbnail(handle),
+                hasThumbnail = hasThumbnail(handle),
                 activeOrPendingThumbnailCount = activeOrPendingThumbnailCount(),
             )
         ) {
             return
         }
-        if (filesController.hasThumbnail(handle)) return
+        if (hasThumbnail(handle)) return
         if (!thumbnailQueue.offerProtected(handle)) {
             thumbnailQueue.protect(setOf(handle))
         }
@@ -173,12 +173,11 @@ class GalleryThumbnailController(
     }
 
     private suspend fun loadThumbnailNow(cameraSource: CameraFileSource, handle: Int) {
-        if (filesController.hasThumbnail(handle)) return
+        if (hasThumbnail(handle)) return
         val currentFile = filesController.files.value.firstOrNull { it.info.handle == handle }
         val cachedThumbnail = readThumbnailFromDisk(cameraSource, handle, currentFile)
         if (cachedThumbnail != null) {
-            thumbnailCache.put(handle, cachedThumbnail)
-            filesController.mergeThumbnail(handle, cachedThumbnail, currentFile)
+            thumbnailStore.put(handle, cachedThumbnail)
             DiagnosticLog.append(
                 cameraSource.context,
                 TAG,
@@ -204,8 +203,7 @@ class GalleryThumbnailController(
             )
             Log.d(TAG, thumbnailSummary)
             DiagnosticLog.append(cameraSource.context, TAG, thumbnailSummary)
-            thumbnailCache.put(handle, thumb)
-            filesController.mergeThumbnail(handle, thumb, thumbnail.file)
+            thumbnailStore.put(handle, thumb)
             writeThumbnailToDisk(cameraSource, handle, thumb, file)
         } catch (e: Exception) {
             Log.w(TAG, "Thumbnail failed handle=$handle: $e")
@@ -289,6 +287,9 @@ class GalleryThumbnailController(
 
     private fun activeOrPendingThumbnailCount(): Int =
         thumbnailQueue.trackedCount
+
+    private fun hasThumbnail(handle: Int): Boolean =
+        thumbnailStore.hasThumbnail(handle) || filesController.hasThumbnail(handle)
 
     private fun ByteArray.decodedBounds(): ThumbnailDecodedBounds {
         val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
