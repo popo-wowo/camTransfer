@@ -4,6 +4,14 @@
 
 本文记录 Android 当前已经落地的连接、相册、下载和 UI 执行规则。后续改动应先对照本文和 `docs/android-official-xapp-connection-analysis.md`，保持“每一步确认后再进入下一步”和“稳定性优先”的原则。不要使用 iOS 实现或旧跨平台文档决定 Android 连接行为。
 
+## 当前稳定回滚点
+
+- 分支: `codex/android-raw-d621-diagnostics`
+- 稳定 tag: `android-stable-20260704-thumbnail-hd-raw-fix`
+- 提交: `db6ce45 Stabilize Android gallery preview loading`
+- 实机状态: 2026-07-04 Android 手机 + X-T5 测试确认进入相册速度恢复、缩略图恢复显示、高清预览模式下 `加入 RAW` 不再按普通 HEIF/JPG 候选入队。
+- 本 tag 之后继续小步迭代；每个 P0/P1 改动必须可单独回滚。
+
 ## 总原则
 
 - 底层连接只保留一套官方协议适配逻辑；UI 可以提供更清晰的引导，但不能绕过步骤。
@@ -138,10 +146,27 @@ BLE session 复用规则:
 
 缩略图显示规则:
 
+- 2026-07-04 当前稳定规则: 列表缩略图不再使用 `9054` current-image context prime 作为必经步骤；但 `GET_THUMB` 前仍会先执行标准 `GET_OBJECT_INFO(handle)`，用于拿到当前对象信息并让标准缩略图读取保持稳定。
+- 这个步骤和首屏 `LoadGallery` 不同：它发生在单个缩略图按需加载时，不阻塞进入相册；不要把它重新挪回 GalleryReady 前。
 - 列表和下载中心共用展示前处理。
 - 解码后根据 EXIF/object orientation 做展示旋转。
 - 如果相机返回的缩略图边缘包含大面积纯黑 letterbox，展示前裁掉边缘黑条，再交给网格 `Crop`。
 - 裁剪只处理边缘几乎整行/整列为黑色的条带，避免误裁正常暗部照片。
+
+## 高清预览模式
+
+高清预览模式是 Gallery 内部浏览模式，不属于连接主链路:
+
+- 进入相册后可以在 `缩略图` 和 `高清预览` 两种模式之间切换；切换模式不重连 BLE、不重开 Wi-Fi、不重启 PTP。
+- 进入高清预览模式时，`GalleryFilesController` 和 `GalleryThumbnailController` 会进入独占暂停，避免后台 metadata 或缩略图抢占 PTP。
+- 高清预览读取使用原厂已确认的 screen preview 路径: `D226 ImageForceCompression=1 -> GET_OBJECT_INFO(handle) -> GET_PARTIAL_OBJECT(handle, 0, fresh compressedSize) -> D226=0`。
+- 高清预览 session 默认按日期构建，一次只激活一个日期；加载优先级按当前可见窗口，而不是无脑从头扫到底。
+- UI 上每张高清预览项可以加入普通显示图下载；如果同一照片有 RAW sidecar，则提供单独 `加入 RAW` 按钮。
+- `加入 RAW` 只允许把 RAW-only 候选或已解析 RAW 文件加入下载队列。对于初始阶段 HEIF/RAW 都未解析出来的模糊占位符，当前稳定规则是把显示图候选标为 `HEIF` hint，把 RAW 侧车候选标为 `RAW` hint，避免 RAW 下载被普通 HEIF/JPG 候选污染。
+- RAW-only 候选进入下载队列后强制使用原图模式；用户当前选择压缩也不能把 RAW 侧车按压缩图下载。
+- 诊断日志 `HD preview session ... rawPairs=preview[hints]->raw[hints]` 用于确认前几个预览项和 RAW sidecar 的配对，不作为业务逻辑输入。
+- 预览读取被取消时不能标记为失败；取消通常来自切换模式、切日期或下载独占暂停。
+- 大尺寸 JPEG 缺 EOI 但仍可解码的相机预览不会直接失败；明显过小且不完整的数据必须拒绝缓存，避免黑图被标记为已加载。
 
 ## 筛选和排序
 
@@ -241,17 +266,17 @@ BLE session 复用规则:
 | ID | 级别 | 状态 | 问题 | 当前依据 | 下一步 |
 | --- | --- | --- | --- | --- | --- |
 | A-P0-01 | P0 | measuring | `Connect -> GalleryReady` 主链路必须保持最小阻塞路径，不能混入诊断、兜底、标准枚举或 UI 重入修复。 | 当前文档已确认首屏只允许 BLE/Wi-Fi/PTP 和 `9050 -> D22B -> 9053 -> D620 -> D621`，加必要 `D604=HEIF/RAW` 扩展。 | 用 `GalleryStartup step=... elapsedMs=...` 证明每一步耗时和失败率；无收益步骤移出阻塞路径。 |
-| A-P0-02 | P0 | measuring | `D222 current handle snapshot` 是否还在挡首屏，需要确认。 | 历史文档多次记录 `D222` 轮询/快照容易扰乱图库读取；当前代码仍有快照日志。 | 看实机日志的 `D222-current-handle-snapshot` 耗时、失败率和是否影响后续 D621；无稳定收益则降级为非阻塞诊断。 |
+| A-P0-02 | P0 | verified | `D222 current handle snapshot` 是否还在挡首屏，需要确认。 | 2026-07-04 已把 `D222-current-handle-snapshot` 从阻塞启动路径降级为非阻塞诊断；当前稳定 tag 实机确认进入相册速度恢复。 | 保持非阻塞；除非有原厂阶段证据和实机收益，不得重新放回 GalleryReady 前。 |
 | A-P0-03 | P0 | measuring | `9050 SearchModeDescAll` 重试可能拖慢进入相册。 | 当前对 `0x2019` 有最多 3 次重试和 500ms/1000ms 等待。 | 统计 `SearchModeDescAll attempt` 和 retry 日志；只有证明能提高成功率才保留。 |
-| A-P0-04 | P0 | open | HEIF/RAW 必须在初始占位符阶段出现，不能靠 hidden gap 猜 handle。 | X-T5 实测 `D604=31` 不是全格式；正式路径是 `D604=HEIF/RAW -> 9053/D620/D621`。 | 验证扩展列表稳定性、耗时和是否保留 D621 原始顺序；失败时只允许显式诊断，不污染主路径。 |
+| A-P0-04 | P0 | verified | HEIF/RAW 必须在初始占位符阶段出现，不能靠 hidden gap 猜 handle。 | X-T5 实测 `D604=31` 不是全格式；当前稳定 tag 使用 `D604=HEIF/RAW -> 9053/D620/D621` 扩展列表并保留 D621 原始顺序，实机确认 HEIF/RAW 初始显示恢复。 | 持续保留日志观察扩展列表耗时；hidden gap 仍只能做诊断/兜底。 |
 | A-P0-05 | P0 | open | 下载必须独占 PTP；下载期间不能继续缩略图、metadata、高清预览请求。 | 相机 PTP 单线程；之前大 RAW 读到 socket closed 后，后续 JPG/RAW 变成 `Not connected`。 | 缩略图模式和高清预览模式点击下载都跳转下载页；下载页期间暂停其它相机请求，失败后停止剩余队列。 |
 | A-P0-06 | P0 | open | 缩略图模式、高清预览模式、下载模块要共享同一下载队列和同一互斥门。 | 用户要求两个预览模式只改变展示方式，下载模块不能分叉。 | 检查所有下载入口是否都走同一个 transfer gate、同一模式快照和同一失败处理。 |
 | A-P1-01 | P1 | open | 后置完整 `ObjectInfo` 补齐不能影响首屏和下载。 | `fastInitialFiles()` 应只发 D621 占位符；完整信息、标准枚举和 hidden metadata 都应低优先级。 | 标记 `galleryObjectInfos()` 的 Android用途，移除或隔离 `iOS logic` 标注分支对首屏/下载的影响。 |
 | A-P1-02 | P1 | open | 缩略图可见窗口需要适配缩放、筛选、快速滚动，不能因为列数变化卡住几个不加载。 | Android 相册网格支持缩放；当前屏幕 item 数会变化，原厂固定 3 列不能直接套用。 | 可见项优先级按真实 visible range 计算；筛选切换时取消旧窗口请求并重新调度当前窗口。 |
 | A-P1-03 | P1 | open | 筛选不能依赖“已经加载出缩略图”的项目。 | 占位符阶段已经有日期、格式候选和 handle，用户选择视频/RAW/HEIF 时应该能先显示占位符，再慢慢加载图。 | 确认筛选输入来自 D621/扩展列表和已知格式标记，而不是缩略图缓存或完整 ObjectInfo 完成状态。 |
 | A-P1-04 | P1 | open | 高清预览必须按当前浏览位置优先加载，而不是一路向下扫。 | 用户滚动到当前屏幕后，当前图片优先级最高；相机请求单线程。 | 采用当前屏幕优先、上方少量、下方更多的 active window；切日期/快速滚动时取消旧任务。 |
-| A-P1-05 | P1 | open | 高清预览取消不能写成失败，也不能把黑图/半图标记成已加载。 | 退出页面、切模式、下载暂停都可能触发 coroutine cancellation；不完整 JPEG 会造成黑图或“已加载但无图”。 | `CancellationException` 单独处理；JPEG 缺 EOI 或解码失败必须拒绝缓存和成功状态。 |
-| A-P1-06 | P1 | open | 高清预览的 RAW sidecar 只能作为同一照片的下载按钮，不能重排 D621 时间线。 | RAW/HEIF/JPG handle 可能交错；按 handle 倒序会破坏原厂顺序。 | HD item 构造以当前相册列表顺序为准，RAW 只合并为当前项的可选下载动作。 |
+| A-P1-05 | P1 | verified | 高清预览取消不能写成失败，也不能把黑图/半图标记成已加载。 | 当前稳定 tag 已单独处理 `CancellationException`，并只拒绝明显过小的不完整 JPEG；实机未再复现黑图卡死。 | 继续用日志观察 `Preview image missing JPEG EOI` 和取消场景，不把取消计入失败。 |
+| A-P1-06 | P1 | verified | 高清预览的 RAW sidecar 只能作为同一照片的下载按钮，不能重排 D621 时间线。 | 当前稳定 tag 已把模糊 HEIF/RAW 配对后的显示图标为 `HEIF` hint、RAW 侧车标为 `RAW` hint，并加入 `rawPairs` 日志；实机确认 `加入 RAW` 看起来正常。 | 继续收集异常日期/handle 顺序样本；如果配对错误，只改 HD sidecar policy，不改连接主链路。 |
 | A-P1-07 | P1 | open | 下载模式必须在下载前写入并重新读 fresh `ObjectInfo`，不能保存缩略图大小。 | 原图/压缩都曾落到缩略图大小；当前规则要求 `D226/D22E -> GET_OBJECT_INFO -> GET_PARTIAL_OBJECT`。 | 保留 `Download mode prepare` 和 `Download partial freshSize/readSize` 日志；任何几百 KB 结果都视为失败。 |
 | A-P1-08 | P1 | open | 交互问题继续收敛：多选滑动过敏、日期范围两个输入框、单图底部悬浮条一致性。 | 用户已明确提出这些 UX 问题；它们不应影响连接主链路。 | 作为 UI 层独立任务处理，禁止借 UI 调整触发 gallery startup 或改变 PTP 调度。 |
 | A-P2-01 | P2 | open | HD 预览磁盘缓存同步读大文件可能卡 UI，且没有容量上限。 | `hd-preview-cache` 可随浏览增长；同步 `readBytes()` 可能阻塞滚动。 | 改 IO 协程读取，加入 LRU/总大小上限和按相机/日期清理策略。 |

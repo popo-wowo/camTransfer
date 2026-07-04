@@ -1,14 +1,25 @@
 # Android Gallery Preview And Transfer Roadmap
 
-更新日期: 2026-06-27
+更新日期: 2026-07-04
 
 本文记录 2026-06-19 原厂 XApp 抓包后，Android 相册缩略图、高清预览、原图导入和缓存的后续改造计划。执行前以 `docs/android-official-xapp-connection-analysis.md` 的证据等级为准，不把未证明的 fallback 放进主链路。
 
-## 当前未提交实验改动
+## 当前稳定基线
 
-以下内容是当前 Android diagnostics worktree 里还没有提交的改动，目的是把“产品功能改动”和“协议诊断改动”分开记录，避免后续排查时混在一起。
+- 分支: `codex/android-raw-d621-diagnostics`
+- 稳定 tag: `android-stable-20260704-thumbnail-hd-raw-fix`
+- 提交: `db6ce45 Stabilize Android gallery preview loading`
+- 状态: 已 push，可作为后续优化的回滚点。
+- 实机现象: 进入相册速度恢复；缩略图恢复显示；高清预览模式下 `加入 RAW` 当前看起来正常。
+- 后续所有优化必须以这个 tag 为基线小步推进，不能把连接、相册启动、缩略图、高清预览和下载混成一次大改。
+
+## 2026-07-04 已提交稳定改动
+
+以下内容已经进入稳定 tag，不再视为未提交实验。后续排查时优先以这些规则判断当前行为是否回归。
 
 ### 1. 下载目录配置
+
+状态: 已实现基础能力，后续继续验证不同系统相册/文件管理器可见性。
 
 目标:
 
@@ -33,6 +44,8 @@
 
 ### 2. 单图高清预览页和预览弹层改造
 
+状态: 已实现高清预览模式基础能力，2026-07-04 稳定 tag 已修复 RAW sidecar 入队语义。
+
 目标:
 
 - 把单图打开和列表缩略图区分开。
@@ -54,7 +67,18 @@
   - 图片信息入口
 - 文件信息优先显示当前已知 `ObjectInfo` 字段，不为了展示信息额外重走相机主链路。
 
+2026-07-04 稳定结论:
+
+- 高清预览模式是 Gallery 内部模式，不触发重新连接或重新进入 GalleryReady。
+- 进入高清预览后会暂停缩略图和 metadata 后台请求，避免抢 PTP。
+- 加入下载只是加入统一下载队列，真正下载仍通过同一个 TransferService。
+- 模糊 HEIF/RAW 占位符配对后，显示项只保留 `HEIF` hint，RAW 侧车只保留 `RAW` hint。
+- RAW-only 候选即使用户当前选择压缩，也必须按原图模式下载。
+- 诊断日志 `HD preview session ... rawPairs=preview[hints]->raw[hints]` 用于排查 RAW 按钮是否对应正确 handle。
+
 ### 3. 相册页交互和筛选 UI 调整
+
+状态: 部分已实现，缩略图显示回归已在 2026-07-04 修复；缩放/筛选快速切换仍需继续压测。
 
 目标:
 
@@ -68,6 +92,12 @@
   - 当前没有可见项时，主动给一个首屏窗口，而不是直接返回空。
   - 可见窗口请求优先于后台补齐。
 - `GalleryFilesController` 调整完整 `ObjectInfo` 的节流，让首屏与可见区域优先。
+
+2026-07-04 稳定结论:
+
+- 为了加速进入相册，`D222-current-handle-snapshot` 已从阻塞启动路径降为非阻塞诊断。
+- 列表缩略图读取不恢复 `9054` current-image prime；但 `GET_THUMB` 前必须做标准 `GET_OBJECT_INFO(handle)`。
+- 这个标准 ObjectInfo 只发生在单个缩略图按需加载时，不属于进入相册前的阻塞主链路。
 
 ### 4. 相机名与配对辅助信息
 
@@ -83,6 +113,8 @@
 - `CameraVendorPairingForgetPolicy` 增加剩余 bonded address 检查辅助方法。
 
 ### 5. Android 图库启动协议诊断改动
+
+状态: 关键 blocker 已闭环，当前稳定 tag 继续保留必要日志。
 
 目标:
 
@@ -167,6 +199,53 @@
   - Android 系统加入相机 Wi-Fi
   - `9050/9053` 本身的读取
 - 这比之前“先被 `9054/9055` 白白耗掉 14 秒再失败”更接近可继续优化的状态。
+
+### 8. 2026-07-04 缩略图与高清 RAW 修复
+
+状态: 已提交、已 push、已打稳定 tag。
+
+问题:
+
+- 为了加速进入相册，移除阻塞 `9054` 后，列表缩略图一度不显示。
+- 高清预览模式里 `加入 RAW` 在部分样本上会把普通 HEIF/JPG 候选加入队列，而不是 RAW 侧车。
+
+根因:
+
+- 缩略图回归不是 `GET_THUMB` 本身坏了，而是关闭 `9054` 的同时也跳过了标准 `GET_OBJECT_INFO(handle)`，导致单张缩略图读取缺少稳定对象上下文和返回的 `ObjectInfo`。
+- RAW 入队问题来自初始 HEIF/RAW 模糊占位符。两个相邻 handle 在未解析真实 `ObjectInfo` 前都带 `HEIF + RAW` hint；如果 RAW 按钮直接使用这个占位符，下载模式和 UI 状态会把它当普通显示图候选处理。
+
+处理:
+
+- `PtpCommands.getThumbWithInfo()` 保持不走 `9054` 阻塞 prime，但在 `GET_THUMB` 前恢复标准 `GET_OBJECT_INFO(handle)`。
+- `HighDefinitionPreviewSessionPolicy` 对模糊配对结果重写 hint:
+  - `previewFile`: `HEIF`
+  - `rawFile`: `RAW`
+- `TransferQueueDownloadModePolicy` 把 RAW-only candidate 当 RAW 处理，强制 `ORIGINAL` 下载模式。
+- `BrowseViewModel` 增加 `rawPairs` 诊断，后续如果某个日期配对错，可以直接看 `preview[hints]->raw[hints]`。
+
+验证:
+
+- `testDebugUnitTest` 目标风险集通过。
+- `compileDebugKotlin` 通过。
+- `git diff --check` 通过。
+- `installDebug` 成功安装到 Android 手机。
+- 用户实机反馈“这波看起来好像没问题”。
+
+后续注意:
+
+- 不要为了缩略图恢复把 `9054/9055` 放回 GalleryReady 前。
+- 不要把 RAW sidecar 配对做成 hidden gap 猜码主路径；当前只在 HD 预览项合并层做展示/下载语义修正。
+- 如果后续发现某个日期 RAW 仍错配，优先调整 sidecar pairing policy 和日志，而不是改连接或图库启动协议。
+
+## 下一轮优化顺序
+
+P0/P1 继续按下面顺序推进:
+
+1. 缩略图模式下载独占复核: 点击下载必须跳转下载页，并确认缩略图、metadata、HD preview 全部暂停到队列结束。
+2. 缩略图可见窗口复核: 缩放列数、筛选、快速滚动时，当前屏幕 handles 必须优先加载，不能留下永远不加载的空洞。
+3. HD 预览 active window 优化: 当前可见图优先，上方少量、下方更多；切日期和快速滚动时取消旧窗口请求。
+4. HD 预览 RAW 配对继续取证: 收集异常日期的 `rawPairs` 日志，只在 sidecar 层修，不污染主链路。
+5. 缓存与内存上限: 给缩略图内存缓存和 HD 预览磁盘缓存加 LRU/容量上限，避免大图库长时间浏览后内存和磁盘膨胀。
 
 ## 已确定结论
 
