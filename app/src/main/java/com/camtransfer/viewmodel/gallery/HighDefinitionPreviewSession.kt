@@ -192,7 +192,8 @@ internal object HighDefinitionPreviewSessionPolicy {
         file.info.isJpeg ||
             file.info.isHeif ||
             CameraFileFormatHint.JPG in file.formatHints ||
-            CameraFileFormatHint.HEIF in file.formatHints
+            CameraFileFormatHint.HEIF in file.formatHints ||
+            CameraFileFormatHint.EXTENDED_STILL_CANDIDATE in file.formatHints
 
     private fun ambiguousHeifRawItems(files: List<CameraFile>): List<HighDefinitionPreviewItem> {
         val ambiguous = files
@@ -228,16 +229,18 @@ internal object HighDefinitionPreviewSessionPolicy {
         copy(formatHints = setOf(CameraFileFormatHint.RAW))
 
     private fun isAmbiguousHeifRawPlaceholder(file: CameraFile): Boolean =
-        !file.info.isJpeg &&
+            !file.info.isJpeg &&
             !file.info.isHeif &&
             !file.info.isRaw &&
-            CameraFileFormatHint.HEIF in file.formatHints &&
-            CameraFileFormatHint.RAW in file.formatHints
+            CameraFileFormatHint.EXTENDED_STILL_CANDIDATE in file.formatHints
 
     private fun isRawSidecar(file: CameraFile): Boolean =
         file.info.isRaw ||
             (
-                CameraFileFormatHint.RAW in file.formatHints &&
+                (
+                    CameraFileFormatHint.RAW in file.formatHints ||
+                        CameraFileFormatHint.EXTENDED_STILL_CANDIDATE in file.formatHints
+                    ) &&
                     CameraFileFormatHint.JPG !in file.formatHints &&
                     CameraFileFormatHint.HEIF !in file.formatHints
                 )

@@ -87,7 +87,7 @@ class GalleryBrowseModeControllerTest {
                 filename = "0x%08X".format(handle),
                 captureDate = "20260628",
                 format = PtpObjectFormat.UNDEFINED,
-                formatHints = setOf(CameraFileFormatHint.HEIF, CameraFileFormatHint.RAW),
+                formatHints = setOf(CameraFileFormatHint.EXTENDED_STILL_CANDIDATE),
             )
         }
 
@@ -107,14 +107,14 @@ class GalleryBrowseModeControllerTest {
                 filename = "0x0000070E",
                 captureDate = "20260628",
                 format = PtpObjectFormat.UNDEFINED,
-                formatHints = setOf(CameraFileFormatHint.HEIF, CameraFileFormatHint.RAW),
+                formatHints = setOf(CameraFileFormatHint.EXTENDED_STILL_CANDIDATE),
             ),
             cameraFile(
                 handle = 1805,
                 filename = "0x0000070D",
                 captureDate = "20260628",
                 format = PtpObjectFormat.UNDEFINED,
-                formatHints = setOf(CameraFileFormatHint.HEIF, CameraFileFormatHint.RAW),
+                formatHints = setOf(CameraFileFormatHint.EXTENDED_STILL_CANDIDATE),
             ),
         )
 
@@ -132,14 +132,14 @@ class GalleryBrowseModeControllerTest {
                 filename = "0x00000001",
                 captureDate = "20260628",
                 format = PtpObjectFormat.UNDEFINED,
-                formatHints = setOf(CameraFileFormatHint.HEIF, CameraFileFormatHint.RAW),
+                formatHints = setOf(CameraFileFormatHint.EXTENDED_STILL_CANDIDATE),
             ),
             cameraFile(
                 handle = 2,
                 filename = "0x00000002",
                 captureDate = "20260620",
                 format = PtpObjectFormat.UNDEFINED,
-                formatHints = setOf(CameraFileFormatHint.HEIF, CameraFileFormatHint.RAW),
+                formatHints = setOf(CameraFileFormatHint.EXTENDED_STILL_CANDIDATE),
             ),
         )
 

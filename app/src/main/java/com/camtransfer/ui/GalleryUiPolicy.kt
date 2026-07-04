@@ -122,8 +122,10 @@ object GalleryUiPolicy {
     private fun matchesFormatHint(file: CameraFile, format: GalleryFormatFilter): Boolean =
         when (format) {
             GalleryFormatFilter.Jpg -> CameraFileFormatHint.JPG in file.formatHints
-            GalleryFormatFilter.Heif -> CameraFileFormatHint.HEIF in file.formatHints
-            GalleryFormatFilter.Raw -> CameraFileFormatHint.RAW in file.formatHints
+            GalleryFormatFilter.Heif -> CameraFileFormatHint.HEIF in file.formatHints ||
+                CameraFileFormatHint.EXTENDED_STILL_CANDIDATE in file.formatHints
+            GalleryFormatFilter.Raw -> CameraFileFormatHint.RAW in file.formatHints ||
+                CameraFileFormatHint.EXTENDED_STILL_CANDIDATE in file.formatHints
             GalleryFormatFilter.Video -> CameraFileFormatHint.VIDEO in file.formatHints
         }
 

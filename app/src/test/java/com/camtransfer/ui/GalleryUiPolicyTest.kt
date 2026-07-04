@@ -148,7 +148,7 @@ class GalleryUiPolicyTest {
             file(1, PtpObjectFormat.UNDEFINED, "20260529T081500")
                 .copy(formatHints = setOf(CameraFileFormatHint.VIDEO)),
             file(2, PtpObjectFormat.UNDEFINED, "20260529T091500")
-                .copy(formatHints = setOf(CameraFileFormatHint.HEIF, CameraFileFormatHint.RAW)),
+                .copy(formatHints = setOf(CameraFileFormatHint.EXTENDED_STILL_CANDIDATE)),
             file(3, PtpObjectFormat.UNDEFINED, "20260529T101500"),
         )
 

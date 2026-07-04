@@ -8,9 +8,11 @@ import com.camtransfer.service.DiagnosticLog
 import com.camtransfer.viewmodel.gallery.GalleryBrowseMode
 import com.camtransfer.viewmodel.gallery.GalleryBrowseModeController
 import com.camtransfer.viewmodel.gallery.GalleryFilesController
+import com.camtransfer.viewmodel.gallery.GalleryMetadataStore
 import com.camtransfer.viewmodel.gallery.GalleryPreviewController
-import com.camtransfer.viewmodel.gallery.GalleryRequestScheduler
+import com.camtransfer.viewmodel.gallery.GalleryPreviewStore
 import com.camtransfer.viewmodel.gallery.GallerySelectionController
+import com.camtransfer.viewmodel.gallery.GallerySessionActor
 import com.camtransfer.viewmodel.gallery.GalleryThumbnailController
 import com.camtransfer.viewmodel.gallery.GalleryThumbnailStore
 import com.camtransfer.viewmodel.gallery.HighDefinitionPreviewSessionPolicy
@@ -20,30 +22,33 @@ import java.time.LocalDate
 
 class BrowseViewModel : ViewModel() {
 
-    private val requestScheduler = GalleryRequestScheduler()
+    private val sessionActor = GallerySessionActor()
     private val browseModeController = GalleryBrowseModeController()
     private val selectionController = GallerySelectionController()
     private val thumbnailStore = GalleryThumbnailStore()
-    private var thumbnailCacheProvider: () -> Map<Int, ByteArray> = { emptyMap() }
+    private val metadataStore = GalleryMetadataStore()
+    private val previewStore = GalleryPreviewStore()
     private var hasActiveThumbnailWorkProvider: () -> Boolean = { false }
     private var highDefinitionPreviewPrepareJob: Job? = null
     private var highDefinitionPreviewPausedSource: CameraFileSource? = null
     private val filesController = GalleryFilesController(
         scope = viewModelScope,
-        requestScheduler = requestScheduler,
-        thumbnailCache = { thumbnailCacheProvider() },
+        sessionActor = sessionActor,
+        metadataStore = metadataStore,
         hasActiveThumbnailWork = { hasActiveThumbnailWorkProvider() },
     )
     private val thumbnailController = GalleryThumbnailController(
         scope = viewModelScope,
-        requestScheduler = requestScheduler,
+        sessionActor = sessionActor,
         filesController = filesController,
         thumbnailStore = thumbnailStore,
+        metadataStore = metadataStore,
     )
     private val previewController = GalleryPreviewController(
         scope = viewModelScope,
-        requestScheduler = requestScheduler,
+        sessionActor = sessionActor,
         thumbnailController = thumbnailController,
+        previewStore = previewStore,
     )
 
     val files = filesController.files
@@ -52,6 +57,7 @@ class BrowseViewModel : ViewModel() {
     val browseModeState = browseModeController.state
     val selectedHandles = selectionController.selectedHandles
     val thumbnailsByHandle = thumbnailStore.thumbnails
+    val objectInfoByHandle = metadataStore.objectInfoByHandle
     val previewImages = previewController.previewImages
     val loadedPreviewHandles = previewController.loadedPreviewHandles
     val loadingPreviewHandles = previewController.loadingPreviewHandles
@@ -59,7 +65,6 @@ class BrowseViewModel : ViewModel() {
     val error = filesController.error
 
     init {
-        thumbnailCacheProvider = thumbnailStore::snapshot
         hasActiveThumbnailWorkProvider = thumbnailController::hasActiveThumbnailWork
     }
 
@@ -219,12 +224,14 @@ class BrowseViewModel : ViewModel() {
     }
 
     suspend fun prepareGalleryLoadingForTransfer(cameraSource: CameraFileSource) {
+        sessionActor.enterTransferExclusive()
         filesController.pauseForExclusiveOperation(cameraSource, reason = "transfer")
         thumbnailController.pauseForExclusiveOperation(cameraSource, reason = "transfer")
         previewController.pauseForExclusiveOperation(cameraSource, reason = "transfer")
     }
 
     fun resumeGalleryLoadingAfterTransfer(cameraSource: CameraFileSource) {
+        sessionActor.exitTransferExclusive()
         if (browseModeState.value.mode != GalleryBrowseMode.HD_PREVIEW) {
             filesController.resumeAfterExclusiveOperation(cameraSource, reason = "transfer")
         }

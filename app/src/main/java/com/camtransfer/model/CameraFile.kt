@@ -64,6 +64,7 @@ enum class CameraFileFormatHint {
     JPG,
     HEIF,
     RAW,
+    EXTENDED_STILL_CANDIDATE,
     VIDEO,
 }
 

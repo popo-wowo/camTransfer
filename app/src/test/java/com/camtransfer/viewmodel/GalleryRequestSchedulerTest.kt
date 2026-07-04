@@ -2,6 +2,7 @@ package com.camtransfer.viewmodel
 
 import com.camtransfer.viewmodel.gallery.GalleryRequestPriority
 import com.camtransfer.viewmodel.gallery.GalleryRequestScheduler
+import com.camtransfer.viewmodel.gallery.GallerySessionActor
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
@@ -90,5 +91,26 @@ class GalleryRequestSchedulerTest {
             ),
             events,
         )
+    }
+
+    @Test
+    fun sessionActorHoldsGalleryReadsDuringTransferExclusive() = runBlocking {
+        val actor = GallerySessionActor()
+        val events = mutableListOf<String>()
+
+        actor.enterTransferExclusive()
+        val thumbnail = async {
+            actor.run(GalleryRequestPriority.VisibleThumbnail) {
+                events += "thumbnail"
+            }
+        }
+        delay(GallerySessionActor.EXCLUSIVE_GATE_POLL_MS * 2)
+
+        assertEquals(emptyList<String>(), events)
+
+        actor.exitTransferExclusive()
+        thumbnail.await()
+
+        assertEquals(listOf("thumbnail"), events)
     }
 }

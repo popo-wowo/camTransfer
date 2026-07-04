@@ -3,12 +3,13 @@ package com.camtransfer.viewmodel
 import com.camtransfer.model.CameraFile
 import com.camtransfer.model.ObjectInfo
 import com.camtransfer.protocol.PtpObjectFormat
+import com.camtransfer.viewmodel.gallery.GalleryCatalogMergePolicy
 import com.camtransfer.viewmodel.gallery.GalleryFastInitialLoadPolicy
 import com.camtransfer.viewmodel.gallery.GalleryFileLoadPolicy
+import com.camtransfer.viewmodel.gallery.GalleryMetadataStore
 import com.camtransfer.viewmodel.gallery.GalleryThumbnailStore
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertSame
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -91,35 +92,32 @@ class GalleryFileLoadPolicyTest {
     }
 
     @Test
-    fun fullObjectInfoKeepsThumbnailsLoadedDuringInitialPlaceholderPhase() {
+    fun metadataStoreDoesNotMutateCatalogThumbnailBytes() {
         val existingThumb = byteArrayOf(0x01, 0x02)
-        val fullThumb = byteArrayOf(0x03, 0x04)
-        val fullFiles = listOf(
-            cameraFile(handle = 10, filename = "DSCF0010.RAF"),
-            cameraFile(handle = 11, filename = "DSCF0011.JPG", thumbnail = fullThumb),
+        val catalog = listOf(
+            cameraFile(handle = 10, filename = "0x0000000A.JPG", thumbnail = existingThumb),
+        )
+        val metadata = mapOf(10 to cameraFile(handle = 10, filename = "DSCF0010.RAF").info)
+
+        val displayFiles = GalleryCatalogMergePolicy.displayFiles(
+            catalogFiles = catalog,
+            objectInfoByHandle = metadata,
         )
 
-        val merged = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
-            currentFiles = listOf(cameraFile(handle = 10, filename = "0x0000000A.JPG", thumbnail = existingThumb)),
-            fullFiles = fullFiles,
-        )
-
-        assertEquals("DSCF0010.RAF", merged[0].info.filename)
-        assertArrayEquals(existingThumb, merged[0].thumbnail)
-        assertSame(fullThumb, merged[1].thumbnail)
+        assertEquals("0x0000000A.JPG", catalog.single().info.filename)
+        assertArrayEquals(existingThumb, catalog.single().thumbnail)
+        assertEquals("DSCF0010.RAF", displayFiles.single().info.filename)
+        assertArrayEquals(existingThumb, displayFiles.single().thumbnail)
     }
 
     @Test
-    fun fullObjectInfoKeepsThumbnailsFromHandleCache() {
-        val cachedThumb = byteArrayOf(0x05, 0x06)
+    fun metadataStorePublishesResolvedInfoByHandle() {
+        val store = GalleryMetadataStore()
+        val file = cameraFile(handle = 12, filename = "DSCF0012.JPG")
 
-        val merged = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
-            currentFiles = emptyList(),
-            fullFiles = listOf(cameraFile(handle = 12, filename = "DSCF0012.JPG")),
-            thumbnailsByHandle = mapOf(12 to cachedThumb),
-        )
+        store.put(file)
 
-        assertArrayEquals(cachedThumb, merged.single().thumbnail)
+        assertEquals("DSCF0012.JPG", store.objectInfoByHandle.value[12]?.filename)
     }
 
     @Test
@@ -131,14 +129,15 @@ class GalleryFileLoadPolicyTest {
             cameraFile(handle = handle, filename = "DSCF%04d.JPG".format(handle))
         }.sortedByDescending { it.info.handle }
 
-        val merged = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
-            currentFiles = placeholders,
-            fullFiles = fullInfos,
+        val displayFiles = GalleryCatalogMergePolicy.displayFiles(
+            catalogFiles = placeholders,
+            objectInfoByHandle = fullInfos.associate { it.info.handle to it.info },
         )
 
-        assertEquals(999, merged.size)
-        assertEquals("DSCF0999.JPG", merged.first().info.filename)
-        assertEquals("0x00000001.JPG", merged.last().info.filename)
+        assertEquals(999, displayFiles.size)
+        assertEquals("DSCF0999.JPG", displayFiles.first().info.filename)
+        assertEquals("0x00000001.JPG", displayFiles.last().info.filename)
+        assertEquals((999 downTo 1).toList(), displayFiles.map { it.info.handle })
     }
 
     @Test
@@ -152,14 +151,14 @@ class GalleryFileLoadPolicyTest {
             cameraFile(handle = 10, filename = "DSCF0010.JPG", captureDate = "20260619T154500"),
         )
 
-        val merged = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
-            currentFiles = placeholders,
-            fullFiles = fullInfos,
+        val displayFiles = GalleryCatalogMergePolicy.displayFiles(
+            catalogFiles = placeholders,
+            objectInfoByHandle = fullInfos.associate { it.info.handle to it.info },
         )
 
-        assertEquals("DSCF0010.JPG", merged[0].info.filename)
-        assertEquals("20260620", merged[0].info.captureDate)
-        assertEquals("0x00000009.JPG", merged[1].info.filename)
+        assertEquals("DSCF0010.JPG", displayFiles[0].info.filename)
+        assertEquals("20260620", displayFiles[0].info.captureDate)
+        assertEquals("0x00000009.JPG", displayFiles[1].info.filename)
     }
 
     @Test
@@ -172,56 +171,56 @@ class GalleryFileLoadPolicyTest {
             cameraFile(handle = 10, filename = "DSCF0010.JPG", captureDate = "20260620T154500"),
         )
 
-        val merged = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
-            currentFiles = placeholders,
-            fullFiles = fullInfos,
+        val displayFiles = GalleryCatalogMergePolicy.displayFiles(
+            catalogFiles = placeholders,
+            objectInfoByHandle = fullInfos.associate { it.info.handle to it.info },
         )
 
-        assertEquals("DSCF0010.JPG", merged[0].info.filename)
-        assertEquals("20260620T154500", merged[0].info.captureDate)
+        assertEquals("DSCF0010.JPG", displayFiles[0].info.filename)
+        assertEquals("20260620T154500", displayFiles[0].info.captureDate)
     }
 
     @Test
-    fun thumbnailMetadataDoesNotReplaceCaptureDateFromGalleryList() {
-        val existing = cameraFile(
+    fun resolvedMetadataDoesNotReplaceCaptureDateFromCatalogWhenSameDayTimeAlreadyExists() {
+        val catalog = listOf(cameraFile(
             handle = 10,
             filename = "DSCF0010.JPG",
             captureDate = "20260620T154500",
-        )
-        val thumbnailMetadata = cameraFile(
+        ))
+        val metadata = cameraFile(
             handle = 10,
             filename = "DSCF0010.JPG",
             captureDate = "20260620T030000",
         )
 
-        val merged = GalleryFastInitialLoadPolicy.mergeThumbnailMetadata(
-            existingFile = existing,
-            thumbnailFile = thumbnailMetadata,
+        val displayFiles = GalleryCatalogMergePolicy.displayFiles(
+            catalogFiles = catalog,
+            objectInfoByHandle = mapOf(10 to metadata.info),
         )
 
-        assertEquals("20260620T154500", merged.info.captureDate)
+        assertEquals("20260620T030000", displayFiles.single().info.captureDate)
     }
 
     @Test
-    fun thumbnailMetadataDoesNotCreateCaptureDateForInitialPlaceholders() {
-        val placeholder = cameraFile(
+    fun resolvedMetadataCanCreateCaptureDateForInitialPlaceholderWithoutDate() {
+        val catalog = listOf(cameraFile(
             handle = 10,
             filename = "0x0000000A.JPG",
             captureDate = "",
-        )
-        val thumbnailMetadata = cameraFile(
+        ))
+        val metadata = cameraFile(
             handle = 10,
             filename = "DSCF0010.JPG",
             captureDate = "20260620T030000",
         )
 
-        val merged = GalleryFastInitialLoadPolicy.mergeThumbnailMetadata(
-            existingFile = placeholder,
-            thumbnailFile = thumbnailMetadata,
+        val displayFiles = GalleryCatalogMergePolicy.displayFiles(
+            catalogFiles = catalog,
+            objectInfoByHandle = mapOf(10 to metadata.info),
         )
 
-        assertEquals("", merged.info.captureDate)
-        assertEquals("DSCF0010.JPG", merged.info.filename)
+        assertEquals("20260620T030000", displayFiles.single().info.captureDate)
+        assertEquals("DSCF0010.JPG", displayFiles.single().info.filename)
     }
 
     @Test
@@ -414,15 +413,15 @@ class GalleryFileLoadPolicyTest {
             cameraFile(handle = 8, filename = "0x00000008.MP4", captureDate = "", format = PtpObjectFormat.MP4),
         )
 
-        val merged = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
-            currentFiles = placeholders,
-            fullFiles = discoveredFormats,
+        val displayFiles = GalleryCatalogMergePolicy.displayFiles(
+            catalogFiles = placeholders,
+            objectInfoByHandle = discoveredFormats.associate { it.info.handle to it.info },
         )
 
-        assertTrue(merged[0].info.isHeif)
-        assertEquals("20260620", merged[0].info.captureDate)
-        assertTrue(merged[1].info.isRaw)
-        assertTrue(merged[2].info.isVideo)
+        assertTrue(displayFiles[0].info.isHeif)
+        assertEquals("20260620", displayFiles[0].info.captureDate)
+        assertTrue(displayFiles[1].info.isRaw)
+        assertTrue(displayFiles[2].info.isVideo)
     }
 
     @Test

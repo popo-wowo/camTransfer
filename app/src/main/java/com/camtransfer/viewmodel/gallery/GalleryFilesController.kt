@@ -13,13 +13,11 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
-import java.time.LocalDate
-import java.time.format.DateTimeFormatter
 
 class GalleryFilesController(
     private val scope: CoroutineScope,
-    private val requestScheduler: GalleryRequestScheduler,
-    private val thumbnailCache: () -> Map<Int, ByteArray>,
+    private val sessionActor: GallerySessionActor,
+    private val metadataStore: GalleryMetadataStore,
     private val hasActiveThumbnailWork: () -> Boolean = { false },
 ) {
     private val _files = MutableStateFlow<List<CameraFile>>(emptyList())
@@ -62,15 +60,12 @@ class GalleryFilesController(
         loadJob = scope.launch(Dispatchers.IO) {
             try {
                 DiagnosticLog.append(cameraSource.context, "Gallery", "Loading file list")
-                val initialFiles = requestScheduler.run(GalleryRequestPriority.BackgroundMetadata) {
+                val initialFiles = sessionActor.run(GalleryRequestPriority.BackgroundMetadata) {
                     cameraSource.fastInitialFiles()
                 }
                 if (GalleryFastInitialLoadPolicy.shouldPublishInitialFiles(_files.value, initialFiles)) {
                     DiagnosticLog.append(cameraSource.context, "Gallery", "Fast file placeholders loaded total=${initialFiles.size}")
-                    _files.value = GalleryFastInitialLoadPolicy.mergeWithCachedThumbnails(
-                        files = initialFiles,
-                        thumbnailsByHandle = thumbnailCache(),
-                    )
+                    _files.value = initialFiles
                     if (GalleryFastInitialLoadPolicy.shouldDeferFullObjectInfoUntilAfterThumbnails(initialFiles.size)) {
                         DiagnosticLog.append(
                             cameraSource.context,
@@ -85,15 +80,14 @@ class GalleryFilesController(
                         return@launch
                     }
                 }
-                val fileList = requestScheduler.run(GalleryRequestPriority.BackgroundMetadata) {
+                val fileList = sessionActor.run(GalleryRequestPriority.BackgroundMetadata) {
                     cameraSource.listFiles()
                 }
                 DiagnosticLog.appendFileSummary(cameraSource.context, fileList)
-                _files.value = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
-                    currentFiles = _files.value,
-                    fullFiles = fileList,
-                    thumbnailsByHandle = thumbnailCache(),
-                )
+                metadataStore.putAll(fileList)
+                if (_files.value.isEmpty()) {
+                    _files.value = fileList.map { it.copy(thumbnail = null) }
+                }
                 loadedSource = cameraSource
                 _isLoading.value = false
             } catch (e: Exception) {
@@ -106,9 +100,6 @@ class GalleryFilesController(
         }
     }
 
-    fun hasThumbnail(handle: Int): Boolean =
-        _files.value.any { it.info.handle == handle && it.thumbnail != null }
-
     fun reset() {
         loadJob?.cancel()
         fullObjectInfoJob?.cancel()
@@ -116,6 +107,7 @@ class GalleryFilesController(
         fullObjectInfoJob = null
         fullObjectInfoPausedForExclusiveOperation = false
         _files.value = emptyList()
+        metadataStore.clear()
         _isLoading.value = false
         _error.value = null
         loadedSource = null
@@ -138,7 +130,12 @@ class GalleryFilesController(
         if (loadedSource !== cameraSource) return
         if (!fullObjectInfoPausedForExclusiveOperation) return
         fullObjectInfoPausedForExclusiveOperation = false
-        if (GalleryFastInitialLoadPolicy.shouldResumeFullObjectInfoAfterExclusiveOperation(_files.value)) {
+        if (
+            GalleryFastInitialLoadPolicy.shouldResumeFullObjectInfoAfterExclusiveOperation(
+                files = _files.value,
+                objectInfoByHandle = metadataStore.snapshot(),
+            )
+        ) {
             DiagnosticLog.append(cameraSource.context, "Gallery", "Resuming full object info after $reason")
             scheduleFullObjectInfoLoad(cameraSource)
         }
@@ -153,7 +150,10 @@ class GalleryFilesController(
             _isLoadingHiddenFormats.value = true
             try {
                 DiagnosticLog.append(cameraSource.context, "Gallery", "Loading full object info incrementally after initial thumbnails")
-                val handles = GalleryFastInitialLoadPolicy.handlesNeedingFullObjectInfo(_files.value)
+                val handles = GalleryCatalogMergePolicy.handlesNeedingMetadata(
+                    catalogFiles = _files.value,
+                    objectInfoByHandle = metadataStore.snapshot(),
+                )
                 val batch = mutableListOf<CameraFile>()
                 for (handle in handles) {
                     if (loadedSource !== cameraSource) return@launch
@@ -161,7 +161,7 @@ class GalleryFilesController(
                     waitForThumbnailDrain(cameraSource)
                     if (loadedSource !== cameraSource) return@launch
                     if (fullObjectInfoPausedForExclusiveOperation) return@launch
-                    val file = requestScheduler.run(GalleryRequestPriority.BackgroundMetadata) {
+                    val file = sessionActor.run(GalleryRequestPriority.BackgroundMetadata) {
                         cameraSource.resolveFile(handle)
                     }
                     if (file != null && GalleryFastInitialLoadPolicy.shouldPublishResolvedMetadata(file)) {
@@ -196,7 +196,7 @@ class GalleryFilesController(
                     DiagnosticLog.appendMetadataSnapshot(
                         context = cameraSource.context,
                         label = "full-object-info-final",
-                        files = _files.value,
+                        files = GalleryCatalogMergePolicy.displayFiles(_files.value, metadataStore.snapshot()),
                     )
                     resolveHiddenStillFilesAfterFullMetadata(cameraSource)
                 }
@@ -232,7 +232,7 @@ class GalleryFilesController(
         }
         val handles = _files.value.map { it.info.handle }
         DiagnosticLog.append(cameraSource.context, "Gallery", "Resolving hidden still metadata knownHandles=${handles.size}")
-        val additionalFiles = requestScheduler.run(GalleryRequestPriority.BackgroundMetadata) {
+        val additionalFiles = sessionActor.run(GalleryRequestPriority.BackgroundMetadata) {
             cameraSource.resolveAdditionalFiles(handles)
         }
         if (additionalFiles.isEmpty()) {
@@ -240,6 +240,10 @@ class GalleryFilesController(
             return
         }
         publishFullObjectInfoBatch(additionalFiles)
+        _files.value = GalleryCatalogMergePolicy.appendCatalogFiles(
+            catalogFiles = _files.value,
+            additionalFiles = additionalFiles,
+        )
         DiagnosticLog.append(
             cameraSource.context,
             "Gallery",
@@ -248,18 +252,13 @@ class GalleryFilesController(
         DiagnosticLog.appendMetadataSnapshot(
             context = cameraSource.context,
             label = "hidden-still-final",
-            files = _files.value,
+            files = GalleryCatalogMergePolicy.displayFiles(_files.value, metadataStore.snapshot()),
         )
     }
 
     private fun publishFullObjectInfoBatch(files: List<CameraFile>) {
         if (files.isEmpty()) return
-        val merged = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
-            currentFiles = _files.value,
-            fullFiles = files,
-            thumbnailsByHandle = thumbnailCache(),
-        )
-        _files.value = merged
+        metadataStore.putAll(files)
     }
 }
 
@@ -301,15 +300,19 @@ internal object GalleryFastInitialLoadPolicy {
     ): Boolean =
         isFinalBatch || resolvedCount >= INCREMENTAL_METADATA_BATCH_SIZE
 
-    fun shouldResumeFullObjectInfoAfterExclusiveOperation(files: List<CameraFile>): Boolean =
-        handlesNeedingFullObjectInfo(files).isNotEmpty()
+    fun shouldResumeFullObjectInfoAfterExclusiveOperation(
+        files: List<CameraFile>,
+        objectInfoByHandle: Map<Int, com.camtransfer.model.ObjectInfo> = emptyMap(),
+    ): Boolean =
+        GalleryCatalogMergePolicy.handlesNeedingMetadata(files, objectInfoByHandle).isNotEmpty()
 
     fun handlesNeedingFullObjectInfo(files: List<CameraFile>): List<Int> =
-        files.filter { file ->
-            file.info.format == com.camtransfer.protocol.PtpObjectFormat.UNDEFINED ||
-                file.info.compressedSize <= 0 ||
-                file.info.filename.startsWith("0x", ignoreCase = true)
-        }.map { it.info.handle }
+        files.filter(::needsFullObjectInfo).map { it.info.handle }
+
+    fun needsFullObjectInfo(file: CameraFile): Boolean =
+        file.info.format == com.camtransfer.protocol.PtpObjectFormat.UNDEFINED ||
+            file.info.compressedSize <= 0 ||
+            file.info.filename.startsWith("0x", ignoreCase = true)
 
     fun shouldPublishResolvedMetadata(file: CameraFile): Boolean =
         !file.info.isFolder
@@ -333,97 +336,4 @@ internal object GalleryFastInitialLoadPolicy {
         return true
     }
 
-    fun mergeWithExistingThumbnails(
-        currentFiles: List<CameraFile>,
-        fullFiles: List<CameraFile>,
-        thumbnailsByHandle: Map<Int, ByteArray> = emptyMap(),
-    ): List<CameraFile> {
-        val mergedThumbnailsByHandle = currentFiles.mapNotNull { file ->
-            file.thumbnail?.let { file.info.handle to it }
-        }.toMap() + thumbnailsByHandle
-        val files = if (currentFiles.isNotEmpty()) {
-            mergeFullObjectInfoIntoExisting(
-                currentFiles = currentFiles,
-                fullFiles = fullFiles,
-            )
-        } else {
-            fullFiles
-        }
-        return mergeWithCachedThumbnails(files, mergedThumbnailsByHandle)
-    }
-
-    fun mergeWithCachedThumbnails(
-        files: List<CameraFile>,
-        thumbnailsByHandle: Map<Int, ByteArray>,
-    ): List<CameraFile> {
-        if (thumbnailsByHandle.isEmpty()) return files
-        return files.map { file ->
-            val thumbnail = thumbnailsByHandle[file.info.handle]
-            if (thumbnail == null || file.thumbnail != null) file else file.copy(thumbnail = thumbnail)
-        }
-    }
-
-    fun mergeThumbnailMetadata(
-        existingFile: CameraFile,
-        thumbnailFile: CameraFile?,
-    ): CameraFile {
-        if (thumbnailFile == null) return existingFile
-        return thumbnailFile.copy(
-            info = thumbnailFile.info.copy(
-                captureDate = existingFile.info.captureDate,
-            ),
-            thumbnail = existingFile.thumbnail,
-        )
-    }
-
-    private fun mergeFullObjectInfoIntoExisting(
-        currentFiles: List<CameraFile>,
-        fullFiles: List<CameraFile>,
-    ): List<CameraFile> {
-        val fullFilesByHandle = fullFiles.associateBy { it.info.handle }
-        val currentHandles = currentFiles.map { it.info.handle }.toSet()
-        val mergedCurrent = currentFiles.map { file ->
-            val fullFile = fullFilesByHandle[file.info.handle] ?: return@map file
-            mergeResolvedMetadata(existingFile = file, resolvedFile = fullFile)
-        }
-        val extraFullFiles = fullFiles.filterNot { it.info.handle in currentHandles }
-        return mergedCurrent + extraFullFiles
-    }
-
-    private fun mergeResolvedMetadata(
-        existingFile: CameraFile,
-        resolvedFile: CameraFile,
-    ): CameraFile =
-        resolvedFile.copy(
-            info = resolvedFile.info.copy(
-                captureDate = resolvedCaptureDate(
-                    existingCaptureDate = existingFile.info.captureDate,
-                    resolvedCaptureDate = resolvedFile.info.captureDate,
-                ),
-            ),
-            thumbnail = resolvedFile.thumbnail,
-        )
-
-    private fun resolvedCaptureDate(
-        existingCaptureDate: String,
-        resolvedCaptureDate: String,
-    ): String {
-        val existingDay = captureDayKey(existingCaptureDate)
-        val resolvedDay = captureDayKey(resolvedCaptureDate)
-        return when {
-            existingDay == null -> resolvedCaptureDate
-            resolvedDay == null -> existingCaptureDate
-            existingDay == resolvedDay -> resolvedCaptureDate
-            else -> existingCaptureDate
-        }
-    }
-
-    private fun captureDayKey(captureDate: String): String? {
-        if (captureDate.length < 8) return null
-        val day = captureDate.take(8)
-        return runCatching {
-            LocalDate.parse(day, DateTimeFormatter.BASIC_ISO_DATE)
-            day
-        }.getOrNull()
-    }
 }

@@ -140,8 +140,11 @@ BLE session 复用规则:
 - 2026-07-02 实机进一步确认：`D604=31` 的基线 `9053` 已能稳定走通并继续到 `D620/D621`；但切到 `D604=HEIF` 或 `D604=RAW` 后，`9053` 还会出现第二种首包 shape（当前日志样本 `length=664`），这属于扩展列表阶段的后续协议问题，不是“进不去图库”的主 blocker。
 - 初始占位符必须保留相机返回的 `D621` 顺序，不要按 handle 数字倒序重排。同一天内 RAW/HEIF/JPG 可能以 `1267,1268,1265,1266...` 这种顺序出现，数字排序会破坏原厂时间线。
 - 可见缩略图按需加载，保持受控节流，避免和 PTP metadata 命令抢通道。
-- 2026-07-04 架构拆分开始: 缩略图 bytes 进入独立 `GalleryThumbnailStore`，UI 通过 `thumbnailsByHandle[handle]` 渲染；单张缩略图加载成功不得再刷新主 `files` 列表。
-- 如果完整信息后续补齐，应合并回现有列表并保留 D621 主顺序；后续 MetadataStore 阶段会继续把 `ObjectInfo` 从主列表结构中拆出。
+- 2026-07-04 架构拆分: `files` 是 catalog/D621 主列表，必须保持相机返回顺序；`ObjectInfo` 进入 `GalleryMetadataStore`，UI 通过 `GalleryCatalogMergePolicy.displayFiles(catalog, metadata)` 派生展示列表，后台 metadata 补齐不得替换或重排 catalog。
+- 缩略图 bytes 进入独立 `GalleryThumbnailStore`，UI 通过 `thumbnailsByHandle[handle]` 渲染；单张缩略图加载成功不得再刷新主 `files` 列表。
+- 高清预览 bytes、loaded/loading/failed 状态进入独立 `GalleryPreviewStore`；`GalleryPreviewController` 只负责调度和相机请求，不持有 preview 图片状态。
+- gallery 内部 metadata、thumbnail、preview 请求必须通过 `GallerySessionActor`，actor 复用现有优先级 scheduler，并在下载 exclusive 阶段阻止新的非下载相机读取进入 PTP。
+- `D604=HEIF/RAW` 扩展出来但尚未 ObjectInfo 确认的 still handle 只能标记为 `EXTENDED_STILL_CANDIDATE`；筛 HEIF/RAW 时可以包含候选，但不能把候选直接伪装成已确认 HEIF 或 RAW。
 - 列表缩略图走标准 `GET_THUMB`；标准缩略图不可用时记录失败，不再用 `GET_PARTIAL_OBJECT` 作为兜底。
 - hidden gap probe 只作为扩展 `D621` 失败后的诊断/兜底，不是 RAW/HEIF 正式发现路径。
 

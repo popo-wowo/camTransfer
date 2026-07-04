@@ -18,9 +18,10 @@ import java.util.LinkedHashMap
 
 class GalleryThumbnailController(
     private val scope: CoroutineScope,
-    private val requestScheduler: GalleryRequestScheduler,
+    private val sessionActor: GallerySessionActor,
     private val filesController: GalleryFilesController,
     private val thumbnailStore: GalleryThumbnailStore,
+    private val metadataStore: GalleryMetadataStore,
 ) {
     private val thumbnailQueue = ThumbnailLoadQueue()
     private val thumbnailWorkers = mutableSetOf<Job>()
@@ -188,7 +189,7 @@ class GalleryThumbnailController(
         Log.d(TAG, "Thumbnail request handle=$handle")
         DiagnosticLog.append(cameraSource.context, TAG, "Thumbnail request handle=$handle")
         try {
-            val thumbnail = requestScheduler.run(GalleryRequestPriority.VisibleThumbnail) {
+            val thumbnail = sessionActor.run(GalleryRequestPriority.VisibleThumbnail) {
                 cameraSource.getThumbnailWithInfo(handle)
             }
             val thumb = thumbnail.data
@@ -203,6 +204,7 @@ class GalleryThumbnailController(
             )
             Log.d(TAG, thumbnailSummary)
             DiagnosticLog.append(cameraSource.context, TAG, thumbnailSummary)
+            thumbnail.file?.let(metadataStore::put)
             thumbnailStore.put(handle, thumb)
             writeThumbnailToDisk(cameraSource, handle, thumb, file)
         } catch (e: Exception) {
@@ -289,7 +291,7 @@ class GalleryThumbnailController(
         thumbnailQueue.trackedCount
 
     private fun hasThumbnail(handle: Int): Boolean =
-        thumbnailStore.hasThumbnail(handle) || filesController.hasThumbnail(handle)
+        thumbnailStore.hasThumbnail(handle)
 
     private fun ByteArray.decodedBounds(): ThumbnailDecodedBounds {
         val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }

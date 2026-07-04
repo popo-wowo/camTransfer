@@ -10,29 +10,21 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
 import java.io.File
-import java.util.LinkedHashMap
 
 class GalleryPreviewController(
     private val scope: CoroutineScope,
-    private val requestScheduler: GalleryRequestScheduler,
+    private val sessionActor: GallerySessionActor,
     private val thumbnailController: GalleryThumbnailController,
+    private val previewStore: GalleryPreviewStore,
 ) {
-    private val previewImageCache = LinkedHashMap<Int, ByteArray>()
-    private val previewCacheLock = Any()
-    private val _previewImages = MutableStateFlow<Map<Int, ByteArray>>(emptyMap())
-    val previewImages: StateFlow<Map<Int, ByteArray>> = _previewImages.asStateFlow()
-    private val _loadedPreviewHandles = MutableStateFlow<Set<Int>>(emptySet())
-    val loadedPreviewHandles: StateFlow<Set<Int>> = _loadedPreviewHandles.asStateFlow()
-    private val _loadingPreviewHandles = MutableStateFlow<Set<Int>>(emptySet())
-    val loadingPreviewHandles: StateFlow<Set<Int>> = _loadingPreviewHandles.asStateFlow()
-    private val _failedPreviewHandles = MutableStateFlow<Set<Int>>(emptySet())
-    val failedPreviewHandles: StateFlow<Set<Int>> = _failedPreviewHandles.asStateFlow()
+    val previewImages: StateFlow<Map<Int, ByteArray>> = previewStore.previewImages
+    val loadedPreviewHandles: StateFlow<Set<Int>> = previewStore.loadedHandles
+    val loadingPreviewHandles: StateFlow<Set<Int>> = previewStore.loadingHandles
+    val failedPreviewHandles: StateFlow<Set<Int>> = previewStore.failedHandles
 
     private var manualPreviewJob: Job? = null
     private var sessionPreviewJob: Job? = null
@@ -65,15 +57,15 @@ class GalleryPreviewController(
         if (previewLoadingPaused) return
         if (!GalleryPreviewFullImageLoadPolicy.shouldRequestFullImagePreview(
                 file = file,
-                hasPreviewImage = hasCachedPreview(handle),
-                isAlreadyLoading = handle in _loadingPreviewHandles.value,
+                hasPreviewImage = previewStore.hasPreview(handle),
+                isAlreadyLoading = handle in previewStore.loadingHandles.value,
                 force = force,
             )
         ) {
             return
         }
         pendingPreviewFile = file
-        _loadingPreviewHandles.value = _loadingPreviewHandles.value + handle
+        previewStore.markLoading(handle)
         if (manualPreviewJob?.isActive == true) return
         manualPreviewJob = scope.launch(Dispatchers.IO) {
             while (true) {
@@ -90,10 +82,11 @@ class GalleryPreviewController(
         cameraSource: CameraFileSource,
         session: HighDefinitionPreviewSession,
     ) {
+        val sessionHandles = session.files.map { it.info.handle }.toSet()
         activeSession = session.copy(
-            failedHandles = _failedPreviewHandles.value.intersect(session.files.map { it.info.handle }.toSet()),
+            failedHandles = previewStore.failedHandles.value.intersect(sessionHandles),
         )
-        _failedPreviewHandles.value = _failedPreviewHandles.value.intersect(session.files.map { it.info.handle }.toSet())
+        previewStore.keepFailuresFor(sessionHandles)
         if (previewLoadingPaused) return
         startSessionWorker(cameraSource)
     }
@@ -106,8 +99,8 @@ class GalleryPreviewController(
         val previousSession = activeSession ?: return
         val nextSession = previousSession.prioritizeVisibleHandles(
             visibleHandles = visibleHandles,
-            loadedHandles = _loadedPreviewHandles.value,
-            loadingHandles = _loadingPreviewHandles.value,
+            loadedHandles = previewStore.loadedHandles.value,
+            loadingHandles = previewStore.loadingHandles.value,
         )
         activeSession = nextSession
         restoreActiveWindowPreviewImages(cameraSource, nextSession.activeWindowHandleSet())
@@ -198,9 +191,6 @@ class GalleryPreviewController(
         sessionPreviewJob?.cancel()
         manualPreviewJob = null
         sessionPreviewJob = null
-        synchronized(previewCacheLock) {
-            previewImageCache.clear()
-        }
         pendingPreviewFile = null
         activeSession = null
         synchronized(previewPauseLock) {
@@ -211,10 +201,7 @@ class GalleryPreviewController(
             currentReadGate?.complete(Unit)
             currentReadGate = null
         }
-        _previewImages.value = emptyMap()
-        _loadedPreviewHandles.value = emptySet()
-        _loadingPreviewHandles.value = emptySet()
-        _failedPreviewHandles.value = emptySet()
+        previewStore.clear()
         clearLastSessionPreviewDiskCache()
     }
 
@@ -226,11 +213,11 @@ class GalleryPreviewController(
                 val session = activeSession ?: return@launch
                 if (session.pausedForTransfer) return@launch
                 val nextFile = session.nextFile(
-                    loadedHandles = _loadedPreviewHandles.value,
-                    loadingHandles = _loadingPreviewHandles.value,
+                    loadedHandles = previewStore.loadedHandles.value,
+                    loadingHandles = previewStore.loadingHandles.value,
                 ) ?: return@launch
                 val handle = nextFile.info.handle
-                _loadingPreviewHandles.value = _loadingPreviewHandles.value + handle
+                previewStore.markLoading(handle)
                 loadPreviewImageNow(
                     cameraSource = cameraSource,
                     file = nextFile,
@@ -238,7 +225,7 @@ class GalleryPreviewController(
                         activeSession = activeSession?.markLoaded(loadedHandle)
                     },
                     onFailure = { failedHandle ->
-                        _failedPreviewHandles.value = _failedPreviewHandles.value + failedHandle
+                        previewStore.markFailed(failedHandle)
                         activeSession = activeSession?.markFailed(failedHandle)
                     },
                 )
@@ -254,8 +241,8 @@ class GalleryPreviewController(
         onFailure: (Int) -> Unit = {},
     ) {
         val handle = file.info.handle
-        if (hasCachedPreview(handle)) {
-            _loadingPreviewHandles.value = _loadingPreviewHandles.value - handle
+        if (previewStore.hasPreview(handle)) {
+            previewStore.clearLoading(handle)
             onSuccess(handle)
             return
         }
@@ -263,16 +250,17 @@ class GalleryPreviewController(
         beginCurrentRead()
         thumbnailController.pauseForExclusiveOperation(cameraSource, reason = "preview")
         try {
-            val data = requestScheduler.run(GalleryRequestPriority.PreviewImage) {
+            val data = sessionActor.run(GalleryRequestPriority.PreviewImage) {
                 cameraSource.getPreviewImage(handle)
             }
             val decodedSize = data.decodedBounds()
-            val previewSnapshot = cachePreviewImage(handle, data)
+            previewStore.markLoaded(
+                handle = handle,
+                data = data,
+                protectedHandles = activeSession?.activeWindowHandleSet().orEmpty(),
+            )
             writePreviewImageToDisk(cameraSource, handle, data)
             trimPreviewDiskCache(cameraSource, activeSession?.activeWindowHandleSet().orEmpty())
-            _previewImages.value = previewSnapshot
-            _loadedPreviewHandles.value = _loadedPreviewHandles.value + handle
-            _failedPreviewHandles.value = _failedPreviewHandles.value - handle
             DiagnosticLog.append(
                 cameraSource.context,
                 TAG,
@@ -292,7 +280,7 @@ class GalleryPreviewController(
             DiagnosticLog.append(cameraSource.context, TAG, "Preview image failed handle=$handle", e)
             onFailure(handle)
         } finally {
-            _loadingPreviewHandles.value = _loadingPreviewHandles.value - handle
+            previewStore.clearLoading(handle)
             thumbnailController.resumeAfterExclusiveOperation(cameraSource, reason = "preview")
             endCurrentRead()
         }
@@ -311,23 +299,6 @@ class GalleryPreviewController(
         }
     }
 
-    private fun hasCachedPreview(handle: Int): Boolean =
-        synchronized(previewCacheLock) { previewImageCache.containsKey(handle) }
-
-    private fun cachePreviewImage(handle: Int, data: ByteArray): Map<Int, ByteArray> =
-        synchronized(previewCacheLock) {
-            previewImageCache.remove(handle)
-            previewImageCache[handle] = data
-            val protectedHandles = activeSession?.activeWindowHandleSet().orEmpty()
-            while (previewImageCache.size > MAX_CACHED_PREVIEW_IMAGES) {
-                val oldestHandle = previewImageCache.keys.firstOrNull { it !in protectedHandles }
-                    ?: previewImageCache.keys.firstOrNull()
-                    ?: return@synchronized previewImageCache.toMap()
-                previewImageCache.remove(oldestHandle)
-            }
-            previewImageCache.toMap()
-        }
-
     private fun restoreActiveWindowPreviewImages(
         cameraSource: CameraFileSource,
         activeWindowHandles: Set<Int>,
@@ -338,17 +309,17 @@ class GalleryPreviewController(
             val restoredHandles = mutableSetOf<Int>()
             val missingLoadedHandles = mutableSetOf<Int>()
             activeWindowHandles.forEach { handle ->
-                if (hasCachedPreview(handle)) return@forEach
+                if (previewStore.hasPreview(handle)) return@forEach
                 val data = readPreviewImageFromDisk(cameraSource, handle)
                 if (data != null) {
-                    previewSnapshot = cachePreviewImage(handle, data)
+                    previewSnapshot = previewStore.putRestored(handle, data, activeWindowHandles)
                     restoredHandles += handle
-                } else if (handle in _loadedPreviewHandles.value) {
+                } else if (handle in previewStore.loadedHandles.value) {
                     missingLoadedHandles += handle
                 }
             }
             if (missingLoadedHandles.isNotEmpty()) {
-                _loadedPreviewHandles.value = _loadedPreviewHandles.value - missingLoadedHandles
+                previewStore.removeLoaded(missingLoadedHandles)
                 DiagnosticLog.append(
                     cameraSource.context,
                     TAG,
@@ -356,8 +327,7 @@ class GalleryPreviewController(
                 )
             }
             previewSnapshot?.let { snapshot ->
-                _previewImages.value = snapshot
-                _loadedPreviewHandles.value = _loadedPreviewHandles.value + restoredHandles
+                previewStore.markRestored(restoredHandles)
                 DiagnosticLog.append(
                     cameraSource.context,
                     TAG,
@@ -457,7 +427,6 @@ class GalleryPreviewController(
 
     private companion object {
         const val TAG = "GalleryPreviewController"
-        const val MAX_CACHED_PREVIEW_IMAGES = 30
     }
 }
 

@@ -291,6 +291,7 @@ internal object TransferQueueDownloadModePolicy {
         file.info.isRaw ||
             (
                 CameraFileFormatHint.RAW in file.formatHints &&
+                    CameraFileFormatHint.EXTENDED_STILL_CANDIDATE !in file.formatHints &&
                     CameraFileFormatHint.JPG !in file.formatHints &&
                     CameraFileFormatHint.HEIF !in file.formatHints &&
                     CameraFileFormatHint.VIDEO !in file.formatHints

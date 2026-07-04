@@ -115,6 +115,7 @@ import com.camtransfer.service.DownloadFolderSettingsStore
 import com.camtransfer.service.DiagnosticLog
 import com.camtransfer.viewmodel.BrowseViewModel
 import com.camtransfer.viewmodel.gallery.GalleryBrowseMode
+import com.camtransfer.viewmodel.gallery.GalleryCatalogMergePolicy
 import com.camtransfer.viewmodel.gallery.HighDefinitionPreviewSessionPolicy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -152,7 +153,8 @@ fun BrowseScreen(
     }
     val downloadFolderSettingsStore = remember(context) { DownloadFolderSettingsStore(context) }
     val appCacheSettingsStore = remember(context) { AppCacheSettingsStore(context) }
-    val files by viewModel.files.collectAsState()
+    val catalogFiles by viewModel.files.collectAsState()
+    val objectInfoByHandle by viewModel.objectInfoByHandle.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val isLoadingHiddenFormats by viewModel.isLoadingHiddenFormats.collectAsState()
     val browseModeState by viewModel.browseModeState.collectAsState()
@@ -163,7 +165,15 @@ fun BrowseScreen(
     val loadingPreviewHandles by viewModel.loadingPreviewHandles.collectAsState()
     val failedPreviewHandles by viewModel.failedPreviewHandles.collectAsState()
     val error by viewModel.error.collectAsState()
-    val hasGalleryFiles = files.isNotEmpty()
+    val files by remember(catalogFiles, objectInfoByHandle) {
+        derivedStateOf {
+            GalleryCatalogMergePolicy.displayFiles(
+                catalogFiles = catalogFiles,
+                objectInfoByHandle = objectInfoByHandle,
+            )
+        }
+    }
+    val hasGalleryFiles = catalogFiles.isNotEmpty()
     val cacheUsageLabel by produceState<String?>(initialValue = null, context, cacheRefreshToken, hasGalleryFiles, isLoading) {
         if (!GalleryCacheUsageUiPolicy.shouldScanCacheUsage(hasFiles = hasGalleryFiles, isLoading = isLoading)) {
             value = null
@@ -292,6 +302,7 @@ fun BrowseScreen(
         }
     }
     val currentFiles by rememberUpdatedState(files)
+    val currentThumbnailsByHandle by rememberUpdatedState(thumbnailsByHandle)
     val selectableDateDays = remember(today) {
         GalleryDatePickerPolicy.selectableDays(today)
     }
@@ -322,7 +333,7 @@ fun BrowseScreen(
             },
             previewProvider = { id ->
                 val handle = id.toIntOrNull()
-                currentFiles.firstOrNull { it.info.handle == handle }?.thumbnail
+                handle?.let { currentThumbnailsByHandle[it] }
             },
             logger = ::logLocalProofing,
         )
@@ -331,7 +342,7 @@ fun BrowseScreen(
             logLocalProofing(
                 "start requested files=${currentFiles.size} " +
                     "photos=${currentFiles.count { !it.info.isFolder }} " +
-                    "previews=${currentFiles.count { !it.info.isFolder && it.thumbnail != null }}"
+                    "previews=${currentFiles.count { !it.info.isFolder && it.info.handle in currentThumbnailsByHandle }}"
             )
             val started = server.start()
             localProofingServer = server

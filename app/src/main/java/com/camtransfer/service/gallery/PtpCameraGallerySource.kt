@@ -221,8 +221,7 @@ class PtpCameraGallerySource(
             .maxByOrNull { it.size }
             .orEmpty()
             .filterNot { it in baselineHandles }
-        add(expandedStillHandles, CameraFileFormatHint.HEIF)
-        add(expandedStillHandles, CameraFileFormatHint.RAW)
+        add(expandedStillHandles, CameraFileFormatHint.EXTENDED_STILL_CANDIDATE)
 
         return hints
     }
