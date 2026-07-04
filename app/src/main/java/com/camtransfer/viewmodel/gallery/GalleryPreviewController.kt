@@ -3,6 +3,7 @@ package com.camtransfer.viewmodel.gallery
 import android.graphics.BitmapFactory
 import com.camtransfer.model.CameraFile
 import com.camtransfer.service.CameraFileSource
+import com.camtransfer.service.AppCacheUsagePolicy
 import com.camtransfer.service.DiagnosticLog
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
@@ -41,6 +42,9 @@ class GalleryPreviewController(
 
     @Volatile
     private var activeSession: HighDefinitionPreviewSession? = null
+
+    @Volatile
+    private var lastPreviewDiskRoot: File? = null
 
     private val previewPauseLock = Any()
     private val currentReadLock = Any()
@@ -125,6 +129,16 @@ class GalleryPreviewController(
         sessionPreviewJob = null
     }
 
+    fun clearSessionPreviewCache(cameraSource: CameraFileSource, reason: String) {
+        stopSession()
+        clearSessionPreviewDiskCache(cameraSource)
+        DiagnosticLog.append(
+            cameraSource.context,
+            TAG,
+            "HD preview session cache cleared reason=$reason",
+        )
+    }
+
     suspend fun awaitIdleOrCurrentReadComplete() {
         currentReadGate?.await()
     }
@@ -201,6 +215,7 @@ class GalleryPreviewController(
         _loadedPreviewHandles.value = emptySet()
         _loadingPreviewHandles.value = emptySet()
         _failedPreviewHandles.value = emptySet()
+        clearLastSessionPreviewDiskCache()
     }
 
     private fun startSessionWorker(cameraSource: CameraFileSource) {
@@ -408,7 +423,25 @@ class GalleryPreviewController(
         File(previewDiskRoot(cameraSource), "$handle.bin")
 
     private fun previewDiskRoot(cameraSource: CameraFileSource): File =
-        File(cameraSource.context.cacheDir, "hd-preview-cache")
+        File(cameraSource.context.cacheDir, AppCacheUsagePolicy.SESSION_PREVIEW_CACHE_DIRECTORY_NAME).also {
+            lastPreviewDiskRoot = it
+        }
+
+    private fun clearSessionPreviewDiskCache(cameraSource: CameraFileSource) {
+        runCatching {
+            AppCacheUsagePolicy.clearSessionPreviewCache(cameraSource.context.cacheDir)
+        }.also {
+            lastPreviewDiskRoot = null
+        }
+    }
+
+    private fun clearLastSessionPreviewDiskCache() {
+        runCatching {
+            lastPreviewDiskRoot?.deleteRecursively()
+        }.also {
+            lastPreviewDiskRoot = null
+        }
+    }
 
     private fun previewHandleFromDiskFile(file: File): Int? =
         file.name.removeSuffix(".bin").toIntOrNull()

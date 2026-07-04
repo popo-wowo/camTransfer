@@ -318,19 +318,30 @@ object GallerySortPolicy {
         }
 
     private fun newestFirstComparator(): Comparator<CameraFile> =
-        compareByDescending<CameraFile> { captureDaySortKey(it) }
+        compareByDescending<CameraFile> { captureDateSortKey(it) }
 
     private fun oldestFirstComparator(): Comparator<CameraFile> =
-        compareBy<CameraFile> { captureDaySortKey(it) }
+        compareBy<CameraFile> { captureDateSortKey(it) }
 
-    private fun captureDaySortKey(file: CameraFile): String {
+    private fun captureDateSortKey(file: CameraFile): String {
         val captureDate = file.info.captureDate
-        return if (captureDate.length >= 8) captureDate.take(8) else captureDate
+        return if (captureDate.length >= 15) captureDate.take(15) else if (captureDate.length >= 8) {
+            captureDate.take(8)
+        } else {
+            captureDate
+        }
     }
 }
 
 object GalleryScrollResetPolicy {
     fun shouldScrollToTopAfterFilterOrSortChange(): Boolean = true
+}
+
+object GalleryCacheUsageUiPolicy {
+    const val INITIAL_SCAN_DELAY_MS = 1_500L
+
+    fun shouldScanCacheUsage(hasFiles: Boolean, isLoading: Boolean): Boolean =
+        hasFiles && !isLoading
 }
 
 object GalleryThumbnailVisibilityPolicy {

@@ -71,6 +71,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
@@ -104,6 +105,9 @@ import com.camtransfer.localproofing.LocalProofingRequestRouter
 import com.camtransfer.localproofing.LocalProofingServer
 import com.camtransfer.localproofing.LocalProofingSessionToken
 import com.camtransfer.service.CameraFileSource
+import com.camtransfer.service.AppCacheLimitOption
+import com.camtransfer.service.AppCacheSettingsStore
+import com.camtransfer.service.AppCacheUsagePolicy
 import com.camtransfer.service.DownloadFolderPathPolicy
 import com.camtransfer.service.DownloadFolderSaveMode
 import com.camtransfer.service.DownloadFolderSettings
@@ -113,6 +117,8 @@ import com.camtransfer.viewmodel.BrowseViewModel
 import com.camtransfer.viewmodel.gallery.GalleryBrowseMode
 import com.camtransfer.viewmodel.gallery.HighDefinitionPreviewSessionPolicy
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
 import java.time.LocalDate
@@ -139,10 +145,13 @@ fun BrowseScreen(
     onDisconnect: () -> Unit,
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    var cacheRefreshToken by remember { mutableStateOf(0) }
     val prefs = remember(context) {
         context.getSharedPreferences("camtransfer.gallery", android.content.Context.MODE_PRIVATE)
     }
     val downloadFolderSettingsStore = remember(context) { DownloadFolderSettingsStore(context) }
+    val appCacheSettingsStore = remember(context) { AppCacheSettingsStore(context) }
     val files by viewModel.files.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val isLoadingHiddenFormats by viewModel.isLoadingHiddenFormats.collectAsState()
@@ -153,6 +162,17 @@ fun BrowseScreen(
     val loadingPreviewHandles by viewModel.loadingPreviewHandles.collectAsState()
     val failedPreviewHandles by viewModel.failedPreviewHandles.collectAsState()
     val error by viewModel.error.collectAsState()
+    val hasGalleryFiles = files.isNotEmpty()
+    val cacheUsageLabel by produceState<String?>(initialValue = null, context, cacheRefreshToken, hasGalleryFiles, isLoading) {
+        if (!GalleryCacheUsageUiPolicy.shouldScanCacheUsage(hasFiles = hasGalleryFiles, isLoading = isLoading)) {
+            value = null
+            return@produceState
+        }
+        delay(GalleryCacheUsageUiPolicy.INITIAL_SCAN_DELAY_MS)
+        value = withContext(Dispatchers.IO) {
+            AppCacheUsagePolicy.format(AppCacheUsagePolicy.usage(context.cacheDir).bytes)
+        }
+    }
     var filterState by remember { mutableStateOf(GalleryFilterState()) }
     var sortMode by remember { mutableStateOf(GallerySortMode.NewestFirst) }
     var filtersExpanded by remember { mutableStateOf(GalleryFilterPanelPolicy.defaultExpanded()) }
@@ -165,7 +185,9 @@ fun BrowseScreen(
     var localProofingState by remember { mutableStateOf<LocalProofingShareUiState?>(null) }
     var localProofingError by remember { mutableStateOf<String?>(null) }
     var showsDownloadFolderSettings by remember { mutableStateOf(false) }
+    var showsCacheSettings by remember { mutableStateOf(false) }
     var downloadFolderSettings by remember { mutableStateOf(downloadFolderSettingsStore.load()) }
+    var cacheLimitOption by remember { mutableStateOf(appCacheSettingsStore.loadLimit()) }
     var columnCount by remember {
         mutableStateOf(
             prefs.getInt("columnCount", GalleryColumnLayoutPolicy.DEFAULT_COLUMNS)
@@ -413,6 +435,33 @@ fun BrowseScreen(
             },
         )
     }
+    if (showsCacheSettings) {
+        CacheSettingsDialog(
+            cacheUsageLabel = cacheUsageLabel ?: AppCacheUsagePolicy.format(0),
+            selectedLimit = cacheLimitOption,
+            onDismiss = { showsCacheSettings = false },
+            onSaveLimit = { option ->
+                cacheLimitOption = option
+                appCacheSettingsStore.saveLimit(option)
+                coroutineScope.launch {
+                    withContext(Dispatchers.IO) {
+                        AppCacheUsagePolicy.trimToLimit(context.cacheDir, option.bytes)
+                    }
+                    cacheRefreshToken += 1
+                }
+                showsCacheSettings = false
+            },
+            onClearCache = {
+                coroutineScope.launch {
+                    withContext(Dispatchers.IO) {
+                        AppCacheUsagePolicy.trimToLimit(context.cacheDir, maxBytes = 0)
+                    }
+                    cacheRefreshToken += 1
+                }
+                showsCacheSettings = false
+            },
+        )
+    }
     BackHandler(enabled = previewFile == null) {
         if (GalleryDisconnectPolicy.shouldConfirmBeforeDisconnect()) {
             showsDisconnectConfirm = true
@@ -523,12 +572,14 @@ fun BrowseScreen(
                         it.state == TransferState.DOWNLOADING ||
                         it.state == TransferState.SAVING
                 },
+                cacheUsageLabel = cacheUsageLabel,
                 isLoading = isLoading,
                 isTransferring = isTransferring,
                 onBack = { showsDisconnectConfirm = true },
                 onOpenLocalProofing = { startLocalProofing() },
                 onOpenDownloadFolderSettings = { showsDownloadFolderSettings = true },
                 onOpenDownloads = onOpenDownloads,
+                onClearCacheClick = { showsCacheSettings = true },
             )
             GalleryBrowseModeRow(
                 activeMode = browseModeState.mode,

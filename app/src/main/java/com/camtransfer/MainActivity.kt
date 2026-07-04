@@ -201,6 +201,9 @@ fun CamTransferApp(trialDays: Long) {
             )
         ) {
             DiagnosticLog.append(context, "Navigation", "Return to connect state=$connectionState screen=$currentScreen")
+            activeCameraSource?.let { source ->
+                browseVM.clearHighDefinitionPreviewSessionCache(source, reason = "return-connect")
+            }
             currentScreen = Screen.CONNECT
         }
     }
@@ -307,6 +310,7 @@ fun CamTransferApp(trialDays: Long) {
                 onOpenDownloads = { currentScreen = Screen.TRANSFER },
                 onDisconnect = {
                     isReturningToConnect = true
+                    browseVM.clearHighDefinitionPreviewSessionCache(cameraSource, reason = "disconnect")
                     browseVM.reset()
                     scope.launch {
                         if (isWiredImport) {

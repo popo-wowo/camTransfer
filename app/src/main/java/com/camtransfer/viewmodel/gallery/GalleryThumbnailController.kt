@@ -2,6 +2,9 @@ package com.camtransfer.viewmodel.gallery
 
 import android.graphics.BitmapFactory
 import android.util.Log
+import com.camtransfer.model.CameraFile
+import com.camtransfer.service.AppCacheSettingsStore
+import com.camtransfer.service.AppCacheUsagePolicy
 import com.camtransfer.service.CameraFileSource
 import com.camtransfer.service.DiagnosticLog
 import com.camtransfer.ui.GalleryThumbnailDiagnosticPolicy
@@ -10,6 +13,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.yield
+import java.io.File
+import java.util.LinkedHashMap
 
 class GalleryThumbnailController(
     private val scope: CoroutineScope,
@@ -18,14 +23,17 @@ class GalleryThumbnailController(
 ) {
     private val thumbnailQueue = ThumbnailLoadQueue()
     private val thumbnailWorkers = mutableSetOf<Job>()
-    private val thumbnailCache = mutableMapOf<Int, ByteArray>()
+    private val thumbnailCache = ThumbnailMemoryCache()
     private val thumbnailPauseLock = Any()
     private var exclusiveThumbnailPauseCount = 0
+    private var thumbnailDiskWriteCount = 0
+    private val thumbnailDiskWriteJobs = mutableSetOf<Job>()
+    private var thumbnailDiskTrimJob: Job? = null
 
     @Volatile
     private var thumbnailLoadingPaused = false
 
-    fun cachedThumbnails(): Map<Int, ByteArray> = thumbnailCache.toMap()
+    fun cachedThumbnails(): Map<Int, ByteArray> = thumbnailCache.snapshot()
 
     fun hasActiveThumbnailWork(): Boolean =
         thumbnailQueue.trackedCount > 0
@@ -107,6 +115,12 @@ class GalleryThumbnailController(
     fun reset() {
         thumbnailWorkers.forEach { it.cancel() }
         thumbnailWorkers.clear()
+        synchronized(thumbnailDiskWriteJobs) {
+            thumbnailDiskWriteJobs.forEach { it.cancel() }
+            thumbnailDiskWriteJobs.clear()
+        }
+        thumbnailDiskTrimJob?.cancel()
+        thumbnailDiskTrimJob = null
         thumbnailCache.clear()
         synchronized(thumbnailPauseLock) {
             exclusiveThumbnailPauseCount = 0
@@ -160,6 +174,18 @@ class GalleryThumbnailController(
 
     private suspend fun loadThumbnailNow(cameraSource: CameraFileSource, handle: Int) {
         if (filesController.hasThumbnail(handle)) return
+        val currentFile = filesController.files.value.firstOrNull { it.info.handle == handle }
+        val cachedThumbnail = readThumbnailFromDisk(cameraSource, handle, currentFile)
+        if (cachedThumbnail != null) {
+            thumbnailCache.put(handle, cachedThumbnail)
+            filesController.mergeThumbnail(handle, cachedThumbnail, currentFile)
+            DiagnosticLog.append(
+                cameraSource.context,
+                TAG,
+                "Thumbnail loaded handle=$handle source=disk bytes=${cachedThumbnail.size}",
+            )
+            return
+        }
         Log.d(TAG, "Thumbnail request handle=$handle")
         DiagnosticLog.append(cameraSource.context, TAG, "Thumbnail request handle=$handle")
         try {
@@ -167,7 +193,7 @@ class GalleryThumbnailController(
                 cameraSource.getThumbnailWithInfo(handle)
             }
             val thumb = thumbnail.data
-            val file = thumbnail.file ?: filesController.files.value.firstOrNull { it.info.handle == handle }
+            val file = thumbnail.file ?: currentFile
             val decodedSize = thumb.decodedBounds()
             val thumbnailSummary = GalleryThumbnailDiagnosticPolicy.summary(
                 handle = handle,
@@ -178,11 +204,86 @@ class GalleryThumbnailController(
             )
             Log.d(TAG, thumbnailSummary)
             DiagnosticLog.append(cameraSource.context, TAG, thumbnailSummary)
-            thumbnailCache[handle] = thumb
+            thumbnailCache.put(handle, thumb)
             filesController.mergeThumbnail(handle, thumb, thumbnail.file)
+            writeThumbnailToDisk(cameraSource, handle, thumb, file)
         } catch (e: Exception) {
             Log.w(TAG, "Thumbnail failed handle=$handle: $e")
             DiagnosticLog.append(cameraSource.context, TAG, "Thumbnail failed handle=$handle", e)
+        }
+    }
+
+    private fun readThumbnailFromDisk(
+        cameraSource: CameraFileSource,
+        handle: Int,
+        file: CameraFile?,
+    ): ByteArray? =
+        runCatching {
+            val diskFile = ThumbnailDiskCachePolicy.fileFor(cameraSource.context.cacheDir, handle, file)
+            if (diskFile.exists() && diskFile.length() > 0L) diskFile.readBytes() else null
+        }.getOrNull()
+
+    private fun writeThumbnailToDisk(
+        cameraSource: CameraFileSource,
+        handle: Int,
+        thumbnail: ByteArray,
+        file: CameraFile?,
+    ) {
+        scheduleThumbnailDiskWrite(
+            cameraSource = cameraSource,
+            handle = handle,
+            thumbnail = thumbnail,
+            file = file,
+        )
+    }
+
+    private fun scheduleThumbnailDiskWrite(
+        cameraSource: CameraFileSource,
+        handle: Int,
+        thumbnail: ByteArray,
+        file: CameraFile?,
+    ) {
+        val context = cameraSource.context.applicationContext
+        val job = scope.launch(Dispatchers.IO) {
+            runCatching {
+                val diskFile = ThumbnailDiskCachePolicy.fileFor(context.cacheDir, handle, file)
+                diskFile.parentFile?.mkdirs()
+                diskFile.writeBytes(thumbnail)
+                thumbnailDiskWriteCount += 1
+                if (ThumbnailDiskCachePolicy.shouldTrimAfterWrite(thumbnailDiskWriteCount)) {
+                    scheduleThumbnailDiskTrim(cameraSource)
+                }
+            }.onFailure { error ->
+                DiagnosticLog.append(context, TAG, "Thumbnail disk cache write failed handle=$handle", error)
+            }
+        }
+        synchronized(thumbnailDiskWriteJobs) {
+            thumbnailDiskWriteJobs.add(job)
+        }
+        job.invokeOnCompletion {
+            synchronized(thumbnailDiskWriteJobs) {
+                thumbnailDiskWriteJobs.remove(job)
+            }
+        }
+    }
+
+    private fun scheduleThumbnailDiskTrim(cameraSource: CameraFileSource) {
+        if (thumbnailDiskTrimJob?.isActive == true) return
+        val context = cameraSource.context.applicationContext
+        thumbnailDiskTrimJob = scope.launch(Dispatchers.IO) {
+            runCatching {
+                val limit = AppCacheSettingsStore(context).loadLimit()
+                val result = AppCacheUsagePolicy.trimToLimit(context.cacheDir, limit.bytes)
+                if (result.deletedFiles > 0) {
+                    DiagnosticLog.append(
+                        context,
+                        TAG,
+                        "Thumbnail disk cache trimmed files=${result.deletedFiles} bytes=${result.deletedBytes}",
+                    )
+                }
+            }.onFailure { error ->
+                DiagnosticLog.append(context, TAG, "Thumbnail disk cache trim failed", error)
+            }
         }
     }
 
@@ -271,4 +372,56 @@ internal object ThumbnailLoadPolicy {
 
     fun shouldStartWorker(activeWorkers: Int, pendingHandles: Int): Boolean =
         pendingHandles > 0 && activeWorkers < MAX_CONCURRENT_WORKERS
+}
+
+internal class ThumbnailMemoryCache(
+    private val maxEntries: Int = MAX_CACHED_THUMBNAILS,
+) {
+    private val entries = LinkedHashMap<Int, ByteArray>(maxEntries, 0.75f, true)
+
+    @Synchronized
+    fun put(handle: Int, thumbnail: ByteArray) {
+        entries.remove(handle)
+        entries[handle] = thumbnail
+        while (entries.size > maxEntries) {
+            val oldestHandle = entries.keys.firstOrNull() ?: return
+            entries.remove(oldestHandle)
+        }
+    }
+
+    @Synchronized
+    fun snapshot(): Map<Int, ByteArray> =
+        entries.toMap()
+
+    @Synchronized
+    fun clear() {
+        entries.clear()
+    }
+
+    companion object {
+        const val MAX_CACHED_THUMBNAILS = 300
+    }
+}
+
+internal object ThumbnailDiskCachePolicy {
+    private const val TRIM_EVERY_WRITES = 32
+    private val UnsafeFileNameChars = Regex("""[^A-Za-z0-9._-]""")
+
+    fun fileFor(cacheDir: File, handle: Int, file: CameraFile?): File {
+        val info = file?.info
+        val identity = listOf(
+            handle.toString(),
+            (info?.format ?: 0).toString(),
+            (info?.compressedSize ?: 0).toString(),
+            info?.filename.orEmpty(),
+        ).joinToString("-")
+        val safeName = identity
+            .replace(UnsafeFileNameChars, "_")
+            .take(140)
+            .ifBlank { handle.toString() }
+        return File(File(cacheDir, "thumbnail-disk-cache"), "$safeName.bin")
+    }
+
+    fun shouldTrimAfterWrite(writeCount: Int): Boolean =
+        writeCount > 0 && writeCount % TRIM_EVERY_WRITES == 0
 }

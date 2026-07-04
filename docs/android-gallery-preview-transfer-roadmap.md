@@ -245,7 +245,33 @@ P0/P1 继续按下面顺序推进:
 2. 实机复核缩略图可见窗口: 缩放列数、筛选、快速滚动时，当前屏幕 handles 必须优先加载，不能留下永远不加载的空洞。
 3. 实机复核 HD 预览 active window: 当前可见图优先，上方少量、下方更多；切日期和快速滚动时从当前屏幕开始加载。
 4. HD 预览 RAW 配对继续取证: 收集异常日期的 `rawPairs` 日志，只在 sidecar 层修，不污染主链路。
-5. 缓存与内存上限: HD 预览磁盘缓存已加 300MB 上限并改 IO 恢复；下一步处理缩略图内存缓存上限，避免大图库长时间浏览后内存膨胀。
+5. 缓存与内存上限: HD 预览只保留会话缓存并在相册返回主界面/断开/reset 时清理；缩略图已增加内存 LRU、磁盘旁路缓存和 `200MB / 500MB / 1GB` 长期上限。
+
+## 后续高风险功能: 删除相机照片
+
+状态: 待办，先做调试验证，不进入当前 P0/P1 主链路优化。
+
+证据:
+
+- 官方 Android XApp native 库里存在相机端删除能力，见 `docs/android-official-xapp-connection-analysis.md` 的“官方 App 删除相机照片能力边界”。
+- 当前证据只能证明 SDK/库有 `DeleteObject` / `DeleteImage` 能力，不能证明普通导入相册 UI 已向用户开放删除相机存储卡照片。
+
+设计原则:
+
+- 删除是破坏性写操作，必须作为独立 `Camera Mutating Operation` 链路处理，不能混入缩略图、高清预览、下载或 GalleryReady 主链路。
+- 删除执行期间必须独占 PTP，暂停 thumbnail、metadata、HD preview、download entry 等其他相机请求。
+- UI 必须二次确认，并明确“从相机存储卡删除，不能靠手机本地缓存恢复”。
+- JPG/HEIF + RAW 组合不能静默全删。第一版应明确区分“删除当前显示文件”和“同时删除 RAW sidecar”。
+- 成功后必须刷新相机目录状态，至少重新读取 `9053/D620/D621` 或用等价的局部刷新策略，确保日期数量、占位符、筛选和 RAW 配对一致。
+- 失败时不能删除本地下载文件、下载标记、缩略图/HD 缓存；只能标记删除失败并提示用户重试。
+
+建议验证路径:
+
+1. 新增隐藏调试入口或开发命令，只允许测试卡/测试照片使用。
+2. 通过统一 PTP 调度器独占执行标准 `DeleteObject(0x100B)`，参数为目标 handle。
+3. 记录 response code、耗时、删除前后 `9053/D620/D621` 数量变化、目标 handle 是否仍可 `GET_OBJECT_INFO`。
+4. 如果标准 `DeleteObject` 返回不支持，再考虑 vendor delete 能力，但必须先抓官方 payload 或验证 native 对应行为，不能靠猜码进入正式功能。
+5. 调试验证通过后，再设计正式 UI 和恢复策略。
 
 ### 9. 2026-07-04 HD 预览缓存工程优化
 
@@ -253,21 +279,19 @@ P0/P1 继续按下面顺序推进:
 
 问题:
 
-- `hd-preview-cache` 原来按 handle 写入磁盘，没有容量上限。
+- `hd-preview-cache` 原来按 handle 写入磁盘，容易被误当成长期缓存。
 - 用户往回滚动到已加载过的 HD 预览时，active window 恢复会同步 `readBytes()`，存在滚动卡顿风险。
 
 处理:
 
 - active window 的磁盘恢复改为 `Dispatchers.IO` 协程执行。
 - 内存 preview cache 加锁，避免 IO 恢复和预览下载同时更新 `LinkedHashMap`。
-- 写入新 HD 预览后执行磁盘缓存 trim。
-- `GalleryPreviewDiskCachePolicy` 设置总量上限 `300MB`，优先删除非当前窗口的旧文件；极端超限时才删除当前窗口旧文件。
+- HD 预览缓存明确为本次浏览会话资产，不计入长期缓存。
+- 相册返回 CONNECT 主界面、断开相机或 `GalleryPreviewController.reset()` 时删除 `hd-preview-cache`，不保留高清预览图。
 
 验证:
 
-- 新增策略测试:
-  - 优先删除非当前窗口旧缓存。
-  - 只有仍然超限时才删除当前窗口缓存。
+- 新增策略测试覆盖长期缓存统计不包含 `hd-preview-cache`。
 - 当前风险测试集和 `compileDebugKotlin` 通过。
 
 边界:
@@ -275,6 +299,80 @@ P0/P1 继续按下面顺序推进:
 - 不改变 `D226 -> GET_OBJECT_INFO -> GET_PARTIAL_OBJECT` 高清预览协议。
 - 不改变连接、D621、缩略图、下载主链路。
 - 不把 HD 预览磁盘缓存和原图/压缩下载结果混用。
+- 不把高清预览图跨启动持久化。
+
+### 10. 2026-07-04 缓存大小展示、上限与下载记录轻量化
+
+状态: 已实现，等待实机 UI 观察。
+
+目标:
+
+- 相册页右上区域展示当前 app 可清理缓存大小，但不能影响进入相册、缩略图、高清预览或下载。
+- 用户可选择长期缓存上限 `200MB / 500MB / 1GB`，默认 `500MB`。
+- 下载完成后的“已下载”标记继续可用，但退出后不再持久化重型 thumbnail bytes。
+
+实现:
+
+- 新增 `AppCacheUsagePolicy`，只统计 app `cacheDir` 下明确可清理的白名单目录:
+  - `thumbnail-disk-cache`
+  - `diagnostics`
+- `BrowseScreen` 进入相册时用 `produceState + Dispatchers.IO` 异步计算一次缓存大小。
+- `GalleryHeader` 显示 `缓存 xx` 和 `清理缓存` 入口；入口打开 `CacheSettingsDialog`，可调整上限或清理可清理缓存。
+- `AppCacheSettingsStore` 持久化用户上限选项；`trimToLimit()` 按最旧文件清理，只处理白名单目录。
+- `DownloadedFileRecordCodec.encode()` 不再把 `CameraFile.thumbnail` 写入 SharedPreferences 记录；旧记录里如果带 thumbnail 仍兼容读取。
+
+边界:
+
+- 不统计、不清理配对/连接信息。
+- 不统计、不清理 MediaStore / SAF 里用户已经下载保存的照片或视频。
+- 不改变下载文件保存路径、下载模式、PTP 读写协议。
+- 不统计、不清理本次浏览会话的 `hd-preview-cache`；高清预览退出时由 preview controller 清理。
+
+### 11. 2026-07-04 缩略图内存缓存上限
+
+状态: 已实现，等待大图库长时间浏览观察。
+
+目标:
+
+- 避免 `GalleryThumbnailController` 里的额外 thumbnail bytes map 随 handle 数无限增长。
+- 不改变缩略图请求协议、不改变可见窗口策略、不影响已显示图片。
+
+实现:
+
+- 新增 `ThumbnailMemoryCache`，默认最多保留 300 个 handle 的 thumbnail bytes。
+- 写入同一个 handle 时刷新 LRU 顺序。
+- 超过上限时删除最旧 entry。
+- `GalleryThumbnailController.cachedThumbnails()` 继续返回 snapshot，供 `GalleryFilesController` 合并时使用。
+
+边界:
+
+- 这个缓存不是磁盘缓存，App 退出后不会保留。
+- 这个缓存不主动移除 `CameraFile.thumbnail` 里已经合并到当前页面的数据，避免滚动中出现已显示图片突然变回占位符。
+- 真正要进一步降低整页内存，需要另开任务设计页面列表 thumbnail 的窗口化/磁盘恢复策略。
+
+### 12. 2026-07-04 缩略图磁盘缓存旁路
+
+状态: 已实现，等待实机二次进入相册验证。
+
+目标:
+
+- 长期只保留缩略图缓存，减少重复进入相册后再次向相机请求同一批缩略图。
+- 不让缓存参与占位符、日期分组、格式筛选、下载等主链路判断。
+
+实现:
+
+- `GalleryThumbnailController.loadThumbnailNow()` 在请求相机前先读取 `thumbnail-disk-cache`。
+- 命中本地缓存时直接 `mergeThumbnail()` 更新 UI，并记录 `Thumbnail loaded ... source=disk` 日志。
+- 未命中时保持原链路: `getThumbnailWithInfo(handle)`，返回后先更新 UI，再把磁盘写入调度到独立后台 job。
+- cache key 包含 handle、format、compressedSize、filename，避免只按 handle 复用导致错图。
+- 为避免拖慢缩略图串行加载，磁盘写入和每 32 次写入后的 trim 都不在缩略图请求 worker 里执行。
+- 缓存大小统计等文件列表加载完成并延迟后再后台执行，不在相册首屏立即递归扫描。
+
+边界:
+
+- 不改变 PTP 单线程调度器。
+- 不改变首屏 D621/9053/ObjectInfo 发现链路。
+- 不改变下载互斥门；下载开始后缩略图请求仍会暂停。
 
 ## 已确定结论
 
@@ -398,7 +496,7 @@ P0/P1 继续按下面顺序推进:
 
 ### 预览缓存
 
-状态: 待设计。
+状态: 已收敛为会话缓存。
 
 为什么需要:
 
@@ -407,16 +505,16 @@ P0/P1 继续按下面顺序推进:
 
 建议设计:
 
-- 内存 LRU: 2-4 张当前会话预览。
-- 磁盘缓存: 100-300MB，可按最近使用淘汰。
-- cache key: `cameraId + handle + compressedSize + objectVersion/modifiedTime + previewMode(D226=1)`。
+- 当前会话内可复用已打开过的高清预览。
+- 返回 CONNECT 主界面、断开相机或 reset 后清理 `hd-preview-cache`，不跨启动保留。
+- 长期跨启动缓存只保留缩略图，不保留高清预览图。
 - 缓存只保存 screen preview，不和原图下载完成状态混用。
 
 风险:
 
 - handle 可能跨会话复用，key 不能只有 handle。
 - 如果用户删除/重拍照片，旧缓存必须能失效。
-- 磁盘缓存要限制总大小，避免占用用户存储。
+- 高清预览如果跨启动保留，会快速占用用户存储；当前明确禁止跨启动保留。
 
 ### 请求调度器优先级
 

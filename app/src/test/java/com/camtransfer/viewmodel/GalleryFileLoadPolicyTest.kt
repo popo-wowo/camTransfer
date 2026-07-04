@@ -5,6 +5,8 @@ import com.camtransfer.model.ObjectInfo
 import com.camtransfer.protocol.PtpObjectFormat
 import com.camtransfer.viewmodel.gallery.GalleryFastInitialLoadPolicy
 import com.camtransfer.viewmodel.gallery.GalleryFileLoadPolicy
+import com.camtransfer.viewmodel.gallery.GalleryThumbnailMerge
+import com.camtransfer.viewmodel.gallery.GalleryThumbnailPublishPolicy
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
@@ -221,6 +223,35 @@ class GalleryFileLoadPolicyTest {
 
         assertEquals("", merged.info.captureDate)
         assertEquals("DSCF0010.JPG", merged.info.filename)
+    }
+
+    @Test
+    fun thumbnailPublishPolicyMergesMultipleUpdatesInOnePass() {
+        val thumb10 = byteArrayOf(0x10)
+        val thumb11 = byteArrayOf(0x11)
+        val existing = listOf(
+            cameraFile(handle = 10, filename = "0x0000000A.JPG"),
+            cameraFile(handle = 11, filename = "0x0000000B.JPG"),
+            cameraFile(handle = 12, filename = "0x0000000C.JPG"),
+        )
+        val updates = mapOf(
+            10 to GalleryThumbnailMerge(
+                thumbnail = thumb10,
+                updatedFile = cameraFile(handle = 10, filename = "DSCF0010.JPG"),
+            ),
+            11 to GalleryThumbnailMerge(
+                thumbnail = thumb11,
+                updatedFile = cameraFile(handle = 11, filename = "DSCF0011.JPG"),
+            ),
+        )
+
+        val merged = GalleryThumbnailPublishPolicy.mergeThumbnails(existing, updates)
+
+        assertArrayEquals(thumb10, merged[0].thumbnail)
+        assertArrayEquals(thumb11, merged[1].thumbnail)
+        assertEquals(null, merged[2].thumbnail)
+        assertEquals("DSCF0010.JPG", merged[0].info.filename)
+        assertEquals("DSCF0011.JPG", merged[1].info.filename)
     }
 
     @Test

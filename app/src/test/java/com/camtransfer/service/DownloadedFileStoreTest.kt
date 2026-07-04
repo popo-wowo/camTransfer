@@ -3,7 +3,6 @@ package com.camtransfer.service
 import com.camtransfer.model.CameraFile
 import com.camtransfer.model.ObjectInfo
 import com.camtransfer.protocol.PtpObjectFormat
-import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
@@ -46,7 +45,7 @@ class DownloadedFileStoreTest {
     }
 
     @Test
-    fun downloadedRecordRoundTripsThumbnailBytes() {
+    fun downloadedRecordDoesNotPersistThumbnailBytes() {
         val thumbnail = byteArrayOf(0x01, 0x23, 0x45, 0x67)
         val original = file(
             handle = 18,
@@ -61,7 +60,7 @@ class DownloadedFileStoreTest {
         )
 
         assertEquals(original.info, restored.info)
-        assertArrayEquals(thumbnail, restored.thumbnail)
+        assertNull(restored.thumbnail)
     }
 
     @Test

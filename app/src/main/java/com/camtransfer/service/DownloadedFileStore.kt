@@ -147,7 +147,7 @@ object DownloadedFileRecordCodec {
             encodeText(info.filename),
             encodeText(info.captureDate),
             info.orientation?.toString().orEmpty(),
-            file.thumbnail?.let { encodeBytes(it) }.orEmpty(),
+            "",
         ).joinToString("|")
     }
 
@@ -184,11 +184,6 @@ object DownloadedFileRecordCodec {
 
     private fun decodeText(value: String): String =
         String(Base64.getUrlDecoder().decode(value), StandardCharsets.UTF_8)
-
-    private fun encodeBytes(value: ByteArray): String =
-        Base64.getUrlEncoder()
-            .withoutPadding()
-            .encodeToString(value)
 
     private fun decodeBytes(value: String): ByteArray =
         Base64.getUrlDecoder().decode(value)

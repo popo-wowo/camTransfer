@@ -96,6 +96,7 @@ import com.camtransfer.model.CameraFile
 import com.camtransfer.model.TransferItem
 import com.camtransfer.model.TransferState
 import com.camtransfer.service.CameraFileSource
+import com.camtransfer.service.AppCacheLimitOption
 import com.camtransfer.service.DownloadFolderPathPolicy
 import com.camtransfer.service.DownloadFolderSaveMode
 import com.camtransfer.service.DownloadFolderSettings
@@ -226,6 +227,59 @@ internal fun DownloadFolderSettingsDialog(
                         fontWeight = FontWeight.Medium,
                     )
                 }
+            }
+        },
+    )
+}
+
+@Composable
+internal fun CacheSettingsDialog(
+    cacheUsageLabel: String,
+    selectedLimit: AppCacheLimitOption,
+    onDismiss: () -> Unit,
+    onSaveLimit: (AppCacheLimitOption) -> Unit,
+    onClearCache: () -> Unit,
+) {
+    var limitOption by remember(selectedLimit) { mutableStateOf(selectedLimit) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = { onSaveLimit(limitOption) }) {
+                Text("保存")
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = onClearCache) {
+                    Text("清理缓存")
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("取消")
+                }
+            }
+        },
+        title = { Text("缓存设置") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    cacheUsageLabel,
+                    color = CamTransferColors.SecondaryInk,
+                    fontSize = 12.sp,
+                )
+                AppCacheLimitOption.entries.forEach { option ->
+                    DownloadFolderModeOptionRow(
+                        selected = limitOption == option,
+                        title = option.label,
+                        subtitle = "超过上限后自动清理最旧的缩略图缓存和诊断日志",
+                        onClick = { limitOption = option },
+                    )
+                }
+                Text(
+                    "高清预览只保留在本次浏览会话，退出相册后清理；配对记录和已下载文件不属于缓存。",
+                    color = CamTransferColors.SecondaryInk,
+                    fontSize = 12.sp,
+                )
             }
         },
     )

@@ -107,12 +107,14 @@ private val GalleryActionColor = Color(0xFF177C6D)
 @Composable
 internal fun GalleryHeader(
     activeDownloadCount: Int,
+    cacheUsageLabel: String?,
     isLoading: Boolean,
     isTransferring: Boolean,
     onBack: () -> Unit,
     onOpenLocalProofing: () -> Unit,
     onOpenDownloadFolderSettings: () -> Unit,
     onOpenDownloads: () -> Unit,
+    onClearCacheClick: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -172,6 +174,29 @@ internal fun GalleryHeader(
                     color = CamTransferColors.SecondaryInk,
                     style = MaterialTheme.typography.bodySmall,
                 )
+            }
+        }
+        if (cacheUsageLabel != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    cacheUsageLabel,
+                    color = CamTransferColors.SecondaryInk,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.width(8.dp))
+                TextButton(
+                    onClick = onClearCacheClick,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                ) {
+                    Text(
+                        "清理缓存",
+                        color = CamTransferColors.SecondaryInk,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
         }
     }

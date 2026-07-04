@@ -319,6 +319,23 @@ sequenceDiagram
 2. 原厂缓存策略没有证据。只能确定单图页内持有高清预览；磁盘缓存大小、key、淘汰、跨启动复用都要我们自己设计。
 3. Android 原厂 payload 还没抓到。若要证明 Android 原厂和 iPhone 原厂在高清预览/导入 opcode 上完全一致，需要 PcapDroid 或 VPN pcap。
 
+## 官方 App 删除相机照片能力边界
+
+2026-07-04 静态复查 Android 官方 XApp `2.7.3(1)`:
+
+- native 层存在相机端删除能力:
+  - `FTLPTP.so`: `FTL_PTP_DeleteObject`、`CPTPController::deleteObject`
+  - `libFFIR.so`: `CPTPCommand::DeleteObject`、`CCameraCommandReadImage::DeleteObject`、`ExecDeleteImage`
+  - `libXAPI.so`: `XSDK_DeleteImage`、`DeleteImage(hCamera=...)`
+- 普通导入相册 UI 没有看到删除入口:
+  - `ImportImageKebabMenuType` 只有 `Layout` / `Sort`。
+  - `ShowBottomSelectViewWithResult` 围绕布局、排序和压缩/原图选择，没有删除项。
+  - `imageDelete` / `btnDelete` 资源主要落在 Timeline 编辑、备份恢复、IPTC/配对注册等非普通相机相册删除场景。
+- 结论:
+  - 官方 SDK/库具备 `DeleteObject` 能力，但当前证据不能证明 XApp 普通相册导入页面向用户开放“删除相机存储卡照片”功能。
+  - 我们不能直接把“删除相机照片”加入主链路或普通相册默认操作。若后续要做，必须作为单独高风险功能设计: 二次确认、只在明确选中对象上执行、统一 PTP 队列独占、成功后重新读取 D621/9053 或局部移除占位符、失败时不破坏本地已下载文件和缓存。
+  - 实装前需要至少一项补充证据: 官方 App 实机 UI 录屏证明存在删除入口，或抓到官方触发 `DeleteObject` 的 payload，或用我们调试命令在测试卡上验证相机对标准 `DeleteObject(0x100B)` / vendor delete 的返回和图库刷新行为。
+
 当前最值得优化的顺序:
 
 1. P0: 高清预览协议。收益最大，直接解决“单图糊”；风险可通过 PTP 串行、`finally D226=0`、大小上限控制。

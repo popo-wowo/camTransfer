@@ -279,8 +279,8 @@ BLE session 复用规则:
 | A-P1-06 | P1 | verified | 高清预览的 RAW sidecar 只能作为同一照片的下载按钮，不能重排 D621 时间线。 | 当前稳定 tag 已把模糊 HEIF/RAW 配对后的显示图标为 `HEIF` hint、RAW 侧车标为 `RAW` hint，并加入 `rawPairs` 日志；实机确认 `加入 RAW` 看起来正常。 | 继续收集异常日期/handle 顺序样本；如果配对错误，只改 HD sidecar policy，不改连接主链路。 |
 | A-P1-07 | P1 | open | 下载模式必须在下载前写入并重新读 fresh `ObjectInfo`，不能保存缩略图大小。 | 原图/压缩都曾落到缩略图大小；当前规则要求 `D226/D22E -> GET_OBJECT_INFO -> GET_PARTIAL_OBJECT`。 | 保留 `Download mode prepare` 和 `Download partial freshSize/readSize` 日志；任何几百 KB 结果都视为失败。 |
 | A-P1-08 | P1 | open | 交互问题继续收敛：多选滑动过敏、日期范围两个输入框、单图底部悬浮条一致性。 | 用户已明确提出这些 UX 问题；它们不应影响连接主链路。 | 作为 UI 层独立任务处理，禁止借 UI 调整触发 gallery startup 或改变 PTP 调度。 |
-| A-P2-01 | P2 | measuring | HD 预览磁盘缓存同步读大文件可能卡 UI，且没有容量上限。 | 2026-07-04 已把 active window 磁盘恢复移到 IO 协程，并给 `hd-preview-cache` 加 300MB 总量上限；策略测试覆盖优先删除非当前窗口旧文件。 | 实机观察 HD 预览长时间浏览后的滚动卡顿和 `HD preview disk cache trimmed` 日志。 |
-| A-P2-02 | P2 | open | 缩略图内存缓存需要上限。 | 大图库持续加载时，按 handle 增长的缓存可能带来内存压力。 | 保留当前窗口、最近窗口和下载中心必要缓存，其余按 LRU 淘汰。 |
+| A-P2-01 | P2 | measuring | HD 预览缓存只能是浏览会话资产，退出后必须清理。 | 2026-07-04 保留本次会话 `hd-preview-cache` 用于回滚动复用，但它不计入长期缓存；`GalleryPreviewController.reset()` 会删除该目录。 | 实机观察退出/切模式后目录是否清理，以及 HD 长时间浏览是否仍有卡顿。 |
+| A-P2-02 | P2 | measuring | 缩略图长期缓存需要落盘、上限和清理策略。 | 2026-07-04 新增 `thumbnail-disk-cache` 旁路：缩略图显示前先读本地，未命中才请求相机；用户上限为 200MB/500MB/1GB，按最旧文件清理。 | 实机验证二次进入相册是否减少 `Thumbnail request`，以及清理不会碰配对/下载文件。 |
 | A-P2-03 | P2 | open | RAW/视频下载必须保持流式保存，不能退回整文件进内存。 | 大 RAW/视频会超过普通 ByteArray 安全范围；当前 64MB 以上走 stream。 | 任何下载重构必须保留大文件 stream 策略，并记录 transfer/save 分段耗时。 |
 
 ### P0: 配对、连接、进入相册和首屏图片加载稳定性
@@ -327,19 +327,30 @@ BLE session 复用规则:
 
 ### P2: 性能、内存和缓存
 
-1. HD 预览磁盘缓存不能在滚动可见项变化时同步读大文件。
-   - 当前风险: 从 `hd-preview-cache` 直接 `readBytes()` 恢复当前窗口，可能造成 UI 卡顿。
-   - 后续应改成 IO 协程恢复，并避免同一 handle 反复读盘。
+1. HD 预览缓存只允许作为浏览会话缓存。
+   - 当前状态: 本次浏览中仍可临时使用 `cacheDir/hd-preview-cache` 复用已打开过的高清预览，避免同一会话反复占用 PTP。
+   - 返回 CONNECT 主界面、断开相机或 ViewModel reset 时必须删除该目录；它不计入长期可清理缓存，也不跨启动保留。
+   - Android 不依赖“退出 app”概念；清理点绑定在可控的相册返回主界面和 reset 路径。
+   - 边界: 不改变 `D226 -> GET_OBJECT_INFO -> GET_PARTIAL_OBJECT` 高清预览协议，不把 screen preview 和原图/压缩下载混用。
 
-2. HD 预览磁盘缓存需要上限和清理策略。
-   - 当前风险: `cacheDir/hd-preview-cache` 只写入不淘汰，长时间浏览会持续占用存储。
-   - 后续建议按相机/日期/总大小做清理，不声称复刻原厂磁盘缓存，因为目前没有原厂磁盘缓存证据。
+2. 缩略图长期缓存是唯一跨会话图片缓存。
+   - 当前状态: `GalleryThumbnailController` 在请求相机前先查 `thumbnail-disk-cache`，命中则直接合并到 UI；未命中才走 `getThumbnailWithInfo`。
+   - 写入策略: 相机返回缩略图后立即更新 UI；磁盘写入和每 32 次写入后的 trim 都调度到独立后台 job，不能卡住后续缩略图请求。
+   - 上限策略: 用户可选 `200MB / 500MB / 1GB`，默认 `500MB`；清理只删除 `thumbnail-disk-cache` 和 `diagnostics` 下的旧文件。
+   - UI 策略: 缓存大小统计不在进入相册首屏立即递归扫描；等文件列表加载完成并延迟后再后台统计，避免和首屏缩略图抢 IO。
+   - 禁止清理: 配对/连接记录、下载目录配置、MediaStore/SAF 已保存照片视频、下载完成标记都不属于缓存清理范围。
 
 3. 缩略图内存缓存需要上限。
-   - 当前风险: 大图库持续加载缩略图时，内存缓存可能随 handle 数增长。
-   - 后续建议保留可见窗口、最近窗口和下载中心必要缩略图，其他按 LRU 淘汰。
+   - 当前状态: `GalleryThumbnailController` 的额外 thumbnail byte map 已限制为 300 entries LRU。
+   - 边界: 这个上限只限制 controller 内部用于合并/恢复的额外缓存，不主动清掉当前页面 `CameraFile.thumbnail` 里已经显示的图片，避免滚动中图片突然消失。
+   - 后续建议: 如果要进一步降内存，需要单独设计页面列表 thumbnail 的窗口化策略。
 
-4. 下载大文件必须继续走流式路径。
+4. 缩略图磁盘缓存不能进入主链路。
+   - 进入相册仍先按官方式 `D621/9053/ObjectInfo` 生成占位符和顺序。
+   - 本地缩略图命中只是显示阶段的旁路优化；不能用本地缓存决定占位符数量、日期分组、格式筛选或下载队列。
+   - key 不能只有 handle；当前包含 handle、format、compressedSize、filename，降低删图/重拍后 handle 复用导致错图的风险。
+
+5. 下载大文件必须继续走流式路径。
    - 当前策略是视频和大于等于 64MB 的文件走 stream，避免 RAW/视频整文件进内存。
    - 后续任何下载优化都不能把 RAW/视频退回整文件 `ByteArray` 保存路径。
 

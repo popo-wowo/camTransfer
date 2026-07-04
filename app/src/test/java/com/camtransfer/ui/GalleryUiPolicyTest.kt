@@ -372,11 +372,11 @@ class GalleryUiPolicyTest {
         )
 
         assertEquals(
-            listOf(1, 2, 4, 3),
+            listOf(2, 4, 1, 3),
             GallerySortPolicy.sortedFiles(files, GallerySortMode.NewestFirst, downloadedStates).map { it.info.handle },
         )
         assertEquals(
-            listOf(3, 1, 2, 4),
+            listOf(3, 1, 4, 2),
             GallerySortPolicy.sortedFiles(files, GallerySortMode.OldestFirst, downloadedStates).map { it.info.handle },
         )
         assertEquals(
@@ -386,32 +386,36 @@ class GalleryUiPolicyTest {
     }
 
     @Test
-    fun newestSortPreservesCameraOrderWhenCaptureDateMatches() {
+    fun newestSortUsesFullCaptureTimeWhenAvailable() {
         val cameraOrder = listOf(
-            file(1269, PtpObjectFormat.HEIF, "20260624"),
-            file(1270, PtpObjectFormat.CAMERA_VENDOR_RAF_ALT, "20260624"),
-            file(1267, PtpObjectFormat.HEIF, "20260621"),
-            file(1268, PtpObjectFormat.CAMERA_VENDOR_RAF_ALT, "20260621"),
+            file(1, PtpObjectFormat.JPEG, "20260624T081500"),
+            file(2, PtpObjectFormat.JPEG, "20260624T101500"),
+            file(3, PtpObjectFormat.JPEG, "20260624T091500"),
         )
 
         assertEquals(
-            listOf(1269, 1270, 1267, 1268),
+            listOf(2, 3, 1),
             GallerySortPolicy.sortedFiles(cameraOrder, GallerySortMode.NewestFirst, emptyMap()).map { it.info.handle },
         )
     }
 
     @Test
-    fun newestSortPreservesCameraOrderWhenFullMetadataAddsTimesWithinSameDay() {
-        val cameraOrderAfterMetadata = listOf(
-            file(1269, PtpObjectFormat.HEIF, "20260624T081500"),
-            file(1270, PtpObjectFormat.CAMERA_VENDOR_RAF_ALT, "20260624T101500"),
-            file(1267, PtpObjectFormat.HEIF, "20260621T091500"),
-            file(1268, PtpObjectFormat.CAMERA_VENDOR_RAF_ALT, "20260621T111500"),
+    fun oldestSortUsesFullCaptureTimeWhenAvailableAfterFormatFiltering() {
+        val jpgFiles = listOf(
+            file(1, PtpObjectFormat.JPEG, "20260624T081500"),
+            file(2, PtpObjectFormat.HEIF, "20260624T101500"),
+            file(3, PtpObjectFormat.JPEG, "20260624T091500"),
+            file(4, PtpObjectFormat.JPEG, "20260624T071500"),
+        )
+        val filtered = GalleryUiPolicy.filteredFiles(
+            files = jpgFiles,
+            state = GalleryFilterState(formats = setOf(GalleryFormatFilter.Jpg)),
+            today = LocalDate.of(2026, 6, 24),
         )
 
         assertEquals(
-            listOf(1269, 1270, 1267, 1268),
-            GallerySortPolicy.sortedFiles(cameraOrderAfterMetadata, GallerySortMode.NewestFirst, emptyMap()).map { it.info.handle },
+            listOf(4, 1, 3),
+            GallerySortPolicy.sortedFiles(filtered, GallerySortMode.OldestFirst, emptyMap()).map { it.info.handle },
         )
     }
 
@@ -661,6 +665,21 @@ class GalleryUiPolicyTest {
     }
 
     @Test
+    fun returningFromBrowseToConnectClearsHighDefinitionSessionCache() {
+        val source = listOf(
+            File("src/main/java/com/camtransfer/MainActivity.kt"),
+            File("app/src/main/java/com/camtransfer/MainActivity.kt"),
+        ).first { it.exists() }.readText()
+        val disconnectBlock = source.substring(
+            source.indexOf("                onDisconnect = {"),
+            source.indexOf("                },", source.indexOf("                onDisconnect = {")),
+        )
+
+        assertTrue(source.contains("browseVM.clearHighDefinitionPreviewSessionCache("))
+        assertTrue(disconnectBlock.contains("browseVM.clearHighDefinitionPreviewSessionCache("))
+    }
+
+    @Test
     fun galleryTileBadgesUseFormatLettersAndIconForDownloadedFiles() {
         assertEquals(
             "RAW",
@@ -726,6 +745,38 @@ class GalleryUiPolicyTest {
         assertTrue(source.contains("选择手机文件夹"))
         assertTrue(source.contains("DownloadFolderModeOptionRow("))
         assertTrue(source.contains("onPickCustomFolder"))
+    }
+
+    @Test
+    fun browseScreenShowsCacheSettingsDialog() {
+        val source = listOf(
+            File("src/main/java/com/camtransfer/ui/BrowseScreen.kt"),
+            File("app/src/main/java/com/camtransfer/ui/BrowseScreen.kt"),
+        ).first { it.exists() }.readText()
+
+        assertTrue(source.contains("CacheSettingsDialog("))
+        assertTrue(source.contains("AppCacheSettingsStore("))
+        assertTrue(source.contains("AppCacheUsagePolicy.trimToLimit("))
+    }
+
+    @Test
+    fun cacheSettingsDialogDescribesPersistentThumbnailCacheLimits() {
+        val source = listOf(
+            File("src/main/java/com/camtransfer/ui/GalleryDialogs.kt"),
+            File("app/src/main/java/com/camtransfer/ui/GalleryDialogs.kt"),
+        ).first { it.exists() }.readText()
+
+        assertTrue(source.contains("AppCacheLimitOption.entries"))
+        assertTrue(source.contains("高清预览只保留在本次浏览会话"))
+        assertTrue(source.contains("配对记录和已下载文件不属于缓存"))
+    }
+
+    @Test
+    fun cacheUsageScanWaitsUntilGalleryInitialLoadSettles() {
+        assertFalse(GalleryCacheUsageUiPolicy.shouldScanCacheUsage(hasFiles = false, isLoading = true))
+        assertFalse(GalleryCacheUsageUiPolicy.shouldScanCacheUsage(hasFiles = true, isLoading = true))
+        assertTrue(GalleryCacheUsageUiPolicy.shouldScanCacheUsage(hasFiles = true, isLoading = false))
+        assertTrue(GalleryCacheUsageUiPolicy.INITIAL_SCAN_DELAY_MS >= 1_000L)
     }
 
     @Test

@@ -134,6 +134,15 @@ class BrowseViewModel : ViewModel() {
         prepareHighDefinitionPreviewSession(cameraSource)
     }
 
+    fun clearHighDefinitionPreviewSessionCache(
+        cameraSource: CameraFileSource,
+        reason: String,
+    ) {
+        highDefinitionPreviewPrepareJob?.cancel()
+        highDefinitionPreviewPrepareJob = null
+        previewController.clearSessionPreviewCache(cameraSource, reason)
+    }
+
     fun prioritizeHighDefinitionPreviewVisibleHandles(
         cameraSource: CameraFileSource,
         visibleHandles: List<Int>,
