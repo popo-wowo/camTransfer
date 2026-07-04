@@ -30,6 +30,51 @@ class TransferDownloadFilePolicyTest {
     }
 
     @Test
+    fun pendingDownloadModeKeepsRawOriginalEvenWhenCompressedModeIsSelected() {
+        val jpg = TransferItem(
+            file = cameraFile(handle = 1, filename = "DSCF0001.JPG", compressedSize = 2048),
+            downloadMode = TransferDownloadMode.ORIGINAL,
+        )
+        val raw = TransferItem(
+            file = cameraFile(
+                handle = 2,
+                filename = "DSCF0001.RAF",
+                compressedSize = 85_000_000,
+                format = PtpObjectFormat.CAMERA_VENDOR_RAF,
+            ),
+            downloadMode = TransferDownloadMode.ORIGINAL,
+        )
+
+        val updated = TransferQueueDownloadModePolicy.applyPendingMode(
+            items = listOf(jpg, raw),
+            selectedMode = TransferDownloadMode.COMPRESSED,
+        )
+
+        assertEquals(TransferDownloadMode.COMPRESSED, updated[0].downloadMode)
+        assertEquals(TransferDownloadMode.ORIGINAL, updated[1].downloadMode)
+    }
+
+    @Test
+    fun removePendingItemsLeavesActiveAndCompletedItemsUntouched() {
+        val pending = TransferItem(file = cameraFile(handle = 1, filename = "DSCF0001.JPG", compressedSize = 2048))
+        val downloading = TransferItem(
+            file = cameraFile(handle = 2, filename = "DSCF0002.JPG", compressedSize = 2048),
+            state = com.camtransfer.model.TransferState.DOWNLOADING,
+        )
+        val done = TransferItem(
+            file = cameraFile(handle = 3, filename = "DSCF0003.JPG", compressedSize = 2048),
+            state = com.camtransfer.model.TransferState.DONE,
+        )
+
+        val updated = TransferQueueDownloadModePolicy.removePendingItems(
+            items = listOf(pending, downloading, done),
+            handles = setOf(1, 2, 3),
+        )
+
+        assertEquals(listOf(2, 3), updated.map { it.file.info.handle })
+    }
+
+    @Test
     fun usesResolvedCameraFileMetadataWhenQueuedFileIsPlaceholder() {
         val placeholderThumbnail = byteArrayOf(1, 2, 3)
         val queuedFile = cameraFile(

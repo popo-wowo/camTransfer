@@ -432,6 +432,39 @@ object GalleryDownloadUiPolicy {
             TransferState.SAVING,
             TransferState.DONE -> false
         }
+
+    fun hasStarted(state: TransferState?): Boolean =
+        when (state) {
+            TransferState.PENDING,
+            TransferState.DOWNLOADING,
+            TransferState.SAVING,
+            TransferState.DONE -> true
+            null,
+            TransferState.ERROR -> false
+        }
+
+    fun isQueuedOrActive(state: TransferState?): Boolean =
+        when (state) {
+            TransferState.PENDING,
+            TransferState.DOWNLOADING,
+            TransferState.SAVING -> true
+            TransferState.DONE,
+            TransferState.ERROR,
+            null -> false
+        }
+
+    fun canDownloadFromHighDefinitionPreview(
+        hasPreviewImage: Boolean,
+        state: TransferState?,
+    ): Boolean =
+        hasPreviewImage && when (state) {
+            null,
+            TransferState.ERROR,
+            TransferState.PENDING -> true
+            TransferState.DOWNLOADING,
+            TransferState.SAVING,
+            TransferState.DONE -> false
+        }
 }
 
 enum class GalleryTileDownloadBadge {

@@ -260,19 +260,49 @@ fun CamTransferApp(trialDays: Long) {
                 canChangeTransferMode = GalleryTransferModeUiPolicy.canChangeTransferMode(isTransferring),
                 onFilesLoaded = { files -> transferVM.syncDownloadedFiles(files) },
                 onPreferenceChanged = connectionVM::setPreferCompressedDownloads,
+                onQueueDownloadSelected = { files ->
+                    transferVM.init(cameraSource)
+                    transferVM.enqueue(
+                        files = files,
+                        downloadMode = if (preferCompressedDownloads) {
+                            TransferDownloadMode.COMPRESSED
+                        } else {
+                            TransferDownloadMode.ORIGINAL
+                        },
+                    )
+                },
+                onCancelQueuedDownloads = { files ->
+                    transferVM.init(cameraSource)
+                    transferVM.removePending(files)
+                },
                 onDownloadSelected = { files ->
-                    scope.launch {
-                        browseVM.prepareThumbnailLoadingForTransfer(cameraSource)
-                        transferVM.init(cameraSource)
-                        transferVM.startTransfer(
-                            files = files,
-                            downloadMode = if (preferCompressedDownloads) {
-                                TransferDownloadMode.COMPRESSED
-                            } else {
-                                TransferDownloadMode.ORIGINAL
-                            },
-                        )
-                    }
+                    transferVM.init(cameraSource)
+                    transferVM.startTransfer(
+                        files = files,
+                        downloadMode = if (preferCompressedDownloads) {
+                            TransferDownloadMode.COMPRESSED
+                        } else {
+                            TransferDownloadMode.ORIGINAL
+                        },
+                        beforeStart = {
+                            browseVM.prepareGalleryLoadingForTransfer(cameraSource)
+                        },
+                    )
+                    currentScreen = CameraScreenRoutePolicy.screenAfterDownloadStarted(currentScreen)
+                },
+                onStartQueuedDownloads = {
+                    transferVM.init(cameraSource)
+                    transferVM.startQueuedTransfer(
+                        downloadMode = if (preferCompressedDownloads) {
+                            TransferDownloadMode.COMPRESSED
+                        } else {
+                            TransferDownloadMode.ORIGINAL
+                        },
+                        beforeStart = {
+                            browseVM.prepareGalleryLoadingForTransfer(cameraSource)
+                        },
+                    )
+                    currentScreen = Screen.TRANSFER
                 },
                 onOpenDownloads = { currentScreen = Screen.TRANSFER },
                 onDisconnect = {
@@ -346,6 +376,9 @@ internal object CameraScreenRoutePolicy {
         if (hasActiveCameraSource && connectionState == ConnectionState.CONNECTED) return false
         return connectionState != ConnectionState.CONNECTED
     }
+
+    fun screenAfterDownloadStarted(currentScreen: Screen): Screen =
+        if (currentScreen == Screen.BROWSE) Screen.TRANSFER else currentScreen
 }
 
 @Composable

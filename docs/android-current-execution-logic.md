@@ -1,6 +1,6 @@
 # Android Current Execution Logic
 
-更新日期: 2026-06-20
+更新日期: 2026-07-04
 
 本文记录 Android 当前已经落地的连接、相册、下载和 UI 执行规则。后续改动应先对照本文和 `docs/android-official-xapp-connection-analysis.md`，保持“每一步确认后再进入下一步”和“稳定性优先”的原则。不要使用 iOS 实现或旧跨平台文档决定 Android 连接行为。
 
@@ -221,3 +221,116 @@ BLE session 复用规则:
 - 相册首屏是否能显示缩略图且没有明显黑边。
 - 日期筛选能直接选择任意日期，且空结果展示正确。
 - 下载中心新下载记录重新进入后仍显示缩略图。
+
+## 当前风险和待确认清单
+
+更新日期: 2026-07-04
+
+这部分记录当前 Android 分支后续必须持续处理的问题。处理顺序按 P0/P1/P2 走；每次改动都要补日志证据、测试结果和实机现象，不能靠猜测删除或新增主链路逻辑。
+
+### 持续问题台账
+
+后续每次处理问题，都先更新这张台账，再更新下面的详细规则。状态只允许写:
+
+- `open`: 已确认存在或有高风险，尚未闭环。
+- `measuring`: 已加日志或测试，等待实机证据。
+- `fixing`: 正在修改。
+- `verified`: 已通过测试和实机现象验证。
+- `deferred`: 暂缓处理，且必须写清楚原因。
+
+| ID | 级别 | 状态 | 问题 | 当前依据 | 下一步 |
+| --- | --- | --- | --- | --- | --- |
+| A-P0-01 | P0 | measuring | `Connect -> GalleryReady` 主链路必须保持最小阻塞路径，不能混入诊断、兜底、标准枚举或 UI 重入修复。 | 当前文档已确认首屏只允许 BLE/Wi-Fi/PTP 和 `9050 -> D22B -> 9053 -> D620 -> D621`，加必要 `D604=HEIF/RAW` 扩展。 | 用 `GalleryStartup step=... elapsedMs=...` 证明每一步耗时和失败率；无收益步骤移出阻塞路径。 |
+| A-P0-02 | P0 | measuring | `D222 current handle snapshot` 是否还在挡首屏，需要确认。 | 历史文档多次记录 `D222` 轮询/快照容易扰乱图库读取；当前代码仍有快照日志。 | 看实机日志的 `D222-current-handle-snapshot` 耗时、失败率和是否影响后续 D621；无稳定收益则降级为非阻塞诊断。 |
+| A-P0-03 | P0 | measuring | `9050 SearchModeDescAll` 重试可能拖慢进入相册。 | 当前对 `0x2019` 有最多 3 次重试和 500ms/1000ms 等待。 | 统计 `SearchModeDescAll attempt` 和 retry 日志；只有证明能提高成功率才保留。 |
+| A-P0-04 | P0 | open | HEIF/RAW 必须在初始占位符阶段出现，不能靠 hidden gap 猜 handle。 | X-T5 实测 `D604=31` 不是全格式；正式路径是 `D604=HEIF/RAW -> 9053/D620/D621`。 | 验证扩展列表稳定性、耗时和是否保留 D621 原始顺序；失败时只允许显式诊断，不污染主路径。 |
+| A-P0-05 | P0 | open | 下载必须独占 PTP；下载期间不能继续缩略图、metadata、高清预览请求。 | 相机 PTP 单线程；之前大 RAW 读到 socket closed 后，后续 JPG/RAW 变成 `Not connected`。 | 缩略图模式和高清预览模式点击下载都跳转下载页；下载页期间暂停其它相机请求，失败后停止剩余队列。 |
+| A-P0-06 | P0 | open | 缩略图模式、高清预览模式、下载模块要共享同一下载队列和同一互斥门。 | 用户要求两个预览模式只改变展示方式，下载模块不能分叉。 | 检查所有下载入口是否都走同一个 transfer gate、同一模式快照和同一失败处理。 |
+| A-P1-01 | P1 | open | 后置完整 `ObjectInfo` 补齐不能影响首屏和下载。 | `fastInitialFiles()` 应只发 D621 占位符；完整信息、标准枚举和 hidden metadata 都应低优先级。 | 标记 `galleryObjectInfos()` 的 Android用途，移除或隔离 `iOS logic` 标注分支对首屏/下载的影响。 |
+| A-P1-02 | P1 | open | 缩略图可见窗口需要适配缩放、筛选、快速滚动，不能因为列数变化卡住几个不加载。 | Android 相册网格支持缩放；当前屏幕 item 数会变化，原厂固定 3 列不能直接套用。 | 可见项优先级按真实 visible range 计算；筛选切换时取消旧窗口请求并重新调度当前窗口。 |
+| A-P1-03 | P1 | open | 筛选不能依赖“已经加载出缩略图”的项目。 | 占位符阶段已经有日期、格式候选和 handle，用户选择视频/RAW/HEIF 时应该能先显示占位符，再慢慢加载图。 | 确认筛选输入来自 D621/扩展列表和已知格式标记，而不是缩略图缓存或完整 ObjectInfo 完成状态。 |
+| A-P1-04 | P1 | open | 高清预览必须按当前浏览位置优先加载，而不是一路向下扫。 | 用户滚动到当前屏幕后，当前图片优先级最高；相机请求单线程。 | 采用当前屏幕优先、上方少量、下方更多的 active window；切日期/快速滚动时取消旧任务。 |
+| A-P1-05 | P1 | open | 高清预览取消不能写成失败，也不能把黑图/半图标记成已加载。 | 退出页面、切模式、下载暂停都可能触发 coroutine cancellation；不完整 JPEG 会造成黑图或“已加载但无图”。 | `CancellationException` 单独处理；JPEG 缺 EOI 或解码失败必须拒绝缓存和成功状态。 |
+| A-P1-06 | P1 | open | 高清预览的 RAW sidecar 只能作为同一照片的下载按钮，不能重排 D621 时间线。 | RAW/HEIF/JPG handle 可能交错；按 handle 倒序会破坏原厂顺序。 | HD item 构造以当前相册列表顺序为准，RAW 只合并为当前项的可选下载动作。 |
+| A-P1-07 | P1 | open | 下载模式必须在下载前写入并重新读 fresh `ObjectInfo`，不能保存缩略图大小。 | 原图/压缩都曾落到缩略图大小；当前规则要求 `D226/D22E -> GET_OBJECT_INFO -> GET_PARTIAL_OBJECT`。 | 保留 `Download mode prepare` 和 `Download partial freshSize/readSize` 日志；任何几百 KB 结果都视为失败。 |
+| A-P1-08 | P1 | open | 交互问题继续收敛：多选滑动过敏、日期范围两个输入框、单图底部悬浮条一致性。 | 用户已明确提出这些 UX 问题；它们不应影响连接主链路。 | 作为 UI 层独立任务处理，禁止借 UI 调整触发 gallery startup 或改变 PTP 调度。 |
+| A-P2-01 | P2 | open | HD 预览磁盘缓存同步读大文件可能卡 UI，且没有容量上限。 | `hd-preview-cache` 可随浏览增长；同步 `readBytes()` 可能阻塞滚动。 | 改 IO 协程读取，加入 LRU/总大小上限和按相机/日期清理策略。 |
+| A-P2-02 | P2 | open | 缩略图内存缓存需要上限。 | 大图库持续加载时，按 handle 增长的缓存可能带来内存压力。 | 保留当前窗口、最近窗口和下载中心必要缓存，其余按 LRU 淘汰。 |
+| A-P2-03 | P2 | open | RAW/视频下载必须保持流式保存，不能退回整文件进内存。 | 大 RAW/视频会超过普通 ByteArray 安全范围；当前 64MB 以上走 stream。 | 任何下载重构必须保留大文件 stream 策略，并记录 transfer/save 分段耗时。 |
+
+### P0: 配对、连接、进入相册和首屏图片加载稳定性
+
+1. `Connect -> GalleryReady` 主链路必须保持最小阻塞路径。
+   - 当前允许的首屏阻塞路径是 BLE 身份确认、官方 Wi-Fi 凭据、AP ready、系统 Wi-Fi `Network`、PTP open、`9050 -> D22B -> 9053 -> D620 -> D621`，以及必要的 `D604=HEIF/RAW -> 9053/D620/D621` 扩展。
+   - 禁止把标准 `GetStorageIDs/GetObjectHandles` 枚举、hidden gap probe、JPG/MOV/MP4 额外格式轮询、无依据 SearchMode restore 或当前对象 prime 混入首屏阻塞路径。
+   - 当前待确认: `loadCameraVendorGalleryObjectHandles()` 里的 `D222 current handle snapshot` 是否仍有必要挡在首屏前。下一步看 `GalleryStartup step=D222-current-handle-snapshot` 的耗时和失败率；若无稳定收益，应移出阻塞路径或降级为非阻塞诊断。
+
+2. `9050 SearchModeDescAll` 重试是否必要。
+   - 当前实现对 `0x2019` 最多重试 3 次，并带 500ms、1000ms 的等待。
+   - 下一步看 `SearchModeDescAll attempt=... elapsedMs=...` 与 `retryable failure ... delayMs=...` 日志。如果重试经常发生但后续仍能成功，需要保留并解释依据；如果极少发生或只拖慢，应改成更窄的诊断/恢复策略。
+
+3. HEIF/RAW 初始占位符发现必须继续走 `D604=HEIF/RAW -> D621` 扩展列表。
+   - 这是 RAW/HEIF 一开始就有占位符的正式路径，不是 hidden handle 猜码。
+   - 下一步看 `FormatSpecifiedHandles HEIF/RAW probe elapsedMs=... handles=...` 和 `promotedToInitial`，确认扩展读取是否稳定、耗时是否可接受、是否总是只需要 HEIF 或 RAW 其中一个就能提升到全量。
+
+4. 下载必须独占 PTP。
+   - 缩略图模式和高清预览模式点击下载后都必须进入下载页，并暂停 metadata、thumbnail、preview 的后续相机请求。
+   - 下载期间如果出现 `Socket is closed`、`Not connected to camera`、`Connection reset`，必须停止剩余队列并提示重新进入相册后重试，不能继续让后续任务刷错误。
+
+### P1: 速度和功能可用性
+
+1. 后置完整 `ObjectInfo` 补齐不能影响首屏和下载。
+   - `fastInitialFiles()` 只负责尽快发布 D621 占位符。
+   - `listFiles()`、标准枚举、hidden metadata、完整 ObjectInfo 补齐都必须是低优先级、可取消、可暂停的后置工作。
+   - 当前待确认: `PtpCommands.galleryObjectInfos()` 里仍有标注为 `iOS logic` 的标准枚举分支。Android 后续必须把它明确成小图库/诊断/后置补齐策略，不能作为 Android 主发现路径，也不能抢首屏或下载通道。
+
+2. 高清预览取消不能变成失败。
+   - 当前风险: 预览 worker 被切换模式、下载前暂停、退出页面取消时，如果把正常 cancellation 记入 failed handles，会导致图片后续不再加载。
+   - 后续修复要求: `CancellationException` 必须按取消处理，不写入失败状态；失败只记录真实协议/解码/数据异常。
+
+3. 高清预览必须拒绝不完整图片。
+   - `D226=1 -> GET_OBJECT_INFO -> GET_PARTIAL_OBJECT(compressedSize) -> D226=0` 是 screen preview 路径。
+   - 如果 JPEG 缺 EOI 或数据不像图片，不能标记为已加载成功，避免黑图、半图、已加载但无图。
+
+4. 高清预览顺序和 RAW 配对不能破坏 `D621` 顺序。
+   - 当前风险: 暧昧 HEIF/RAW 占位符如果按 handle 倒序重组，会和“保留相机 D621 返回顺序”的规则冲突。
+   - 后续修复要求: HD 预览 item 构造应尽量按当前相册列表顺序生成，RAW sidecar 只作为同项下载按钮，不应重排时间线。
+
+5. 筛选和下载队列状态要一致。
+   - 高清预览底部下载按钮如果按全局 pending 启用，而当前日期显示加入数为 0，会让用户误解。
+   - 后续要么显示全局队列数量，要么只按当前 HD 日期队列启用下载。
+
+### P2: 性能、内存和缓存
+
+1. HD 预览磁盘缓存不能在滚动可见项变化时同步读大文件。
+   - 当前风险: 从 `hd-preview-cache` 直接 `readBytes()` 恢复当前窗口，可能造成 UI 卡顿。
+   - 后续应改成 IO 协程恢复，并避免同一 handle 反复读盘。
+
+2. HD 预览磁盘缓存需要上限和清理策略。
+   - 当前风险: `cacheDir/hd-preview-cache` 只写入不淘汰，长时间浏览会持续占用存储。
+   - 后续建议按相机/日期/总大小做清理，不声称复刻原厂磁盘缓存，因为目前没有原厂磁盘缓存证据。
+
+3. 缩略图内存缓存需要上限。
+   - 当前风险: 大图库持续加载缩略图时，内存缓存可能随 handle 数增长。
+   - 后续建议保留可见窗口、最近窗口和下载中心必要缩略图，其他按 LRU 淘汰。
+
+4. 下载大文件必须继续走流式路径。
+   - 当前策略是视频和大于等于 64MB 的文件走 stream，避免 RAW/视频整文件进内存。
+   - 后续任何下载优化都不能把 RAW/视频退回整文件 `ByteArray` 保存路径。
+
+### 当前新增诊断日志
+
+以下日志用于决定是否删除或优化某一步，先收集实机证据，再改逻辑:
+
+- `GalleryStartup start/complete elapsedMs=...`
+- `GalleryStartup step=<label> start/done/failed elapsedMs=...`
+- `SearchModeDescAll attempt=... elapsedMs=...`
+- `SearchModeDescAll retryable failure ... delayMs=...`
+- `Current object handle snapshot elapsedMs=...`
+- `FormatSpecifiedHandles HEIF/RAW probe elapsedMs=... handles=...`
+
+判断规则:
+
+- 如果某一步耗时高、失败率高、且没有影响后续 D621 首屏占位符生成，就优先移出阻塞路径。
+- 如果某一步耗时低、能稳定避免后续错误，并且有官方或实机证据支撑，才保留在主链路。
+- 如果证据不足，只能作为可开关诊断或后置低优先级任务，不能默认进入首屏主链路。

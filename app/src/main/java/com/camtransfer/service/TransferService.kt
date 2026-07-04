@@ -72,6 +72,15 @@ class TransferService(
         _items.value = resetItems + newItems
     }
 
+    fun updatePendingDownloadMode(downloadMode: TransferDownloadMode) {
+        _items.value = TransferQueueDownloadModePolicy.applyPendingMode(_items.value, downloadMode)
+    }
+
+    fun removePending(handles: Set<Int>) {
+        if (handles.isEmpty()) return
+        _items.value = TransferQueueDownloadModePolicy.removePendingItems(_items.value, handles)
+    }
+
     fun syncDownloadedFiles(files: List<CameraFile>) {
         val currentFilesByHandle = files.associateBy { it.info.handle }
         val downloadedFromGallery = downloadedFileStore.downloadedFiles(files)
@@ -256,6 +265,34 @@ internal object TransferDownloadFilePolicy {
 
     fun shouldStreamDownload(file: CameraFile): Boolean =
         file.info.isVideo || file.info.compressedSize >= STREAM_DOWNLOAD_THRESHOLD_BYTES
+}
+
+internal object TransferQueueDownloadModePolicy {
+    fun applyPendingMode(
+        items: List<TransferItem>,
+        selectedMode: TransferDownloadMode,
+    ): List<TransferItem> =
+        items.map { item ->
+            if (item.state == TransferState.PENDING) {
+                item.copy(downloadMode = effectiveMode(item.file, selectedMode))
+            } else {
+                item
+            }
+        }
+
+    private fun effectiveMode(
+        file: CameraFile,
+        selectedMode: TransferDownloadMode,
+    ): TransferDownloadMode =
+        if (file.info.isRaw) TransferDownloadMode.ORIGINAL else selectedMode
+
+    fun removePendingItems(
+        items: List<TransferItem>,
+        handles: Set<Int>,
+    ): List<TransferItem> =
+        items.filterNot { item ->
+            item.state == TransferState.PENDING && item.file.info.handle in handles
+        }
 }
 
 internal object TransferFailurePolicy {

@@ -224,26 +224,85 @@ class PtpCommands(
 
     suspend fun getPreviewImage(handle: Int): ByteArray {
         val startedMs = SystemClock.elapsedRealtime()
-        val info = getObjectInfo(handle)
-        if (!CameraVendorPreviewImageReadPolicy.shouldReadCompressedPreview(info)) {
-            throw IllegalStateException(
-                "Compressed preview unavailable handle=$handle format=0x${info.format.toString(16)} size=${info.compressedSize}",
+        val prepareProperty = CameraVendorPreviewImageReadPolicy.prepareProperty()
+        val resetProperty = CameraVendorPreviewImageReadPolicy.resetProperty(prepareProperty)
+        try {
+            val prepareResponse = setDeviceProperty(prepareProperty)
+            diagnostic(
+                "Preview mode prepare handle=$handle prop=0x${prepareProperty.code.toString(16)} " +
+                    "value=${prepareProperty.value} response=0x${prepareResponse.responseCode.toString(16)}",
             )
+            val info = getObjectInfo(handle)
+            val previewSize = CameraVendorPreviewImageReadPolicy.readSize(info)
+                ?: throw IllegalStateException(
+                    "Compressed preview unavailable handle=$handle format=0x${info.format.toString(16)} size=${info.compressedSize}",
+                )
+            val raw = readPreviewImageByPartialObjects(handle, previewSize)
+            val image = CameraVendorPtpDataParser.imageData(raw)
+            if (!CameraVendorPtpDataParser.isLikelyImageData(image)) {
+                throw IllegalStateException("Preview image is not image data handle=$handle bytes=${raw.size} head=${image.headHex()}")
+            }
+            if (CameraVendorThumbnailReadPolicy.shouldRejectIncompletePartialPreview(image)) {
+                diagnostic(
+                    "Preview image missing JPEG EOI handle=$handle bytes=${image.size} " +
+                        "readSize=$previewSize max=${CameraVendorPreviewImageReadPolicy.MAX_SCREEN_PREVIEW_BYTES}",
+                )
+            }
+            val message = "Preview image compressed handle=$handle rawBytes=${raw.size} imageBytes=${image.size} " +
+                "readSize=$previewSize object=${info.imagePixWidth}x${info.imagePixHeight} " +
+                "elapsedMs=${SystemClock.elapsedRealtime() - startedMs}"
+            Log.d(TAG, message)
+            diagnostic(message)
+            return image
+        } finally {
+            runCatching {
+                val response = setDeviceProperty(resetProperty)
+                diagnostic(
+                    "Preview mode reset handle=$handle prop=0x${resetProperty.code.toString(16)} " +
+                        "value=${resetProperty.value} response=0x${response.responseCode.toString(16)}",
+                )
+            }.onFailure {
+                Log.d(TAG, "Preview mode reset failed: ${it.message}")
+                diagnostic("Preview mode reset failed handle=$handle error=${it.message}")
+            }
         }
-        val previewSize = info.compressedSize.coerceAtMost(CameraVendorReferenceApp.PARTIAL_PREVIEW_READ_SIZE)
-        val raw = getPartialObject(handle, 0, previewSize)
-        val image = CameraVendorPtpDataParser.imageData(raw)
-        if (!CameraVendorPtpDataParser.isLikelyImageData(image)) {
-            throw IllegalStateException("Preview image is not image data handle=$handle bytes=${raw.size} head=${image.headHex()}")
+    }
+
+    private suspend fun readPreviewImageByPartialObjects(handle: Int, objectInfoSize: Int): ByteArray {
+        val maxBytes = objectInfoSize.coerceAtMost(CameraVendorPreviewImageReadPolicy.MAX_SCREEN_PREVIEW_BYTES)
+        val chunks = mutableListOf<ByteArray>()
+        var offset = 0
+        var previousLastByte: Byte? = null
+        var readSize = CameraVendorReferenceApp.PARTIAL_FILE_READ_SIZE
+        while (offset < maxBytes) {
+            val requestSize = minOf(readSize, maxBytes - offset)
+            val chunk = try {
+                getPartialObject(handle, offset, requestSize)
+            } catch (e: Throwable) {
+                if (readSize > CameraVendorReferenceApp.PARTIAL_INITIAL_READ_SIZE) {
+                    readSize = CameraVendorReferenceApp.PARTIAL_INITIAL_READ_SIZE
+                    continue
+                }
+                throw e
+            }
+            if (chunk.isEmpty()) break
+            chunks += chunk
+            offset += chunk.size
+            val complete = CameraVendorPartialObjectReadPolicy.shouldStopAfterChunk(
+                expectedSize = null,
+                previousLastByte = previousLastByte,
+                chunk = chunk,
+                offset = offset,
+                maxBytes = maxBytes,
+            )
+            diagnostic(
+                "Preview partial chunk handle=$handle offset=$offset/$maxBytes " +
+                    "objectInfoSize=$objectInfoSize bytes=${chunk.size} readSize=$readSize complete=$complete",
+            )
+            if (complete || chunk.size < requestSize) break
+            previousLastByte = chunk.last()
         }
-        if (CameraVendorThumbnailReadPolicy.shouldRejectIncompletePartialPreview(image)) {
-            throw IllegalStateException("Preview image is incomplete JPEG handle=$handle bytes=${image.size}")
-        }
-        val message = "Preview image compressed handle=$handle rawBytes=${raw.size} imageBytes=${image.size} " +
-            "object=${info.imagePixWidth}x${info.imagePixHeight} elapsedMs=${SystemClock.elapsedRealtime() - startedMs}"
-        Log.d(TAG, message)
-        diagnostic(message)
-        return image
+        return flatten(chunks)
     }
 
     suspend fun getObject(
@@ -740,9 +799,26 @@ internal object CameraVendorThumbnailReadPolicy {
 }
 
 internal object CameraVendorPreviewImageReadPolicy {
+    const val MAX_SCREEN_PREVIEW_BYTES = 12 * 1024 * 1024
+    private const val FORCE_COMPRESSED = 1
+    private const val FORCE_RESET = 0
+
     fun shouldReadCompressedPreview(objectInfo: ObjectInfo): Boolean =
         (objectInfo.isJpeg || objectInfo.isHeif) &&
-            objectInfo.compressedSize in 1..CameraVendorReferenceApp.PARTIAL_PREVIEW_READ_SIZE
+            objectInfo.compressedSize in 1..MAX_SCREEN_PREVIEW_BYTES
+
+    fun readSize(objectInfo: ObjectInfo): Int? =
+        if (shouldReadCompressedPreview(objectInfo)) objectInfo.compressedSize else null
+
+    fun prepareProperty(): CameraVendorDevicePropertyValue =
+        CameraVendorDevicePropertyValue(
+            code = CameraVendorDevicePropCode.IMAGE_FORCE_COMPRESSION,
+            value = FORCE_COMPRESSED,
+            width = CameraVendorDevicePropertyWidth.UINT16,
+        )
+
+    fun resetProperty(prepareProperty: CameraVendorDevicePropertyValue): CameraVendorDevicePropertyValue =
+        prepareProperty.copy(value = FORCE_RESET)
 }
 
 internal object CameraVendorPartialObjectReadPolicy {

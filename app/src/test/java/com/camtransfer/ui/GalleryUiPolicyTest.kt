@@ -603,6 +603,64 @@ class GalleryUiPolicyTest {
     }
 
     @Test
+    fun startedDownloadCountExcludesErrorsAndNeverQueuedItems() {
+        assertFalse(GalleryDownloadUiPolicy.hasStarted(null))
+        assertFalse(GalleryDownloadUiPolicy.hasStarted(TransferState.ERROR))
+        assertTrue(GalleryDownloadUiPolicy.hasStarted(TransferState.PENDING))
+        assertTrue(GalleryDownloadUiPolicy.hasStarted(TransferState.DOWNLOADING))
+        assertTrue(GalleryDownloadUiPolicy.hasStarted(TransferState.SAVING))
+        assertTrue(GalleryDownloadUiPolicy.hasStarted(TransferState.DONE))
+    }
+
+    @Test
+    fun highDefinitionPreviewDownloadWaitsForLoadedPreviewBytes() {
+        assertFalse(GalleryDownloadUiPolicy.canDownloadFromHighDefinitionPreview(hasPreviewImage = false, state = null))
+        assertTrue(GalleryDownloadUiPolicy.canDownloadFromHighDefinitionPreview(hasPreviewImage = true, state = TransferState.PENDING))
+        assertTrue(GalleryDownloadUiPolicy.canDownloadFromHighDefinitionPreview(hasPreviewImage = true, state = null))
+        assertFalse(GalleryDownloadUiPolicy.canDownloadFromHighDefinitionPreview(hasPreviewImage = true, state = TransferState.DOWNLOADING))
+    }
+
+    @Test
+    fun highDefinitionPreviewQueuesPerCardAndStartsOnlyFromBottomBar() {
+        val source = listOf(
+            File("src/main/java/com/camtransfer/ui/HighDefinitionPreviewScreen.kt"),
+            File("app/src/main/java/com/camtransfer/ui/HighDefinitionPreviewScreen.kt"),
+        ).first { it.exists() }.readText()
+        val cardBlock = source.substring(
+            source.indexOf("private fun HighDefinitionPreviewCard("),
+            source.indexOf("private fun hdRawDownloadLabel("),
+        )
+        val bottomBarBlock = source.substring(
+            source.indexOf("private fun HighDefinitionPreviewBottomBar("),
+            source.indexOf("private fun HdDownloadCountDot("),
+        )
+
+        assertTrue(cardBlock.contains("onQueueDownload"))
+        assertTrue(cardBlock.contains("onCancelQueuedDownload"))
+        assertFalse(cardBlock.contains("onStartDownload"))
+        assertTrue(cardBlock.contains("HdQueueButton("))
+        assertTrue(bottomBarBlock.contains("onStartDownload"))
+        assertTrue(bottomBarBlock.contains("Text(\"下载\""))
+    }
+
+    @Test
+    fun mainActivitySeparatesQueueingFromStartingQueuedDownloads() {
+        val source = listOf(
+            File("src/main/java/com/camtransfer/MainActivity.kt"),
+            File("app/src/main/java/com/camtransfer/MainActivity.kt"),
+        ).first { it.exists() }.readText()
+        val browseCall = source.substring(
+            source.indexOf("BrowseScreen("),
+            source.indexOf("                onDisconnect = {"),
+        )
+
+        assertTrue(browseCall.contains("onQueueDownloadSelected = { files ->"))
+        assertTrue(browseCall.contains("transferVM.enqueue("))
+        assertTrue(browseCall.contains("onStartQueuedDownloads = {"))
+        assertTrue(browseCall.contains("transferVM.startQueuedTransfer("))
+    }
+
+    @Test
     fun galleryTileBadgesUseFormatLettersAndIconForDownloadedFiles() {
         assertEquals(
             "RAW",

@@ -110,6 +110,8 @@ import com.camtransfer.service.DownloadFolderSettings
 import com.camtransfer.service.DownloadFolderSettingsStore
 import com.camtransfer.service.DiagnosticLog
 import com.camtransfer.viewmodel.BrowseViewModel
+import com.camtransfer.viewmodel.gallery.GalleryBrowseMode
+import com.camtransfer.viewmodel.gallery.HighDefinitionPreviewSessionPolicy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
@@ -129,7 +131,10 @@ fun BrowseScreen(
     canChangeTransferMode: Boolean = true,
     onFilesLoaded: (List<CameraFile>) -> Unit,
     onPreferenceChanged: (Boolean) -> Unit,
+    onQueueDownloadSelected: (List<CameraFile>) -> Unit,
+    onCancelQueuedDownloads: (List<CameraFile>) -> Unit,
     onDownloadSelected: (List<CameraFile>) -> Unit,
+    onStartQueuedDownloads: () -> Unit,
     onOpenDownloads: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
@@ -141,8 +146,12 @@ fun BrowseScreen(
     val files by viewModel.files.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val isLoadingHiddenFormats by viewModel.isLoadingHiddenFormats.collectAsState()
+    val browseModeState by viewModel.browseModeState.collectAsState()
     val selectedHandles by viewModel.selectedHandles.collectAsState()
     val previewImages by viewModel.previewImages.collectAsState()
+    val loadedPreviewHandles by viewModel.loadedPreviewHandles.collectAsState()
+    val loadingPreviewHandles by viewModel.loadingPreviewHandles.collectAsState()
+    val failedPreviewHandles by viewModel.failedPreviewHandles.collectAsState()
     val error by viewModel.error.collectAsState()
     var filterState by remember { mutableStateOf(GalleryFilterState()) }
     var sortMode by remember { mutableStateOf(GallerySortMode.NewestFirst) }
@@ -186,6 +195,11 @@ fun BrowseScreen(
     val downloadStates = remember(downloadedItems, transferItems) {
         (downloadedItems + transferItems).associate { it.file.info.handle to it.state }
     }
+    val hasPendingQueuedDownloads by remember(transferItems) {
+        derivedStateOf {
+            transferItems.any { it.state == TransferState.PENDING }
+        }
+    }
     val filteredFiles by remember(files, filterState, today) {
         derivedStateOf { GalleryUiPolicy.filteredFiles(files, filterState, today) }
     }
@@ -194,6 +208,22 @@ fun BrowseScreen(
     }
     val sortedFiles by remember(filteredFiles, sortMode, downloadStates) {
         derivedStateOf { GallerySortPolicy.sortedFiles(filteredFiles, sortMode, downloadStates) }
+    }
+    val highDefinitionPreviewFiles by remember(files, browseModeState.highDefinitionDate) {
+        derivedStateOf {
+            HighDefinitionPreviewSessionPolicy.previewableFilesForDate(
+                files = files,
+                activeDate = browseModeState.highDefinitionDate,
+            )
+        }
+    }
+    val highDefinitionPreviewItems by remember(files, browseModeState.highDefinitionDate) {
+        derivedStateOf {
+            HighDefinitionPreviewSessionPolicy.previewItemsForDate(
+                files = files,
+                activeDate = browseModeState.highDefinitionDate,
+            )
+        }
     }
     val gallerySections by remember(sortedFiles, expandedSectionDays) {
         derivedStateOf {
@@ -241,6 +271,9 @@ fun BrowseScreen(
     val currentFiles by rememberUpdatedState(files)
     val selectableDateDays = remember(today) {
         GalleryDatePickerPolicy.selectableDays(today)
+    }
+    val highDefinitionPreviewDateDays by remember(files) {
+        derivedStateOf { HighDefinitionPreviewSessionPolicy.availableDates(files) }
     }
 
     fun stopLocalProofing() {
@@ -315,21 +348,42 @@ fun BrowseScreen(
     }
     LaunchedEffect(cameraSource, isTransferring) {
         if (!isTransferring) {
-            viewModel.resumeThumbnailLoadingAfterTransfer(cameraSource)
+            viewModel.resumeGalleryLoadingAfterTransfer(cameraSource)
+        }
+    }
+    LaunchedEffect(cameraSource, browseModeState.mode, browseModeState.highDefinitionDate, files) {
+        if (browseModeState.mode == GalleryBrowseMode.HD_PREVIEW) {
+            val preferredDate = HighDefinitionPreviewSessionPolicy.preferredActiveDate(
+                files = files,
+                currentDate = browseModeState.highDefinitionDate,
+            )
+            if (preferredDate != browseModeState.highDefinitionDate) {
+                viewModel.setHighDefinitionPreviewDate(cameraSource, preferredDate)
+            } else {
+                viewModel.syncHighDefinitionSession(cameraSource)
+            }
         }
     }
     LaunchedEffect(cameraSource, thumbnailRequestHandles, isTransferring) {
-        if (!isTransferring) {
+        if (!isTransferring && browseModeState.mode == GalleryBrowseMode.THUMBNAIL) {
             viewModel.loadVisibleThumbnails(cameraSource, thumbnailRequestHandles)
         }
     }
 
     if (showsDatePicker) {
         DatePickerDialog(
-            days = selectableDateDays,
+            days = if (browseModeState.mode == GalleryBrowseMode.HD_PREVIEW && highDefinitionPreviewDateDays.isNotEmpty()) {
+                highDefinitionPreviewDateDays
+            } else {
+                selectableDateDays
+            },
             onDismiss = { showsDatePicker = false },
             onSelect = { day ->
-                filterState = filterState.copy(date = GalleryDateFilter.SpecificDay(day))
+                if (browseModeState.mode == GalleryBrowseMode.HD_PREVIEW) {
+                    viewModel.setHighDefinitionPreviewDate(cameraSource, day)
+                } else {
+                    filterState = filterState.copy(date = GalleryDateFilter.SpecificDay(day))
+                }
                 showsDatePicker = false
             },
         )
@@ -402,6 +456,7 @@ fun BrowseScreen(
             selectedHandles = selectedHandles,
             previewImages = previewImages,
             preferCompressedDownloads = preferCompressedDownloads,
+            canChangeTransferMode = canChangeTransferMode,
             onDismiss = { previewFile = null },
             onPreviewVisible = { handles ->
                 viewModel.loadPreviewThumbnails(cameraSource, handles)
@@ -414,6 +469,7 @@ fun BrowseScreen(
                     viewModel.toggleSelection(currentFile.info.handle)
                 }
             },
+            onPreferenceChanged = onPreferenceChanged,
             onDownload = { currentFile ->
                 if (GalleryDownloadUiPolicy.canSelect(downloadStates[currentFile.info.handle])) {
                     onDownloadSelected(listOf(currentFile))
@@ -426,31 +482,33 @@ fun BrowseScreen(
     Scaffold(
         containerColor = CamTransferColors.Background,
         bottomBar = {
-            val allFilteredSelected = selectedHandles.containsAll(selectableFilteredHandles) &&
-                selectableFilteredHandles.isNotEmpty()
-            GalleryDownloadBar(
-                selectedCount = selectedFiles.size,
-                totalCount = selectableFilteredHandles.size,
-                allFilteredSelected = allFilteredSelected,
-                canToggleSelectAll = selectableFilteredHandles.isNotEmpty(),
-                preferCompressedDownloads = preferCompressedDownloads,
-                canDownload = selectedFiles.isNotEmpty(),
-                canChangeTransferMode = canChangeTransferMode,
-                onToggleSelectAll = {
-                    if (allFilteredSelected) {
-                        viewModel.clearSelection()
-                    } else {
-                        viewModel.selectHandles(selectableFilteredHandles)
-                    }
-                },
-                onPreferenceChanged = onPreferenceChanged,
-                onDownload = {
-                    if (selectedFiles.isNotEmpty()) {
-                        onDownloadSelected(selectedFiles)
-                        viewModel.clearSelection()
-                    }
-                },
-            )
+            if (browseModeState.mode == GalleryBrowseMode.THUMBNAIL) {
+                val allFilteredSelected = selectedHandles.containsAll(selectableFilteredHandles) &&
+                    selectableFilteredHandles.isNotEmpty()
+                GalleryDownloadBar(
+                    selectedCount = selectedFiles.size,
+                    totalCount = selectableFilteredHandles.size,
+                    allFilteredSelected = allFilteredSelected,
+                    canToggleSelectAll = selectableFilteredHandles.isNotEmpty(),
+                    preferCompressedDownloads = preferCompressedDownloads,
+                    canDownload = selectedFiles.isNotEmpty(),
+                    canChangeTransferMode = canChangeTransferMode,
+                    onToggleSelectAll = {
+                        if (allFilteredSelected) {
+                            viewModel.clearSelection()
+                        } else {
+                            viewModel.selectHandles(selectableFilteredHandles)
+                        }
+                    },
+                    onPreferenceChanged = onPreferenceChanged,
+                    onDownload = {
+                        if (selectedFiles.isNotEmpty()) {
+                            onDownloadSelected(selectedFiles)
+                            viewModel.clearSelection()
+                        }
+                    },
+                )
+            }
         },
     ) { padding ->
         Column(
@@ -472,91 +530,192 @@ fun BrowseScreen(
                 onOpenDownloadFolderSettings = { showsDownloadFolderSettings = true },
                 onOpenDownloads = onOpenDownloads,
             )
-            GalleryFilterPanel(
-                expanded = filtersExpanded,
-                onExpandedChange = { filtersExpanded = it },
-                state = filterState,
-                stats = filterStats,
-                isLoadingJpg = isLoading,
-                isLoadingHiddenFormats = isLoadingHiddenFormats,
-                onStateChange = { filterState = it },
-                sortMode = sortMode,
-                onSortModeChange = { sortMode = it },
-                onPickDate = { showsDatePicker = true },
-                onPickDateRange = { showsDateRangePicker = true },
+            GalleryBrowseModeRow(
+                activeMode = browseModeState.mode,
+                onModeChange = { mode ->
+                    previewFile = null
+                    viewModel.setBrowseMode(cameraSource, mode)
+                },
             )
-            Box(Modifier.fillMaxSize()) {
-                when {
-                    isLoading && files.isEmpty() -> {
-                        CircularProgressIndicator(
-                            modifier = Modifier.align(Alignment.Center),
-                            color = CamTransferColors.Accent,
-                        )
-                    }
-                    error != null -> {
-                        Column(
-                            modifier = Modifier
-                                .align(Alignment.Center)
-                                .padding(24.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                        ) {
-                            Text(error!!, color = MaterialTheme.colorScheme.error)
-                            Spacer(Modifier.height(10.dp))
-                            Button(onClick = { viewModel.loadFiles(cameraSource) }) {
-                                Text("重试")
+            if (browseModeState.mode == GalleryBrowseMode.HD_PREVIEW) {
+                Box(Modifier.fillMaxSize()) {
+                    HighDefinitionPreviewScreen(
+                        items = highDefinitionPreviewItems,
+                        isLoading = isLoading,
+                        error = error,
+                        activeDate = browseModeState.highDefinitionDate,
+                        previewImages = previewImages,
+                        loadedPreviewHandles = loadedPreviewHandles,
+                        loadingPreviewHandles = loadingPreviewHandles,
+                        failedPreviewHandles = failedPreviewHandles,
+                        downloadStates = downloadStates,
+                        preferCompressedDownloads = preferCompressedDownloads,
+                        canChangeTransferMode = canChangeTransferMode,
+                        canStartDownload = hasPendingQueuedDownloads && !isTransferring,
+                        onPickDate = { showsDatePicker = true },
+                        onPreferenceChanged = onPreferenceChanged,
+                        onVisibleHandlesChanged = { visibleHandles ->
+                            viewModel.prioritizeHighDefinitionPreviewVisibleHandles(cameraSource, visibleHandles)
+                        },
+                        onQueueDownload = { file ->
+                            if (GalleryDownloadUiPolicy.canSelect(downloadStates[file.info.handle])) {
+                                onQueueDownloadSelected(listOf(file))
+                            }
+                        },
+                        onCancelQueuedDownload = { file ->
+                            if (downloadStates[file.info.handle] == TransferState.PENDING) {
+                                onCancelQueuedDownloads(listOf(file))
+                            }
+                        },
+                        onQueueDownloadRaw = { file ->
+                            if (GalleryDownloadUiPolicy.canSelect(downloadStates[file.info.handle])) {
+                                onQueueDownloadSelected(listOf(file))
+                            }
+                        },
+                        onCancelQueuedRawDownload = { file ->
+                            if (downloadStates[file.info.handle] == TransferState.PENDING) {
+                                onCancelQueuedDownloads(listOf(file))
+                            }
+                        },
+                        onStartDownload = onStartQueuedDownloads,
+                    )
+                }
+            } else {
+                GalleryFilterPanel(
+                    expanded = filtersExpanded,
+                    onExpandedChange = { filtersExpanded = it },
+                    state = filterState,
+                    stats = filterStats,
+                    isLoadingJpg = isLoading,
+                    isLoadingHiddenFormats = isLoadingHiddenFormats,
+                    onStateChange = { filterState = it },
+                    sortMode = sortMode,
+                    onSortModeChange = { sortMode = it },
+                    onPickDate = { showsDatePicker = true },
+                    onPickDateRange = { showsDateRangePicker = true },
+                )
+                Box(Modifier.fillMaxSize()) {
+                    when {
+                        isLoading && files.isEmpty() -> {
+                            CircularProgressIndicator(
+                                modifier = Modifier.align(Alignment.Center),
+                                color = CamTransferColors.Accent,
+                            )
+                        }
+                        error != null -> {
+                            Column(
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                Text(error!!, color = MaterialTheme.colorScheme.error)
+                                Spacer(Modifier.height(10.dp))
+                                Button(onClick = { viewModel.loadFiles(cameraSource) }) {
+                                    Text("重试")
+                                }
                             }
                         }
-                    }
-                    files.isEmpty() -> {
-                        EmptyGalleryMessage("相机中没有文件")
-                    }
-                    filteredFiles.isEmpty() -> {
-                        EmptyGalleryMessage("当前筛选没有照片")
-                    }
-                    else -> {
-                        GalleryGrid(
-                            files = sortedFiles,
-                            sections = gallerySections,
-                            today = today,
-                            columnCount = columnCount,
-                            gridState = gridState,
-                            selectedHandles = selectedHandles,
-                            downloadStates = downloadStates,
-                            isLoadingFullObjectInfo = isLoading,
-                            visibleGridHandleSet = visibleGridHandleSet,
-                            onColumnCountChange = { newCount ->
-                                columnCount = newCount
-                                prefs.edit().putInt("columnCount", newCount).apply()
-                            },
-                            onSelectionChange = viewModel::selectHandles,
-                            onToggleDayHours = { day ->
-                                expandedSectionDays = if (day in expandedSectionDays) {
-                                    expandedSectionDays - day
-                                } else {
-                                    expandedSectionDays + day
-                                }
-                            },
-                            onToggleDaySelection = { dayFiles ->
-                                val dayHandles = dayFiles
-                                    .filter { GalleryDownloadUiPolicy.canSelect(downloadStates[it.info.handle]) }
-                                    .map { it.info.handle }
-                                    .toSet()
-                                if (dayHandles.isNotEmpty()) {
-                                    val nextSelection = if (selectedHandles.containsAll(dayHandles)) {
-                                        selectedHandles - dayHandles
+                        files.isEmpty() -> {
+                            EmptyGalleryMessage("相机中没有文件")
+                        }
+                        filteredFiles.isEmpty() -> {
+                            EmptyGalleryMessage("当前筛选没有照片")
+                        }
+                        else -> {
+                            GalleryGrid(
+                                files = sortedFiles,
+                                sections = gallerySections,
+                                today = today,
+                                columnCount = columnCount,
+                                gridState = gridState,
+                                selectedHandles = selectedHandles,
+                                downloadStates = downloadStates,
+                                isLoadingFullObjectInfo = isLoading,
+                                visibleGridHandleSet = visibleGridHandleSet,
+                                onColumnCountChange = { newCount ->
+                                    columnCount = newCount
+                                    prefs.edit().putInt("columnCount", newCount).apply()
+                                },
+                                onSelectionChange = viewModel::selectHandles,
+                                onToggleDayHours = { day ->
+                                    expandedSectionDays = if (day in expandedSectionDays) {
+                                        expandedSectionDays - day
                                     } else {
-                                        selectedHandles + dayHandles
+                                        expandedSectionDays + day
                                     }
-                                    viewModel.selectHandles(nextSelection)
-                                }
-                            },
-                            onOpenFile = { file -> previewFile = file },
-                            onToggleSelection = { file -> viewModel.toggleSelection(file.info.handle) },
-                            onVisible = { file -> viewModel.loadThumbnail(cameraSource, file.info.handle) },
-                        )
+                                },
+                                onToggleDaySelection = { dayFiles ->
+                                    val dayHandles = dayFiles
+                                        .filter { GalleryDownloadUiPolicy.canSelect(downloadStates[it.info.handle]) }
+                                        .map { it.info.handle }
+                                        .toSet()
+                                    if (dayHandles.isNotEmpty()) {
+                                        val nextSelection = if (selectedHandles.containsAll(dayHandles)) {
+                                            selectedHandles - dayHandles
+                                        } else {
+                                            selectedHandles + dayHandles
+                                        }
+                                        viewModel.selectHandles(nextSelection)
+                                    }
+                                },
+                                onOpenFile = { file -> previewFile = file },
+                                onToggleSelection = { file -> viewModel.toggleSelection(file.info.handle) },
+                                onVisible = { file -> viewModel.loadThumbnail(cameraSource, file.info.handle) },
+                            )
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun GalleryBrowseModeRow(
+    activeMode: GalleryBrowseMode,
+    onModeChange: (GalleryBrowseMode) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        GalleryBrowseModeChip(
+            label = "缩略图",
+            selected = activeMode == GalleryBrowseMode.THUMBNAIL,
+            onClick = { onModeChange(GalleryBrowseMode.THUMBNAIL) },
+        )
+        GalleryBrowseModeChip(
+            label = "高清预览",
+            selected = activeMode == GalleryBrowseMode.HD_PREVIEW,
+            onClick = { onModeChange(GalleryBrowseMode.HD_PREVIEW) },
+        )
+    }
+}
+
+@Composable
+private fun GalleryBrowseModeChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val background = if (selected) CamTransferColors.Accent.copy(alpha = 0.18f) else CamTransferColors.Card
+    val border = if (selected) CamTransferColors.Accent else CamTransferColors.Hairline
+    val textColor = if (selected) CamTransferColors.Ink else CamTransferColors.SecondaryInk
+    Surface(
+        modifier = Modifier.clip(RoundedCornerShape(16.dp)),
+        color = background,
+        border = BorderStroke(1.dp, border),
+        shape = RoundedCornerShape(16.dp),
+        onClick = onClick,
+    ) {
+        Text(
+            text = label,
+            color = textColor,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+        )
     }
 }

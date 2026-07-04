@@ -9,11 +9,13 @@ class GalleryModularArchitectureTest {
     @Test
     fun galleryControllersAreSplitByFeature() {
         val controllerFiles = listOf(
+            "viewmodel/gallery/GalleryBrowseModeController.kt",
             "viewmodel/gallery/GalleryRequestScheduler.kt",
             "viewmodel/gallery/GalleryFilesController.kt",
             "viewmodel/gallery/GalleryThumbnailController.kt",
             "viewmodel/gallery/GalleryPreviewController.kt",
             "viewmodel/gallery/GallerySelectionController.kt",
+            "viewmodel/gallery/HighDefinitionPreviewSession.kt",
         )
 
         controllerFiles.forEach { path ->
@@ -26,9 +28,11 @@ class GalleryModularArchitectureTest {
         val source = sourceFile("viewmodel/BrowseViewModel.kt").readText()
 
         assertTrue(source.contains("GalleryFilesController"))
+        assertTrue(source.contains("GalleryBrowseModeController"))
         assertTrue(source.contains("GalleryThumbnailController"))
         assertTrue(source.contains("GalleryPreviewController"))
         assertTrue(source.contains("GallerySelectionController"))
+        assertTrue(source.contains("HighDefinitionPreviewSessionPolicy"))
         assertTrue(source.contains("filesController.pauseForExclusiveOperation"))
         assertTrue(source.contains("filesController.resumeAfterExclusiveOperation"))
         assertFalse(source.contains("class ThumbnailLoadQueue"))

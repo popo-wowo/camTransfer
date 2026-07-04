@@ -1,263 +1,533 @@
 package com.camtransfer.ui
 
-import androidx.activity.compose.BackHandler
+import android.graphics.BitmapFactory
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.camtransfer.model.CameraFile
-import com.camtransfer.service.CameraFileSource
-import com.camtransfer.viewmodel.BrowseViewModel
+import com.camtransfer.model.TransferState
+import com.camtransfer.viewmodel.gallery.HighDefinitionPreviewItem
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
 
 @Composable
 fun HighDefinitionPreviewScreen(
-    viewModel: BrowseViewModel,
-    cameraSource: CameraFileSource,
-    onOpenThumbnailGallery: () -> Unit,
-    onDisconnect: () -> Unit,
+    items: List<HighDefinitionPreviewItem>,
+    isLoading: Boolean,
+    error: String?,
+    activeDate: LocalDate,
+    previewImages: Map<Int, ByteArray>,
+    loadedPreviewHandles: Set<Int>,
+    loadingPreviewHandles: Set<Int>,
+    failedPreviewHandles: Set<Int>,
+    downloadStates: Map<Int, TransferState>,
+    preferCompressedDownloads: Boolean,
+    canChangeTransferMode: Boolean = true,
+    canStartDownload: Boolean,
+    onPickDate: () -> Unit,
+    onPreferenceChanged: (Boolean) -> Unit,
+    onVisibleHandlesChanged: (List<Int>) -> Unit,
+    onQueueDownload: (CameraFile) -> Unit,
+    onCancelQueuedDownload: (CameraFile) -> Unit,
+    onQueueDownloadRaw: (CameraFile) -> Unit,
+    onCancelQueuedRawDownload: (CameraFile) -> Unit,
+    onStartDownload: () -> Unit,
 ) {
-    val files by viewModel.files.collectAsState()
-    val isLoading by viewModel.isLoading.collectAsState()
-    val previewImages by viewModel.previewImages.collectAsState()
-    val loadedPreviewHandles by viewModel.loadedPreviewHandles.collectAsState()
-    val loadingPreviewHandles by viewModel.loadingPreviewHandles.collectAsState()
-    val error by viewModel.error.collectAsState()
+    var fullScreenFile by remember { mutableStateOf<CameraFile?>(null) }
+    val listState = rememberLazyListState()
+    val dateLabel = remember(activeDate) {
+        activeDate.format(DateTimeFormatter.ofPattern("yyyy-MM-dd"))
+    }
+    val activeHandles = remember(items) { items.map { it.previewFile.info.handle }.toSet() }
+    val loadedCount = remember(loadedPreviewHandles, activeHandles) {
+        loadedPreviewHandles.count { it in activeHandles }
+    }
+    val downloadCount = remember(items, downloadStates) {
+        items.sumOf { item ->
+            listOfNotNull(item.previewFile, item.rawFile).count { file ->
+                GalleryDownloadUiPolicy.isQueuedOrActive(downloadStates[file.info.handle])
+            }
+        }
+    }
+    val visibleHandles by remember {
+        derivedStateOf {
+            listState.layoutInfo.visibleItemsInfo
+                .sortedBy { it.index }
+                .mapNotNull { it.key as? Int }
+        }
+    }
 
-    val mediaFiles = remember(files) {
-        files.filterNot { it.info.isFolder }
-    }
-    val previewableFiles = remember(mediaFiles) {
-        mediaFiles.filter { GalleryPreviewActionBarPolicy.canRequestHighDefinitionPreview(it) }
-    }
-    var sequentialIndex by remember(previewableFiles.map { it.info.handle }) { mutableIntStateOf(0) }
-    var attemptedPreviewHandles by remember(previewableFiles.map { it.info.handle }) { mutableStateOf(emptySet<Int>()) }
-    val loadedPreviewCount = remember(previewableFiles, loadedPreviewHandles) {
-        previewableFiles.count { it.info.handle in loadedPreviewHandles }
+    LaunchedEffect(visibleHandles) {
+        if (visibleHandles.isNotEmpty()) {
+            onVisibleHandlesChanged(visibleHandles)
+        }
     }
 
-    LaunchedEffect(cameraSource) {
-        viewModel.loadFilesIfNeeded(cameraSource)
-    }
-    LaunchedEffect(previewableFiles, loadedPreviewHandles, loadingPreviewHandles, sequentialIndex, attemptedPreviewHandles) {
-        if (previewableFiles.isEmpty()) return@LaunchedEffect
-        val next = previewableFiles.getOrNull(sequentialIndex) ?: return@LaunchedEffect
-        val handle = next.info.handle
-        when {
-            handle in loadedPreviewHandles -> sequentialIndex += 1
-            handle in loadingPreviewHandles -> Unit
-            handle in attemptedPreviewHandles -> sequentialIndex += 1
-            else -> {
-                attemptedPreviewHandles = attemptedPreviewHandles + handle
-                viewModel.loadPreviewImage(cameraSource, next)
+    fullScreenFile?.let { file ->
+        val previewImage = previewImages[file.info.handle]
+        if (previewImage != null) {
+            Dialog(
+                onDismissRequest = { fullScreenFile = null },
+                properties = DialogProperties(usePlatformDefaultWidth = false),
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = Color.Black,
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(12.dp),
+                    ) {
+                        ZoomablePreviewImage(
+                            file = file,
+                            previewImage = previewImage,
+                            manualRotationDegrees = 0,
+                        )
+                        Text(
+                            text = "×",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .clickable { fullScreenFile = null }
+                                .padding(8.dp),
+                        )
+                    }
+                }
             }
         }
     }
 
-    BackHandler(onBack = onDisconnect)
-
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(CamTransferColors.Background)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .background(Color.Black),
     ) {
-        Surface(
-            modifier = Modifier.fillMaxWidth(),
-            color = CamTransferColors.WarmFill,
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
-            border = androidx.compose.foundation.BorderStroke(1.dp, CamTransferColors.Hairline),
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            state = listState,
+            verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
-            Column(
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            "HD PREVIEW",
-                            color = CamTransferColors.SecondaryInk,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Black,
-                        )
-                        Text(
-                            "高清预览模式",
-                            color = CamTransferColors.Ink,
-                            fontSize = 22.sp,
-                            fontWeight = FontWeight.Black,
-                        )
-                    }
-                    TextButton(onClick = onDisconnect) {
-                        Text("退出", color = CamTransferColors.Ink)
-                    }
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    val statusText = when {
-                        error != null -> error ?: "加载失败"
-                        isLoading && mediaFiles.isEmpty() -> "正在读取相机照片"
-                        previewableFiles.isEmpty() -> "当前没有可用的高清预览图片"
-                        loadingPreviewHandles.isNotEmpty() ->
-                            "高清预览加载中 $loadedPreviewCount / ${previewableFiles.size}"
-                        sequentialIndex < previewableFiles.size ->
-                            "准备继续加载 ${sequentialIndex + 1} / ${previewableFiles.size}"
-                        else -> "高清预览已加载完成 ${previewableFiles.size} / ${previewableFiles.size}"
-                    }
-                    Text(
-                        statusText,
-                        modifier = Modifier.weight(1f),
-                        color = CamTransferColors.SecondaryInk,
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    OutlinedButton(onClick = onOpenThumbnailGallery) {
-                        Text("缩略图库", fontWeight = FontWeight.Bold)
-                    }
-                }
+            items(
+                items = items,
+                key = { it.previewFile.info.handle },
+            ) { item ->
+                val file = item.previewFile
+                val handle = file.info.handle
+                HighDefinitionPreviewCard(
+                    item = item,
+                    previewImage = previewImages[handle],
+                    isLoading = handle in loadingPreviewHandles,
+                    isFailed = handle in failedPreviewHandles,
+                    wasLoaded = handle in loadedPreviewHandles,
+                    downloadState = downloadStates[handle],
+                    rawDownloadState = item.rawFile?.let { rawFile -> downloadStates[rawFile.info.handle] },
+                    onOpenFullscreen = {
+                        if (previewImages[handle] != null) {
+                            fullScreenFile = file
+                        }
+                    },
+                    onQueueDownload = { onQueueDownload(file) },
+                    onCancelQueuedDownload = { onCancelQueuedDownload(file) },
+                    onDownloadRaw = item.rawFile?.let { rawFile ->
+                        { onQueueDownloadRaw(rawFile) }
+                    },
+                    onCancelQueuedRawDownload = item.rawFile?.let { rawFile ->
+                        { onCancelQueuedRawDownload(rawFile) }
+                    },
+                )
             }
         }
 
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            items(
-                items = mediaFiles,
-                key = { it.info.handle },
-            ) { file ->
-                HighDefinitionPreviewCard(
+            if (error != null) {
+                FloatingLabel(error)
+            } else if (isLoading && items.isEmpty()) {
+                FloatingLabel("读取中")
+            } else if (items.isEmpty()) {
+                FloatingLabel("无预览")
+            } else {
+                FloatingLabel("$loadedCount/${items.size}")
+            }
+            FloatingChip(label = dateLabel, selected = false, onClick = onPickDate)
+        }
+
+        HighDefinitionPreviewBottomBar(
+            modifier = Modifier.align(Alignment.BottomCenter),
+            downloadCount = downloadCount,
+            totalCount = items.size,
+            preferCompressedDownloads = preferCompressedDownloads,
+            canChangeTransferMode = canChangeTransferMode,
+            canStartDownload = canStartDownload,
+            onPreferenceChanged = onPreferenceChanged,
+            onStartDownload = onStartDownload,
+        )
+    }
+}
+
+@Composable
+private fun HighDefinitionPreviewCard(
+    item: HighDefinitionPreviewItem,
+    previewImage: ByteArray?,
+    isLoading: Boolean,
+    isFailed: Boolean,
+    wasLoaded: Boolean,
+    downloadState: TransferState?,
+    rawDownloadState: TransferState?,
+    onOpenFullscreen: () -> Unit,
+    onQueueDownload: () -> Unit,
+    onCancelQueuedDownload: () -> Unit,
+    onDownloadRaw: (() -> Unit)?,
+    onCancelQueuedRawDownload: (() -> Unit)?,
+) {
+    val file = item.previewFile
+    val imageAspectRatio = remember(file.info, previewImage) {
+        highDefinitionPreviewAspectRatio(file, previewImage)
+    }
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(imageAspectRatio)
+            .background(Color.Black)
+            .clickable(enabled = previewImage != null, onClick = onOpenFullscreen),
+        contentAlignment = Alignment.Center,
+    ) {
+        when {
+            previewImage != null -> {
+                HighDefinitionPreviewImage(
                     file = file,
-                    previewImage = previewImages[file.info.handle],
-                    isLoading = file.info.handle in loadingPreviewHandles,
-                    supported = GalleryPreviewActionBarPolicy.canRequestHighDefinitionPreview(file),
-                    wasLoaded = file.info.handle in loadedPreviewHandles,
+                    previewImage = previewImage,
                 )
+            }
+            isLoading -> {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(28.dp),
+                    strokeWidth = 2.dp,
+                    color = Color.White,
+                )
+            }
+            isFailed -> {
+                Text(
+                    "预览失败",
+                    color = Color.White.copy(alpha = 0.78f),
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            else -> {
+                Text(
+                    if (wasLoaded) "已加载" else "等待预览",
+                    color = Color.White.copy(alpha = 0.72f),
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+        }
+
+        val hasPreviewImage = previewImage != null
+        val canDownloadPreview = GalleryDownloadUiPolicy.canDownloadFromHighDefinitionPreview(
+            hasPreviewImage = hasPreviewImage,
+            state = downloadState,
+        )
+        val canDownloadRaw = GalleryDownloadUiPolicy.canDownloadFromHighDefinitionPreview(
+            hasPreviewImage = hasPreviewImage,
+            state = rawDownloadState,
+        )
+        Row(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            onDownloadRaw?.let { downloadRaw ->
+                HdQueueButton(
+                    label = hdRawDownloadLabel(hasPreviewImage, rawDownloadState),
+                    enabled = canDownloadRaw,
+                    queued = rawDownloadState == TransferState.PENDING,
+                    onClick = if (rawDownloadState == TransferState.PENDING) {
+                        onCancelQueuedRawDownload ?: downloadRaw
+                    } else {
+                        downloadRaw
+                    },
+                )
+            }
+            HdQueueButton(
+                label = hdPreviewDownloadLabel(hasPreviewImage, downloadState),
+                enabled = canDownloadPreview,
+                queued = downloadState == TransferState.PENDING,
+                onClick = if (downloadState == TransferState.PENDING) onCancelQueuedDownload else onQueueDownload,
+            )
+        }
+    }
+}
+
+@Composable
+private fun HdQueueButton(
+    label: String,
+    enabled: Boolean,
+    queued: Boolean,
+    onClick: () -> Unit,
+) {
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (queued) CamTransferColors.Accent.copy(alpha = 0.72f) else CamTransferColors.Accent,
+            contentColor = Color.White,
+            disabledContainerColor = CamTransferColors.MutedFill,
+            disabledContentColor = CamTransferColors.SecondaryInk,
+        ),
+    ) {
+        Text(label, fontWeight = FontWeight.Bold)
+    }
+}
+
+private fun hdPreviewDownloadLabel(
+    hasPreviewImage: Boolean,
+    state: TransferState?,
+): String =
+    if (!hasPreviewImage) {
+        "加载后加入"
+    } else {
+        when (state) {
+            null -> "加入"
+            TransferState.ERROR -> "重试加入"
+            TransferState.PENDING -> "已加入"
+            else -> GalleryPreviewActionBarPolicy.downloadLabel(state)
+        }
+    }
+
+private fun hdRawDownloadLabel(
+    hasPreviewImage: Boolean,
+    state: TransferState?,
+): String =
+    if (!hasPreviewImage) {
+        "加载后 RAW"
+    } else {
+        when (state) {
+            null -> "加入 RAW"
+            TransferState.ERROR -> "重试 RAW"
+            TransferState.PENDING -> "RAW 已加入"
+            else -> GalleryPreviewActionBarPolicy.downloadLabel(state)
+        }
+    }
+
+@Composable
+private fun HighDefinitionPreviewBottomBar(
+    modifier: Modifier = Modifier,
+    downloadCount: Int,
+    totalCount: Int,
+    preferCompressedDownloads: Boolean,
+    canChangeTransferMode: Boolean,
+    canStartDownload: Boolean,
+    onPreferenceChanged: (Boolean) -> Unit,
+    onStartDownload: () -> Unit,
+) {
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        shape = RoundedCornerShape(30.dp),
+        color = CamTransferColors.WarmFill,
+        border = BorderStroke(1.dp, CamTransferColors.Hairline),
+        shadowElevation = 14.dp,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(58.dp)
+                .padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            HdDownloadCountDot(
+                checked = downloadCount > 0,
+            )
+            Spacer(Modifier.width(9.dp))
+            Text(
+                "已加入 $downloadCount / 共 $totalCount 张",
+                modifier = Modifier.weight(1f),
+                color = CamTransferColors.Ink,
+                fontWeight = FontWeight.SemiBold,
+            )
+            TransferModeCapsule(
+                preferCompressedDownloads = preferCompressedDownloads,
+                enabled = canChangeTransferMode,
+                onPreferenceChanged = onPreferenceChanged,
+            )
+            Spacer(Modifier.width(9.dp))
+            Button(
+                onClick = onStartDownload,
+                enabled = canStartDownload,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = CamTransferColors.Accent,
+                    contentColor = Color.White,
+                    disabledContainerColor = CamTransferColors.MutedFill,
+                    disabledContentColor = CamTransferColors.SecondaryInk,
+                ),
+            ) {
+                Text("下载", fontWeight = FontWeight.Bold)
             }
         }
     }
 }
 
 @Composable
-private fun HighDefinitionPreviewCard(
-    file: CameraFile,
-    previewImage: ByteArray?,
-    isLoading: Boolean,
-    supported: Boolean,
-    wasLoaded: Boolean,
-) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = CamTransferColors.Card,
-        shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, CamTransferColors.Hairline),
+private fun HdDownloadCountDot(checked: Boolean) {
+    Box(
+        modifier = Modifier
+            .size(30.dp)
+            .background(
+                if (checked) CamTransferColors.Accent else CamTransferColors.MutedFill.copy(alpha = 0.55f),
+                CircleShape,
+            ),
+        contentAlignment = Alignment.Center,
     ) {
-        Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    file.info.formatLabel,
-                    color = CamTransferColors.SecondaryInk,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Black,
-                )
-                Spacer(Modifier.weight(1f))
-                Text(
-                    when {
-                        !supported -> "暂不支持"
-                        previewImage != null -> "已加载"
-                        wasLoaded -> "已加载"
-                        isLoading -> "加载中"
-                        else -> "等待中"
-                    },
-                    color = CamTransferColors.SecondaryInk,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                )
-            }
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(280.dp)
-                    .background(Color.Black, androidx.compose.foundation.shape.RoundedCornerShape(14.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                when {
-                    !supported -> {
-                        Text(
-                            "当前格式暂不支持高清预览",
-                            color = Color.White.copy(alpha = 0.8f),
-                            fontWeight = FontWeight.Bold,
-                        )
-                    }
-                    previewImage != null -> {
-                        ZoomablePreviewImage(
-                            file = file,
-                            previewImage = previewImage,
-                            manualRotationDegrees = 0,
-                        )
-                    }
-                    isLoading -> {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(28.dp),
-                            strokeWidth = 2.dp,
-                            color = Color.White,
-                        )
-                    }
-                    else -> {
-                        Text(
-                            if (wasLoaded) "已加载过，继续下滑可看后续" else "等待高清预览",
-                            color = Color.White.copy(alpha = 0.72f),
-                            fontWeight = FontWeight.Bold,
-                        )
-                    }
-                }
-            }
-            Text(
-                file.info.filename,
-                color = CamTransferColors.Ink,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+        Text(
+            if (checked) "✓" else "",
+            color = Color.White,
+            fontWeight = FontWeight.Black,
+        )
+    }
+}
+
+@Composable
+private fun HighDefinitionPreviewImage(
+    file: CameraFile,
+    previewImage: ByteArray,
+) {
+    val bitmap = remember(previewImage) {
+        decodeThumbnailBitmap(
+            data = previewImage,
+            maxDecodedSide = GalleryPreviewImagePolicy.FULL_IMAGE_MAX_DECODED_SIDE,
+        )
+    }
+    val autoRotationDegrees = remember(file.info, previewImage, bitmap) {
+        if (bitmap == null) {
+            0
+        } else {
+            GalleryPreviewRotationPolicy.autoRotationDegrees(
+                file = file,
+                decodedWidth = bitmap.width,
+                decodedHeight = bitmap.height,
+                imageData = previewImage,
             )
         }
+    }
+    val displayBitmap = remember(bitmap, autoRotationDegrees) {
+        bitmap?.let { rotateGalleryBitmapForDisplay(it, autoRotationDegrees) }
+    }
+    if (displayBitmap != null) {
+        Image(
+            bitmap = displayBitmap.asImageBitmap(),
+            contentDescription = file.info.filename,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Fit,
+        )
+    } else {
+        Text(
+            file.info.formatLabel,
+            color = Color.White.copy(alpha = 0.55f),
+            fontWeight = FontWeight.Bold,
+        )
+    }
+}
+
+private fun highDefinitionPreviewAspectRatio(
+    file: CameraFile,
+    previewImage: ByteArray?,
+): Float {
+    val decoded = previewImage?.let { data ->
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(data, 0, data.size, options)
+        if (options.outWidth > 0 && options.outHeight > 0) {
+            options.outWidth.toFloat() / options.outHeight.toFloat()
+        } else {
+            null
+        }
+    }
+    if (decoded != null) return decoded.coerceIn(0.45f, 2.4f)
+    val width = file.info.imagePixWidth
+    val height = file.info.imagePixHeight
+    if (width > 0 && height > 0) return (width.toFloat() / height.toFloat()).coerceIn(0.45f, 2.4f)
+    return 1.5f
+}
+
+@Composable
+private fun FloatingChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    val background = if (selected) CamTransferColors.Accent.copy(alpha = 0.18f) else CamTransferColors.Card
+    val border = if (selected) CamTransferColors.Accent else CamTransferColors.Hairline
+    val textColor = if (selected) CamTransferColors.Ink else CamTransferColors.SecondaryInk
+    Surface(
+        modifier = Modifier.clickable(onClick = onClick),
+        color = background,
+        border = BorderStroke(1.dp, border),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Text(
+            text = label,
+            color = textColor,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp),
+        )
+    }
+}
+
+@Composable
+private fun FloatingLabel(label: String) {
+    Surface(
+        color = Color.Black.copy(alpha = 0.48f),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Text(
+            text = label,
+            color = Color.White,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+        )
     }
 }

@@ -38,10 +38,36 @@ class TransferViewModel(app: Application) : AndroidViewModel(app) {
     fun startTransfer(
         files: List<CameraFile>,
         downloadMode: TransferDownloadMode = TransferDownloadMode.ORIGINAL,
+        beforeStart: (suspend () -> Unit)? = null,
     ) {
         val service = transferService ?: return
         service.enqueue(files, downloadMode)
-        viewModelScope.launch { service.startTransfer() }
+        startQueuedTransfer(downloadMode, beforeStart)
+    }
+
+    fun enqueue(
+        files: List<CameraFile>,
+        downloadMode: TransferDownloadMode = TransferDownloadMode.ORIGINAL,
+    ) {
+        val service = transferService ?: return
+        service.enqueue(files, downloadMode)
+    }
+
+    fun removePending(files: List<CameraFile>) {
+        val service = transferService ?: return
+        service.removePending(files.map { it.info.handle }.toSet())
+    }
+
+    fun startQueuedTransfer(
+        downloadMode: TransferDownloadMode = TransferDownloadMode.ORIGINAL,
+        beforeStart: (suspend () -> Unit)? = null,
+    ) {
+        val service = transferService ?: return
+        service.updatePendingDownloadMode(downloadMode)
+        viewModelScope.launch {
+            beforeStart?.invoke()
+            service.startTransfer()
+        }
     }
 
     fun syncDownloadedFiles(files: List<CameraFile>) {

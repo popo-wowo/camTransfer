@@ -4,18 +4,28 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.camtransfer.model.CameraFile
 import com.camtransfer.service.CameraFileSource
+import com.camtransfer.service.DiagnosticLog
+import com.camtransfer.viewmodel.gallery.GalleryBrowseMode
+import com.camtransfer.viewmodel.gallery.GalleryBrowseModeController
 import com.camtransfer.viewmodel.gallery.GalleryFilesController
 import com.camtransfer.viewmodel.gallery.GalleryPreviewController
 import com.camtransfer.viewmodel.gallery.GalleryRequestScheduler
 import com.camtransfer.viewmodel.gallery.GallerySelectionController
 import com.camtransfer.viewmodel.gallery.GalleryThumbnailController
+import com.camtransfer.viewmodel.gallery.HighDefinitionPreviewSessionPolicy
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import java.time.LocalDate
 
 class BrowseViewModel : ViewModel() {
 
     private val requestScheduler = GalleryRequestScheduler()
+    private val browseModeController = GalleryBrowseModeController()
     private val selectionController = GallerySelectionController()
     private var thumbnailCacheProvider: () -> Map<Int, ByteArray> = { emptyMap() }
     private var hasActiveThumbnailWorkProvider: () -> Boolean = { false }
+    private var highDefinitionPreviewPrepareJob: Job? = null
+    private var highDefinitionPreviewPausedSource: CameraFileSource? = null
     private val filesController = GalleryFilesController(
         scope = viewModelScope,
         requestScheduler = requestScheduler,
@@ -36,10 +46,12 @@ class BrowseViewModel : ViewModel() {
     val files = filesController.files
     val isLoading = filesController.isLoading
     val isLoadingHiddenFormats = filesController.isLoadingHiddenFormats
+    val browseModeState = browseModeController.state
     val selectedHandles = selectionController.selectedHandles
     val previewImages = previewController.previewImages
     val loadedPreviewHandles = previewController.loadedPreviewHandles
     val loadingPreviewHandles = previewController.loadingPreviewHandles
+    val failedPreviewHandles = previewController.failedPreviewHandles
     val error = filesController.error
 
     init {
@@ -91,21 +103,119 @@ class BrowseViewModel : ViewModel() {
         selectionController.clear()
     }
 
+    fun setBrowseMode(
+        cameraSource: CameraFileSource,
+        mode: GalleryBrowseMode,
+    ) {
+        browseModeController.setMode(mode)
+        when (mode) {
+            GalleryBrowseMode.THUMBNAIL -> {
+                highDefinitionPreviewPrepareJob?.cancel()
+                highDefinitionPreviewPrepareJob = null
+                previewController.stopSession()
+                resumeGalleryLoadingAfterHighDefinitionPreview(cameraSource)
+            }
+            GalleryBrowseMode.HD_PREVIEW -> prepareHighDefinitionPreviewSession(cameraSource)
+        }
+    }
+
+    fun setHighDefinitionPreviewDate(
+        cameraSource: CameraFileSource,
+        date: LocalDate,
+    ) {
+        browseModeController.setHighDefinitionDate(date)
+        if (browseModeState.value.mode == GalleryBrowseMode.HD_PREVIEW) {
+            prepareHighDefinitionPreviewSession(cameraSource)
+        }
+    }
+
+    fun syncHighDefinitionSession(cameraSource: CameraFileSource) {
+        if (browseModeState.value.mode != GalleryBrowseMode.HD_PREVIEW) return
+        prepareHighDefinitionPreviewSession(cameraSource)
+    }
+
+    fun prioritizeHighDefinitionPreviewVisibleHandles(
+        cameraSource: CameraFileSource,
+        visibleHandles: List<Int>,
+    ) {
+        if (browseModeState.value.mode != GalleryBrowseMode.HD_PREVIEW) return
+        previewController.prioritizeSessionVisibleHandles(cameraSource, visibleHandles)
+    }
+
+    private fun prepareHighDefinitionPreviewSession(cameraSource: CameraFileSource) {
+        if (highDefinitionPreviewPrepareJob?.isActive == true) return
+        highDefinitionPreviewPrepareJob = viewModelScope.launch {
+            pauseGalleryLoadingForHighDefinitionPreview(cameraSource)
+            if (browseModeState.value.mode != GalleryBrowseMode.HD_PREVIEW) return@launch
+            startHighDefinitionPreviewSession(cameraSource)
+        }
+    }
+
+    private suspend fun pauseGalleryLoadingForHighDefinitionPreview(cameraSource: CameraFileSource) {
+        if (highDefinitionPreviewPausedSource === cameraSource) return
+        highDefinitionPreviewPausedSource?.let { previousSource ->
+            filesController.resumeAfterExclusiveOperation(previousSource, reason = "hd-preview")
+            thumbnailController.resumeAfterExclusiveOperation(previousSource, reason = "hd-preview")
+        }
+        filesController.pauseForExclusiveOperation(cameraSource, reason = "hd-preview")
+        thumbnailController.pauseForExclusiveOperation(cameraSource, reason = "hd-preview")
+        highDefinitionPreviewPausedSource = cameraSource
+    }
+
+    private fun resumeGalleryLoadingAfterHighDefinitionPreview(cameraSource: CameraFileSource) {
+        if (highDefinitionPreviewPausedSource !== cameraSource) return
+        highDefinitionPreviewPausedSource = null
+        filesController.resumeAfterExclusiveOperation(cameraSource, reason = "hd-preview")
+        thumbnailController.resumeAfterExclusiveOperation(cameraSource, reason = "hd-preview")
+    }
+
+    private fun startHighDefinitionPreviewSession(cameraSource: CameraFileSource) {
+        val session = HighDefinitionPreviewSessionPolicy.build(
+            files = files.value,
+            activeDate = browseModeState.value.highDefinitionDate,
+        )
+        val items = HighDefinitionPreviewSessionPolicy.previewItemsForDate(
+            files = files.value,
+            activeDate = browseModeState.value.highDefinitionDate,
+        )
+        DiagnosticLog.append(
+            cameraSource.context,
+            "GalleryPreviewController",
+            "HD preview session date=${browseModeState.value.highDefinitionDate} " +
+                "items=${items.size} rawSidecars=${items.count { it.rawFile != null }} " +
+                "previewHandles=${items.take(8).joinToString { it.previewFile.info.handle.toString() }} " +
+                "totalFiles=${files.value.size}",
+        )
+        previewController.startOrReplaceSession(cameraSource, session)
+    }
+
     fun reset() {
+        highDefinitionPreviewPrepareJob?.cancel()
+        highDefinitionPreviewPrepareJob = null
+        highDefinitionPreviewPausedSource = null
+        browseModeController.reset()
         filesController.reset()
         thumbnailController.reset()
         previewController.reset()
         selectionController.clear()
     }
 
-    suspend fun prepareThumbnailLoadingForTransfer(cameraSource: CameraFileSource) {
+    suspend fun prepareGalleryLoadingForTransfer(cameraSource: CameraFileSource) {
         filesController.pauseForExclusiveOperation(cameraSource, reason = "transfer")
         thumbnailController.pauseForExclusiveOperation(cameraSource, reason = "transfer")
+        previewController.pauseForExclusiveOperation(cameraSource, reason = "transfer")
     }
 
-    fun resumeThumbnailLoadingAfterTransfer(cameraSource: CameraFileSource) {
-        filesController.resumeAfterExclusiveOperation(cameraSource, reason = "transfer")
+    fun resumeGalleryLoadingAfterTransfer(cameraSource: CameraFileSource) {
+        if (browseModeState.value.mode != GalleryBrowseMode.HD_PREVIEW) {
+            filesController.resumeAfterExclusiveOperation(cameraSource, reason = "transfer")
+        }
         thumbnailController.resumeAfterExclusiveOperation(cameraSource, reason = "transfer")
+        previewController.resumeAfterExclusiveOperation(
+            cameraSource = cameraSource,
+            reason = "transfer",
+            shouldResumeSequentialSession = browseModeState.value.mode == GalleryBrowseMode.HD_PREVIEW,
+        )
     }
 
     fun getSelectedFiles(): List<CameraFile> =

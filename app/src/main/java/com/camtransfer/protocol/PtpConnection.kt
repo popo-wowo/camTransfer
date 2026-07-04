@@ -1,5 +1,6 @@
 package com.camtransfer.protocol
 
+import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -264,15 +265,29 @@ class PtpConnection {
     }
 
     suspend fun loadCameraVendorGalleryObjectHandles() {
-        readDeviceProperty(CameraVendorDevicePropCode.REFERENCE_APP_GALLERY_OBJECT_CONTEXT)
-        readDeviceProperty(CameraVendorDevicePropCode.REFERENCE_APP_GALLERY_ACCESS_STATE)
-        resetOfficialCompressionModeForGalleryStartup()
-        retrySearchModeDescAll()
-        readCurrentObjectHandleSnapshot()
-        val objectCountGroupData = sendCommandGetData(
-            PtpOpCode.CAMERA_VENDOR_GET_SPECIFIED_OBJECT_COUNT_GROUP_BY_DATE,
-            listOf(0, CameraVendorReferenceApp.SPECIFIED_OBJECT_COUNT_LIMIT),
-        )
+        val startupMs = SystemClock.elapsedRealtime()
+        Log.d(TAG, "GalleryStartup start")
+        traceGalleryStartupStep("D225-object-context") {
+            readDeviceProperty(CameraVendorDevicePropCode.REFERENCE_APP_GALLERY_OBJECT_CONTEXT)
+        }
+        traceGalleryStartupStep("D244-access-state") {
+            readDeviceProperty(CameraVendorDevicePropCode.REFERENCE_APP_GALLERY_ACCESS_STATE)
+        }
+        traceGalleryStartupStep("compression-reset") {
+            resetOfficialCompressionModeForGalleryStartup()
+        }
+        traceGalleryStartupStep("9050-search-mode-desc-all") {
+            retrySearchModeDescAll()
+        }
+        traceGalleryStartupStep("D222-current-handle-snapshot") {
+            readCurrentObjectHandleSnapshot()
+        }
+        val objectCountGroupData = traceGalleryStartupStep("9053-counts-by-date") {
+            sendCommandGetData(
+                PtpOpCode.CAMERA_VENDOR_GET_SPECIFIED_OBJECT_COUNT_GROUP_BY_DATE,
+                listOf(0, CameraVendorReferenceApp.SPECIFIED_OBJECT_COUNT_LIMIT),
+            )
+        }
         specifiedObjectCountsByDate = CameraVendorPtpDataParser.objectCountsByDate(objectCountGroupData)
         Log.d(
             TAG,
@@ -280,15 +295,21 @@ class PtpConnection {
                 CameraVendorGalleryDiagnosticPolicy.dateGroupSummary(specifiedObjectCountsByDate) + " " +
                 "bytes=${objectCountGroupData.size} head=${objectCountGroupData.headHex()}",
         )
-        readDeviceProperty(CameraVendorDevicePropCode.REFERENCE_APP_GALLERY_OBJECT_CONTEXT)
-        val specifiedObjectCountData = readDeviceProperty(CameraVendorDevicePropCode.SPECIFIED_OBJECT_COUNT)
+        traceGalleryStartupStep("D225-object-context-before-D620") {
+            readDeviceProperty(CameraVendorDevicePropCode.REFERENCE_APP_GALLERY_OBJECT_CONTEXT)
+        }
+        val specifiedObjectCountData = traceGalleryStartupStep("D620-specified-object-count") {
+            readDeviceProperty(CameraVendorDevicePropCode.SPECIFIED_OBJECT_COUNT)
+        }
         specifiedObjectCount = specifiedObjectCountData.uint32OrNull()
         Log.d(
             TAG,
             "SpecifiedObjectCount expected=${specifiedObjectCount ?: "unknown"} " +
                 "bytes=${specifiedObjectCountData.size} head=${specifiedObjectCountData.headHex()}",
         )
-        val specifiedObjectHandlesData = readDeviceProperty(CameraVendorDevicePropCode.SPECIFIED_OBJECT_HANDLES)
+        val specifiedObjectHandlesData = traceGalleryStartupStep("D621-specified-object-handles") {
+            readDeviceProperty(CameraVendorDevicePropCode.SPECIFIED_OBJECT_HANDLES)
+        }
         specifiedObjectHandles = CameraVendorPtpDataParser.uint32Array(
             specifiedObjectHandlesData
         )
@@ -302,32 +323,60 @@ class PtpConnection {
         )
         specifiedObjectHandlesByFormatMask = specifiedObjectHandlesByFormatMask +
             (CameraVendorOfficialGalleryStartupPolicy.initialObjectFormatMask() to specifiedObjectHandles)
-        readExpandedStillSpecifiedHandlesForOfficialStartup()
+        traceGalleryStartupStep("D604-expanded-still-HEIF-RAW") {
+            readExpandedStillSpecifiedHandlesForOfficialStartup()
+        }
+        Log.d(
+            TAG,
+            "GalleryStartup complete elapsedMs=${SystemClock.elapsedRealtime() - startupMs} " +
+                "handles=${specifiedObjectHandles.size} dateGroups=${specifiedObjectCountsByDate.size}",
+        )
     }
 
     private suspend fun retrySearchModeDescAll() {
         var lastError: Throwable? = null
         repeat(3) { index ->
+            val attemptMs = SystemClock.elapsedRealtime()
             try {
                 val data = sendCommandGetData(PtpOpCode.CAMERA_VENDOR_GET_SEARCH_MODE_DESC_ALL)
                 Log.d(
                     TAG,
-                    "SearchModeDescAll bytes=${data.size} head=${data.headHex()} " +
+                    "SearchModeDescAll attempt=${index + 1}/3 elapsedMs=${SystemClock.elapsedRealtime() - attemptMs} " +
+                        "bytes=${data.size} head=${data.headHex()} " +
                         "snapshot=${CameraVendorPtpDataParser.searchModeSnapshot(data)}",
                 )
                 return
             } catch (e: Throwable) {
                 lastError = e
                 if (index == 2 || !e.message.orEmpty().contains("0x2019")) throw e
-                delay(500L * (index + 1))
+                val delayMs = 500L * (index + 1)
+                Log.d(
+                    TAG,
+                    "SearchModeDescAll retryable failure attempt=${index + 1}/3 " +
+                        "elapsedMs=${SystemClock.elapsedRealtime() - attemptMs} delayMs=$delayMs error=${e.message}",
+                )
+                delay(delayMs)
             }
         }
         throw lastError ?: IllegalStateException("SearchModeDescAll failed")
     }
 
     private suspend fun readCurrentObjectHandleSnapshot() {
+        val startedMs = SystemClock.elapsedRealtime()
         runCatching { readDeviceProperty(CameraVendorDevicePropCode.CURRENT_OBJECT_HANDLE) }
-            .onFailure { Log.d(TAG, "Current object handle read failed: ${it.message}") }
+            .onSuccess {
+                Log.d(
+                    TAG,
+                    "Current object handle snapshot elapsedMs=${SystemClock.elapsedRealtime() - startedMs} " +
+                        "bytes=${it.size} head=${it.headHex()}",
+                )
+            }
+            .onFailure {
+                Log.d(
+                    TAG,
+                    "Current object handle read failed elapsedMs=${SystemClock.elapsedRealtime() - startedMs}: ${it.message}",
+                )
+            }
     }
 
     private suspend fun readDevicePropertyForDiagnostic(label: String, code: Int): ByteArray {
@@ -340,19 +389,35 @@ class PtpConnection {
     }
 
     private suspend fun resetOfficialCompressionModeForGalleryStartup() {
+        val d226Ms = SystemClock.elapsedRealtime()
         runCatching {
             setDevicePropertyUInt16(CameraVendorDevicePropCode.IMAGE_FORCE_COMPRESSION, 0)
         }.onSuccess {
-            Log.d(TAG, "Gallery setup D226 compression reset response=0x${it.responseCode.toString(16)}")
+            Log.d(
+                TAG,
+                "Gallery setup D226 compression reset elapsedMs=${SystemClock.elapsedRealtime() - d226Ms} " +
+                    "response=0x${it.responseCode.toString(16)}",
+            )
         }.onFailure {
-            Log.d(TAG, "Gallery setup D226 compression reset failed: ${it.message}")
+            Log.d(
+                TAG,
+                "Gallery setup D226 compression reset failed elapsedMs=${SystemClock.elapsedRealtime() - d226Ms}: ${it.message}",
+            )
         }
+        val d227Ms = SystemClock.elapsedRealtime()
         runCatching {
             setDevicePropertyUInt16(CameraVendorDevicePropCode.IMAGE_COMPRESSION_REAL_INFO, 0)
         }.onSuccess {
-            Log.d(TAG, "Gallery setup D227 compression reset response=0x${it.responseCode.toString(16)}")
+            Log.d(
+                TAG,
+                "Gallery setup D227 compression reset elapsedMs=${SystemClock.elapsedRealtime() - d227Ms} " +
+                    "response=0x${it.responseCode.toString(16)}",
+            )
         }.onFailure {
-            Log.d(TAG, "Gallery setup D227 compression reset failed: ${it.message}")
+            Log.d(
+                TAG,
+                "Gallery setup D227 compression reset failed elapsedMs=${SystemClock.elapsedRealtime() - d227Ms}: ${it.message}",
+            )
         }
     }
 
@@ -364,7 +429,13 @@ class PtpConnection {
                 else -> "0x${mask.toString(16)}"
             }
             runCatching {
+                val startedMs = SystemClock.elapsedRealtime()
                 val snapshot = readSpecifiedHandlesForFormatMask(label, mask)
+                Log.d(
+                    TAG,
+                    "FormatSpecifiedHandles $label probe elapsedMs=${SystemClock.elapsedRealtime() - startedMs} " +
+                        "handles=${snapshot.handles.size} groups=${snapshot.groups.size} count=${snapshot.count ?: "unknown"}",
+                )
                 if (
                     snapshot.handles.size > specifiedObjectHandles.size &&
                     snapshot.groups.sumOf { it.numberOfImages } == snapshot.handles.size
@@ -383,6 +454,29 @@ class PtpConnection {
             }.onFailure {
                 Log.d(TAG, "FormatSpecifiedHandles $label failed: ${it.message}")
             }
+        }
+    }
+
+    private suspend fun <T> traceGalleryStartupStep(label: String, block: suspend () -> T): T {
+        val startedMs = SystemClock.elapsedRealtime()
+        Log.d(TAG, "GalleryStartup step=$label start")
+        return try {
+            block().also { result ->
+                val resultSummary = when (result) {
+                    is ByteArray -> " bytes=${result.size} head=${result.headHex()}"
+                    else -> ""
+                }
+                Log.d(
+                    TAG,
+                    "GalleryStartup step=$label done elapsedMs=${SystemClock.elapsedRealtime() - startedMs}$resultSummary",
+                )
+            }
+        } catch (error: Throwable) {
+            Log.d(
+                TAG,
+                "GalleryStartup step=$label failed elapsedMs=${SystemClock.elapsedRealtime() - startedMs} error=${error.message}",
+            )
+            throw error
         }
     }
 

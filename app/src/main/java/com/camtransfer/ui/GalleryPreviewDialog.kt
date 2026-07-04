@@ -112,10 +112,12 @@ internal fun PhotoPreviewDialog(
     selectedHandles: Set<Int>,
     previewImages: Map<Int, ByteArray>,
     preferCompressedDownloads: Boolean,
+    canChangeTransferMode: Boolean = true,
     onDismiss: () -> Unit,
     onPreviewVisible: (List<Int>) -> Unit,
     onPreviewImageVisible: (CameraFile) -> Unit,
     onToggleSelection: (CameraFile) -> Unit,
+    onPreferenceChanged: (Boolean) -> Unit = {},
     onDownload: (CameraFile) -> Unit,
 ) {
     val pagerState = rememberPagerState(
@@ -195,20 +197,7 @@ internal fun PhotoPreviewDialog(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 TextButton(onClick = onDismiss) {
-                    Text("关闭", color = Color.White)
-                }
-                PreviewSelectionButton(
-                    isSelected = isSelected,
-                    enabled = canDownload,
-                    onClick = { onToggleSelection(currentFile) },
-                )
-                TextButton(
-                    onClick = {
-                        manualRotationDegrees =
-                            GalleryPreviewRotationPolicy.nextManualRotationDegrees(manualRotationDegrees)
-                    },
-                ) {
-                    Text("旋转", color = Color.White)
+                    Text("×", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Black)
                 }
                 Column(
                     modifier = Modifier.weight(1f),
@@ -222,24 +211,22 @@ internal fun PhotoPreviewDialog(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                TextButton(
-                    onClick = { onDownload(currentFile) },
-                    enabled = canDownload,
-                ) {
-                    Text(
-                        when (downloadState) {
-                            TransferState.PENDING -> "排队"
-                            TransferState.DOWNLOADING -> "下载中"
-                            TransferState.SAVING -> "保存中"
-                            TransferState.DONE -> "已保存"
-                            TransferState.ERROR -> "重试"
-                            null -> "下载"
-                        },
-                        color = if (canDownload) Color.White else Color.White.copy(alpha = 0.5f),
-                        fontWeight = FontWeight.Bold,
-                    )
-                }
             }
+            PreviewActionBar(
+                file = currentFile,
+                downloadState = downloadState,
+                isSelected = isSelected,
+                canDownload = canDownload,
+                hasHighDefinitionPreview = previewImages[currentFile.info.handle] != null,
+                isLoadingHighDefinitionPreview = false,
+                preferCompressedDownloads = preferCompressedDownloads,
+                canChangeTransferMode = canChangeTransferMode,
+                onRequestHighDefinitionPreview = { onPreviewImageVisible(currentFile) },
+                onToggleSelection = { onToggleSelection(currentFile) },
+                onPreferenceChanged = onPreferenceChanged,
+                onDownload = { onDownload(currentFile) },
+                modifier = Modifier.align(Alignment.BottomCenter),
+            )
         }
     }
 }
