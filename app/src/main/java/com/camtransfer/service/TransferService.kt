@@ -3,6 +3,7 @@ package com.camtransfer.service
 import android.content.Context
 import android.util.Log
 import com.camtransfer.model.CameraFile
+import com.camtransfer.model.CameraFileFormatHint
 import com.camtransfer.model.TransferDownloadMode
 import com.camtransfer.model.TransferItem
 import com.camtransfer.model.TransferState
@@ -284,7 +285,16 @@ internal object TransferQueueDownloadModePolicy {
         file: CameraFile,
         selectedMode: TransferDownloadMode,
     ): TransferDownloadMode =
-        if (file.info.isRaw) TransferDownloadMode.ORIGINAL else selectedMode
+        if (isRawDownloadCandidate(file)) TransferDownloadMode.ORIGINAL else selectedMode
+
+    private fun isRawDownloadCandidate(file: CameraFile): Boolean =
+        file.info.isRaw ||
+            (
+                CameraFileFormatHint.RAW in file.formatHints &&
+                    CameraFileFormatHint.JPG !in file.formatHints &&
+                    CameraFileFormatHint.HEIF !in file.formatHints &&
+                    CameraFileFormatHint.VIDEO !in file.formatHints
+                )
 
     fun removePendingItems(
         items: List<TransferItem>,

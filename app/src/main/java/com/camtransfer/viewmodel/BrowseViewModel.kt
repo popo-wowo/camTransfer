@@ -184,6 +184,11 @@ class BrowseViewModel : ViewModel() {
             "HD preview session date=${browseModeState.value.highDefinitionDate} " +
                 "items=${items.size} rawSidecars=${items.count { it.rawFile != null }} " +
                 "previewHandles=${items.take(8).joinToString { it.previewFile.info.handle.toString() }} " +
+                "rawPairs=${items.take(8).joinToString { item ->
+                    val previewHints = item.previewFile.formatHints.joinToString("|").ifBlank { "-" }
+                    val rawHints = item.rawFile?.formatHints?.joinToString("|")?.ifBlank { "-" } ?: "-"
+                    "${item.previewFile.info.handle}[$previewHints]->${item.rawFile?.info?.handle ?: 0}[$rawHints]"
+                }} " +
                 "totalFiles=${files.value.size}",
         )
         previewController.startOrReplaceSession(cameraSource, session)

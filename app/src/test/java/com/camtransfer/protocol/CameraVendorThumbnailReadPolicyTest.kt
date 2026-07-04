@@ -8,8 +8,13 @@ import org.junit.Test
 
 class CameraVendorThumbnailReadPolicyTest {
     @Test
-    fun primesObjectContextBeforeStandardThumbnailRead() {
-        assertTrue(CameraVendorThumbnailReadPolicy.shouldPrimeObjectContextBeforeStandardThumbnail())
+    fun standardThumbnailReadDoesNotPrimeCurrentImageContext() {
+        assertFalse(CameraVendorThumbnailReadPolicy.shouldPrimeObjectContextBeforeStandardThumbnail())
+    }
+
+    @Test
+    fun standardThumbnailReadStillReadsStandardObjectInfo() {
+        assertTrue(CameraVendorThumbnailReadPolicy.shouldReadStandardObjectInfoBeforeStandardThumbnail())
     }
 
     @Test
@@ -148,6 +153,20 @@ class CameraVendorThumbnailReadPolicyTest {
                 byteArrayOf(0xFF.toByte(), 0xD8.toByte()) + ByteArray(128 * 1024) { 0x01 },
             )
         )
+    }
+
+    @Test
+    fun fullScreenPreviewRejectsObviouslyIncompleteJpegBeforeCaching() {
+        val incompleteJpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01, 0x02)
+        val completeJpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0x01, 0x02, 0xFF.toByte(), 0xD9.toByte())
+        val largeCameraPreviewWithoutEoi = byteArrayOf(0xFF.toByte(), 0xD8.toByte()) + ByteArray(256 * 1024) { 0x01 }
+
+        assertEquals(
+            "Preview image missing JPEG EOI",
+            CameraVendorPreviewImageReadPolicy.validationFailure(incompleteJpeg),
+        )
+        assertEquals(null, CameraVendorPreviewImageReadPolicy.validationFailure(completeJpeg))
+        assertEquals(null, CameraVendorPreviewImageReadPolicy.validationFailure(largeCameraPreviewWithoutEoi))
     }
 
     private fun objectInfo(

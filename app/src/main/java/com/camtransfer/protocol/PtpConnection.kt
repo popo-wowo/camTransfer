@@ -279,8 +279,12 @@ class PtpConnection {
         traceGalleryStartupStep("9050-search-mode-desc-all") {
             retrySearchModeDescAll()
         }
-        traceGalleryStartupStep("D222-current-handle-snapshot") {
-            readCurrentObjectHandleSnapshot()
+        if (CameraVendorOfficialGalleryStartupPolicy.shouldReadCurrentObjectHandleSnapshotDuringBlockingStartup()) {
+            traceGalleryStartupStep("D222-current-handle-snapshot") {
+                readCurrentObjectHandleSnapshot()
+            }
+        } else {
+            Log.d(TAG, "GalleryStartup step=D222-current-handle-snapshot skipped reason=nonBlockingDiagnostic")
         }
         val objectCountGroupData = traceGalleryStartupStep("9053-counts-by-date") {
             sendCommandGetData(

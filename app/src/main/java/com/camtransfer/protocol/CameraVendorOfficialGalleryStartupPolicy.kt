@@ -25,6 +25,8 @@ object CameraVendorOfficialGalleryStartupPolicy {
             CameraVendorSearchMode.FORMAT_RAW,
         )
 
+    fun shouldReadCurrentObjectHandleSnapshotDuringBlockingStartup(): Boolean = false
+
     fun connectionStageOperations(): List<CameraVendorOfficialGalleryStartupOperation> =
         listOf(
             CameraVendorOfficialGalleryStartupOperation.SetFunctionMode,

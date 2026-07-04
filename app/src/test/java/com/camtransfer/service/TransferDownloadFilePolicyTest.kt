@@ -1,6 +1,7 @@
 package com.camtransfer.service
 
 import com.camtransfer.model.CameraFile
+import com.camtransfer.model.CameraFileFormatHint
 import com.camtransfer.model.ObjectInfo
 import com.camtransfer.model.TransferDownloadMode
 import com.camtransfer.model.TransferItem
@@ -52,6 +53,27 @@ class TransferDownloadFilePolicyTest {
 
         assertEquals(TransferDownloadMode.COMPRESSED, updated[0].downloadMode)
         assertEquals(TransferDownloadMode.ORIGINAL, updated[1].downloadMode)
+    }
+
+    @Test
+    fun pendingDownloadModeKeepsRawOnlyCandidateOriginalBeforeMetadataResolves() {
+        val rawCandidate = TransferItem(
+            file = cameraFile(
+                handle = 1805,
+                filename = "0x0000070D",
+                compressedSize = 0,
+                format = PtpObjectFormat.UNDEFINED,
+                formatHints = setOf(CameraFileFormatHint.RAW),
+            ),
+            downloadMode = TransferDownloadMode.COMPRESSED,
+        )
+
+        val updated = TransferQueueDownloadModePolicy.applyPendingMode(
+            items = listOf(rawCandidate),
+            selectedMode = TransferDownloadMode.COMPRESSED,
+        )
+
+        assertEquals(TransferDownloadMode.ORIGINAL, updated.single().downloadMode)
     }
 
     @Test
@@ -180,6 +202,7 @@ class TransferDownloadFilePolicyTest {
         compressedSize: Int,
         thumbnail: ByteArray? = null,
         format: Int = PtpObjectFormat.JPEG,
+        formatHints: Set<CameraFileFormatHint> = emptySet(),
     ): CameraFile =
         CameraFile(
             info = ObjectInfo(
@@ -198,5 +221,6 @@ class TransferDownloadFilePolicyTest {
                 captureDate = "20260616T214139",
             ),
             thumbnail = thumbnail,
+            formatHints = formatHints,
         )
 }

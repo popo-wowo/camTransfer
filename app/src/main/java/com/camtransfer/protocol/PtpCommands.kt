@@ -163,6 +163,26 @@ class PtpCommands(
                     )
                 }
         }
+        if (objectInfo == null && CameraVendorThumbnailReadPolicy.shouldReadStandardObjectInfoBeforeStandardThumbnail()) {
+            val infoStartedMs = SystemClock.elapsedRealtime()
+            runCatching { getObjectInfo(handle) }
+                .onSuccess {
+                    objectInfo = it
+                    diagnostic(
+                        "Thumbnail standard object info handle=$handle " +
+                            "format=0x${it.format.toString(16)} " +
+                            "thumb=${it.thumbPixWidth}x${it.thumbPixHeight} " +
+                            "orientation=${it.orientation?.toString() ?: "unknown"} " +
+                            "elapsedMs=${SystemClock.elapsedRealtime() - infoStartedMs}",
+                    )
+                }
+                .onFailure { error ->
+                    diagnostic(
+                        "Thumbnail standard object info failed handle=$handle " +
+                            "elapsedMs=${SystemClock.elapsedRealtime() - infoStartedMs} error=${error.message}",
+                    )
+                }
+        }
         val standardStartedMs = SystemClock.elapsedRealtime()
         val standard = runCatching {
             connection.sendCommandGetData(
@@ -243,10 +263,13 @@ class PtpCommands(
                 throw IllegalStateException("Preview image is not image data handle=$handle bytes=${raw.size} head=${image.headHex()}")
             }
             if (CameraVendorThumbnailReadPolicy.shouldRejectIncompletePartialPreview(image)) {
-                diagnostic(
-                    "Preview image missing JPEG EOI handle=$handle bytes=${image.size} " +
-                        "readSize=$previewSize max=${CameraVendorPreviewImageReadPolicy.MAX_SCREEN_PREVIEW_BYTES}",
-                )
+                val validationFailure = CameraVendorPreviewImageReadPolicy.validationFailure(image)
+                val message = "Preview image missing JPEG EOI handle=$handle bytes=${image.size} " +
+                    "readSize=$previewSize max=${CameraVendorPreviewImageReadPolicy.MAX_SCREEN_PREVIEW_BYTES}"
+                diagnostic(message)
+                if (validationFailure != null) {
+                    throw IllegalStateException("$validationFailure handle=$handle bytes=${image.size}")
+                }
             }
             val message = "Preview image compressed handle=$handle rawBytes=${raw.size} imageBytes=${image.size} " +
                 "readSize=$previewSize object=${info.imagePixWidth}x${info.imagePixHeight} " +
@@ -775,7 +798,9 @@ internal object CameraVendorThumbnailReadPolicy {
     const val STANDARD_THUMB_TIMEOUT_MS = 3_000
     const val VENDOR_EXTENSION_THUMB_TIMEOUT_MS = 3_000
 
-    fun shouldPrimeObjectContextBeforeStandardThumbnail(): Boolean = true
+    fun shouldPrimeObjectContextBeforeStandardThumbnail(): Boolean = false
+
+    fun shouldReadStandardObjectInfoBeforeStandardThumbnail(): Boolean = true
 
     fun shouldPrimeObjectContextBeforePartialFallback(): Boolean = false
 
@@ -800,6 +825,7 @@ internal object CameraVendorThumbnailReadPolicy {
 
 internal object CameraVendorPreviewImageReadPolicy {
     const val MAX_SCREEN_PREVIEW_BYTES = 12 * 1024 * 1024
+    private const val MIN_DECODEABLE_INCOMPLETE_JPEG_BYTES = 64 * 1024
     private const val FORCE_COMPRESSED = 1
     private const val FORCE_RESET = 0
 
@@ -809,6 +835,16 @@ internal object CameraVendorPreviewImageReadPolicy {
 
     fun readSize(objectInfo: ObjectInfo): Int? =
         if (shouldReadCompressedPreview(objectInfo)) objectInfo.compressedSize else null
+
+    fun validationFailure(data: ByteArray): String? =
+        if (
+            CameraVendorThumbnailReadPolicy.shouldRejectIncompletePartialPreview(data) &&
+            data.size < MIN_DECODEABLE_INCOMPLETE_JPEG_BYTES
+        ) {
+            "Preview image missing JPEG EOI"
+        } else {
+            null
+        }
 
     fun prepareProperty(): CameraVendorDevicePropertyValue =
         CameraVendorDevicePropertyValue(

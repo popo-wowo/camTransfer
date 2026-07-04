@@ -5,6 +5,7 @@ import com.camtransfer.model.CameraFile
 import com.camtransfer.service.CameraFileSource
 import com.camtransfer.service.DiagnosticLog
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -261,6 +262,14 @@ class GalleryPreviewController(
             )
             onSuccess(handle)
         } catch (e: Exception) {
+            if (!GalleryPreviewFailurePolicy.shouldMarkFailed(e)) {
+                DiagnosticLog.append(
+                    cameraSource.context,
+                    TAG,
+                    "Preview image cancelled handle=$handle reason=${e.message.orEmpty()}",
+                )
+                throw e
+            }
             DiagnosticLog.append(cameraSource.context, TAG, "Preview image failed handle=$handle", e)
             onFailure(handle)
         } finally {
@@ -388,4 +397,9 @@ internal object GalleryPreviewFullImageLoadPolicy {
 
     fun supportsHighDefinitionPreview(file: CameraFile): Boolean =
         file.info.isJpeg || file.info.isHeif
+}
+
+internal object GalleryPreviewFailurePolicy {
+    fun shouldMarkFailed(error: Throwable): Boolean =
+        error !is CancellationException
 }

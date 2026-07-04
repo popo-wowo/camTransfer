@@ -4,9 +4,11 @@ import com.camtransfer.model.CameraFile
 import com.camtransfer.model.ObjectInfo
 import com.camtransfer.protocol.PtpObjectFormat
 import com.camtransfer.viewmodel.gallery.GalleryFastInitialLoadPolicy
+import com.camtransfer.viewmodel.gallery.GalleryPreviewFailurePolicy
 import com.camtransfer.viewmodel.gallery.GalleryPreviewFullImageLoadPolicy
 import com.camtransfer.viewmodel.gallery.ThumbnailLoadPolicy
 import com.camtransfer.viewmodel.gallery.ThumbnailLoadQueue
+import kotlinx.coroutines.CancellationException
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -144,6 +146,12 @@ class ThumbnailRequestTrackerTest {
                 force = false,
             )
         )
+    }
+
+    @Test
+    fun previewCancellationDoesNotMarkHandleAsFailed() {
+        assertFalse(GalleryPreviewFailurePolicy.shouldMarkFailed(CancellationException("transfer pause")))
+        assertTrue(GalleryPreviewFailurePolicy.shouldMarkFailed(IllegalStateException("decode failed")))
     }
 
     private fun file(format: Int): CameraFile = CameraFile(

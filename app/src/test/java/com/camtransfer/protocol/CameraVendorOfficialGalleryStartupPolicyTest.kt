@@ -41,4 +41,9 @@ class CameraVendorOfficialGalleryStartupPolicyTest {
             CameraVendorOfficialGalleryStartupPolicy.expandedStillFormatMasks(),
         )
     }
+
+    @Test
+    fun blockingGalleryStartupDoesNotReadCurrentObjectHandleSnapshot() {
+        assertFalse(CameraVendorOfficialGalleryStartupPolicy.shouldReadCurrentObjectHandleSnapshotDuringBlockingStartup())
+    }
 }

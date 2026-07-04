@@ -209,14 +209,23 @@ internal object HighDefinitionPreviewSessionPolicy {
             if (rawFile != null) {
                 used += handle
                 used += rawFile.info.handle
-                items += HighDefinitionPreviewItem(previewFile = file, rawFile = rawFile)
+                items += HighDefinitionPreviewItem(
+                    previewFile = file.asAmbiguousPreviewCandidate(),
+                    rawFile = rawFile.asAmbiguousRawCandidate(),
+                )
             } else {
                 used += handle
-                items += HighDefinitionPreviewItem(previewFile = file, rawFile = null)
+                items += HighDefinitionPreviewItem(previewFile = file.asAmbiguousPreviewCandidate(), rawFile = null)
             }
         }
         return items
     }
+
+    private fun CameraFile.asAmbiguousPreviewCandidate(): CameraFile =
+        copy(formatHints = setOf(CameraFileFormatHint.HEIF))
+
+    private fun CameraFile.asAmbiguousRawCandidate(): CameraFile =
+        copy(formatHints = setOf(CameraFileFormatHint.RAW))
 
     private fun isAmbiguousHeifRawPlaceholder(file: CameraFile): Boolean =
         !file.info.isJpeg &&

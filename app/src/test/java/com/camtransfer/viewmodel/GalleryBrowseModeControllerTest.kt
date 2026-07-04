@@ -99,6 +99,32 @@ class GalleryBrowseModeControllerTest {
     }
 
     @Test
+    fun ambiguousRawSidecarIsQueuedAsRawOnlyCandidate() {
+        val activeDate = LocalDate.of(2026, 6, 28)
+        val files = listOf(
+            cameraFile(
+                handle = 1806,
+                filename = "0x0000070E",
+                captureDate = "20260628",
+                format = PtpObjectFormat.UNDEFINED,
+                formatHints = setOf(CameraFileFormatHint.HEIF, CameraFileFormatHint.RAW),
+            ),
+            cameraFile(
+                handle = 1805,
+                filename = "0x0000070D",
+                captureDate = "20260628",
+                format = PtpObjectFormat.UNDEFINED,
+                formatHints = setOf(CameraFileFormatHint.HEIF, CameraFileFormatHint.RAW),
+            ),
+        )
+
+        val item = HighDefinitionPreviewSessionPolicy.previewItemsForDate(files, activeDate).single()
+
+        assertEquals(setOf(CameraFileFormatHint.HEIF), item.previewFile.formatHints)
+        assertEquals(setOf(CameraFileFormatHint.RAW), item.rawFile?.formatHints)
+    }
+
+    @Test
     fun availableDatesComeFromPlaceholdersBeforeFormatsAreResolved() {
         val files = listOf(
             cameraFile(
