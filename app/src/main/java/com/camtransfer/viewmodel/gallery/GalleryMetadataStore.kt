@@ -26,4 +26,3 @@ class GalleryMetadataStore {
         _objectInfoByHandle.value = emptyMap()
     }
 }
-

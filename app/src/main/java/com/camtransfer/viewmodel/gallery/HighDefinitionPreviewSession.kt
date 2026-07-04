@@ -121,9 +121,18 @@ internal object HighDefinitionPreviewSessionPolicy {
         files: List<CameraFile>,
         activeDate: LocalDate,
     ): HighDefinitionPreviewSession =
+        buildFromItems(
+            activeDate = activeDate,
+            items = previewItemsForDate(files, activeDate),
+        )
+
+    fun buildFromItems(
+        activeDate: LocalDate,
+        items: List<HighDefinitionPreviewItem>,
+    ): HighDefinitionPreviewSession =
         HighDefinitionPreviewSession(
             activeDate = activeDate,
-            files = previewableFilesForDate(files, activeDate),
+            files = items.map { it.previewFile },
         )
 
     fun previewableFilesForDate(

@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
 import android.graphics.Matrix
 import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
@@ -80,6 +81,13 @@ fun TransferScreen(
             it.state == TransferState.DOWNLOADING ||
             it.state == TransferState.SAVING
     }
+    val canReturnToGallery = DownloadCenterActionPolicy.canReturnToGallery(activeCount)
+
+    BackHandler {
+        if (canReturnToGallery) {
+            onBack()
+        }
+    }
 
     Scaffold(containerColor = CamTransferColors.Background) { padding ->
         Column(
@@ -93,6 +101,7 @@ fun TransferScreen(
                 doneCount = doneCount,
                 activeCount = activeCount,
                 isTransferring = isTransferring,
+                canReturnToGallery = canReturnToGallery,
                 onBack = onBack,
                 onClearDownloadCache = onClearDownloadCache,
             )
@@ -123,6 +132,7 @@ private fun DownloadHeader(
     doneCount: Int,
     activeCount: Int,
     isTransferring: Boolean,
+    canReturnToGallery: Boolean,
     onBack: () -> Unit,
     onClearDownloadCache: () -> Unit,
 ) {
@@ -139,7 +149,7 @@ private fun DownloadHeader(
             DownloadHeaderIconButton(
                 icon = DownloadHeaderIcon.Back,
                 contentDescription = "返回",
-                enabled = true,
+                enabled = canReturnToGallery,
                 onClick = onBack,
             )
             Spacer(Modifier.weight(1f))
@@ -152,7 +162,7 @@ private fun DownloadHeader(
             Spacer(Modifier.weight(1f))
             DownloadHeaderTextButton(
                 label = DownloadCenterActionPolicy.clearDownloadRecordsLabel,
-                enabled = totalCount > 0 && !isTransferring,
+                enabled = DownloadCenterActionPolicy.canClearRecords(totalCount, activeCount),
                 onClick = onClearDownloadCache,
             )
         }

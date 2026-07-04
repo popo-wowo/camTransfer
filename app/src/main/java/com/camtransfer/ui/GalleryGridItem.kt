@@ -6,12 +6,10 @@ import android.graphics.ImageDecoder
 import android.graphics.Matrix
 import android.os.Build
 import androidx.activity.compose.BackHandler
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -60,7 +58,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -110,62 +107,43 @@ private val GalleryActionColor = Color(0xFF177C6D)
 internal fun GalleryGridItem(
     file: CameraFile,
     thumbnail: ByteArray?,
+    decodedThumbnailCache: GalleryDecodedThumbnailCache<Bitmap>,
     modifier: Modifier = Modifier,
     isSelected: Boolean,
     downloadState: TransferState?,
-    isLoadingFullObjectInfo: Boolean,
-    isItemVisible: Boolean,
     onOpen: () -> Unit,
     onToggleSelection: () -> Unit,
-    onVisible: () -> Unit,
 ) {
-    LaunchedEffect(file.info.handle, thumbnail, isLoadingFullObjectInfo, isItemVisible) {
-        if (
-            GalleryThumbnailVisibilityPolicy.shouldRequestThumbnail(
-                isItemVisible = isItemVisible,
-                isLoadingFullObjectInfo = isLoadingFullObjectInfo,
-                hasThumbnail = thumbnail != null,
-            )
-        ) {
-            onVisible()
-        }
-    }
-    var tileVisible by remember(file.info.handle) { mutableStateOf(false) }
-    LaunchedEffect(file.info.handle) {
-        tileVisible = true
-    }
-    val tileScale by animateFloatAsState(
-        targetValue = if (tileVisible) 1f else 0.985f,
-        animationSpec = tween(durationMillis = 140, easing = FastOutSlowInEasing),
-        label = "galleryTileScale",
-    )
-    val tileAlpha by animateFloatAsState(
-        targetValue = if (tileVisible) 1f else 0.72f,
-        animationSpec = tween(durationMillis = 140, easing = FastOutSlowInEasing),
-        label = "galleryTileAlpha",
-    )
-
     Box(
         modifier = modifier
             .aspectRatio(1f)
-            .graphicsLayer {
-                scaleX = tileScale
-                scaleY = tileScale
-                alpha = tileAlpha
-            }
             .clip(RoundedCornerShape(18.dp))
             .background(Color(0xFFEDEBE5))
             .clickable { onOpen() }
     ) {
         val thumb = thumbnail
         if (thumb != null) {
-            val bitmap by produceState<Bitmap?>(initialValue = null, thumb, file.info) {
-                value = withContext(Dispatchers.Default) {
-                    decodeThumbnailBitmapForDisplay(
-                        file = file,
-                        data = thumb,
-                        maxDecodedSide = GalleryThumbnailDecodePolicy.GRID_MAX_DECODED_SIDE,
-                    )
+            val cacheKey = GalleryDecodedThumbnailCache.key(
+                file = file,
+                thumbnailSize = thumb.size,
+                maxDecodedSide = GalleryThumbnailDecodePolicy.GRID_MAX_DECODED_SIDE,
+            )
+            val bitmap by produceState<Bitmap?>(
+                initialValue = decodedThumbnailCache.get(cacheKey),
+                cacheKey,
+                thumb,
+                decodedThumbnailCache,
+            ) {
+                if (value == null) {
+                    value = withContext(Dispatchers.Default) {
+                        decodeThumbnailBitmapForDisplay(
+                            file = file,
+                            data = thumb,
+                            maxDecodedSide = GalleryThumbnailDecodePolicy.GRID_MAX_DECODED_SIDE,
+                        )?.also { decoded ->
+                            decodedThumbnailCache.put(cacheKey, decoded)
+                        }
+                    }
                 }
             }
             val currentBitmap = bitmap

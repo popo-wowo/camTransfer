@@ -71,10 +71,13 @@
 
 - 高清预览模式是 Gallery 内部模式，不触发重新连接或重新进入 GalleryReady。
 - 进入高清预览后会暂停缩略图和 metadata 后台请求，避免抢 PTP。
+- 高清预览列表数量来自 ViewModel session 快照，而不是 Compose 层实时 `files` 重算；切换日期后 UI 总数和加载队列必须保持同一批 items。
 - 加入下载只是加入统一下载队列，真正下载仍通过同一个 TransferService。
 - 模糊 HEIF/RAW 占位符配对后，显示项只保留 `HEIF` hint，RAW 侧车只保留 `RAW` hint。
 - RAW-only 候选即使用户当前选择压缩，也必须按原图模式下载。
 - 诊断日志 `HD preview session ... rawPairs=preview[hints]->raw[hints]` 用于排查 RAW 按钮是否对应正确 handle。
+- 顶部工具区采用两个独立框: 左侧 `[筛选]`，右侧 `[预览 | 缩略图 | 高清]`；高清模式只显示紧凑预览模式框，不把缩略图筛选状态混入 HD session。
+- 已下载文件只显示已下载标记，仍允许再次选中和重新下载；正在排队/下载/保存的文件仍不可选。
 
 ### 3. 相册页交互和筛选 UI 调整
 
@@ -91,6 +94,8 @@
 - `GalleryThumbnailController` 调整首屏与可见窗口请求规则:
   - 当前没有可见项时，主动给一个首屏窗口，而不是直接返回空。
   - 可见窗口请求优先于后台补齐。
+- 缩略图请求入口收敛到 `GalleryThumbnailRequestWindowPolicy -> loadVisibleThumbnails()`，删除 per-tile visible 回调路径，避免滚动每帧把 visible set 传进所有 tile 造成重组。
+- 网格 item 增加 decoded thumbnail LRU，减少快速滚动时相同缩略图反复 decode。
 - `GalleryFilesController` 调整完整 `ObjectInfo` 的节流，让首屏与可见区域优先。
 
 2026-07-04 稳定结论:
@@ -243,9 +248,48 @@ P0/P1 继续按下面顺序推进:
 
 1. 实机复核下载独占: 点击下载必须跳转下载页，并确认缩略图、metadata、HD preview 全部暂停到队列结束。
 2. 实机复核缩略图可见窗口: 缩放列数、筛选、快速滚动时，当前屏幕 handles 必须优先加载，不能留下永远不加载的空洞。
-3. 实机复核 HD 预览 active window: 当前可见图优先，上方少量、下方更多；切日期和快速滚动时从当前屏幕开始加载。
+3. 实机复核 HD 预览 active window: 当前可见图优先，上方少量、下方更多；切日期和快速滚动时从当前屏幕开始加载，并确认 2026-06-28 这类大日期数量稳定不漂移。
 4. HD 预览 RAW 配对继续取证: 收集异常日期的 `rawPairs` 日志，只在 sidecar 层修，不污染主链路。
 5. 缓存与内存上限: HD 预览只保留会话缓存并在相册返回主界面/断开/reset 时清理；缩略图已增加内存 LRU、磁盘旁路缓存和 `200MB / 500MB / 1GB` 长期上限。
+
+## 待确认 / 待优化事项
+
+这些事项后续逐项实机确认，不在当前稳定主链路里继续混改:
+
+1. 下载独占实机确认
+   - 下载页期间不能再出现 `Thumbnail request`、`Preview image request`、`Resolve file metadata`。
+   - 缩略图模式、高清预览模式、单图预览加入的下载都必须进入同一个队列和同一个互斥门。
+
+2. 缩略图加载窗口实机确认
+   - 缩放列数、筛选、快速上下滚动时，当前屏幕 handles 必须优先加载。
+   - 不能留下永远不加载的空洞。
+   - 如果仍有卡顿，先抓 `gfxinfo + logcat`，再判断是 map 重组、decode/GC，还是 section/header 计算问题。
+
+3. 高清预览 active window 实机确认
+   - 切日期和快速滚动后，应从当前屏幕开始加载。
+   - 当前可见图优先，前 5、后 20 只是窗口策略，可按实机体验继续调。
+   - 继续确认 2026-06-28 这类大日期数量稳定，不随 metadata 补齐漂移。
+
+4. RAW sidecar 配对继续取证
+   - 收集异常日期的 `HD preview session ... rawPairs=preview[hints]->raw[hints]` 日志。
+   - 如果配对错误，只调整 HD sidecar policy。
+   - 禁止为了 RAW 配对回头污染连接、D621、GalleryReady 或 hidden gap 主路径。
+
+5. 下载模式与文件大小继续验收
+   - 原图/压缩都必须在下载前写入模式并重新读取 fresh `ObjectInfo`。
+   - HEIF/JPG 压缩下载不能落到缩略图大小。
+   - RAW/视频下载必须保持大文件 stream 保存，不能退回整文件进内存。
+
+6. 缓存功能实机确认
+   - 二次进入相册应减少 `Thumbnail request`，优先出现 `Thumbnail loaded ... source=disk`。
+   - 清理缓存不能碰配对记录、下载目录配置、MediaStore/SAF 已保存文件、下载完成标记。
+   - HD 预览只保留会话缓存；返回 CONNECT、断开或 reset 后应清理 `hd-preview-cache`。
+   - 长时间浏览 HD 预览后观察是否还有内存或滚动卡顿。
+
+7. 顶部工具区 UI 继续设计
+   - 当前方向: 左侧 `[筛选]`，右侧 `[预览 | 缩略图 | 高清]`。
+   - 缓存大小、清理缓存、下载目录、下载中心、本地分享等入口需要统一分层，避免继续堆在顶部。
+   - 静态 HTML demo 单独线程产出后，再决定 Android 侧怎么落地。
 
 ## 后续高风险功能: 删除相机照片
 

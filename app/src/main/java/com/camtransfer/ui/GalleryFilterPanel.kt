@@ -101,6 +101,7 @@ import com.camtransfer.model.TransferItem
 import com.camtransfer.model.TransferState
 import com.camtransfer.service.CameraFileSource
 import com.camtransfer.viewmodel.BrowseViewModel
+import com.camtransfer.viewmodel.gallery.GalleryBrowseMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
@@ -122,6 +123,8 @@ internal fun GalleryFilterPanel(
     onStateChange: (GalleryFilterState) -> Unit,
     sortMode: GallerySortMode,
     onSortModeChange: (GallerySortMode) -> Unit,
+    activeMode: GalleryBrowseMode,
+    onModeChange: (GalleryBrowseMode) -> Unit,
     onPickDate: () -> Unit,
     onPickDateRange: () -> Unit,
 ) {
@@ -132,38 +135,30 @@ internal fun GalleryFilterPanel(
             .padding(start = 18.dp, top = 6.dp, end = 18.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Surface(
+        Row(
             modifier = Modifier
-                .fillMaxWidth()
-                .clickable { onExpandedChange(!expanded) },
-            shape = RoundedCornerShape(24.dp),
-            color = CamTransferColors.WarmFill,
-            border = BorderStroke(1.dp, CamTransferColors.Hairline),
-            shadowElevation = 2.dp,
+                .fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                FilterPanelIcon(expanded = expanded)
-                Text(
-                    "筛选",
-                    color = CamTransferColors.Ink,
-                    fontWeight = FontWeight.Black,
-                    fontSize = 13.sp,
-                    maxLines = 1,
-                )
-                Text(
-                    GalleryFilterPanelPolicy.summary(state, sortMode),
-                    modifier = Modifier.weight(1f),
-                    color = CamTransferColors.SecondaryInk,
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                FilterPanelChevron(expanded = expanded)
-            }
+            FilterPanelTrigger(
+                expanded = expanded,
+                onClick = { onExpandedChange(!expanded) },
+            )
+            Spacer(Modifier.weight(1f))
+            GalleryBrowseModeSegmentedControl(
+                activeMode = activeMode,
+                onModeChange = onModeChange,
+            )
+        }
+        if (expanded) {
+            Text(
+                GalleryFilterPanelPolicy.summary(state, sortMode),
+                modifier = Modifier.padding(start = 2.dp, end = 2.dp),
+                color = CamTransferColors.SecondaryInk,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
         AnimatedVisibility(
             visible = expanded,
@@ -188,6 +183,126 @@ internal fun GalleryFilterPanel(
     }
 }
 
+@Composable
+private fun FilterPanelTrigger(
+    expanded: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .clip(RoundedCornerShape(22.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(22.dp),
+        color = CamTransferColors.WarmFill,
+        border = BorderStroke(1.dp, CamTransferColors.Hairline),
+        shadowElevation = 2.dp,
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 9.dp, top = 7.dp, end = 8.dp, bottom = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+        ) {
+            FilterPanelIcon(expanded = expanded)
+            Text(
+                "筛选",
+                color = CamTransferColors.Ink,
+                fontWeight = FontWeight.Black,
+                fontSize = 13.sp,
+                maxLines = 1,
+            )
+            FilterPanelChevron(expanded = expanded)
+        }
+    }
+}
+
+@Composable
+internal fun GalleryBrowseModeOnlyBar(
+    activeMode: GalleryBrowseMode,
+    onModeChange: (GalleryBrowseMode) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 18.dp, top = 6.dp, end = 18.dp, bottom = 6.dp),
+        horizontalArrangement = Arrangement.End,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        GalleryBrowseModeSegmentedControl(
+            activeMode = activeMode,
+            onModeChange = onModeChange,
+        )
+    }
+}
+
+@Composable
+private fun GalleryBrowseModeSegmentedControl(
+    activeMode: GalleryBrowseMode,
+    onModeChange: (GalleryBrowseMode) -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(22.dp),
+        color = CamTransferColors.Card,
+        border = BorderStroke(1.dp, CamTransferColors.Hairline),
+        shadowElevation = 4.dp,
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 10.dp, top = 4.dp, end = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text(
+                "预览",
+                color = CamTransferColors.SecondaryInk,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Black,
+                maxLines = 1,
+            )
+            Box(
+                modifier = Modifier
+                    .width(1.dp)
+                    .height(18.dp)
+                    .background(CamTransferColors.Hairline),
+            )
+            GalleryBrowseModeSegment(
+                label = "缩略图",
+                selected = activeMode == GalleryBrowseMode.THUMBNAIL,
+                onClick = { onModeChange(GalleryBrowseMode.THUMBNAIL) },
+            )
+            GalleryBrowseModeSegment(
+                label = "高清",
+                selected = activeMode == GalleryBrowseMode.HD_PREVIEW,
+                onClick = { onModeChange(GalleryBrowseMode.HD_PREVIEW) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun GalleryBrowseModeSegment(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val background = if (selected) CamTransferColors.Ink else Color.Transparent
+    val textColor = if (selected) CamTransferColors.Card else CamTransferColors.SecondaryInk
+    Box(
+        modifier = Modifier
+            .height(30.dp)
+            .clip(RoundedCornerShape(15.dp))
+            .background(background)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            color = textColor,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Black,
+            maxLines = 1,
+        )
+    }
+}
 @Composable
 private fun CompactFilterChips(
     modifier: Modifier = Modifier,

@@ -100,6 +100,7 @@ import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
+import java.util.LinkedHashMap
 import kotlin.math.hypot
 
 @Composable
@@ -168,4 +169,55 @@ internal fun rotateGalleryBitmapForDisplay(bitmap: Bitmap, degrees: Int): Bitmap
     if (normalizedDegrees == 0) return bitmap
     val matrix = Matrix().apply { postRotate(normalizedDegrees.toFloat()) }
     return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+}
+
+internal data class GalleryDecodedThumbnailKey(
+    val handle: Int,
+    val format: Int,
+    val compressedSize: Int,
+    val filename: String,
+    val thumbnailSize: Int,
+    val maxDecodedSide: Int,
+)
+
+internal class GalleryDecodedThumbnailCache<T>(
+    private val maxEntries: Int = DEFAULT_MAX_ENTRIES,
+) {
+    private val entries = LinkedHashMap<GalleryDecodedThumbnailKey, T>(maxEntries, 0.75f, true)
+
+    @Synchronized
+    fun get(key: GalleryDecodedThumbnailKey): T? = entries[key]
+
+    @Synchronized
+    fun put(key: GalleryDecodedThumbnailKey, value: T) {
+        entries.remove(key)
+        entries[key] = value
+        while (entries.size > maxEntries) {
+            val oldestKey = entries.keys.firstOrNull() ?: return
+            entries.remove(oldestKey)
+        }
+    }
+
+    @Synchronized
+    fun clear() {
+        entries.clear()
+    }
+
+    companion object {
+        const val DEFAULT_MAX_ENTRIES = 120
+
+        fun key(
+            file: CameraFile,
+            thumbnailSize: Int,
+            maxDecodedSide: Int,
+        ): GalleryDecodedThumbnailKey =
+            GalleryDecodedThumbnailKey(
+                handle = file.info.handle,
+                format = file.info.format,
+                compressedSize = file.info.compressedSize,
+                filename = file.info.filename,
+                thumbnailSize = thumbnailSize,
+                maxDecodedSide = maxDecodedSide,
+            )
+    }
 }

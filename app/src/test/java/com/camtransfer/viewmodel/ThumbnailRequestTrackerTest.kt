@@ -227,6 +227,19 @@ class ThumbnailRequestTrackerTest {
     }
 
     @Test
+    fun fullPreviewRequestsDisplayFormatHintCandidatesBeforeObjectInfoResolves() {
+        assertTrue(
+            GalleryPreviewFullImageLoadPolicy.shouldRequestFullImagePreview(
+                file = file(PtpObjectFormat.UNDEFINED)
+                    .copy(formatHints = setOf(com.camtransfer.model.CameraFileFormatHint.HEIF)),
+                hasPreviewImage = false,
+                isAlreadyLoading = false,
+                force = false,
+            )
+        )
+    }
+
+    @Test
     fun previewCancellationDoesNotMarkHandleAsFailed() {
         assertFalse(GalleryPreviewFailurePolicy.shouldMarkFailed(CancellationException("transfer pause")))
         assertTrue(GalleryPreviewFailurePolicy.shouldMarkFailed(IllegalStateException("decode failed")))

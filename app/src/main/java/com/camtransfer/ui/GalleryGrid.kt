@@ -1,5 +1,6 @@
 package com.camtransfer.ui
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -39,15 +40,13 @@ internal fun GalleryGrid(
     selectedHandles: Set<Int>,
     downloadStates: Map<Int, TransferState?>,
     thumbnailsByHandle: Map<Int, ByteArray>,
-    isLoadingFullObjectInfo: Boolean,
-    visibleGridHandleSet: Set<Int>,
+    decodedThumbnailCache: GalleryDecodedThumbnailCache<Bitmap>,
     onColumnCountChange: (Int) -> Unit,
     onSelectionChange: (Set<Int>) -> Unit,
     onToggleDayHours: (LocalDate) -> Unit,
     onToggleDaySelection: (List<CameraFile>) -> Unit,
     onOpenFile: (CameraFile) -> Unit,
     onToggleSelection: (CameraFile) -> Unit,
-    onVisible: (CameraFile) -> Unit,
 ) {
     val stickySection by remember(sections, gridState) {
         derivedStateOf {
@@ -87,11 +86,9 @@ internal fun GalleryGrid(
                         selectedHandles = selectedHandles,
                         downloadStates = downloadStates,
                         thumbnailsByHandle = thumbnailsByHandle,
-                        isLoadingFullObjectInfo = isLoadingFullObjectInfo,
-                        visibleGridHandleSet = visibleGridHandleSet,
+                        decodedThumbnailCache = decodedThumbnailCache,
                         onOpenFile = onOpenFile,
                         onToggleSelection = onToggleSelection,
-                        onVisible = onVisible,
                     )
                 }
                 return@LazyVerticalGrid
@@ -128,11 +125,9 @@ internal fun GalleryGrid(
                                 selectedHandles = selectedHandles,
                                 downloadStates = downloadStates,
                                 thumbnailsByHandle = thumbnailsByHandle,
-                                isLoadingFullObjectInfo = isLoadingFullObjectInfo,
-                                visibleGridHandleSet = visibleGridHandleSet,
+                                decodedThumbnailCache = decodedThumbnailCache,
                                 onOpenFile = onOpenFile,
                                 onToggleSelection = onToggleSelection,
-                                onVisible = onVisible,
                             )
                         }
                     }
@@ -143,11 +138,9 @@ internal fun GalleryGrid(
                             selectedHandles = selectedHandles,
                             downloadStates = downloadStates,
                             thumbnailsByHandle = thumbnailsByHandle,
-                            isLoadingFullObjectInfo = isLoadingFullObjectInfo,
-                            visibleGridHandleSet = visibleGridHandleSet,
+                            decodedThumbnailCache = decodedThumbnailCache,
                             onOpenFile = onOpenFile,
                             onToggleSelection = onToggleSelection,
-                            onVisible = onVisible,
                         )
                     }
                 }
@@ -275,28 +268,24 @@ private fun GalleryGridFileItem(
     selectedHandles: Set<Int>,
     downloadStates: Map<Int, TransferState?>,
     thumbnailsByHandle: Map<Int, ByteArray>,
-    isLoadingFullObjectInfo: Boolean,
-    visibleGridHandleSet: Set<Int>,
+    decodedThumbnailCache: GalleryDecodedThumbnailCache<Bitmap>,
     onOpenFile: (CameraFile) -> Unit,
     onToggleSelection: (CameraFile) -> Unit,
-    onVisible: (CameraFile) -> Unit,
 ) {
     val state = downloadStates[file.info.handle]
     GalleryGridItem(
         file = file,
         thumbnail = GalleryThumbnailDisplayPolicy.thumbnailFor(file, thumbnailsByHandle),
+        decodedThumbnailCache = decodedThumbnailCache,
         modifier = modifier,
         isSelected = file.info.handle in selectedHandles,
         downloadState = state,
-        isLoadingFullObjectInfo = isLoadingFullObjectInfo,
-        isItemVisible = file.info.handle in visibleGridHandleSet,
         onOpen = { onOpenFile(file) },
         onToggleSelection = {
             if (GalleryDownloadUiPolicy.canSelect(state)) {
                 onToggleSelection(file)
             }
         },
-        onVisible = { onVisible(file) },
     )
 }
 

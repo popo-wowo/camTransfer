@@ -164,6 +164,7 @@ fun BrowseScreen(
     val loadedPreviewHandles by viewModel.loadedPreviewHandles.collectAsState()
     val loadingPreviewHandles by viewModel.loadingPreviewHandles.collectAsState()
     val failedPreviewHandles by viewModel.failedPreviewHandles.collectAsState()
+    val highDefinitionPreviewItems by viewModel.highDefinitionPreviewItems.collectAsState()
     val error by viewModel.error.collectAsState()
     val files by remember(catalogFiles, objectInfoByHandle) {
         derivedStateOf {
@@ -224,6 +225,7 @@ fun BrowseScreen(
         }
     }
     val gridState = rememberLazyGridState()
+    val decodedThumbnailCache = remember { GalleryDecodedThumbnailCache<Bitmap>() }
     val today = remember { LocalDate.now() }
     val downloadStates = remember(downloadedItems, transferItems) {
         (downloadedItems + transferItems).associate { it.file.info.handle to it.state }
@@ -241,22 +243,6 @@ fun BrowseScreen(
     }
     val sortedFiles by remember(filteredFiles, sortMode, downloadStates) {
         derivedStateOf { GallerySortPolicy.sortedFiles(filteredFiles, sortMode, downloadStates) }
-    }
-    val highDefinitionPreviewFiles by remember(files, browseModeState.highDefinitionDate) {
-        derivedStateOf {
-            HighDefinitionPreviewSessionPolicy.previewableFilesForDate(
-                files = files,
-                activeDate = browseModeState.highDefinitionDate,
-            )
-        }
-    }
-    val highDefinitionPreviewItems by remember(files, browseModeState.highDefinitionDate) {
-        derivedStateOf {
-            HighDefinitionPreviewSessionPolicy.previewItemsForDate(
-                files = files,
-                activeDate = browseModeState.highDefinitionDate,
-            )
-        }
     }
     val gallerySections by remember(sortedFiles, expandedSectionDays) {
         derivedStateOf {
@@ -285,9 +271,6 @@ fun BrowseScreen(
                 columnCount = columnCount,
             )
         }
-    }
-    val visibleGridHandleSet by remember {
-        derivedStateOf { visibleGridHandles.toSet() }
     }
     val selectableFilteredHandles = remember(sortedFiles, downloadStates) {
         sortedFiles
@@ -385,8 +368,8 @@ fun BrowseScreen(
             viewModel.resumeGalleryLoadingAfterTransfer(cameraSource)
         }
     }
-    LaunchedEffect(cameraSource, browseModeState.mode, browseModeState.highDefinitionDate, files) {
-        if (browseModeState.mode == GalleryBrowseMode.HD_PREVIEW) {
+    LaunchedEffect(cameraSource, browseModeState.mode, files.isNotEmpty()) {
+        if (browseModeState.mode == GalleryBrowseMode.HD_PREVIEW && files.isNotEmpty()) {
             val preferredDate = HighDefinitionPreviewSessionPolicy.preferredActiveDate(
                 files = files,
                 currentDate = browseModeState.highDefinitionDate,
@@ -593,14 +576,14 @@ fun BrowseScreen(
                 onOpenDownloads = onOpenDownloads,
                 onClearCacheClick = { showsCacheSettings = true },
             )
-            GalleryBrowseModeRow(
-                activeMode = browseModeState.mode,
-                onModeChange = { mode ->
-                    previewFile = null
-                    viewModel.setBrowseMode(cameraSource, mode)
-                },
-            )
             if (browseModeState.mode == GalleryBrowseMode.HD_PREVIEW) {
+                GalleryBrowseModeOnlyBar(
+                    activeMode = browseModeState.mode,
+                    onModeChange = { mode ->
+                        previewFile = null
+                        viewModel.setBrowseMode(cameraSource, mode)
+                    },
+                )
                 Box(Modifier.fillMaxSize()) {
                     HighDefinitionPreviewScreen(
                         items = highDefinitionPreviewItems,
@@ -654,6 +637,11 @@ fun BrowseScreen(
                     onStateChange = { filterState = it },
                     sortMode = sortMode,
                     onSortModeChange = { sortMode = it },
+                    activeMode = browseModeState.mode,
+                    onModeChange = { mode ->
+                        previewFile = null
+                        viewModel.setBrowseMode(cameraSource, mode)
+                    },
                     onPickDate = { showsDatePicker = true },
                     onPickDateRange = { showsDateRangePicker = true },
                 )
@@ -695,8 +683,7 @@ fun BrowseScreen(
                                 selectedHandles = selectedHandles,
                                 downloadStates = downloadStates,
                                 thumbnailsByHandle = thumbnailsByHandle,
-                                isLoadingFullObjectInfo = isLoading,
-                                visibleGridHandleSet = visibleGridHandleSet,
+                                decodedThumbnailCache = decodedThumbnailCache,
                                 onColumnCountChange = { newCount ->
                                     columnCount = newCount
                                     prefs.edit().putInt("columnCount", newCount).apply()
@@ -725,61 +712,11 @@ fun BrowseScreen(
                                 },
                                 onOpenFile = { file -> previewFile = file },
                                 onToggleSelection = { file -> viewModel.toggleSelection(file.info.handle) },
-                                onVisible = { file -> viewModel.loadThumbnail(cameraSource, file.info.handle) },
                             )
                         }
                     }
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun GalleryBrowseModeRow(
-    activeMode: GalleryBrowseMode,
-    onModeChange: (GalleryBrowseMode) -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        GalleryBrowseModeChip(
-            label = "缩略图",
-            selected = activeMode == GalleryBrowseMode.THUMBNAIL,
-            onClick = { onModeChange(GalleryBrowseMode.THUMBNAIL) },
-        )
-        GalleryBrowseModeChip(
-            label = "高清预览",
-            selected = activeMode == GalleryBrowseMode.HD_PREVIEW,
-            onClick = { onModeChange(GalleryBrowseMode.HD_PREVIEW) },
-        )
-    }
-}
-
-@Composable
-private fun GalleryBrowseModeChip(
-    label: String,
-    selected: Boolean,
-    onClick: () -> Unit,
-) {
-    val background = if (selected) CamTransferColors.Accent.copy(alpha = 0.18f) else CamTransferColors.Card
-    val border = if (selected) CamTransferColors.Accent else CamTransferColors.Hairline
-    val textColor = if (selected) CamTransferColors.Ink else CamTransferColors.SecondaryInk
-    Surface(
-        modifier = Modifier.clip(RoundedCornerShape(16.dp)),
-        color = background,
-        border = BorderStroke(1.dp, border),
-        shape = RoundedCornerShape(16.dp),
-        onClick = onClick,
-    ) {
-        Text(
-            text = label,
-            color = textColor,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-        )
     }
 }

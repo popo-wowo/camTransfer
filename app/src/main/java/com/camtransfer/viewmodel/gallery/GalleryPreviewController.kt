@@ -2,6 +2,7 @@ package com.camtransfer.viewmodel.gallery
 
 import android.graphics.BitmapFactory
 import com.camtransfer.model.CameraFile
+import com.camtransfer.model.CameraFileFormatHint
 import com.camtransfer.service.CameraFileSource
 import com.camtransfer.service.AppCacheUsagePolicy
 import com.camtransfer.service.DiagnosticLog
@@ -448,7 +449,10 @@ internal object GalleryPreviewFullImageLoadPolicy {
     }
 
     fun supportsHighDefinitionPreview(file: CameraFile): Boolean =
-        file.info.isJpeg || file.info.isHeif
+        file.info.isJpeg ||
+            file.info.isHeif ||
+            CameraFileFormatHint.JPG in file.formatHints ||
+            CameraFileFormatHint.HEIF in file.formatHints
 }
 
 internal object GalleryPreviewFailurePolicy {

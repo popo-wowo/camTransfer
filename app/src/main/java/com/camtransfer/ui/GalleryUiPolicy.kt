@@ -314,7 +314,7 @@ object GallerySortPolicy {
             GallerySortMode.OldestFirst -> files.sortedWith(oldestFirstComparator())
             GallerySortMode.NotDownloadedFirst -> files.sortedWith(
                 compareBy<CameraFile> { file ->
-                    if (GalleryDownloadUiPolicy.canSelect(downloadStates[file.info.handle])) 0 else 1
+                    if (GalleryDownloadUiPolicy.isNeverDownloadedOrRetryable(downloadStates[file.info.handle])) 0 else 1
                 }.then(newestFirstComparator())
             )
         }
@@ -344,15 +344,6 @@ object GalleryCacheUsageUiPolicy {
 
     fun shouldScanCacheUsage(hasFiles: Boolean, isLoading: Boolean): Boolean =
         hasFiles && !isLoading
-}
-
-object GalleryThumbnailVisibilityPolicy {
-    fun shouldRequestThumbnail(
-        isItemVisible: Boolean,
-        isLoadingFullObjectInfo: Boolean,
-        hasThumbnail: Boolean,
-    ): Boolean =
-        isItemVisible && !hasThumbnail
 }
 
 object GalleryThumbnailRequestWindowPolicy {
@@ -439,11 +430,12 @@ object GalleryFilterPanelPolicy {
 object GalleryDownloadUiPolicy {
     fun canSelect(state: TransferState?): Boolean =
         when (state) {
-            null, TransferState.ERROR -> true
+            null,
+            TransferState.ERROR,
+            TransferState.DONE -> true
             TransferState.PENDING,
             TransferState.DOWNLOADING,
-            TransferState.SAVING,
-            TransferState.DONE -> false
+            TransferState.SAVING -> false
         }
 
     fun hasStarted(state: TransferState?): Boolean =
@@ -466,6 +458,16 @@ object GalleryDownloadUiPolicy {
             null -> false
         }
 
+    fun isNeverDownloadedOrRetryable(state: TransferState?): Boolean =
+        when (state) {
+            null,
+            TransferState.ERROR -> true
+            TransferState.PENDING,
+            TransferState.DOWNLOADING,
+            TransferState.SAVING,
+            TransferState.DONE -> false
+        }
+
     fun canDownloadFromHighDefinitionPreview(
         hasPreviewImage: Boolean,
         state: TransferState?,
@@ -473,10 +475,10 @@ object GalleryDownloadUiPolicy {
         hasPreviewImage && when (state) {
             null,
             TransferState.ERROR,
-            TransferState.PENDING -> true
+            TransferState.PENDING,
+            TransferState.DONE -> true
             TransferState.DOWNLOADING,
-            TransferState.SAVING,
-            TransferState.DONE -> false
+            TransferState.SAVING -> false
         }
 }
 
@@ -508,6 +510,12 @@ object GalleryHeaderActionPolicy {
 
 object DownloadCenterActionPolicy {
     const val clearDownloadRecordsLabel = "清理记录"
+
+    fun canReturnToGallery(activeCount: Int): Boolean =
+        activeCount == 0
+
+    fun canClearRecords(totalCount: Int, activeCount: Int): Boolean =
+        totalCount > 0 && activeCount == 0
 }
 
 object GalleryDisconnectPolicy {

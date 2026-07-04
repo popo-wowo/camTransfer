@@ -15,8 +15,11 @@ import com.camtransfer.viewmodel.gallery.GallerySelectionController
 import com.camtransfer.viewmodel.gallery.GallerySessionActor
 import com.camtransfer.viewmodel.gallery.GalleryThumbnailController
 import com.camtransfer.viewmodel.gallery.GalleryThumbnailStore
+import com.camtransfer.viewmodel.gallery.HighDefinitionPreviewItem
 import com.camtransfer.viewmodel.gallery.HighDefinitionPreviewSessionPolicy
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 
@@ -28,6 +31,7 @@ class BrowseViewModel : ViewModel() {
     private val thumbnailStore = GalleryThumbnailStore()
     private val metadataStore = GalleryMetadataStore()
     private val previewStore = GalleryPreviewStore()
+    private val _highDefinitionPreviewItems = MutableStateFlow<List<HighDefinitionPreviewItem>>(emptyList())
     private var hasActiveThumbnailWorkProvider: () -> Boolean = { false }
     private var highDefinitionPreviewPrepareJob: Job? = null
     private var highDefinitionPreviewPausedSource: CameraFileSource? = null
@@ -62,6 +66,7 @@ class BrowseViewModel : ViewModel() {
     val loadedPreviewHandles = previewController.loadedPreviewHandles
     val loadingPreviewHandles = previewController.loadingPreviewHandles
     val failedPreviewHandles = previewController.failedPreviewHandles
+    val highDefinitionPreviewItems = _highDefinitionPreviewItems.asStateFlow()
     val error = filesController.error
 
     init {
@@ -121,6 +126,7 @@ class BrowseViewModel : ViewModel() {
             GalleryBrowseMode.THUMBNAIL -> {
                 highDefinitionPreviewPrepareJob?.cancel()
                 highDefinitionPreviewPrepareJob = null
+                _highDefinitionPreviewItems.value = emptyList()
                 previewController.stopSession()
                 resumeGalleryLoadingAfterHighDefinitionPreview(cameraSource)
             }
@@ -161,7 +167,8 @@ class BrowseViewModel : ViewModel() {
     }
 
     private fun prepareHighDefinitionPreviewSession(cameraSource: CameraFileSource) {
-        if (highDefinitionPreviewPrepareJob?.isActive == true) return
+        highDefinitionPreviewPrepareJob?.cancel()
+        previewController.stopSession()
         highDefinitionPreviewPrepareJob = viewModelScope.launch {
             pauseGalleryLoadingForHighDefinitionPreview(cameraSource)
             if (browseModeState.value.mode != GalleryBrowseMode.HD_PREVIEW) return@launch
@@ -188,14 +195,15 @@ class BrowseViewModel : ViewModel() {
     }
 
     private fun startHighDefinitionPreviewSession(cameraSource: CameraFileSource) {
-        val session = HighDefinitionPreviewSessionPolicy.build(
-            files = files.value,
-            activeDate = browseModeState.value.highDefinitionDate,
-        )
         val items = HighDefinitionPreviewSessionPolicy.previewItemsForDate(
             files = files.value,
             activeDate = browseModeState.value.highDefinitionDate,
         )
+        val session = HighDefinitionPreviewSessionPolicy.buildFromItems(
+            activeDate = browseModeState.value.highDefinitionDate,
+            items = items,
+        )
+        _highDefinitionPreviewItems.value = items
         DiagnosticLog.append(
             cameraSource.context,
             "GalleryPreviewController",
@@ -216,6 +224,7 @@ class BrowseViewModel : ViewModel() {
         highDefinitionPreviewPrepareJob?.cancel()
         highDefinitionPreviewPrepareJob = null
         highDefinitionPreviewPausedSource = null
+        _highDefinitionPreviewItems.value = emptyList()
         browseModeController.reset()
         filesController.reset()
         thumbnailController.reset()

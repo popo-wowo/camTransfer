@@ -425,31 +425,6 @@ class GalleryUiPolicyTest {
     }
 
     @Test
-    fun visibleThumbnailRequestsCanStartBeforeFullObjectInfoFinishes() {
-        assertTrue(
-            GalleryThumbnailVisibilityPolicy.shouldRequestThumbnail(
-                isItemVisible = true,
-                isLoadingFullObjectInfo = true,
-                hasThumbnail = false,
-            )
-        )
-        assertTrue(
-            GalleryThumbnailVisibilityPolicy.shouldRequestThumbnail(
-                isItemVisible = true,
-                isLoadingFullObjectInfo = false,
-                hasThumbnail = false,
-            )
-        )
-        assertFalse(
-            GalleryThumbnailVisibilityPolicy.shouldRequestThumbnail(
-                isItemVisible = true,
-                isLoadingFullObjectInfo = false,
-                hasThumbnail = true,
-            )
-        )
-    }
-
-    @Test
     fun thumbnailRequestWindowKeepsVisibleHandlesFirstThenNearbyRows() {
         val allHandles = listOf(10, 9, 8, 7, 6, 5, 4, 3)
 
@@ -506,17 +481,6 @@ class GalleryUiPolicyTest {
     }
 
     @Test
-    fun offscreenThumbnailRequestsDoNotStartFromLazyGridPrefetch() {
-        assertFalse(
-            GalleryThumbnailVisibilityPolicy.shouldRequestThumbnail(
-                isItemVisible = false,
-                isLoadingFullObjectInfo = false,
-                hasThumbnail = false,
-            )
-        )
-    }
-
-    @Test
     fun filterPanelDefaultsCollapsedAndSummarizesActiveControls() {
         assertFalse(GalleryFilterPanelPolicy.defaultExpanded())
         assertEquals(
@@ -539,6 +503,27 @@ class GalleryUiPolicyTest {
                 sortMode = GallerySortMode.NotDownloadedFirst,
             ),
         )
+    }
+
+    @Test
+    fun browseModeSwitcherUsesSeparatePreviewFrameNextToFilterButton() {
+        val browseSource = listOf(
+            File("src/main/java/com/camtransfer/ui/BrowseScreen.kt"),
+            File("app/src/main/java/com/camtransfer/ui/BrowseScreen.kt"),
+        ).first { it.exists() }.readText()
+        val filterSource = listOf(
+            File("src/main/java/com/camtransfer/ui/GalleryFilterPanel.kt"),
+            File("app/src/main/java/com/camtransfer/ui/GalleryFilterPanel.kt"),
+        ).first { it.exists() }.readText()
+
+        assertFalse(browseSource.contains("private fun GalleryBrowseModeRow("))
+        assertFalse(browseSource.contains("private fun GalleryBrowseModeChip("))
+        assertTrue(filterSource.contains("FilterPanelTrigger("))
+        assertTrue(filterSource.contains("GalleryBrowseModeSegmentedControl("))
+        assertTrue(filterSource.contains("Spacer(Modifier.weight(1f))"))
+        assertTrue(filterSource.contains("\"预览\""))
+        assertTrue(filterSource.contains("activeMode: GalleryBrowseMode"))
+        assertTrue(browseSource.contains("activeMode = browseModeState.mode"))
     }
 
     @Test
@@ -597,13 +582,13 @@ class GalleryUiPolicyTest {
     }
 
     @Test
-    fun activeAndSavedDownloadsAreNotSelectableAgain() {
+    fun activeDownloadsAreNotSelectableButSavedDownloadsCanBeSelectedAgain() {
         assertTrue(GalleryDownloadUiPolicy.canSelect(TransferState.ERROR))
         assertTrue(GalleryDownloadUiPolicy.canSelect(null))
+        assertTrue(GalleryDownloadUiPolicy.canSelect(TransferState.DONE))
         assertFalse(GalleryDownloadUiPolicy.canSelect(TransferState.PENDING))
         assertFalse(GalleryDownloadUiPolicy.canSelect(TransferState.DOWNLOADING))
         assertFalse(GalleryDownloadUiPolicy.canSelect(TransferState.SAVING))
-        assertFalse(GalleryDownloadUiPolicy.canSelect(TransferState.DONE))
     }
 
     @Test
@@ -621,6 +606,7 @@ class GalleryUiPolicyTest {
         assertFalse(GalleryDownloadUiPolicy.canDownloadFromHighDefinitionPreview(hasPreviewImage = false, state = null))
         assertTrue(GalleryDownloadUiPolicy.canDownloadFromHighDefinitionPreview(hasPreviewImage = true, state = TransferState.PENDING))
         assertTrue(GalleryDownloadUiPolicy.canDownloadFromHighDefinitionPreview(hasPreviewImage = true, state = null))
+        assertTrue(GalleryDownloadUiPolicy.canDownloadFromHighDefinitionPreview(hasPreviewImage = true, state = TransferState.DONE))
         assertFalse(GalleryDownloadUiPolicy.canDownloadFromHighDefinitionPreview(hasPreviewImage = true, state = TransferState.DOWNLOADING))
     }
 
@@ -645,6 +631,23 @@ class GalleryUiPolicyTest {
         assertTrue(cardBlock.contains("HdQueueButton("))
         assertTrue(bottomBarBlock.contains("onStartDownload"))
         assertTrue(bottomBarBlock.contains("Text(\"下载\""))
+    }
+
+    @Test
+    fun highDefinitionPreviewScreenUsesSessionItemsFromViewModel() {
+        val source = listOf(
+            File("src/main/java/com/camtransfer/ui/BrowseScreen.kt"),
+            File("app/src/main/java/com/camtransfer/ui/BrowseScreen.kt"),
+        ).first { it.exists() }.readText()
+        val screenIndex = source.indexOf("HighDefinitionPreviewScreen(")
+        val screenBlock = source.substring(
+            screenIndex,
+            source.indexOf("GalleryFilterPanel(", startIndex = screenIndex),
+        )
+
+        assertTrue(source.contains("val highDefinitionPreviewItems by viewModel.highDefinitionPreviewItems.collectAsState()"))
+        assertTrue(screenBlock.contains("items = highDefinitionPreviewItems"))
+        assertFalse(source.contains("HighDefinitionPreviewSessionPolicy.previewItemsForDate(\n                files = files"))
     }
 
     @Test
@@ -711,6 +714,33 @@ class GalleryUiPolicyTest {
     fun downloadRecordCleanupLivesInDownloadCenterNotGalleryHeader() {
         assertFalse(GalleryHeaderActionPolicy.shouldShowClearDownloadRecords)
         assertEquals("清理记录", DownloadCenterActionPolicy.clearDownloadRecordsLabel)
+    }
+
+    @Test
+    fun downloadCenterBlocksReturningToGalleryWhileQueueIsActive() {
+        assertFalse(DownloadCenterActionPolicy.canReturnToGallery(activeCount = 1))
+        assertTrue(DownloadCenterActionPolicy.canReturnToGallery(activeCount = 0))
+    }
+
+    @Test
+    fun downloadCenterBlocksRecordCleanupWhileQueueIsActive() {
+        assertFalse(DownloadCenterActionPolicy.canClearRecords(totalCount = 3, activeCount = 1))
+        assertTrue(DownloadCenterActionPolicy.canClearRecords(totalCount = 3, activeCount = 0))
+        assertFalse(DownloadCenterActionPolicy.canClearRecords(totalCount = 0, activeCount = 0))
+    }
+
+    @Test
+    fun transferScreenBlocksBackAndCleanupWhileQueueIsActive() {
+        val source = listOf(
+            File("src/main/java/com/camtransfer/ui/TransferScreen.kt"),
+            File("app/src/main/java/com/camtransfer/ui/TransferScreen.kt"),
+        ).first { it.exists() }.readText()
+
+        assertTrue(source.contains("val canReturnToGallery = DownloadCenterActionPolicy.canReturnToGallery(activeCount)"))
+        assertTrue(source.contains("BackHandler"))
+        assertTrue(source.contains("if (canReturnToGallery)"))
+        assertTrue(source.contains("enabled = canReturnToGallery"))
+        assertTrue(source.contains("DownloadCenterActionPolicy.canClearRecords(totalCount, activeCount)"))
     }
 
     @Test
@@ -818,7 +848,7 @@ class GalleryUiPolicyTest {
                 endDownloadState = null,
             )
         )
-        assertFalse(
+        assertTrue(
             GalleryDragSelectionPolicy.shouldCommitDragSelection(
                 startHandle = 1,
                 endHandle = 2,
@@ -852,7 +882,7 @@ class GalleryUiPolicyTest {
             ),
         )
         assertEquals(
-            setOf(1),
+            setOf(1, 3),
             GalleryDragSelectionPolicy.updatedSelection(
                 currentSelection = setOf(1),
                 handle = 3,
@@ -871,7 +901,7 @@ class GalleryUiPolicyTest {
         )
 
         assertEquals(
-            setOf(2, 3, 4, 6, 7, 9),
+            setOf(2, 3, 4, 5, 6, 7, 9),
             GalleryDragSelectionPolicy.updatedRangeSelection(
                 currentSelection = emptySet(),
                 orderedHandles = handles,
@@ -952,7 +982,7 @@ class GalleryUiPolicyTest {
         ).first { it.exists() }.readText()
         val thumbnailRequestBlock = source.substring(
             source.indexOf("val thumbnailRequestHandles"),
-            source.indexOf("val visibleGridHandleSet"),
+            source.indexOf("val selectableFilteredHandles"),
         )
 
         assertTrue(source.contains("var columnCount by remember"))
@@ -963,9 +993,43 @@ class GalleryUiPolicyTest {
     }
 
     @Test
+    fun galleryGridDoesNotPassPerFrameVisibleStateIntoEveryTile() {
+        val browseSource = listOf(
+            File("src/main/java/com/camtransfer/ui/BrowseScreen.kt"),
+            File("app/src/main/java/com/camtransfer/ui/BrowseScreen.kt"),
+        ).first { it.exists() }.readText()
+        val gridSource = listOf(
+            File("src/main/java/com/camtransfer/ui/GalleryGrid.kt"),
+            File("app/src/main/java/com/camtransfer/ui/GalleryGrid.kt"),
+        ).first { it.exists() }.readText()
+        val itemSource = listOf(
+            File("src/main/java/com/camtransfer/ui/GalleryGridItem.kt"),
+            File("app/src/main/java/com/camtransfer/ui/GalleryGridItem.kt"),
+        ).first { it.exists() }.readText()
+
+        assertFalse(browseSource.contains("val visibleGridHandleSet"))
+        assertFalse(gridSource.contains("visibleGridHandleSet"))
+        assertFalse(itemSource.contains("isItemVisible"))
+        assertFalse(itemSource.contains("onVisible()"))
+    }
+
+    @Test
     fun galleryGridSpacingKeepsPhotoGapsCompact() {
         assertEquals(2, GalleryGridSpacingPolicy.HORIZONTAL_DP)
         assertEquals(2, GalleryGridSpacingPolicy.VERTICAL_DP)
+    }
+
+    @Test
+    fun galleryGridItemsDoNotAnimateDuringScroll() {
+        val source = listOf(
+            File("src/main/java/com/camtransfer/ui/GalleryGridItem.kt"),
+            File("app/src/main/java/com/camtransfer/ui/GalleryGridItem.kt"),
+        ).first { it.exists() }.readText()
+
+        assertFalse(source.contains("galleryTileScale"))
+        assertFalse(source.contains("galleryTileAlpha"))
+        assertFalse(source.contains("tileVisible"))
+        assertFalse(source.contains("alpha = tileAlpha"))
     }
 
     @Test
@@ -988,6 +1052,71 @@ class GalleryUiPolicyTest {
         )
         assertEquals(1, GalleryThumbnailDecodePolicy.sampleSize(width = 640, height = 480))
         assertEquals(1, GalleryThumbnailDecodePolicy.sampleSize(width = 0, height = 0))
+    }
+
+    @Test
+    fun decodedThumbnailCacheReusesSameThumbnailIdentity() {
+        val cache = GalleryDecodedThumbnailCache<String>(maxEntries = 2)
+        val file = file(42, PtpObjectFormat.JPEG, "20260529T081500")
+        val key = GalleryDecodedThumbnailCache.key(
+            file = file,
+            thumbnailSize = 128,
+            maxDecodedSide = GalleryThumbnailDecodePolicy.GRID_MAX_DECODED_SIDE,
+        )
+
+        cache.put(key, "bitmap-42")
+
+        assertEquals("bitmap-42", cache.get(key))
+    }
+
+    @Test
+    fun decodedThumbnailCacheMissesWhenObjectIdentityChanges() {
+        val cache = GalleryDecodedThumbnailCache<String>(maxEntries = 2)
+        val file = file(42, PtpObjectFormat.JPEG, "20260529T081500")
+        val changedFile = file.copy(info = file.info.copy(compressedSize = 2048))
+        val originalKey = GalleryDecodedThumbnailCache.key(
+            file = file,
+            thumbnailSize = 128,
+            maxDecodedSide = GalleryThumbnailDecodePolicy.GRID_MAX_DECODED_SIDE,
+        )
+        val changedKey = GalleryDecodedThumbnailCache.key(
+            file = changedFile,
+            thumbnailSize = 128,
+            maxDecodedSide = GalleryThumbnailDecodePolicy.GRID_MAX_DECODED_SIDE,
+        )
+
+        cache.put(originalKey, "bitmap-42")
+
+        assertEquals(null, cache.get(changedKey))
+    }
+
+    @Test
+    fun decodedThumbnailCacheEvictsLeastRecentlyUsedEntry() {
+        val cache = GalleryDecodedThumbnailCache<String>(maxEntries = 2)
+        val first = GalleryDecodedThumbnailCache.key(
+            file = file(1, PtpObjectFormat.JPEG, "20260529T081500"),
+            thumbnailSize = 128,
+            maxDecodedSide = GalleryThumbnailDecodePolicy.GRID_MAX_DECODED_SIDE,
+        )
+        val second = GalleryDecodedThumbnailCache.key(
+            file = file(2, PtpObjectFormat.JPEG, "20260529T081500"),
+            thumbnailSize = 128,
+            maxDecodedSide = GalleryThumbnailDecodePolicy.GRID_MAX_DECODED_SIDE,
+        )
+        val third = GalleryDecodedThumbnailCache.key(
+            file = file(3, PtpObjectFormat.JPEG, "20260529T081500"),
+            thumbnailSize = 128,
+            maxDecodedSide = GalleryThumbnailDecodePolicy.GRID_MAX_DECODED_SIDE,
+        )
+
+        cache.put(first, "one")
+        cache.put(second, "two")
+        assertEquals("one", cache.get(first))
+        cache.put(third, "three")
+
+        assertEquals("one", cache.get(first))
+        assertEquals(null, cache.get(second))
+        assertEquals("three", cache.get(third))
     }
 
     @Test

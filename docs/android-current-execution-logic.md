@@ -142,7 +142,10 @@ BLE session 复用规则:
 - 可见缩略图按需加载，保持受控节流，避免和 PTP metadata 命令抢通道。
 - 2026-07-04 架构拆分: `files` 是 catalog/D621 主列表，必须保持相机返回顺序；`ObjectInfo` 进入 `GalleryMetadataStore`，UI 通过 `GalleryCatalogMergePolicy.displayFiles(catalog, metadata)` 派生展示列表，后台 metadata 补齐不得替换或重排 catalog。
 - 缩略图 bytes 进入独立 `GalleryThumbnailStore`，UI 通过 `thumbnailsByHandle[handle]` 渲染；单张缩略图加载成功不得再刷新主 `files` 列表。
+- 缩略图请求只走 `BrowseScreen` 的可见窗口调度: `GalleryThumbnailRequestWindowPolicy` 根据真实 visible handles 和当前列数生成请求窗口，然后由 `BrowseViewModel.loadVisibleThumbnails()` 统一进入 `GalleryThumbnailController`。不要再把 per-tile `isVisible/onVisible` 回调放回网格 item。
+- 网格 item 可以维护解码后 bitmap 的轻量 LRU，降低快速滚动时反复 decode 的 UI 抖动；这只影响展示缓存，不改变相机请求顺序。
 - 高清预览 bytes、loaded/loading/failed 状态进入独立 `GalleryPreviewStore`；`GalleryPreviewController` 只负责调度和相机请求，不持有 preview 图片状态。
+- 高清预览 UI 的 `items` 必须来自 ViewModel 里的 session 快照，不允许在 Compose 层直接用实时 `files` 重算。否则后台 `ObjectInfo` 补齐会让同一日期总数漂移。
 - gallery 内部 metadata、thumbnail、preview 请求必须通过 `GallerySessionActor`，actor 复用现有优先级 scheduler，并在下载 exclusive 阶段阻止新的非下载相机读取进入 PTP。
 - `D604=HEIF/RAW` 扩展出来但尚未 ObjectInfo 确认的 still handle 只能标记为 `EXTENDED_STILL_CANDIDATE`；筛 HEIF/RAW 时可以包含候选，但不能把候选直接伪装成已确认 HEIF 或 RAW。
 - 列表缩略图走标准 `GET_THUMB`；标准缩略图不可用时记录失败，不再用 `GET_PARTIAL_OBJECT` 作为兜底。
@@ -165,6 +168,7 @@ BLE session 复用规则:
 - 进入高清预览模式时，`GalleryFilesController` 和 `GalleryThumbnailController` 会进入独占暂停，避免后台 metadata 或缩略图抢占 PTP。
 - 高清预览读取使用原厂已确认的 screen preview 路径: `D226 ImageForceCompression=1 -> GET_OBJECT_INFO(handle) -> GET_PARTIAL_OBJECT(handle, 0, fresh compressedSize) -> D226=0`。
 - 高清预览 session 默认按日期构建，一次只激活一个日期；加载优先级按当前可见窗口，而不是无脑从头扫到底。
+- 切换日期或进入高清预览时会重新生成一次 session 快照；例如 2026-06-28 的 290 张应在 UI 和加载 worker 中保持同一个数量，不能随着后续 metadata 补齐上下漂移。
 - UI 上每张高清预览项可以加入普通显示图下载；如果同一照片有 RAW sidecar，则提供单独 `加入 RAW` 按钮。
 - `加入 RAW` 只允许把 RAW-only 候选或已解析 RAW 文件加入下载队列。对于初始阶段 HEIF/RAW 都未解析出来的模糊占位符，当前稳定规则是把显示图候选标为 `HEIF` hint，把 RAW 侧车候选标为 `RAW` hint，避免 RAW 下载被普通 HEIF/JPG 候选污染。
 - RAW-only 候选进入下载队列后强制使用原图模式；用户当前选择压缩也不能把 RAW 侧车按压缩图下载。
@@ -178,6 +182,8 @@ BLE session 复用规则:
 
 - 日期: 全部、今天、指定日期、日期范围。
 - 格式: 全部格式、JPG、HEIF、RAW、视频。
+- 顶部工具区采用两个独立框: 左侧 `[筛选]` 只负责展开/收起筛选，右侧 `[预览 | 缩略图 | 高清]` 只负责切换浏览模式，避免单独模式行占用垂直空间，也避免点击模式时误触筛选面板。
+- 已下载文件仍显示已下载图标，但可以再次被选中并重新加入下载；`PENDING/DOWNLOADING/SAVING` 仍不可选。`未下载优先` 排序继续把已下载项排后面，不能复用 `canSelect()` 判断“未下载”。
 - 排序: 最新、最早、未下载。
 
 日期选择规则:
