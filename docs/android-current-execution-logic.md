@@ -269,17 +269,17 @@ BLE session 复用规则:
 | A-P0-02 | P0 | verified | `D222 current handle snapshot` 是否还在挡首屏，需要确认。 | 2026-07-04 已把 `D222-current-handle-snapshot` 从阻塞启动路径降级为非阻塞诊断；当前稳定 tag 实机确认进入相册速度恢复。 | 保持非阻塞；除非有原厂阶段证据和实机收益，不得重新放回 GalleryReady 前。 |
 | A-P0-03 | P0 | measuring | `9050 SearchModeDescAll` 重试可能拖慢进入相册。 | 当前对 `0x2019` 有最多 3 次重试和 500ms/1000ms 等待。 | 统计 `SearchModeDescAll attempt` 和 retry 日志；只有证明能提高成功率才保留。 |
 | A-P0-04 | P0 | verified | HEIF/RAW 必须在初始占位符阶段出现，不能靠 hidden gap 猜 handle。 | X-T5 实测 `D604=31` 不是全格式；当前稳定 tag 使用 `D604=HEIF/RAW -> 9053/D620/D621` 扩展列表并保留 D621 原始顺序，实机确认 HEIF/RAW 初始显示恢复。 | 持续保留日志观察扩展列表耗时；hidden gap 仍只能做诊断/兜底。 |
-| A-P0-05 | P0 | open | 下载必须独占 PTP；下载期间不能继续缩略图、metadata、高清预览请求。 | 相机 PTP 单线程；之前大 RAW 读到 socket closed 后，后续 JPG/RAW 变成 `Not connected`。 | 缩略图模式和高清预览模式点击下载都跳转下载页；下载页期间暂停其它相机请求，失败后停止剩余队列。 |
-| A-P0-06 | P0 | open | 缩略图模式、高清预览模式、下载模块要共享同一下载队列和同一互斥门。 | 用户要求两个预览模式只改变展示方式，下载模块不能分叉。 | 检查所有下载入口是否都走同一个 transfer gate、同一模式快照和同一失败处理。 |
+| A-P0-05 | P0 | measuring | 下载必须独占 PTP；下载期间不能继续缩略图、metadata、高清预览请求。 | 代码检查确认直接下载和队列启动都走 `prepareGalleryLoadingForTransfer()`，会暂停 files/thumbnail/preview；测试覆盖 HD 卡片只入队、底部统一开始下载。 | 实机继续验证下载页期间是否还有 `Thumbnail request`、`Preview image request`、`Resolve file metadata` 日志。 |
+| A-P0-06 | P0 | measuring | 缩略图模式、高清预览模式、下载模块要共享同一下载队列和同一互斥门。 | 缩略图、单图预览和 HD 预览下载入口都进入同一个 `TransferViewModel`/`TransferService`，HD 单卡只入队，`onStartQueuedDownloads` 统一启动。 | 实机验证两种模式混合入队后下载顺序、模式快照和失败停止队列是否一致。 |
 | A-P1-01 | P1 | open | 后置完整 `ObjectInfo` 补齐不能影响首屏和下载。 | `fastInitialFiles()` 应只发 D621 占位符；完整信息、标准枚举和 hidden metadata 都应低优先级。 | 标记 `galleryObjectInfos()` 的 Android用途，移除或隔离 `iOS logic` 标注分支对首屏/下载的影响。 |
-| A-P1-02 | P1 | open | 缩略图可见窗口需要适配缩放、筛选、快速滚动，不能因为列数变化卡住几个不加载。 | Android 相册网格支持缩放；当前屏幕 item 数会变化，原厂固定 3 列不能直接套用。 | 可见项优先级按真实 visible range 计算；筛选切换时取消旧窗口请求并重新调度当前窗口。 |
-| A-P1-03 | P1 | open | 筛选不能依赖“已经加载出缩略图”的项目。 | 占位符阶段已经有日期、格式候选和 handle，用户选择视频/RAW/HEIF 时应该能先显示占位符，再慢慢加载图。 | 确认筛选输入来自 D621/扩展列表和已知格式标记，而不是缩略图缓存或完整 ObjectInfo 完成状态。 |
-| A-P1-04 | P1 | open | 高清预览必须按当前浏览位置优先加载，而不是一路向下扫。 | 用户滚动到当前屏幕后，当前图片优先级最高；相机请求单线程。 | 采用当前屏幕优先、上方少量、下方更多的 active window；切日期/快速滚动时取消旧任务。 |
+| A-P1-02 | P1 | measuring | 缩略图可见窗口需要适配缩放、筛选、快速滚动，不能因为列数变化卡住几个不加载。 | `GalleryThumbnailRequestWindowPolicy` 已按真实 visible handles 和当前 `columnCount` 计算窗口，并覆盖 stale visible/fallback 测试。 | 实机继续压测缩放、筛选、快速滚动是否还会留下不加载空洞。 |
+| A-P1-03 | P1 | measuring | 筛选不能依赖“已经加载出缩略图”的项目。 | `GalleryUiPolicy.matchesFormat()` 对 `UNDEFINED` 占位符使用 `formatHints`，筛选不依赖缩略图缓存。 | 实机继续验证视频/RAW/HEIF 在缩略图未加载前是否能筛出占位符。 |
+| A-P1-04 | P1 | measuring | 高清预览必须按当前浏览位置优先加载，而不是一路向下扫。 | `HighDefinitionPreviewSession.prioritizeVisibleHandles()` 已按可见 handles 构建 active window：当前可见优先，后 20、前 5；测试覆盖向下和向上滚动。 | 实机继续观察快速滚动/切日期后是否从当前屏幕开始加载。 |
 | A-P1-05 | P1 | verified | 高清预览取消不能写成失败，也不能把黑图/半图标记成已加载。 | 当前稳定 tag 已单独处理 `CancellationException`，并只拒绝明显过小的不完整 JPEG；实机未再复现黑图卡死。 | 继续用日志观察 `Preview image missing JPEG EOI` 和取消场景，不把取消计入失败。 |
 | A-P1-06 | P1 | verified | 高清预览的 RAW sidecar 只能作为同一照片的下载按钮，不能重排 D621 时间线。 | 当前稳定 tag 已把模糊 HEIF/RAW 配对后的显示图标为 `HEIF` hint、RAW 侧车标为 `RAW` hint，并加入 `rawPairs` 日志；实机确认 `加入 RAW` 看起来正常。 | 继续收集异常日期/handle 顺序样本；如果配对错误，只改 HD sidecar policy，不改连接主链路。 |
 | A-P1-07 | P1 | open | 下载模式必须在下载前写入并重新读 fresh `ObjectInfo`，不能保存缩略图大小。 | 原图/压缩都曾落到缩略图大小；当前规则要求 `D226/D22E -> GET_OBJECT_INFO -> GET_PARTIAL_OBJECT`。 | 保留 `Download mode prepare` 和 `Download partial freshSize/readSize` 日志；任何几百 KB 结果都视为失败。 |
 | A-P1-08 | P1 | open | 交互问题继续收敛：多选滑动过敏、日期范围两个输入框、单图底部悬浮条一致性。 | 用户已明确提出这些 UX 问题；它们不应影响连接主链路。 | 作为 UI 层独立任务处理，禁止借 UI 调整触发 gallery startup 或改变 PTP 调度。 |
-| A-P2-01 | P2 | open | HD 预览磁盘缓存同步读大文件可能卡 UI，且没有容量上限。 | `hd-preview-cache` 可随浏览增长；同步 `readBytes()` 可能阻塞滚动。 | 改 IO 协程读取，加入 LRU/总大小上限和按相机/日期清理策略。 |
+| A-P2-01 | P2 | measuring | HD 预览磁盘缓存同步读大文件可能卡 UI，且没有容量上限。 | 2026-07-04 已把 active window 磁盘恢复移到 IO 协程，并给 `hd-preview-cache` 加 300MB 总量上限；策略测试覆盖优先删除非当前窗口旧文件。 | 实机观察 HD 预览长时间浏览后的滚动卡顿和 `HD preview disk cache trimmed` 日志。 |
 | A-P2-02 | P2 | open | 缩略图内存缓存需要上限。 | 大图库持续加载时，按 handle 增长的缓存可能带来内存压力。 | 保留当前窗口、最近窗口和下载中心必要缓存，其余按 LRU 淘汰。 |
 | A-P2-03 | P2 | open | RAW/视频下载必须保持流式保存，不能退回整文件进内存。 | 大 RAW/视频会超过普通 ByteArray 安全范围；当前 64MB 以上走 stream。 | 任何下载重构必须保留大文件 stream 策略，并记录 transfer/save 分段耗时。 |
 

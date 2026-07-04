@@ -23,6 +23,7 @@ class GalleryPreviewController(
     private val thumbnailController: GalleryThumbnailController,
 ) {
     private val previewImageCache = LinkedHashMap<Int, ByteArray>()
+    private val previewCacheLock = Any()
     private val _previewImages = MutableStateFlow<Map<Int, ByteArray>>(emptyMap())
     val previewImages: StateFlow<Map<Int, ByteArray>> = _previewImages.asStateFlow()
     private val _loadedPreviewHandles = MutableStateFlow<Set<Int>>(emptySet())
@@ -60,7 +61,7 @@ class GalleryPreviewController(
         if (previewLoadingPaused) return
         if (!GalleryPreviewFullImageLoadPolicy.shouldRequestFullImagePreview(
                 file = file,
-                hasPreviewImage = previewImageCache.containsKey(handle),
+                hasPreviewImage = hasCachedPreview(handle),
                 isAlreadyLoading = handle in _loadingPreviewHandles.value,
                 force = force,
             )
@@ -183,7 +184,9 @@ class GalleryPreviewController(
         sessionPreviewJob?.cancel()
         manualPreviewJob = null
         sessionPreviewJob = null
-        previewImageCache.clear()
+        synchronized(previewCacheLock) {
+            previewImageCache.clear()
+        }
         pendingPreviewFile = null
         activeSession = null
         synchronized(previewPauseLock) {
@@ -236,7 +239,7 @@ class GalleryPreviewController(
         onFailure: (Int) -> Unit = {},
     ) {
         val handle = file.info.handle
-        if (previewImageCache.containsKey(handle)) {
+        if (hasCachedPreview(handle)) {
             _loadingPreviewHandles.value = _loadingPreviewHandles.value - handle
             onSuccess(handle)
             return
@@ -249,9 +252,10 @@ class GalleryPreviewController(
                 cameraSource.getPreviewImage(handle)
             }
             val decodedSize = data.decodedBounds()
-            cachePreviewImage(handle, data)
+            val previewSnapshot = cachePreviewImage(handle, data)
             writePreviewImageToDisk(cameraSource, handle, data)
-            _previewImages.value = previewImageCache.toMap()
+            trimPreviewDiskCache(cameraSource, activeSession?.activeWindowHandleSet().orEmpty())
+            _previewImages.value = previewSnapshot
             _loadedPreviewHandles.value = _loadedPreviewHandles.value + handle
             _failedPreviewHandles.value = _failedPreviewHandles.value - handle
             DiagnosticLog.append(
@@ -292,51 +296,59 @@ class GalleryPreviewController(
         }
     }
 
-    private fun cachePreviewImage(handle: Int, data: ByteArray) {
-        previewImageCache.remove(handle)
-        previewImageCache[handle] = data
-        val protectedHandles = activeSession?.activeWindowHandleSet().orEmpty()
-        while (previewImageCache.size > MAX_CACHED_PREVIEW_IMAGES) {
-            val oldestHandle = previewImageCache.keys.firstOrNull { it !in protectedHandles }
-                ?: previewImageCache.keys.firstOrNull()
-                ?: return
-            previewImageCache.remove(oldestHandle)
+    private fun hasCachedPreview(handle: Int): Boolean =
+        synchronized(previewCacheLock) { previewImageCache.containsKey(handle) }
+
+    private fun cachePreviewImage(handle: Int, data: ByteArray): Map<Int, ByteArray> =
+        synchronized(previewCacheLock) {
+            previewImageCache.remove(handle)
+            previewImageCache[handle] = data
+            val protectedHandles = activeSession?.activeWindowHandleSet().orEmpty()
+            while (previewImageCache.size > MAX_CACHED_PREVIEW_IMAGES) {
+                val oldestHandle = previewImageCache.keys.firstOrNull { it !in protectedHandles }
+                    ?: previewImageCache.keys.firstOrNull()
+                    ?: return@synchronized previewImageCache.toMap()
+                previewImageCache.remove(oldestHandle)
+            }
+            previewImageCache.toMap()
         }
-    }
 
     private fun restoreActiveWindowPreviewImages(
         cameraSource: CameraFileSource,
         activeWindowHandles: Set<Int>,
     ) {
         if (activeWindowHandles.isEmpty()) return
-        var changed = false
-        val missingLoadedHandles = mutableSetOf<Int>()
-        activeWindowHandles.forEach { handle ->
-            if (previewImageCache.containsKey(handle)) return@forEach
-            val data = readPreviewImageFromDisk(cameraSource, handle)
-            if (data != null) {
-                cachePreviewImage(handle, data)
-                _loadedPreviewHandles.value = _loadedPreviewHandles.value + handle
-                changed = true
-            } else if (handle in _loadedPreviewHandles.value) {
-                missingLoadedHandles += handle
+        scope.launch(Dispatchers.IO) {
+            var previewSnapshot: Map<Int, ByteArray>? = null
+            val restoredHandles = mutableSetOf<Int>()
+            val missingLoadedHandles = mutableSetOf<Int>()
+            activeWindowHandles.forEach { handle ->
+                if (hasCachedPreview(handle)) return@forEach
+                val data = readPreviewImageFromDisk(cameraSource, handle)
+                if (data != null) {
+                    previewSnapshot = cachePreviewImage(handle, data)
+                    restoredHandles += handle
+                } else if (handle in _loadedPreviewHandles.value) {
+                    missingLoadedHandles += handle
+                }
             }
-        }
-        if (missingLoadedHandles.isNotEmpty()) {
-            _loadedPreviewHandles.value = _loadedPreviewHandles.value - missingLoadedHandles
-            DiagnosticLog.append(
-                cameraSource.context,
-                TAG,
-                "HD preview active window missing cache handles=${missingLoadedHandles.take(8).joinToString()}",
-            )
-        }
-        if (changed) {
-            _previewImages.value = previewImageCache.toMap()
-            DiagnosticLog.append(
-                cameraSource.context,
-                TAG,
-                "HD preview restored active window from disk count=${activeWindowHandles.count { it in previewImageCache }}",
-            )
+            if (missingLoadedHandles.isNotEmpty()) {
+                _loadedPreviewHandles.value = _loadedPreviewHandles.value - missingLoadedHandles
+                DiagnosticLog.append(
+                    cameraSource.context,
+                    TAG,
+                    "HD preview active window missing cache handles=${missingLoadedHandles.take(8).joinToString()}",
+                )
+            }
+            previewSnapshot?.let { snapshot ->
+                _previewImages.value = snapshot
+                _loadedPreviewHandles.value = _loadedPreviewHandles.value + restoredHandles
+                DiagnosticLog.append(
+                    cameraSource.context,
+                    TAG,
+                    "HD preview restored active window from disk count=${restoredHandles.size}",
+                )
+            }
         }
     }
 
@@ -360,8 +372,46 @@ class GalleryPreviewController(
         }
     }
 
+    private fun trimPreviewDiskCache(
+        cameraSource: CameraFileSource,
+        activeWindowHandles: Set<Int>,
+    ) {
+        runCatching {
+            val root = previewDiskRoot(cameraSource)
+            val entries = root.listFiles()
+                ?.filter { it.isFile && it.length() > 0L }
+                ?.map { file ->
+                    GalleryPreviewDiskCacheEntry(
+                        fileName = file.name,
+                        sizeBytes = file.length(),
+                        lastModifiedMs = file.lastModified(),
+                        isActiveWindow = previewHandleFromDiskFile(file) in activeWindowHandles,
+                    )
+                }
+                .orEmpty()
+            val filesToDelete = GalleryPreviewDiskCachePolicy.filesToDelete(entries)
+            if (filesToDelete.isEmpty()) return
+            root.listFiles()
+                ?.filter { it.name in filesToDelete }
+                ?.forEach { it.delete() }
+            DiagnosticLog.append(
+                cameraSource.context,
+                TAG,
+                "HD preview disk cache trimmed deleted=${filesToDelete.size}",
+            )
+        }.onFailure { error ->
+            DiagnosticLog.append(cameraSource.context, TAG, "HD preview disk cache trim failed", error)
+        }
+    }
+
     private fun previewDiskFile(cameraSource: CameraFileSource, handle: Int): File =
-        File(File(cameraSource.context.cacheDir, "hd-preview-cache"), "$handle.bin")
+        File(previewDiskRoot(cameraSource), "$handle.bin")
+
+    private fun previewDiskRoot(cameraSource: CameraFileSource): File =
+        File(cameraSource.context.cacheDir, "hd-preview-cache")
+
+    private fun previewHandleFromDiskFile(file: File): Int? =
+        file.name.removeSuffix(".bin").toIntOrNull()
 
     private fun ByteArray.decodedBounds(): PreviewDecodedBounds {
         val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -402,4 +452,35 @@ internal object GalleryPreviewFullImageLoadPolicy {
 internal object GalleryPreviewFailurePolicy {
     fun shouldMarkFailed(error: Throwable): Boolean =
         error !is CancellationException
+}
+
+internal data class GalleryPreviewDiskCacheEntry(
+    val fileName: String,
+    val sizeBytes: Long,
+    val lastModifiedMs: Long,
+    val isActiveWindow: Boolean,
+)
+
+internal object GalleryPreviewDiskCachePolicy {
+    const val MAX_TOTAL_BYTES: Long = 300L * 1024L * 1024L
+
+    fun filesToDelete(
+        entries: List<GalleryPreviewDiskCacheEntry>,
+        maxTotalBytes: Long = MAX_TOTAL_BYTES,
+    ): Set<String> {
+        var totalBytes = entries.sumOf { it.sizeBytes }
+        if (totalBytes <= maxTotalBytes) return emptySet()
+        val deleted = linkedSetOf<String>()
+        entries
+            .sortedWith(
+                compareBy<GalleryPreviewDiskCacheEntry> { it.isActiveWindow }
+                    .thenBy { it.lastModifiedMs }
+            )
+            .forEach { entry ->
+                if (totalBytes <= maxTotalBytes) return@forEach
+                deleted += entry.fileName
+                totalBytes -= entry.sizeBytes
+            }
+        return deleted
+    }
 }

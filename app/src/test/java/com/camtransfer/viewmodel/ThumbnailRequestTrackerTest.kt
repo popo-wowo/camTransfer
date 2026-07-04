@@ -4,6 +4,8 @@ import com.camtransfer.model.CameraFile
 import com.camtransfer.model.ObjectInfo
 import com.camtransfer.protocol.PtpObjectFormat
 import com.camtransfer.viewmodel.gallery.GalleryFastInitialLoadPolicy
+import com.camtransfer.viewmodel.gallery.GalleryPreviewDiskCacheEntry
+import com.camtransfer.viewmodel.gallery.GalleryPreviewDiskCachePolicy
 import com.camtransfer.viewmodel.gallery.GalleryPreviewFailurePolicy
 import com.camtransfer.viewmodel.gallery.GalleryPreviewFullImageLoadPolicy
 import com.camtransfer.viewmodel.gallery.ThumbnailLoadPolicy
@@ -152,6 +154,33 @@ class ThumbnailRequestTrackerTest {
     fun previewCancellationDoesNotMarkHandleAsFailed() {
         assertFalse(GalleryPreviewFailurePolicy.shouldMarkFailed(CancellationException("transfer pause")))
         assertTrue(GalleryPreviewFailurePolicy.shouldMarkFailed(IllegalStateException("decode failed")))
+    }
+
+    @Test
+    fun previewDiskCacheTrimsOldUnprotectedEntriesFirst() {
+        val entries = listOf(
+            GalleryPreviewDiskCacheEntry(fileName = "1.bin", sizeBytes = 40, lastModifiedMs = 1, isActiveWindow = false),
+            GalleryPreviewDiskCacheEntry(fileName = "2.bin", sizeBytes = 40, lastModifiedMs = 2, isActiveWindow = true),
+            GalleryPreviewDiskCacheEntry(fileName = "3.bin", sizeBytes = 40, lastModifiedMs = 3, isActiveWindow = false),
+        )
+
+        assertEquals(
+            setOf("1.bin"),
+            GalleryPreviewDiskCachePolicy.filesToDelete(entries, maxTotalBytes = 90),
+        )
+    }
+
+    @Test
+    fun previewDiskCacheCanTrimProtectedEntriesOnlyWhenStillOverLimit() {
+        val entries = listOf(
+            GalleryPreviewDiskCacheEntry(fileName = "1.bin", sizeBytes = 70, lastModifiedMs = 1, isActiveWindow = true),
+            GalleryPreviewDiskCacheEntry(fileName = "2.bin", sizeBytes = 70, lastModifiedMs = 2, isActiveWindow = true),
+        )
+
+        assertEquals(
+            setOf("1.bin"),
+            GalleryPreviewDiskCachePolicy.filesToDelete(entries, maxTotalBytes = 100),
+        )
     }
 
     private fun file(format: Int): CameraFile = CameraFile(
