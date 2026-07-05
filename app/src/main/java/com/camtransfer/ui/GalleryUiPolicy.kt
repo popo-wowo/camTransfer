@@ -1,10 +1,12 @@
 package com.camtransfer.ui
 
 import com.camtransfer.model.CameraFile
+import com.camtransfer.model.CameraFileFormatHint
 import com.camtransfer.model.TransferState
 import com.camtransfer.protocol.PtpObjectFormat
 import java.nio.ByteOrder
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import kotlin.math.abs
 import kotlin.math.hypot
@@ -101,14 +103,38 @@ object GalleryUiPolicy {
     private fun matchesFormat(file: CameraFile, formats: Set<GalleryFormatFilter>): Boolean {
         if (formats.isEmpty()) return true
         return formats.any { format ->
-            when (format) {
-                GalleryFormatFilter.Jpg -> file.info.isJpeg
-                GalleryFormatFilter.Heif -> file.info.isHeif
-                GalleryFormatFilter.Raw -> file.info.isRaw
-                GalleryFormatFilter.Video -> file.info.isVideo
+            if (file.info.format != PtpObjectFormat.UNDEFINED) {
+                matchesResolvedFormat(file, format)
+            } else {
+                matchesFormatHint(file, format)
             }
         }
     }
+
+    private fun matchesResolvedFormat(file: CameraFile, format: GalleryFormatFilter): Boolean =
+        when (format) {
+            GalleryFormatFilter.Jpg -> file.info.isJpeg
+            GalleryFormatFilter.Heif -> file.info.isHeif
+            GalleryFormatFilter.Raw -> file.info.isRaw
+            GalleryFormatFilter.Video -> file.info.isVideo
+        }
+
+    private fun matchesFormatHint(file: CameraFile, format: GalleryFormatFilter): Boolean =
+        when (format) {
+            GalleryFormatFilter.Jpg -> CameraFileFormatHint.JPG in file.formatHints
+            GalleryFormatFilter.Heif -> CameraFileFormatHint.HEIF in file.formatHints ||
+                CameraFileFormatHint.EXTENDED_STILL_CANDIDATE in file.formatHints
+            GalleryFormatFilter.Raw -> CameraFileFormatHint.RAW in file.formatHints ||
+                CameraFileFormatHint.EXTENDED_STILL_CANDIDATE in file.formatHints
+            GalleryFormatFilter.Video -> CameraFileFormatHint.VIDEO in file.formatHints
+        }
+
+    fun formatMatches(file: CameraFile, format: GalleryFormatFilter): Boolean =
+        if (file.info.format != PtpObjectFormat.UNDEFINED) {
+            matchesResolvedFormat(file, format)
+        } else {
+            matchesFormatHint(file, format)
+        }
 
     private fun matchesFolder(file: CameraFile, folders: Set<GalleryFolderFilter>): Boolean {
         if (folders.isEmpty()) return true
@@ -148,11 +174,15 @@ object GalleryFilterStatsPolicy {
 
     private fun localFormatCounts(files: List<CameraFile>): Map<GalleryFormatFilter, Int> =
         mapOf(
-            GalleryFormatFilter.Jpg to files.count { it.info.isJpeg },
-            GalleryFormatFilter.Heif to files.count { it.info.isHeif },
-            GalleryFormatFilter.Raw to files.count { it.info.isRaw },
-            GalleryFormatFilter.Video to files.count { it.info.isVideo },
+            GalleryFormatFilter.Jpg to files.count { GalleryUiPolicy.formatMatches(it, GalleryFormatFilter.Jpg) },
+            GalleryFormatFilter.Heif to files.count { GalleryUiPolicy.formatMatches(it, GalleryFormatFilter.Heif) },
+            GalleryFormatFilter.Raw to files.count { GalleryUiPolicy.formatMatches(it, GalleryFormatFilter.Raw) },
+            GalleryFormatFilter.Video to files.count { GalleryUiPolicy.formatMatches(it, GalleryFormatFilter.Video) },
         )
+}
+
+object GalleryTransferModeUiPolicy {
+    fun canChangeTransferMode(isTransferring: Boolean): Boolean = !isTransferring
 }
 
 object GallerySectionPolicy {
@@ -249,6 +279,30 @@ object GalleryDateDialogPolicy {
         }
 }
 
+enum class GalleryDateRangeEndpoint {
+    Start,
+    End,
+}
+
+object GalleryDateRangePickerPolicy {
+    private val fullDateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
+
+    fun fieldValue(day: LocalDate?): String =
+        day?.format(fullDateFormatter) ?: "选择日期"
+
+    fun nextEndpointAfterDate(endpoint: GalleryDateRangeEndpoint): GalleryDateRangeEndpoint =
+        when (endpoint) {
+            GalleryDateRangeEndpoint.Start -> GalleryDateRangeEndpoint.End
+            GalleryDateRangeEndpoint.End -> GalleryDateRangeEndpoint.End
+        }
+
+    fun normalizedStart(start: LocalDate?, end: LocalDate?): LocalDate? =
+        start?.let { startDay -> end?.let { minOf(startDay, it) } ?: startDay }
+
+    fun normalizedEnd(start: LocalDate?, end: LocalDate?): LocalDate? =
+        start?.let { startDay -> end?.let { maxOf(startDay, it) } ?: startDay }
+}
+
 object GallerySortPolicy {
     fun sortedFiles(
         files: List<CameraFile>,
@@ -260,34 +314,40 @@ object GallerySortPolicy {
             GallerySortMode.OldestFirst -> files.sortedWith(oldestFirstComparator())
             GallerySortMode.NotDownloadedFirst -> files.sortedWith(
                 compareBy<CameraFile> { file ->
-                    if (GalleryDownloadUiPolicy.canSelect(downloadStates[file.info.handle])) 0 else 1
+                    if (GalleryDownloadUiPolicy.isNeverDownloadedOrRetryable(downloadStates[file.info.handle])) 0 else 1
                 }.then(newestFirstComparator())
             )
         }
 
     private fun newestFirstComparator(): Comparator<CameraFile> =
-        compareByDescending<CameraFile> { it.info.captureDate }
-            .thenByDescending { it.info.handle }
+        compareByDescending<CameraFile> { captureDateSortKey(it) }
 
     private fun oldestFirstComparator(): Comparator<CameraFile> =
-        compareBy<CameraFile> { it.info.captureDate }
-            .thenBy { it.info.handle }
+        compareBy<CameraFile> { captureDateSortKey(it) }
+
+    private fun captureDateSortKey(file: CameraFile): String {
+        val captureDate = file.info.captureDate
+        return if (captureDate.length >= 15) captureDate.take(15) else if (captureDate.length >= 8) {
+            captureDate.take(8)
+        } else {
+            captureDate
+        }
+    }
 }
 
 object GalleryScrollResetPolicy {
     fun shouldScrollToTopAfterFilterOrSortChange(): Boolean = true
 }
 
-object GalleryThumbnailVisibilityPolicy {
-    fun shouldRequestThumbnail(
-        isItemVisible: Boolean,
-        isLoadingFullObjectInfo: Boolean,
-        hasThumbnail: Boolean,
-    ): Boolean =
-        isItemVisible && !hasThumbnail
+object GalleryCacheUsageUiPolicy {
+    const val INITIAL_SCAN_DELAY_MS = 1_500L
+
+    fun shouldScanCacheUsage(hasFiles: Boolean, isLoading: Boolean): Boolean =
+        hasFiles && !isLoading
 }
 
 object GalleryThumbnailRequestWindowPolicy {
+    const val REQUEST_DEBOUNCE_MS = 80L
     private const val PREFETCH_ROWS_BEFORE = 1
     private const val PREFETCH_ROWS_AFTER = 2
 
@@ -296,12 +356,15 @@ object GalleryThumbnailRequestWindowPolicy {
         visibleHandles: List<Int>,
         columnCount: Int,
     ): List<Int> {
-        if (orderedHandles.isEmpty() || visibleHandles.isEmpty()) return emptyList()
+        if (orderedHandles.isEmpty()) return emptyList()
         val indexByHandle = orderedHandles.withIndex().associate { it.value to it.index }
-        val visibleIndexes = visibleHandles.mapNotNull(indexByHandle::get)
-        if (visibleIndexes.isEmpty()) return emptyList()
-
         val normalizedColumnCount = columnCount.coerceAtLeast(1)
+        val visibleIndexes = visibleHandles.mapNotNull(indexByHandle::get)
+        if (visibleIndexes.isEmpty()) {
+            val initialWindowSize = normalizedColumnCount * (1 + PREFETCH_ROWS_AFTER)
+            return orderedHandles.take(initialWindowSize)
+        }
+
         val start = (visibleIndexes.minOrNull()!! - normalizedColumnCount * PREFETCH_ROWS_BEFORE).coerceAtLeast(0)
         val end = (visibleIndexes.maxOrNull()!! + normalizedColumnCount * PREFETCH_ROWS_AFTER)
             .coerceAtMost(orderedHandles.lastIndex)
@@ -368,11 +431,55 @@ object GalleryFilterPanelPolicy {
 object GalleryDownloadUiPolicy {
     fun canSelect(state: TransferState?): Boolean =
         when (state) {
-            null, TransferState.ERROR -> true
+            null,
+            TransferState.ERROR,
+            TransferState.DONE -> true
+            TransferState.PENDING,
+            TransferState.DOWNLOADING,
+            TransferState.SAVING -> false
+        }
+
+    fun hasStarted(state: TransferState?): Boolean =
+        when (state) {
+            TransferState.PENDING,
+            TransferState.DOWNLOADING,
+            TransferState.SAVING,
+            TransferState.DONE -> true
+            null,
+            TransferState.ERROR -> false
+        }
+
+    fun isQueuedOrActive(state: TransferState?): Boolean =
+        when (state) {
+            TransferState.PENDING,
+            TransferState.DOWNLOADING,
+            TransferState.SAVING -> true
+            TransferState.DONE,
+            TransferState.ERROR,
+            null -> false
+        }
+
+    fun isNeverDownloadedOrRetryable(state: TransferState?): Boolean =
+        when (state) {
+            null,
+            TransferState.ERROR -> true
             TransferState.PENDING,
             TransferState.DOWNLOADING,
             TransferState.SAVING,
             TransferState.DONE -> false
+        }
+
+    fun canDownloadFromHighDefinitionPreview(
+        hasPreviewImage: Boolean,
+        state: TransferState?,
+    ): Boolean =
+        hasPreviewImage && when (state) {
+            null,
+            TransferState.ERROR,
+            TransferState.PENDING,
+            TransferState.DONE -> true
+            TransferState.DOWNLOADING,
+            TransferState.SAVING -> false
         }
 }
 
@@ -404,6 +511,16 @@ object GalleryHeaderActionPolicy {
 
 object DownloadCenterActionPolicy {
     const val clearDownloadRecordsLabel = "清理记录"
+    const val pauseDownloadsLabel = "暂停下载"
+
+    fun canReturnToGallery(activeCount: Int): Boolean =
+        true
+
+    fun canPauseDownloads(activeCount: Int): Boolean =
+        activeCount > 0
+
+    fun canClearRecords(totalCount: Int, activeCount: Int): Boolean =
+        totalCount > 0 && activeCount == 0
 }
 
 object GalleryDisconnectPolicy {
@@ -414,6 +531,9 @@ object GalleryDisconnectPolicy {
 }
 
 object GalleryDragSelectionPolicy {
+    private const val HORIZONTAL_INTENT_RATIO = 1.25f
+    private const val MIN_HORIZONTAL_SLOP_MULTIPLIER = 1.15f
+
     fun shouldSelectForDrag(startHandleSelected: Boolean): Boolean = !startHandleSelected
 
     fun shouldStartDragSelection(
@@ -424,9 +544,20 @@ object GalleryDragSelectionPolicy {
     ): Boolean {
         val distance = hypot(deltaX.toDouble(), deltaY.toDouble()).toFloat()
         if (distance < touchSlop) return false
-        if (selectionActive) return true
-        return abs(deltaX) >= abs(deltaY) * 0.55f
+        val horizontal = abs(deltaX)
+        val vertical = abs(deltaY)
+        val minHorizontal = touchSlop * MIN_HORIZONTAL_SLOP_MULTIPLIER
+        return horizontal >= minHorizontal && horizontal >= vertical * HORIZONTAL_INTENT_RATIO
     }
+
+    fun shouldCommitDragSelection(
+        startHandle: Int,
+        endHandle: Int?,
+        endDownloadState: TransferState?,
+    ): Boolean =
+        endHandle != null &&
+            endHandle != startHandle &&
+            GalleryDownloadUiPolicy.canSelect(endDownloadState)
 
     fun updatedSelection(
         currentSelection: Set<Int>,
@@ -537,6 +668,9 @@ object GalleryPreviewThumbnailPolicy {
 }
 
 object GalleryPreviewRotationPolicy {
+    fun previousManualRotationDegrees(currentDegrees: Int): Int =
+        normalizedDegrees(currentDegrees - 90)
+
     fun nextManualRotationDegrees(currentDegrees: Int): Int =
         normalizedDegrees(currentDegrees + 90)
 
@@ -682,6 +816,12 @@ object GalleryPreviewRotationPolicy {
 }
 
 object GalleryThumbnailDisplayPolicy {
+    fun thumbnailFor(file: CameraFile, thumbnailsByHandle: Map<Int, ByteArray>): ByteArray? =
+        thumbnailsByHandle[file.info.handle] ?: file.thumbnail
+
+    fun thumbnailFor(file: CameraFile, cachedThumbnail: ByteArray?): ByteArray? =
+        cachedThumbnail ?: file.thumbnail
+
     fun rotationDegrees(
         file: CameraFile,
         decodedWidth: Int,
@@ -756,4 +896,88 @@ internal object GalleryPreviewImagePolicy {
 
     fun displayBytes(previewImage: ByteArray?, thumbnail: ByteArray?): ByteArray? =
         previewImage ?: thumbnail
+}
+
+internal object GalleryPreviewActionBarPolicy {
+    fun downloadLabel(state: TransferState?): String =
+        when (state) {
+            TransferState.PENDING -> "排队"
+            TransferState.DOWNLOADING -> "下载中"
+            TransferState.SAVING -> "保存中"
+            TransferState.DONE -> "已保存"
+            TransferState.ERROR -> "重试"
+            null -> "下载"
+        }
+
+    fun downloadModeLabel(preferCompressedDownloads: Boolean): String =
+        if (preferCompressedDownloads) "压缩" else "原图"
+
+    fun canRequestHighDefinitionPreview(file: CameraFile): Boolean =
+        file.info.isJpeg || file.info.isHeif
+
+    fun highDefinitionPreviewLabel(hasPreview: Boolean, isLoading: Boolean): String =
+        when {
+            isLoading -> "加载中"
+            hasPreview -> "已加载"
+            else -> "高清预览"
+        }
+}
+
+data class GalleryPreviewFileInfoRow(
+    val label: String,
+    val value: String,
+)
+
+internal object GalleryPreviewFileInfoPolicy {
+    private val inputFormatter = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss")
+    private val outputFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+
+    fun rows(file: CameraFile): List<GalleryPreviewFileInfoRow> {
+        val info = file.info
+        return buildList {
+            add(GalleryPreviewFileInfoRow("文件", info.filename))
+            add(GalleryPreviewFileInfoRow("格式", info.formatLabel))
+            dimensionLabel(info.imagePixWidth, info.imagePixHeight)?.let {
+                add(GalleryPreviewFileInfoRow("尺寸", it))
+            }
+            dimensionLabel(info.thumbPixWidth, info.thumbPixHeight)?.let {
+                add(GalleryPreviewFileInfoRow("缩略图", it))
+            }
+            formatBytes(info.compressedSize)?.let {
+                add(GalleryPreviewFileInfoRow("大小", it))
+            }
+            captureDateLabel(info.captureDate)?.let {
+                add(GalleryPreviewFileInfoRow("拍摄时间", it))
+            }
+            add(GalleryPreviewFileInfoRow("Handle", info.handle.toString()))
+            add(GalleryPreviewFileInfoRow("存储", "0x%08X".format(info.storageId)))
+            if (info.parentObject > 0) {
+                add(GalleryPreviewFileInfoRow("文件夹", info.parentObject.toString()))
+            }
+            info.orientation?.let {
+                add(GalleryPreviewFileInfoRow("方向", it.toString()))
+            }
+        }
+    }
+
+    private fun dimensionLabel(width: Int, height: Int): String? =
+        if (width > 0 && height > 0) "$width x $height" else null
+
+    private fun captureDateLabel(value: String): String? {
+        if (value.length < 15) return null
+        return runCatching {
+            LocalDateTime.parse(value.take(15), inputFormatter).format(outputFormatter)
+        }.getOrNull()
+    }
+
+    private fun formatBytes(bytes: Int): String? {
+        if (bytes <= 0) return null
+        val kib = 1024.0
+        val mib = kib * 1024.0
+        return when {
+            bytes < 1024 -> "$bytes B"
+            bytes < 1024 * 1024 -> "${(bytes / kib).toInt()} KB"
+            else -> "%.1f MB".format(bytes / mib).replace(".0 MB", " MB")
+        }
+    }
 }

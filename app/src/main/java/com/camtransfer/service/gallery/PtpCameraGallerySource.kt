@@ -2,15 +2,20 @@ package com.camtransfer.service.gallery
 
 import android.content.Context
 import com.camtransfer.model.CameraFile
+import com.camtransfer.model.CameraFileFormatHint
 import com.camtransfer.model.ObjectInfo
+import com.camtransfer.model.TransferDownloadMode
 import com.camtransfer.protocol.CameraVendorGalleryDiscoveryPolicy
 import com.camtransfer.protocol.CameraVendorHiddenObjectProbePolicy
+import com.camtransfer.protocol.CameraVendorOfficialGalleryStartupPolicy
 import com.camtransfer.protocol.PtpCommands
 import com.camtransfer.protocol.PtpConnection
 import com.camtransfer.protocol.PtpObjectFormat
+import com.camtransfer.protocol.CameraVendorSearchMode
 import com.camtransfer.service.CameraFileSource
 import com.camtransfer.service.CameraThumbnail
 import com.camtransfer.service.DiagnosticLog
+import java.io.OutputStream
 
 private const val TAG = "PtpCameraGallerySource"
 
@@ -30,12 +35,6 @@ class PtpCameraGallerySource(
     }
 
     override suspend fun fastInitialFiles(): List<CameraFile> {
-        if (connection.cameraVendorSpecifiedObjectHandles.isEmpty()) {
-            runCatching { connection.loadCameraVendorGalleryObjectHandles() }
-                .onFailure {
-                    DiagnosticLog.append(context, TAG, "Fast gallery handle initialization failed", it)
-                }
-        }
         val handles = CameraVendorGalleryDiscoveryPolicy.initialPlaceholderHandles(
             connection.cameraVendorSpecifiedObjectHandles
         )
@@ -44,18 +43,20 @@ class PtpCameraGallerySource(
             specifiedHandles = connection.cameraVendorSpecifiedObjectHandles,
             countsByDate = connection.cameraVendorSpecifiedObjectCountsByDate,
         )
+        val formatHintsByHandle = formatHintsByHandle()
         DiagnosticLog.append(
             context,
             TAG,
             "Fast gallery placeholders count=${handles.size} dateGroups=${connection.cameraVendorSpecifiedObjectCountsByDate.size} " +
-                "datedPlaceholders=${captureDatesByHandle.size}",
+                "datedPlaceholders=${captureDatesByHandle.size} formatHints=${formatHintsByHandle.size}",
         )
         return handles.map { handle ->
             CameraFile(
                 placeholderObjectInfo(
                     handle = handle,
                     captureDate = captureDatesByHandle[handle].orEmpty(),
-                )
+                ),
+                formatHints = formatHintsByHandle[handle].orEmpty(),
             )
         }
     }
@@ -143,15 +144,81 @@ class PtpCameraGallerySource(
         return commands.getPreviewImage(handle)
     }
 
-    override suspend fun getFile(handle: Int): ByteArray {
-        DiagnosticLog.append(context, TAG, "Get original file handle=$handle")
-        val expectedSize = runCatching { commands.getObjectInfo(handle).compressedSize }.getOrNull()
-        val data = commands.getObject(handle, expectedSize)
-        DiagnosticLog.append(context, TAG, "Original file loaded handle=$handle bytes=${data.size} expected=$expectedSize")
+    override suspend fun getFile(
+        handle: Int,
+        downloadMode: TransferDownloadMode,
+    ): ByteArray {
+        DiagnosticLog.append(context, TAG, "Get file handle=$handle mode=${downloadMode.name.lowercase()}")
+        val expectedInfo = runCatching { commands.getObjectInfo(handle) }.getOrNull()
+        val expectedSize = expectedInfo?.compressedSize
+        val data = commands.getObject(
+            handle = handle,
+            expectedSize = expectedSize,
+            downloadMode = downloadMode,
+            objectInfo = expectedInfo,
+        )
+        DiagnosticLog.append(
+            context,
+            TAG,
+            "File loaded handle=$handle bytes=${data.size} expected=$expectedSize mode=${downloadMode.name.lowercase()}",
+        )
         return data
     }
 
+    override suspend fun writeFile(
+        handle: Int,
+        downloadMode: TransferDownloadMode,
+        output: OutputStream,
+    ): Long {
+        DiagnosticLog.append(context, TAG, "Stream file handle=$handle mode=${downloadMode.name.lowercase()}")
+        val expectedInfo = runCatching { commands.getObjectInfo(handle) }.getOrNull()
+        val expectedSize = expectedInfo?.compressedSize
+        val bytes = commands.writeObjectToStream(
+            handle = handle,
+            expectedSize = expectedSize,
+            downloadMode = downloadMode,
+            objectInfo = expectedInfo,
+            output = output,
+        )
+        DiagnosticLog.append(
+            context,
+            TAG,
+            "File streamed handle=$handle bytes=$bytes expected=$expectedSize mode=${downloadMode.name.lowercase()}",
+        )
+        return bytes
+    }
+
     override suspend fun disconnect() = Unit
+
+    private fun formatHintsByHandle(): Map<Int, Set<CameraFileFormatHint>> {
+        val handlesByMask = connection.cameraVendorSpecifiedObjectHandlesByFormatMask
+        if (handlesByMask.isEmpty()) return emptyMap()
+
+        val hints = linkedMapOf<Int, MutableSet<CameraFileFormatHint>>()
+        fun add(handles: Iterable<Int>, hint: CameraFileFormatHint) {
+            handles.forEach { handle ->
+                hints.getOrPut(handle) { linkedSetOf() }.add(hint)
+            }
+        }
+
+        add(handlesByMask[CameraVendorSearchMode.FORMAT_JPEG].orEmpty(), CameraFileFormatHint.JPG)
+        add(handlesByMask[CameraVendorSearchMode.FORMAT_MOV].orEmpty(), CameraFileFormatHint.VIDEO)
+        add(handlesByMask[CameraVendorSearchMode.FORMAT_MP4].orEmpty(), CameraFileFormatHint.VIDEO)
+
+        val baselineHandles = handlesByMask[CameraVendorOfficialGalleryStartupPolicy.initialObjectFormatMask()]
+            .orEmpty()
+            .toSet()
+        val expandedStillHandles = listOfNotNull(
+            handlesByMask[CameraVendorSearchMode.FORMAT_HEIF],
+            handlesByMask[CameraVendorSearchMode.FORMAT_RAW],
+        )
+            .maxByOrNull { it.size }
+            .orEmpty()
+            .filterNot { it in baselineHandles }
+        add(expandedStillHandles, CameraFileFormatHint.EXTENDED_STILL_CANDIDATE)
+
+        return hints
+    }
 
     private fun placeholderObjectInfo(handle: Int, captureDate: String = ""): ObjectInfo = ObjectInfo(
         handle = handle,

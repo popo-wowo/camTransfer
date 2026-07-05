@@ -3,8 +3,11 @@ package com.camtransfer.service
 import android.content.Context
 import android.util.Log
 import com.camtransfer.model.CameraFile
+import com.camtransfer.model.CameraFileFormatHint
+import com.camtransfer.model.TransferDownloadMode
 import com.camtransfer.model.TransferItem
 import com.camtransfer.model.TransferState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -33,16 +36,34 @@ class TransferService(
     private val _isTransferring = MutableStateFlow(false)
     val isTransferring: StateFlow<Boolean> = _isTransferring.asStateFlow()
 
-    fun enqueue(files: List<CameraFile>) {
+    @Volatile
+    private var stopRequested = false
+
+    fun enqueue(
+        files: List<CameraFile>,
+        downloadMode: TransferDownloadMode = TransferDownloadMode.ORIGINAL,
+    ) {
         val retryFilesByHandle = files.associateBy { it.info.handle }
         val resetItems = _items.value.map { item ->
             val retryFile = retryFilesByHandle[item.file.info.handle]
             when {
                 retryFile != null && downloadedFileStore.isDownloaded(retryFile) -> {
-                    item.copy(file = retryFile, state = TransferState.DONE, progress = 1f, error = null)
+                    item.copy(
+                        file = retryFile,
+                        state = TransferState.DONE,
+                        progress = 1f,
+                        error = null,
+                        downloadMode = downloadMode,
+                    )
                 }
                 retryFile != null && item.state == TransferState.ERROR -> {
-                    item.copy(file = retryFile, state = TransferState.PENDING, progress = 0f, error = null)
+                    item.copy(
+                        file = retryFile,
+                        state = TransferState.PENDING,
+                        progress = 0f,
+                        error = null,
+                        downloadMode = downloadMode,
+                    )
                 }
                 else -> item
             }
@@ -52,8 +73,23 @@ class TransferService(
             .distinctBy { it.info.handle }
             .filterNot { it.info.handle in existingHandles }
             .filterNot { downloadedFileStore.isDownloaded(it) }
-            .map { TransferItem(file = it) }
+            .map { TransferItem(file = it, downloadMode = downloadMode) }
         _items.value = resetItems + newItems
+    }
+
+    fun updatePendingDownloadMode(downloadMode: TransferDownloadMode) {
+        _items.value = TransferQueueDownloadModePolicy.applyPendingMode(_items.value, downloadMode)
+    }
+
+    fun removePending(handles: Set<Int>) {
+        if (handles.isEmpty()) return
+        _items.value = TransferQueueDownloadModePolicy.removePendingItems(_items.value, handles)
+    }
+
+    fun pauseTransfers() {
+        stopRequested = true
+        _items.value = TransferPausePolicy.markActiveAndPendingPaused(_items.value)
+        DiagnosticLog.append(galleryService.context, TAG, "Transfer paused by user")
     }
 
     fun syncDownloadedFiles(files: List<CameraFile>) {
@@ -80,84 +116,141 @@ class TransferService(
             return
         }
         DiagnosticLog.append(galleryService.context, TAG, "Transfer started pending=${_items.value.count { it.state == TransferState.PENDING }}")
+        stopRequested = false
         _isTransferring.value = true
 
-        val current = _items.value.toMutableList()
-        for (i in current.indices) {
-            val item = current[i]
-            if (item.state != TransferState.PENDING) continue
+        try {
+            var current = _items.value.toMutableList()
+            for (i in current.indices) {
+                if (stopRequested) break
+                val item = current[i]
+                if (item.state != TransferState.PENDING) continue
 
-            current[i] = item.copy(state = TransferState.DOWNLOADING, progress = 0f)
-            _items.value = current.toList()
+                current[i] = item.copy(state = TransferState.DOWNLOADING, progress = 0f)
+                _items.value = current.toList()
 
-            try {
-                val transferFile = withContext(Dispatchers.IO) {
-                    TransferDownloadFilePolicy.fileForSaveAndDownload(
-                        queuedFile = item.file,
-                        resolvedFile = cameraSource.resolveFile(item.file.info.handle),
+                try {
+                    val transferFile = withContext(Dispatchers.IO) {
+                        TransferDownloadFilePolicy.fileForSaveAndDownload(
+                            queuedFile = item.file,
+                            resolvedFile = cameraSource.resolveFile(item.file.info.handle),
+                        )
+                    }
+                    current[i] = item.copy(file = transferFile, state = TransferState.DOWNLOADING, progress = 0f)
+                    _items.value = current.toList()
+                    Log.d(
+                        TAG,
+                        "Download start handle=${transferFile.info.handle} " +
+                            "filename=${transferFile.info.filename} expected=${transferFile.info.compressedSize}",
                     )
-                }
-                current[i] = item.copy(file = transferFile, state = TransferState.DOWNLOADING, progress = 0f)
-                _items.value = current.toList()
-                Log.d(
-                    TAG,
-                    "Download start handle=${transferFile.info.handle} " +
-                        "filename=${transferFile.info.filename} expected=${transferFile.info.compressedSize}",
-                )
-                DiagnosticLog.append(
-                    galleryService.context,
-                    TAG,
-                    "Download start handle=${transferFile.info.handle} " +
-                        "format=${transferFile.info.formatLabel} expected=${transferFile.info.compressedSize}",
-                )
-                val data = withContext(Dispatchers.IO) {
-                    cameraSource.getFile(transferFile.info.handle)
-                }
-                Log.d(
-                    TAG,
-                    "Download finished handle=${transferFile.info.handle} bytes=${data.size}",
-                )
-                DiagnosticLog.append(
-                    galleryService.context,
-                    TAG,
-                    "Download finished handle=${transferFile.info.handle} bytes=${data.size}",
-                )
+                    DiagnosticLog.append(
+                        galleryService.context,
+                        TAG,
+                        "Download start handle=${transferFile.info.handle} " +
+                            "format=${transferFile.info.formatLabel} expected=${transferFile.info.compressedSize} " +
+                            "mode=${item.downloadMode.name.lowercase()}",
+                    )
+                    current[i] = item.copy(file = transferFile, state = TransferState.SAVING, progress = 0.9f)
+                    _items.value = current.toList()
 
-                current[i] = item.copy(file = transferFile, state = TransferState.SAVING, progress = 0.9f)
-                _items.value = current.toList()
+                    var downloadedBytes = 0L
+                    val saved = withContext(Dispatchers.IO) {
+                        if (TransferDownloadFilePolicy.shouldStreamDownload(transferFile)) {
+                            DiagnosticLog.append(
+                                galleryService.context,
+                                TAG,
+                                "Download stream selected handle=${transferFile.info.handle} expected=${transferFile.info.compressedSize}",
+                            )
+                            galleryService.saveToGalleryFromStream(transferFile.info) { output ->
+                                cameraSource.writeFile(
+                                    handle = transferFile.info.handle,
+                                    downloadMode = item.downloadMode,
+                                    output = output,
+                                ).also { downloadedBytes = it }
+                            }
+                        } else {
+                            val data = cameraSource.getFile(transferFile.info.handle, item.downloadMode)
+                            downloadedBytes = data.size.toLong()
+                            galleryService.saveToGallery(transferFile.info, data)
+                        }
+                    }
+                    if (stopRequested) {
+                        current = _items.value.toMutableList()
+                        break
+                    }
+                    Log.d(
+                        TAG,
+                        "Download finished handle=${transferFile.info.handle} bytes=$downloadedBytes",
+                    )
+                    DiagnosticLog.append(
+                        galleryService.context,
+                        TAG,
+                        "Download finished handle=${transferFile.info.handle} bytes=$downloadedBytes",
+                    )
+                    if (saved) {
+                        downloadedFileStore.markDownloaded(transferFile)
+                        markDownloadedInGalleryState(transferFile)
+                        markDownloadedInHistoryState(transferFile)
+                    }
+                    current[i] = item.copy(
+                        file = transferFile,
+                        state = if (saved) TransferState.DONE else TransferState.ERROR,
+                        progress = if (saved) 1f else 0.9f,
+                        error = if (!saved) "保存失败" else null,
+                    )
+                    _items.value = current.toList()
 
-                val saved = withContext(Dispatchers.IO) {
-                    galleryService.saveToGallery(transferFile.info, data)
+                    Log.d(TAG, "${transferFile.info.filename}: ${if (saved) "done" else "save failed"}")
+                    DiagnosticLog.append(
+                        galleryService.context,
+                        TAG,
+                        "Save result handle=${transferFile.info.handle} result=${if (saved) "done" else "failed"}",
+                    )
+                } catch (e: Exception) {
+                    if (TransferCancellationPolicy.shouldPropagate(e)) {
+                        current[i] = item.copy(
+                            state = TransferState.ERROR,
+                            progress = 0f,
+                            error = TransferPausePolicy.PAUSED_MESSAGE,
+                        )
+                        _items.value = current.toList()
+                        DiagnosticLog.append(
+                            galleryService.context,
+                            TAG,
+                            "Transfer cancelled handle=${item.file.info.handle}",
+                        )
+                        throw e
+                    }
+                    current[i] = item.copy(state = TransferState.ERROR, error = e.message)
+                    _items.value = current.toList()
+                    Log.e(TAG, "Transfer failed: ${item.file.info.filename}", e)
+                    DiagnosticLog.append(galleryService.context, TAG, "Transfer failed handle=${item.file.info.handle}", e)
+                    if (TransferFailurePolicy.shouldStopQueueAfterFailure(e)) {
+                        val queueStopMessage = TransferFailurePolicy.CONNECTION_LOST_QUEUE_STOP_MESSAGE
+                        val stopped = TransferFailurePolicy.markPendingAfterFatalFailure(
+                            items = current,
+                            error = queueStopMessage,
+                        )
+                        current.clear()
+                        current.addAll(stopped)
+                        _items.value = current.toList()
+                        DiagnosticLog.append(
+                            galleryService.context,
+                            TAG,
+                            "Transfer queue stopped after connection loss pendingMarked=${stopped.count { it.error == queueStopMessage }}",
+                        )
+                        break
+                    }
                 }
-                if (saved) {
-                    downloadedFileStore.markDownloaded(transferFile)
-                    markDownloadedInGalleryState(transferFile)
-                    markDownloadedInHistoryState(transferFile)
-                }
-                current[i] = item.copy(
-                    file = transferFile,
-                    state = if (saved) TransferState.DONE else TransferState.ERROR,
-                    progress = if (saved) 1f else 0.9f,
-                    error = if (!saved) "保存失败" else null
-                )
-                _items.value = current.toList()
-
-                Log.d(TAG, "${transferFile.info.filename}: ${if (saved) "done" else "save failed"}")
-                DiagnosticLog.append(
-                    galleryService.context,
-                    TAG,
-                    "Save result handle=${transferFile.info.handle} result=${if (saved) "done" else "failed"}",
-                )
-            } catch (e: Exception) {
-                current[i] = item.copy(state = TransferState.ERROR, error = e.message)
-                _items.value = current.toList()
-                Log.e(TAG, "Transfer failed: ${item.file.info.filename}", e)
-                DiagnosticLog.append(galleryService.context, TAG, "Transfer failed handle=${item.file.info.handle}", e)
             }
+        } finally {
+            _isTransferring.value = false
+            DiagnosticLog.append(
+                galleryService.context,
+                TAG,
+                if (stopRequested) "Transfer stopped after pause" else "Transfer finished",
+            )
         }
-
-        _isTransferring.value = false
-        DiagnosticLog.append(galleryService.context, TAG, "Transfer finished")
     }
 
     fun clearCompleted() {
@@ -195,6 +288,8 @@ class TransferService(
 }
 
 internal object TransferDownloadFilePolicy {
+    private const val STREAM_DOWNLOAD_THRESHOLD_BYTES = 64 * 1024 * 1024
+
     fun fileForSaveAndDownload(
         queuedFile: CameraFile,
         resolvedFile: CameraFile?,
@@ -204,6 +299,100 @@ internal object TransferDownloadFilePolicy {
             thumbnail = queuedFile.thumbnail ?: resolvedFile.thumbnail,
         )
     }
+
+    fun shouldStreamDownload(file: CameraFile): Boolean =
+        file.info.isVideo || file.info.compressedSize >= STREAM_DOWNLOAD_THRESHOLD_BYTES
+}
+
+internal object TransferQueueDownloadModePolicy {
+    fun applyPendingMode(
+        items: List<TransferItem>,
+        selectedMode: TransferDownloadMode,
+    ): List<TransferItem> =
+        items.map { item ->
+            if (item.state == TransferState.PENDING) {
+                item.copy(downloadMode = effectiveMode(item.file, selectedMode))
+            } else {
+                item
+            }
+        }
+
+    private fun effectiveMode(
+        file: CameraFile,
+        selectedMode: TransferDownloadMode,
+    ): TransferDownloadMode =
+        if (isRawDownloadCandidate(file)) TransferDownloadMode.ORIGINAL else selectedMode
+
+    private fun isRawDownloadCandidate(file: CameraFile): Boolean =
+        file.info.isRaw ||
+            (
+                CameraFileFormatHint.RAW in file.formatHints &&
+                    CameraFileFormatHint.EXTENDED_STILL_CANDIDATE !in file.formatHints &&
+                    CameraFileFormatHint.JPG !in file.formatHints &&
+                    CameraFileFormatHint.HEIF !in file.formatHints &&
+                    CameraFileFormatHint.VIDEO !in file.formatHints
+                )
+
+    fun removePendingItems(
+        items: List<TransferItem>,
+        handles: Set<Int>,
+    ): List<TransferItem> =
+        items.filterNot { item ->
+            item.state == TransferState.PENDING && item.file.info.handle in handles
+        }
+}
+
+internal object TransferPausePolicy {
+    const val PAUSED_MESSAGE = "下载已暂停，可返回相册后重新选择下载"
+
+    fun markActiveAndPendingPaused(items: List<TransferItem>): List<TransferItem> =
+        items.map { item ->
+            when (item.state) {
+                TransferState.PENDING,
+                TransferState.DOWNLOADING,
+                TransferState.SAVING -> item.copy(
+                    state = TransferState.ERROR,
+                    progress = 0f,
+                    error = PAUSED_MESSAGE,
+                )
+                TransferState.DONE,
+                TransferState.ERROR -> item
+            }
+        }
+}
+
+internal object TransferCancellationPolicy {
+    fun shouldPropagate(error: Throwable): Boolean =
+        error is CancellationException
+}
+
+internal object TransferFailurePolicy {
+    const val CONNECTION_LOST_QUEUE_STOP_MESSAGE = "相机连接已断开，请重新进入相册后重试"
+
+    fun shouldStopQueueAfterFailure(error: Throwable): Boolean {
+        val messages = generateSequence(error) { it.cause }
+            .mapNotNull { it.message }
+            .toList()
+        return generateSequence(error) { it.cause }.any { it is java.net.SocketException } ||
+            messages.any { message ->
+                message.contains("Not connected to camera", ignoreCase = true) ||
+                    message.contains("Socket is closed", ignoreCase = true) ||
+                    message.contains("Broken pipe", ignoreCase = true) ||
+                    message.contains("Connection reset", ignoreCase = true)
+            }
+    }
+
+    fun markPendingAfterFatalFailure(
+        items: List<TransferItem>,
+        error: String,
+    ): List<TransferItem> =
+        items.map { item ->
+            if (item.state == TransferState.PENDING) {
+                item.copy(state = TransferState.ERROR, progress = 0f, error = error)
+            } else {
+                item
+            }
+        }
 }
 
 internal object TransferHistoryPolicy {

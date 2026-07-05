@@ -13,6 +13,23 @@ object CameraVendorPairingForgetPolicy {
     fun shouldPromptSystemBondRemovalBeforeFreshPairing(bondState: Int): Boolean =
         bondState != android.bluetooth.BluetoothDevice.BOND_NONE
 
+    fun remainingSystemBondAddresses(
+        requestedAddresses: Collection<String>,
+        systemBonds: List<CameraVendorSystemBluetoothBond>,
+    ): List<String> {
+        val requested = requestedAddresses
+            .filter { it.isNotBlank() }
+            .mapTo(mutableSetOf(), ::normalizeBluetoothAddress)
+        if (requested.isEmpty()) return emptyList()
+        return systemBonds
+            .filter { it.bondState != android.bluetooth.BluetoothDevice.BOND_NONE }
+            .map { it.address }
+            .filter { it.isNotBlank() }
+            .map(::normalizeBluetoothAddress)
+            .filter { it in requested }
+            .distinct()
+    }
+
     fun systemBondRemovalMessage(deviceName: String?): String {
         val name = deviceName?.takeIf { it.isNotBlank() } ?: "这台相机"
         return "手机系统里还保留着 $name 的蓝牙配对记录。\n" +

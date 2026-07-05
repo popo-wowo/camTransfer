@@ -15,6 +15,7 @@ private const val INCLUDE_SAVED_MEDIA_NAMES = "include_saved_media_names"
 class DownloadedFileStore(context: Context) {
     private val context = context.applicationContext
     private val prefs = context.getSharedPreferences(DOWNLOADED_PREFS, Context.MODE_PRIVATE)
+    private val downloadFolderSettingsStore = DownloadFolderSettingsStore(this.context)
 
     fun markDownloaded(file: CameraFile) {
         val keys = prefs.getStringSet(DOWNLOADED_KEYS, emptySet()).orEmpty().toMutableSet()
@@ -59,15 +60,25 @@ class DownloadedFileStore(context: Context) {
     private fun downloadedKeys(): Set<String> =
         prefs.getStringSet(DOWNLOADED_KEYS, emptySet()).orEmpty()
 
-    private fun savedMediaNames(): Set<String> =
-        if (prefs.getBoolean(INCLUDE_SAVED_MEDIA_NAMES, true)) {
-            querySavedMediaNames(MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)) +
-                querySavedMediaNames(MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY))
-        } else {
-            emptySet()
-        }
+    private fun savedMediaNames(): Set<String> {
+        if (!prefs.getBoolean(INCLUDE_SAVED_MEDIA_NAMES, true)) return emptySet()
+        val settings = downloadFolderSettingsStore.load()
+        if (!DownloadFolderPathPolicy.shouldShowRuleOptions(settings)) return emptySet()
+        val managedRootFolderName = settings.rootFolderName
+        return querySavedMediaNames(
+            MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+            managedRootFolderName,
+        ) +
+            querySavedMediaNames(
+                MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+                managedRootFolderName,
+            )
+    }
 
-    private fun querySavedMediaNames(uri: android.net.Uri): Set<String> {
+    private fun querySavedMediaNames(
+        uri: android.net.Uri,
+        managedRootFolderName: String,
+    ): Set<String> {
         val names = mutableSetOf<String>()
         val projection = arrayOf(
             MediaStore.MediaColumns.DISPLAY_NAME,
@@ -79,13 +90,23 @@ class DownloadedFileStore(context: Context) {
                 val pathIndex = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.RELATIVE_PATH)
                 while (cursor.moveToNext()) {
                     val relativePath = cursor.getString(pathIndex).orEmpty()
-                    if (relativePath.contains("CamTransfer", ignoreCase = true)) {
+                    if (DownloadedFileMediaPathPolicy.matchesManagedFolder(relativePath, managedRootFolderName)) {
                         names.add(cursor.getString(nameIndex).orEmpty())
                     }
                 }
             }
         }
         return names
+    }
+}
+
+internal object DownloadedFileMediaPathPolicy {
+    fun matchesManagedFolder(relativePath: String, rootFolderName: String): Boolean {
+        val normalizedRoot = DownloadFolderPathPolicy.normalizedRootFolderName(rootFolderName)
+        return relativePath
+            .trim()
+            .contains("/$normalizedRoot/", ignoreCase = true) ||
+            relativePath.trim().endsWith("/$normalizedRoot", ignoreCase = true)
     }
 }
 
@@ -126,7 +147,7 @@ object DownloadedFileRecordCodec {
             encodeText(info.filename),
             encodeText(info.captureDate),
             info.orientation?.toString().orEmpty(),
-            file.thumbnail?.let { encodeBytes(it) }.orEmpty(),
+            "",
         ).joinToString("|")
     }
 
@@ -163,11 +184,6 @@ object DownloadedFileRecordCodec {
 
     private fun decodeText(value: String): String =
         String(Base64.getUrlDecoder().decode(value), StandardCharsets.UTF_8)
-
-    private fun encodeBytes(value: ByteArray): String =
-        Base64.getUrlEncoder()
-            .withoutPadding()
-            .encodeToString(value)
 
     private fun decodeBytes(value: String): ByteArray =
         Base64.getUrlDecoder().decode(value)

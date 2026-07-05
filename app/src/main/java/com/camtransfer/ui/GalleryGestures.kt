@@ -178,20 +178,36 @@ internal fun Modifier.galleryDragSelection(
                             selectionActive = currentSelectedHandles.isNotEmpty(),
                         )
                     ) {
-                        GalleryDragSelectionPolicy.shouldSelectForDrag(
-                            startHandleSelected = startHandle in currentSelectedHandles,
-                        ).also {
-                            shouldSelect = it
-                            nextSelection = GalleryDragSelectionPolicy.updatedRangeSelection(
-                                currentSelection = nextSelection,
-                                orderedHandles = orderedHandles,
+                        val hit = gridState.hitAt(change.position, currentFiles)
+                        val endHandle = hit?.handle
+                        val committedEndHandle = if (GalleryDragSelectionPolicy.shouldCommitDragSelection(
                                 startHandle = startHandle,
-                                endHandle = startHandle,
-                                downloadStates = currentDownloadStates,
-                                shouldSelect = it,
+                                endHandle = endHandle,
+                                endDownloadState = endHandle?.let { currentDownloadStates[it] },
                             )
-                            lastEndHandle = startHandle
-                            currentOnSelectionChange(nextSelection)
+                        ) {
+                            endHandle
+                        } else {
+                            null
+                        }
+                        if (committedEndHandle == null) {
+                            null
+                        } else {
+                            GalleryDragSelectionPolicy.shouldSelectForDrag(
+                                startHandleSelected = startHandle in currentSelectedHandles,
+                            ).also {
+                                shouldSelect = it
+                                nextSelection = GalleryDragSelectionPolicy.updatedRangeSelection(
+                                    currentSelection = nextSelection,
+                                    orderedHandles = orderedHandles,
+                                    startHandle = startHandle,
+                                    endHandle = committedEndHandle,
+                                    downloadStates = currentDownloadStates,
+                                    shouldSelect = it,
+                                )
+                                lastEndHandle = committedEndHandle
+                                currentOnSelectionChange(nextSelection)
+                            }
                         }
                     } else {
                         null

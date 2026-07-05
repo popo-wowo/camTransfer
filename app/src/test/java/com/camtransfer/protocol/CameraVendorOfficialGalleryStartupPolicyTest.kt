@@ -25,4 +25,25 @@ class CameraVendorOfficialGalleryStartupPolicyTest {
             CameraVendorOfficialGalleryStartupPolicy.functionVersion(byteArrayOf(0x03, 0x00, 0x00, 0x00)),
         )
     }
+
+    @Test
+    fun initialGallerySearchRequestsEveryStillAndMovieFormat() {
+        assertEquals(
+            CameraVendorSearchMode.ALL_FORMATS,
+            CameraVendorOfficialGalleryStartupPolicy.initialObjectFormatMask(),
+        )
+    }
+
+    @Test
+    fun expandedGalleryStartupPassOnlyChecksStillExpansionFormats() {
+        assertEquals(
+            listOf(CameraVendorSearchMode.FORMAT_HEIF, CameraVendorSearchMode.FORMAT_RAW),
+            CameraVendorOfficialGalleryStartupPolicy.expandedStillFormatMasks(),
+        )
+    }
+
+    @Test
+    fun blockingGalleryStartupDoesNotReadCurrentObjectHandleSnapshot() {
+        assertFalse(CameraVendorOfficialGalleryStartupPolicy.shouldReadCurrentObjectHandleSnapshotDuringBlockingStartup())
+    }
 }

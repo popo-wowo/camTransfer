@@ -49,8 +49,6 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -102,8 +100,6 @@ import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import kotlin.math.hypot
 
-private val GalleryActionColor = Color(0xFF177C6D)
-
 @Composable
 internal fun GalleryDownloadBar(
     selectedCount: Int,
@@ -112,6 +108,7 @@ internal fun GalleryDownloadBar(
     canToggleSelectAll: Boolean,
     preferCompressedDownloads: Boolean,
     canDownload: Boolean,
+    canChangeTransferMode: Boolean = true,
     onToggleSelectAll: () -> Unit,
     onPreferenceChanged: (Boolean) -> Unit,
     onDownload: () -> Unit,
@@ -120,59 +117,72 @@ internal fun GalleryDownloadBar(
         modifier = Modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        shape = RoundedCornerShape(30.dp),
-        color = CamTransferColors.WarmFill,
-        border = BorderStroke(1.dp, CamTransferColors.Hairline),
-        shadowElevation = 14.dp,
+            .padding(horizontal = 18.dp, vertical = 12.dp),
+        shape = RoundedCornerShape(22.dp),
+        color = CamTransferColors.WarmFill.copy(alpha = 0.86f),
+        border = BorderStroke(0.dp, Color.Transparent),
+        shadowElevation = 10.dp,
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(60.dp)
-                .padding(horizontal = 12.dp),
+                .height(56.dp)
+                .padding(start = 10.dp, end = 7.dp),
             verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(9.dp),
         ) {
-            SelectAllBox(
-                checked = allFilteredSelected,
-                enabled = canToggleSelectAll,
-                onClick = onToggleSelectAll,
-            )
-            Spacer(Modifier.width(9.dp))
-            Text(
-                "已选 $selectedCount / 共 $totalCount 张",
+            Row(
                 modifier = Modifier.weight(1f),
-                color = CamTransferColors.Ink,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 13.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(9.dp),
+            ) {
+                SelectAllBox(
+                    checked = allFilteredSelected,
+                    enabled = canToggleSelectAll,
+                    onClick = onToggleSelectAll,
+                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Text(
+                        if (selectedCount > 0) "已选 $selectedCount 张" else "未选择照片",
+                        color = CamTransferColors.Ink,
+                        fontWeight = FontWeight.Black,
+                        fontSize = GalleryTypeScale.Level2,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        if (selectedCount > 0) "共 $totalCount 张可选" else "选择照片后可下载",
+                        color = CamTransferColors.SecondaryInk,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = GalleryTypeScale.Micro,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
             TransferModeCapsule(
                 preferCompressedDownloads = preferCompressedDownloads,
+                enabled = canChangeTransferMode,
                 onPreferenceChanged = onPreferenceChanged,
             )
-            Spacer(Modifier.width(9.dp))
-            Button(
-                onClick = onDownload,
-                enabled = canDownload,
+            Box(
                 modifier = Modifier
-                    .height(38.dp)
-                    .requiredWidth(76.dp),
-                shape = RoundedCornerShape(21.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = GalleryActionColor,
-                    contentColor = CamTransferColors.Card,
-                    disabledContainerColor = CamTransferColors.MutedFill,
-                    disabledContentColor = CamTransferColors.SecondaryInk,
-                ),
-                contentPadding = PaddingValues(horizontal = 0.dp),
-                elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp, pressedElevation = 0.dp),
+                    .height(40.dp)
+                    .requiredWidth(90.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(if (canDownload) CamTransferColors.Ink else CamTransferColors.MutedFill)
+                    .clickable(enabled = canDownload, onClick = onDownload),
+                contentAlignment = Alignment.Center,
             ) {
                 Text(
                     "下载",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
+                    fontSize = GalleryTypeScale.Level1,
+                    fontWeight = FontWeight.Black,
+                    color = if (canDownload) CamTransferColors.Card else CamTransferColors.SecondaryInk,
+                    maxLines = 1,
                 )
             }
         }
@@ -180,49 +190,71 @@ internal fun GalleryDownloadBar(
 }
 
 @Composable
-private fun TransferModeCapsule(
+internal fun TransferModeCapsule(
     preferCompressedDownloads: Boolean,
+    enabled: Boolean,
     onPreferenceChanged: (Boolean) -> Unit,
 ) {
-    val label = if (preferCompressedDownloads) "压缩" else "原图"
-    val backgroundColor = if (preferCompressedDownloads) {
-        GalleryActionColor.copy(alpha = 0.10f)
-    } else {
-        Color(0xFF1A6B5C).copy(alpha = 0.08f)
-    }
-    val borderColor = if (preferCompressedDownloads) {
-        GalleryActionColor.copy(alpha = 0.54f)
-    } else {
-        Color(0xFF1A6B5C).copy(alpha = 0.32f)
-    }
-    val textColor = if (preferCompressedDownloads) {
-        GalleryActionColor
-    } else {
-        Color(0xFF1A6B5C)
-    }
     Surface(
         modifier = Modifier
-            .height(32.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .clickable { onPreferenceChanged(!preferCompressedDownloads) },
-        shape = RoundedCornerShape(16.dp),
-        color = backgroundColor,
-        border = BorderStroke(1.dp, borderColor),
+            .height(40.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(enabled = enabled) { onPreferenceChanged(!preferCompressedDownloads) },
+        shape = RoundedCornerShape(18.dp),
+        color = CamTransferColors.Ink.copy(alpha = 0.065f),
+        border = BorderStroke(0.dp, Color.Transparent),
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 10.dp),
+            modifier = Modifier.padding(2.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(0.dp),
         ) {
-            Box(
-                modifier = Modifier
-                    .size(6.dp)
-                    .background(textColor, CircleShape),
+            TransferModeSegment(
+                label = "原图",
+                selected = !preferCompressedDownloads,
+                enabled = enabled,
+                onClick = { if (preferCompressedDownloads) onPreferenceChanged(false) },
             )
+            TransferModeSegment(
+                label = "压缩",
+                selected = preferCompressedDownloads,
+                enabled = enabled,
+                onClick = { if (!preferCompressedDownloads) onPreferenceChanged(true) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun TransferModeSegment(
+    label: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .height(34.dp)
+            .requiredWidth(52.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(enabled = enabled, onClick = onClick),
+        shape = RoundedCornerShape(16.dp),
+        color = if (selected && enabled) CamTransferColors.Card.copy(alpha = 0.98f) else Color.Transparent,
+        border = BorderStroke(
+            width = if (selected && enabled) 1.dp else 0.dp,
+            color = if (selected && enabled) CamTransferColors.Hairline.copy(alpha = 0.70f) else Color.Transparent,
+        ),
+        shadowElevation = if (selected && enabled) 3.dp else 0.dp,
+    ) {
+        Box(contentAlignment = Alignment.Center) {
             Text(
                 label,
-                color = textColor,
-                fontSize = 11.sp,
+                color = when {
+                    selected && enabled -> CamTransferColors.Ink
+                    enabled -> CamTransferColors.SecondaryInk
+                    else -> CamTransferColors.SecondaryInk.copy(alpha = 0.48f)
+                },
+                fontSize = GalleryTypeScale.Level2,
                 fontWeight = FontWeight.Black,
                 maxLines = 1,
             )
@@ -238,20 +270,20 @@ private fun SelectAllBox(
 ) {
     Box(
         modifier = Modifier
-            .size(30.dp)
+            .size(34.dp)
             .clip(CircleShape)
             .background(
                 when {
-                    checked -> GalleryActionColor
-                    enabled -> GalleryActionColor.copy(alpha = 0.12f)
+                    checked -> CamTransferColors.Accent
+                    enabled -> CamTransferColors.Accent.copy(alpha = 0.14f)
                     else -> CamTransferColors.MutedFill.copy(alpha = 0.55f)
                 }
             )
             .border(
                 width = if (enabled) 1.8.dp else 1.5.dp,
                 color = when {
-                    checked -> GalleryActionColor
-                    enabled -> GalleryActionColor.copy(alpha = 0.48f)
+                    checked -> CamTransferColors.Accent
+                    enabled -> CamTransferColors.Accent.copy(alpha = 0.78f)
                     else -> CamTransferColors.Hairline.copy(alpha = 0.55f)
                 },
                 shape = CircleShape,
@@ -263,10 +295,9 @@ private fun SelectAllBox(
             Text(
                 "✓",
                 color = CamTransferColors.Card,
-                fontSize = 18.sp,
+                fontSize = GalleryTypeScale.Level1,
                 fontWeight = FontWeight.Black,
             )
         }
     }
 }
-

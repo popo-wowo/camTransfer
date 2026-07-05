@@ -307,6 +307,9 @@ internal object ConnectionUiLayoutPolicy {
     fun shouldShowTransferSizeSelector(state: ConnectionState): Boolean =
         false
 
+    fun shouldShowGalleryEntryModeSelector(state: ConnectionState): Boolean =
+        state == ConnectionState.PAIRED
+
     fun shouldShowPairedCameraSelector(
         state: ConnectionState,
         pairedCameras: List<CameraVendorPairedCameraRecord>,

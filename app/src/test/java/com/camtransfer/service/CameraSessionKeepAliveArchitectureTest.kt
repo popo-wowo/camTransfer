@@ -91,7 +91,7 @@ class CameraSessionKeepAliveArchitectureTest {
         assertTrue(method.contains("cameraService.resetGalleryConnectionBeforeRetry()"))
         assertTrue(
             method.indexOf("cameraService.resetGalleryConnectionBeforeRetry()") <
-                method.indexOf("cameraService.connectPairedCameraToGallery")
+            method.indexOf("cameraService.connectPairedCameraToGallery")
         )
     }
 
@@ -100,7 +100,7 @@ class CameraSessionKeepAliveArchitectureTest {
         val source = sourceFile("service/CameraService.kt").readText()
         val method = source.substring(
             source.indexOf("suspend fun resetConnectionForFreshPairing"),
-            source.indexOf("private fun removeSystemBluetoothBonds"),
+            source.indexOf("private suspend fun removeSystemBluetoothBonds"),
         )
 
         assertTrue(method.contains("disconnect()"))
@@ -108,8 +108,29 @@ class CameraSessionKeepAliveArchitectureTest {
         assertTrue(method.contains("CameraVendorPairingRegistrationPolicy.systemCameraBondAddresses(systemBluetoothBonds())"))
         assertTrue(method.contains("pairingStore.rememberDeletedBluetoothAddresses"))
         assertTrue(method.contains("removeSystemBluetoothBonds"))
+        assertTrue(method.contains("remainingSystemBondAddresses"))
         assertTrue(method.contains("pairingStore.clear()"))
         assertTrue(method.contains("CameraVendorTerminalIdentityStore(context).clearRegisteredTerminalName()"))
+    }
+
+    @Test
+    fun systemBondRemovalWaitsForAndroidToActuallyForgetDevice() {
+        val source = sourceFile("service/CameraService.kt").readText()
+        val removalMethod = source.substring(
+            source.indexOf("private suspend fun removeSystemBluetoothBonds"),
+            source.indexOf("private fun removeSystemBluetoothBond"),
+        )
+        val waitMethod = source.substring(
+            source.indexOf("private suspend fun waitForSystemBluetoothBondRemoval"),
+            source.indexOf("private fun remainingSystemBondAddresses"),
+        )
+
+        assertTrue(removalMethod.contains("removeSystemBluetoothBond(device)"))
+        assertTrue(removalMethod.contains("waitForSystemBluetoothBondRemoval(normalizedAddresses)"))
+        assertTrue(removalMethod.contains("return remaining"))
+        assertTrue(waitMethod.contains("delay(SYSTEM_BOND_REMOVAL_POLL_INTERVAL_MS)"))
+        assertTrue(waitMethod.contains("remainingSystemBondAddresses(normalizedAddresses)"))
+        assertTrue(waitMethod.contains("SYSTEM_BOND_REMOVAL_WAIT_TIMEOUT_MS"))
     }
 
     @Test
@@ -293,6 +314,47 @@ class CameraSessionKeepAliveArchitectureTest {
         assertTrue(method.contains("name == remembered.deviceName"))
         assertTrue(!method.contains("name.contains"))
         assertTrue(!method.contains("remembered.deviceName.contains"))
+    }
+
+    @Test
+    fun existingPtpProbeMustLoadGalleryHandlesBeforeReportingConnected() {
+        val source = sourceFile("service/CameraService.kt").readText()
+        val method = source.substring(
+            source.indexOf("suspend fun connectExistingCameraWifiToGallery"),
+            source.indexOf("suspend fun pairWithCamera"),
+        )
+
+        assertTrue(method.contains("connection.loadCameraVendorGalleryObjectHandles()"))
+        assertTrue(
+            method.indexOf("connection.loadCameraVendorGalleryObjectHandles()") <
+                method.indexOf("onStatus(\"已连接\")")
+        )
+    }
+
+    @Test
+    fun wifiRetryPathMustLoadGalleryHandlesBeforeReportingConnected() {
+        val source = sourceFile("service/connection/CameraGalleryConnectionCoordinator.kt").readText()
+        val method = source.substring(
+            source.indexOf("suspend fun connectWifiAndPtp"),
+            source.indexOf("private suspend fun connectPtpWithRetry"),
+        )
+
+        assertTrue(method.contains("connection.loadCameraVendorGalleryObjectHandles()"))
+        assertTrue(
+            method.indexOf("connection.loadCameraVendorGalleryObjectHandles()") <
+                method.indexOf("onStatus(\"已连接\")")
+        )
+    }
+
+    @Test
+    fun fastInitialFilesDoesNotRestartVendorGalleryStartup() {
+        val source = sourceFile("service/gallery/PtpCameraGallerySource.kt").readText()
+        val method = source.substring(
+            source.indexOf("override suspend fun fastInitialFiles()"),
+            source.indexOf("override suspend fun getThumbnail"),
+        )
+
+        assertTrue(!method.contains("loadCameraVendorGalleryObjectHandles()"))
     }
 
     @Test

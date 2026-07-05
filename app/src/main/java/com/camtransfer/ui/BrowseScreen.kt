@@ -6,6 +6,9 @@ import android.graphics.ImageDecoder
 import android.graphics.Matrix
 import android.os.Build
 import android.util.Log
+import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
@@ -68,6 +71,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
@@ -101,9 +105,21 @@ import com.camtransfer.localproofing.LocalProofingRequestRouter
 import com.camtransfer.localproofing.LocalProofingServer
 import com.camtransfer.localproofing.LocalProofingSessionToken
 import com.camtransfer.service.CameraFileSource
+import com.camtransfer.service.AppCacheLimitOption
+import com.camtransfer.service.AppCacheSettingsStore
+import com.camtransfer.service.AppCacheUsagePolicy
+import com.camtransfer.service.DownloadFolderPathPolicy
+import com.camtransfer.service.DownloadFolderSaveMode
+import com.camtransfer.service.DownloadFolderSettings
+import com.camtransfer.service.DownloadFolderSettingsStore
 import com.camtransfer.service.DiagnosticLog
 import com.camtransfer.viewmodel.BrowseViewModel
+import com.camtransfer.viewmodel.gallery.GalleryBrowseMode
+import com.camtransfer.viewmodel.gallery.GalleryCatalogMergePolicy
+import com.camtransfer.viewmodel.gallery.HighDefinitionPreviewSessionPolicy
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
 import java.time.LocalDate
@@ -119,22 +135,55 @@ fun BrowseScreen(
     downloadedItems: List<TransferItem>,
     isTransferring: Boolean,
     preferCompressedDownloads: Boolean,
+    canChangeTransferMode: Boolean = true,
     onFilesLoaded: (List<CameraFile>) -> Unit,
     onPreferenceChanged: (Boolean) -> Unit,
+    onQueueDownloadSelected: (List<CameraFile>) -> Unit,
+    onCancelQueuedDownloads: (List<CameraFile>) -> Unit,
     onDownloadSelected: (List<CameraFile>) -> Unit,
+    onStartQueuedDownloads: () -> Unit,
     onOpenDownloads: () -> Unit,
     onDisconnect: () -> Unit,
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    var cacheRefreshToken by remember { mutableStateOf(0) }
     val prefs = remember(context) {
         context.getSharedPreferences("camtransfer.gallery", android.content.Context.MODE_PRIVATE)
     }
-    val files by viewModel.files.collectAsState()
+    val downloadFolderSettingsStore = remember(context) { DownloadFolderSettingsStore(context) }
+    val appCacheSettingsStore = remember(context) { AppCacheSettingsStore(context) }
+    val catalogFiles by viewModel.files.collectAsState()
+    val objectInfoByHandle by viewModel.objectInfoByHandle.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val isLoadingHiddenFormats by viewModel.isLoadingHiddenFormats.collectAsState()
+    val browseModeState by viewModel.browseModeState.collectAsState()
     val selectedHandles by viewModel.selectedHandles.collectAsState()
     val previewImages by viewModel.previewImages.collectAsState()
+    val loadedPreviewHandles by viewModel.loadedPreviewHandles.collectAsState()
+    val loadingPreviewHandles by viewModel.loadingPreviewHandles.collectAsState()
+    val failedPreviewHandles by viewModel.failedPreviewHandles.collectAsState()
+    val highDefinitionPreviewItems by viewModel.highDefinitionPreviewItems.collectAsState()
     val error by viewModel.error.collectAsState()
+    val files by remember(catalogFiles, objectInfoByHandle) {
+        derivedStateOf {
+            GalleryCatalogMergePolicy.displayFiles(
+                catalogFiles = catalogFiles,
+                objectInfoByHandle = objectInfoByHandle,
+            )
+        }
+    }
+    val hasGalleryFiles = catalogFiles.isNotEmpty()
+    val cacheUsageLabel by produceState<String?>(initialValue = null, context, cacheRefreshToken, hasGalleryFiles, isLoading) {
+        if (!GalleryCacheUsageUiPolicy.shouldScanCacheUsage(hasFiles = hasGalleryFiles, isLoading = isLoading)) {
+            value = null
+            return@produceState
+        }
+        delay(GalleryCacheUsageUiPolicy.INITIAL_SCAN_DELAY_MS)
+        value = withContext(Dispatchers.IO) {
+            AppCacheUsagePolicy.format(AppCacheUsagePolicy.usage(context.cacheDir).bytes)
+        }
+    }
     var filterState by remember { mutableStateOf(GalleryFilterState()) }
     var sortMode by remember { mutableStateOf(GallerySortMode.NewestFirst) }
     var filtersExpanded by remember { mutableStateOf(GalleryFilterPanelPolicy.defaultExpanded()) }
@@ -146,16 +195,44 @@ fun BrowseScreen(
     var localProofingServer by remember { mutableStateOf<LocalProofingServer?>(null) }
     var localProofingState by remember { mutableStateOf<LocalProofingShareUiState?>(null) }
     var localProofingError by remember { mutableStateOf<String?>(null) }
+    var showsDownloadFolderSettings by remember { mutableStateOf(false) }
+    var showsCacheSettings by remember { mutableStateOf(false) }
+    var downloadFolderSettings by remember { mutableStateOf(downloadFolderSettingsStore.load()) }
+    var cacheLimitOption by remember { mutableStateOf(appCacheSettingsStore.loadLimit()) }
     var columnCount by remember {
         mutableStateOf(
             prefs.getInt("columnCount", GalleryColumnLayoutPolicy.DEFAULT_COLUMNS)
                 .coerceIn(GalleryColumnLayoutPolicy.MIN_COLUMNS, GalleryColumnLayoutPolicy.MAX_COLUMNS)
         )
     }
+    val customFolderPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree(),
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+                )
+            }
+            val updated = downloadFolderSettings.copy(
+                saveMode = DownloadFolderSaveMode.CUSTOM_TREE,
+                customTreeUri = uri.toString(),
+                customTreeLabel = DownloadFolderPathPolicy.customTreeLabel(uri),
+            )
+            downloadFolderSettings = updated
+        }
+    }
     val gridState = rememberLazyGridState()
+    val decodedThumbnailCache = remember { GalleryDecodedThumbnailCache<Bitmap>() }
     val today = remember { LocalDate.now() }
     val downloadStates = remember(downloadedItems, transferItems) {
         (downloadedItems + transferItems).associate { it.file.info.handle to it.state }
+    }
+    val hasPendingQueuedDownloads by remember(transferItems) {
+        derivedStateOf {
+            transferItems.any { it.state == TransferState.PENDING }
+        }
     }
     val filteredFiles by remember(files, filterState, today) {
         derivedStateOf { GalleryUiPolicy.filteredFiles(files, filterState, today) }
@@ -194,9 +271,6 @@ fun BrowseScreen(
             )
         }
     }
-    val visibleGridHandleSet by remember {
-        derivedStateOf { visibleGridHandles.toSet() }
-    }
     val selectableFilteredHandles = remember(sortedFiles, downloadStates) {
         sortedFiles
             .filter { GalleryDownloadUiPolicy.canSelect(downloadStates[it.info.handle]) }
@@ -213,6 +287,9 @@ fun BrowseScreen(
     val selectableDateDays = remember(today) {
         GalleryDatePickerPolicy.selectableDays(today)
     }
+    val highDefinitionPreviewDateDays by remember(files) {
+        derivedStateOf { HighDefinitionPreviewSessionPolicy.availableDates(files) }
+    }
 
     fun stopLocalProofing() {
         localProofingServer?.stop()
@@ -228,6 +305,7 @@ fun BrowseScreen(
     fun startLocalProofing() {
         stopLocalProofing()
         val token = LocalProofingSessionToken.make()
+        val currentThumbnailsByHandle = viewModel.cachedThumbnails()
         val router = LocalProofingRequestRouter(
             sessionToken = token,
             photosProvider = {
@@ -237,7 +315,7 @@ fun BrowseScreen(
             },
             previewProvider = { id ->
                 val handle = id.toIntOrNull()
-                currentFiles.firstOrNull { it.info.handle == handle }?.thumbnail
+                handle?.let { currentThumbnailsByHandle[it] }
             },
             logger = ::logLocalProofing,
         )
@@ -246,7 +324,7 @@ fun BrowseScreen(
             logLocalProofing(
                 "start requested files=${currentFiles.size} " +
                     "photos=${currentFiles.count { !it.info.isFolder }} " +
-                    "previews=${currentFiles.count { !it.info.isFolder && it.thumbnail != null }}"
+                    "previews=${currentFiles.count { !it.info.isFolder && it.info.handle in currentThumbnailsByHandle }}"
             )
             val started = server.start()
             localProofingServer = server
@@ -286,21 +364,43 @@ fun BrowseScreen(
     }
     LaunchedEffect(cameraSource, isTransferring) {
         if (!isTransferring) {
-            viewModel.resumeThumbnailLoadingAfterTransfer(cameraSource)
+            viewModel.resumeGalleryLoadingAfterTransfer(cameraSource)
+        }
+    }
+    LaunchedEffect(cameraSource, browseModeState.mode, files.isNotEmpty()) {
+        if (browseModeState.mode == GalleryBrowseMode.HD_PREVIEW && files.isNotEmpty()) {
+            val preferredDate = HighDefinitionPreviewSessionPolicy.preferredActiveDate(
+                files = files,
+                currentDate = browseModeState.highDefinitionDate,
+            )
+            if (preferredDate != browseModeState.highDefinitionDate) {
+                viewModel.setHighDefinitionPreviewDate(cameraSource, preferredDate)
+            } else {
+                viewModel.syncHighDefinitionSession(cameraSource)
+            }
         }
     }
     LaunchedEffect(cameraSource, thumbnailRequestHandles, isTransferring) {
-        if (!isTransferring) {
+        if (!isTransferring && browseModeState.mode == GalleryBrowseMode.THUMBNAIL) {
+            delay(GalleryThumbnailRequestWindowPolicy.REQUEST_DEBOUNCE_MS)
             viewModel.loadVisibleThumbnails(cameraSource, thumbnailRequestHandles)
         }
     }
 
     if (showsDatePicker) {
         DatePickerDialog(
-            days = selectableDateDays,
+            days = if (browseModeState.mode == GalleryBrowseMode.HD_PREVIEW && highDefinitionPreviewDateDays.isNotEmpty()) {
+                highDefinitionPreviewDateDays
+            } else {
+                selectableDateDays
+            },
             onDismiss = { showsDatePicker = false },
             onSelect = { day ->
-                filterState = filterState.copy(date = GalleryDateFilter.SpecificDay(day))
+                if (browseModeState.mode == GalleryBrowseMode.HD_PREVIEW) {
+                    viewModel.setHighDefinitionPreviewDate(cameraSource, day)
+                } else {
+                    filterState = filterState.copy(date = GalleryDateFilter.SpecificDay(day))
+                }
                 showsDatePicker = false
             },
         )
@@ -313,6 +413,47 @@ fun BrowseScreen(
             onSelect = { start, end ->
                 filterState = filterState.copy(date = GalleryDateFilter.Range(start, end))
                 showsDateRangePicker = false
+            },
+        )
+    }
+    if (showsDownloadFolderSettings) {
+        DownloadFolderSettingsDialog(
+            settings = downloadFolderSettings,
+            cameraDisplayName = cameraSource.displayName,
+            sampleCaptureDate = files.firstOrNull { !it.info.isFolder }?.info?.captureDate.orEmpty(),
+            onPickCustomFolder = { customFolderPicker.launch(null) },
+            onDismiss = { showsDownloadFolderSettings = false },
+            onSave = { updated ->
+                downloadFolderSettings = updated
+                downloadFolderSettingsStore.save(updated)
+                showsDownloadFolderSettings = false
+            },
+        )
+    }
+    if (showsCacheSettings) {
+        CacheSettingsDialog(
+            cacheUsageLabel = cacheUsageLabel ?: AppCacheUsagePolicy.format(0),
+            selectedLimit = cacheLimitOption,
+            onDismiss = { showsCacheSettings = false },
+            onSaveLimit = { option ->
+                cacheLimitOption = option
+                appCacheSettingsStore.saveLimit(option)
+                coroutineScope.launch {
+                    withContext(Dispatchers.IO) {
+                        AppCacheUsagePolicy.trimToLimit(context.cacheDir, option.bytes)
+                    }
+                    cacheRefreshToken += 1
+                }
+                showsCacheSettings = false
+            },
+            onClearCache = {
+                coroutineScope.launch {
+                    withContext(Dispatchers.IO) {
+                        AppCacheUsagePolicy.trimToLimit(context.cacheDir, maxBytes = 0)
+                    }
+                    cacheRefreshToken += 1
+                }
+                showsCacheSettings = false
             },
         )
     }
@@ -359,6 +500,7 @@ fun BrowseScreen(
             selectedHandles = selectedHandles,
             previewImages = previewImages,
             preferCompressedDownloads = preferCompressedDownloads,
+            canChangeTransferMode = canChangeTransferMode,
             onDismiss = { previewFile = null },
             onPreviewVisible = { handles ->
                 viewModel.loadPreviewThumbnails(cameraSource, handles)
@@ -371,6 +513,7 @@ fun BrowseScreen(
                     viewModel.toggleSelection(currentFile.info.handle)
                 }
             },
+            onPreferenceChanged = onPreferenceChanged,
             onDownload = { currentFile ->
                 if (GalleryDownloadUiPolicy.canSelect(downloadStates[currentFile.info.handle])) {
                     onDownloadSelected(listOf(currentFile))
@@ -383,30 +526,33 @@ fun BrowseScreen(
     Scaffold(
         containerColor = CamTransferColors.Background,
         bottomBar = {
-            val allFilteredSelected = selectedHandles.containsAll(selectableFilteredHandles) &&
-                selectableFilteredHandles.isNotEmpty()
-            GalleryDownloadBar(
-                selectedCount = selectedFiles.size,
-                totalCount = selectableFilteredHandles.size,
-                allFilteredSelected = allFilteredSelected,
-                canToggleSelectAll = selectableFilteredHandles.isNotEmpty(),
-                preferCompressedDownloads = preferCompressedDownloads,
-                canDownload = selectedFiles.isNotEmpty(),
-                onToggleSelectAll = {
-                    if (allFilteredSelected) {
-                        viewModel.clearSelection()
-                    } else {
-                        viewModel.selectHandles(selectableFilteredHandles)
-                    }
-                },
-                onPreferenceChanged = onPreferenceChanged,
-                onDownload = {
-                    if (selectedFiles.isNotEmpty()) {
-                        onDownloadSelected(selectedFiles)
-                        viewModel.clearSelection()
-                    }
-                },
-            )
+            if (browseModeState.mode == GalleryBrowseMode.THUMBNAIL) {
+                val allFilteredSelected = selectedHandles.containsAll(selectableFilteredHandles) &&
+                    selectableFilteredHandles.isNotEmpty()
+                GalleryDownloadBar(
+                    selectedCount = selectedFiles.size,
+                    totalCount = selectableFilteredHandles.size,
+                    allFilteredSelected = allFilteredSelected,
+                    canToggleSelectAll = selectableFilteredHandles.isNotEmpty(),
+                    preferCompressedDownloads = preferCompressedDownloads,
+                    canDownload = selectedFiles.isNotEmpty(),
+                    canChangeTransferMode = canChangeTransferMode,
+                    onToggleSelectAll = {
+                        if (allFilteredSelected) {
+                            viewModel.clearSelection()
+                        } else {
+                            viewModel.selectHandles(selectableFilteredHandles)
+                        }
+                    },
+                    onPreferenceChanged = onPreferenceChanged,
+                    onDownload = {
+                        if (selectedFiles.isNotEmpty()) {
+                            onDownloadSelected(selectedFiles)
+                            viewModel.clearSelection()
+                        }
+                    },
+                )
+            }
         },
     ) { padding ->
         Column(
@@ -421,94 +567,159 @@ fun BrowseScreen(
                         it.state == TransferState.DOWNLOADING ||
                         it.state == TransferState.SAVING
                 },
+                cacheUsageLabel = cacheUsageLabel,
                 isLoading = isLoading,
                 isTransferring = isTransferring,
+                totalCount = files.count { !it.info.isFolder },
+                filteredCount = sortedFiles.count { !it.info.isFolder },
+                filterExpanded = filtersExpanded,
+                activeMode = browseModeState.mode,
                 onBack = { showsDisconnectConfirm = true },
-                onOpenLocalProofing = { startLocalProofing() },
-                onOpenDownloads = onOpenDownloads,
-            )
-            GalleryFilterPanel(
-                expanded = filtersExpanded,
-                onExpandedChange = { filtersExpanded = it },
-                state = filterState,
-                stats = filterStats,
-                isLoadingJpg = isLoading,
-                isLoadingHiddenFormats = isLoadingHiddenFormats,
-                onStateChange = { filterState = it },
-                sortMode = sortMode,
-                onSortModeChange = { sortMode = it },
-                onPickDate = { showsDatePicker = true },
-                onPickDateRange = { showsDateRangePicker = true },
-            )
-            Box(Modifier.fillMaxSize()) {
-                when {
-                    isLoading && files.isEmpty() -> {
-                        CircularProgressIndicator(
-                            modifier = Modifier.align(Alignment.Center),
-                            color = CamTransferColors.Accent,
-                        )
+                onToggleFilters = {
+                    if (browseModeState.mode == GalleryBrowseMode.THUMBNAIL) {
+                        filtersExpanded = !filtersExpanded
                     }
-                    error != null -> {
-                        Column(
-                            modifier = Modifier
-                                .align(Alignment.Center)
-                                .padding(24.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                        ) {
-                            Text(error!!, color = MaterialTheme.colorScheme.error)
-                            Spacer(Modifier.height(10.dp))
-                            Button(onClick = { viewModel.loadFiles(cameraSource) }) {
-                                Text("重试")
+                },
+                onModeChange = { mode ->
+                    previewFile = null
+                    viewModel.setBrowseMode(cameraSource, mode)
+                },
+                onOpenLocalProofing = { startLocalProofing() },
+                onOpenDownloadFolderSettings = { showsDownloadFolderSettings = true },
+                onOpenDownloads = onOpenDownloads,
+                onClearCacheClick = { showsCacheSettings = true },
+            )
+            if (browseModeState.mode == GalleryBrowseMode.HD_PREVIEW) {
+                Box(Modifier.fillMaxSize()) {
+                    HighDefinitionPreviewScreen(
+                        items = highDefinitionPreviewItems,
+                        isLoading = isLoading,
+                        error = error,
+                        activeDate = browseModeState.highDefinitionDate,
+                        previewImages = previewImages,
+                        loadedPreviewHandles = loadedPreviewHandles,
+                        loadingPreviewHandles = loadingPreviewHandles,
+                        failedPreviewHandles = failedPreviewHandles,
+                        downloadStates = downloadStates,
+                        preferCompressedDownloads = preferCompressedDownloads,
+                        canChangeTransferMode = canChangeTransferMode,
+                        canStartDownload = hasPendingQueuedDownloads && !isTransferring,
+                        onPickDate = { showsDatePicker = true },
+                        onPreferenceChanged = onPreferenceChanged,
+                        onVisibleHandlesChanged = { visibleHandles ->
+                            viewModel.prioritizeHighDefinitionPreviewVisibleHandles(cameraSource, visibleHandles)
+                        },
+                        onQueueDownload = { file ->
+                            if (GalleryDownloadUiPolicy.canSelect(downloadStates[file.info.handle])) {
+                                onQueueDownloadSelected(listOf(file))
+                            }
+                        },
+                        onCancelQueuedDownload = { file ->
+                            if (downloadStates[file.info.handle] == TransferState.PENDING) {
+                                onCancelQueuedDownloads(listOf(file))
+                            }
+                        },
+                        onQueueDownloadRaw = { file ->
+                            if (GalleryDownloadUiPolicy.canSelect(downloadStates[file.info.handle])) {
+                                onQueueDownloadSelected(listOf(file))
+                            }
+                        },
+                        onCancelQueuedRawDownload = { file ->
+                            if (downloadStates[file.info.handle] == TransferState.PENDING) {
+                                onCancelQueuedDownloads(listOf(file))
+                            }
+                        },
+                        onStartDownload = onStartQueuedDownloads,
+                    )
+                }
+            } else {
+                GalleryFilterPanel(
+                    expanded = filtersExpanded,
+                    onExpandedChange = { filtersExpanded = it },
+                    state = filterState,
+                    stats = filterStats,
+                    isLoadingJpg = isLoading,
+                    isLoadingHiddenFormats = isLoadingHiddenFormats,
+                    onStateChange = { filterState = it },
+                    sortMode = sortMode,
+                    onSortModeChange = { sortMode = it },
+                    activeMode = browseModeState.mode,
+                    onModeChange = { mode ->
+                        previewFile = null
+                        viewModel.setBrowseMode(cameraSource, mode)
+                    },
+                    onPickDate = { showsDatePicker = true },
+                    onPickDateRange = { showsDateRangePicker = true },
+                )
+                Box(Modifier.fillMaxSize()) {
+                    when {
+                        isLoading && files.isEmpty() -> {
+                            CircularProgressIndicator(
+                                modifier = Modifier.align(Alignment.Center),
+                                color = CamTransferColors.Accent,
+                            )
+                        }
+                        error != null -> {
+                            Column(
+                                modifier = Modifier
+                                    .align(Alignment.Center)
+                                    .padding(24.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                            ) {
+                                Text(error!!, color = MaterialTheme.colorScheme.error)
+                                Spacer(Modifier.height(10.dp))
+                                Button(onClick = { viewModel.loadFiles(cameraSource) }) {
+                                    Text("重试")
+                                }
                             }
                         }
-                    }
-                    files.isEmpty() -> {
-                        EmptyGalleryMessage("相机中没有文件")
-                    }
-                    filteredFiles.isEmpty() -> {
-                        EmptyGalleryMessage("当前筛选没有照片")
-                    }
-                    else -> {
-                        GalleryGrid(
-                            files = sortedFiles,
-                            sections = gallerySections,
-                            today = today,
-                            columnCount = columnCount,
-                            gridState = gridState,
-                            selectedHandles = selectedHandles,
-                            downloadStates = downloadStates,
-                            isLoadingFullObjectInfo = isLoading,
-                            visibleGridHandleSet = visibleGridHandleSet,
-                            onColumnCountChange = { newCount ->
-                                columnCount = newCount
-                                prefs.edit().putInt("columnCount", newCount).apply()
-                            },
-                            onSelectionChange = viewModel::selectHandles,
-                            onToggleDayHours = { day ->
-                                expandedSectionDays = if (day in expandedSectionDays) {
-                                    expandedSectionDays - day
-                                } else {
-                                    expandedSectionDays + day
-                                }
-                            },
-                            onToggleDaySelection = { dayFiles ->
-                                val dayHandles = dayFiles
-                                    .filter { GalleryDownloadUiPolicy.canSelect(downloadStates[it.info.handle]) }
-                                    .map { it.info.handle }
-                                    .toSet()
-                                if (dayHandles.isNotEmpty()) {
-                                    val nextSelection = if (selectedHandles.containsAll(dayHandles)) {
-                                        selectedHandles - dayHandles
+                        files.isEmpty() -> {
+                            EmptyGalleryMessage("相机中没有文件")
+                        }
+                        filteredFiles.isEmpty() -> {
+                            EmptyGalleryMessage("当前筛选没有照片")
+                        }
+                        else -> {
+                            GalleryGrid(
+                                files = sortedFiles,
+                                sections = gallerySections,
+                                today = today,
+                                columnCount = columnCount,
+                                gridState = gridState,
+                                selectedHandles = selectedHandles,
+                                downloadStates = downloadStates,
+                                thumbnailState = viewModel::thumbnailState,
+                                decodedThumbnailCache = decodedThumbnailCache,
+                                onColumnCountChange = { newCount ->
+                                    columnCount = newCount
+                                    prefs.edit().putInt("columnCount", newCount).apply()
+                                },
+                                onSelectionChange = viewModel::selectHandles,
+                                onToggleDayHours = { day ->
+                                    expandedSectionDays = if (day in expandedSectionDays) {
+                                        expandedSectionDays - day
                                     } else {
-                                        selectedHandles + dayHandles
+                                        expandedSectionDays + day
                                     }
-                                    viewModel.selectHandles(nextSelection)
-                                }
-                            },
-                            onOpenFile = { file -> previewFile = file },
-                            onToggleSelection = { file -> viewModel.toggleSelection(file.info.handle) },
-                            onVisible = { file -> viewModel.loadThumbnail(cameraSource, file.info.handle) },
-                        )
+                                },
+                                onToggleDaySelection = { dayFiles ->
+                                    val dayHandles = dayFiles
+                                        .filter { GalleryDownloadUiPolicy.canSelect(downloadStates[it.info.handle]) }
+                                        .map { it.info.handle }
+                                        .toSet()
+                                    if (dayHandles.isNotEmpty()) {
+                                        val nextSelection = if (selectedHandles.containsAll(dayHandles)) {
+                                            selectedHandles - dayHandles
+                                        } else {
+                                            selectedHandles + dayHandles
+                                        }
+                                        viewModel.selectHandles(nextSelection)
+                                    }
+                                },
+                                onOpenFile = { file -> previewFile = file },
+                                onToggleSelection = { file -> viewModel.toggleSelection(file.info.handle) },
+                            )
+                        }
                     }
                 }
             }

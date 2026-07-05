@@ -6,8 +6,8 @@ import org.junit.Test
 
 class CameraConnectionEntryPolicyTest {
     @Test
-    fun errorEntryWithRememberedPairingProbesExistingPtpBeforeBle() {
-        assertTrue(
+    fun neverAutoProbesExistingPtpBeforeBleOnNormalConnectionEntry() {
+        assertFalse(
             CameraConnectionEntryPolicy.shouldProbeExistingPtpBeforeBle(
                 state = ConnectionState.ERROR,
                 hasRememberedPairing = true,

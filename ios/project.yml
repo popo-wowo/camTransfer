@@ -15,11 +15,17 @@ targets:
     platform: iOS
     sources:
       - path: Runner
+      - path: Shared
+    dependencies:
+      - target: CameraSessionActivityWidget
+        embed: true
     info:
       path: Runner/Info.plist
       properties:
         CFBundleDisplayName: CamTransfer
         CFBundleIconName: AppIcon
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSRequiresIPhoneOS: true
         NSBluetoothAlwaysUsageDescription: CamTransfer 需要使用蓝牙来发现并连接相机
         NSBluetoothPeripheralUsageDescription: CamTransfer 需要使用蓝牙来发现并连接相机
@@ -27,7 +33,12 @@ targets:
           NSAllowsLocalNetworking: true
         NSLocalNetworkUsageDescription: CamTransfer 需要访问本地网络以连接相机
         NSLocationWhenInUseUsageDescription: CamTransfer 需要定位权限来确认当前连接的 Wi-Fi 网络名称，以便自动切换到相机热点
+        NSLocationAlwaysAndWhenInUseUsageDescription: CamTransfer 需要在相机相册会话期间继续确认相机 Wi-Fi 状态，以便锁屏或切到后台时保持相机传输连接
         NSPhotoLibraryAddUsageDescription: CamTransfer 需要把下载的照片保存到你的相册
+        NSSupportsLiveActivities: true
+        UIBackgroundModes:
+          - bluetooth-central
+          - location
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -37,10 +48,40 @@ targets:
     settings:
       base:
         INFOPLIST_FILE: Runner/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Runner/Runner.entitlements
         PRODUCT_NAME: Runner
-        CURRENT_PROJECT_VERSION: 2
-        MARKETING_VERSION: 1.0.0
+        CURRENT_PROJECT_VERSION: 5
+        MARKETING_VERSION: 1.0
         GENERATE_INFOPLIST_FILE: NO
+    attributes:
+      SystemCapabilities:
+        com.apple.AccessWiFi:
+          enabled: 1
+        com.apple.HotspotConfiguration:
+          enabled: 1
+  CameraSessionActivityWidget:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "16.1"
+    sources:
+      - path: CameraSessionActivityWidget
+      - path: Shared
+    info:
+      path: CameraSessionActivityWidget/Info.plist
+      properties:
+        CFBundleDisplayName: CamTransfer
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.camtransfer.app.CameraSessionActivityWidget
+        PRODUCT_NAME: CameraSessionActivityWidget
+        CURRENT_PROJECT_VERSION: 5
+        MARKETING_VERSION: 1.0
+        GENERATE_INFOPLIST_FILE: NO
+        APPLICATION_EXTENSION_API_ONLY: YES
   RunnerTests:
     type: bundle.unit-test
     platform: iOS

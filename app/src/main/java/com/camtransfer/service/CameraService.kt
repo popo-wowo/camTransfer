@@ -11,6 +11,7 @@ import com.camtransfer.ble.CameraVendorBleScanner
 import com.camtransfer.ble.CameraVendorBleTransferActivationPolicy
 import com.camtransfer.ble.CameraVendorConnectedDeviceNameStore
 import com.camtransfer.model.CameraFile
+import com.camtransfer.model.TransferDownloadMode
 import com.camtransfer.protocol.CameraVendorPtpIdentityPolicy
 import com.camtransfer.protocol.PtpCommands
 import com.camtransfer.protocol.PtpConnection
@@ -19,6 +20,8 @@ import com.camtransfer.service.gallery.PtpCameraGallerySource
 import com.camtransfer.service.pairing.CameraPairingService
 import com.camtransfer.wifi.CameraVendorWifiJoinPolicy
 import com.camtransfer.wifi.WifiConnector
+import kotlinx.coroutines.delay
+import java.io.OutputStream
 
 private const val TAG = "CameraService"
 
@@ -157,6 +160,8 @@ class CameraService(override val context: Context) : CameraFileSource {
             connection.connect(clientName = cameraVendorPtpClientName())
             CameraSessionKeepAlive.start(context)
             onStep(CameraConnectionStep.LoadGallery)
+            onStatus("正在读取相机照片数量")
+            connection.loadCameraVendorGalleryObjectHandles()
             onStatus("已连接")
             Log.d(TAG, "Existing camera PTP connection established")
             DiagnosticLog.append(context, TAG, "Existing camera PTP connection established")
@@ -303,6 +308,7 @@ class CameraService(override val context: Context) : CameraFileSource {
                     CameraVendorBleEndpointPolicy.SystemBond(
                         name = device.name.orEmpty(),
                         address = device.address.orEmpty(),
+                        type = device.type,
                     )
                 }
                 .orEmpty()
@@ -352,8 +358,19 @@ class CameraService(override val context: Context) : CameraFileSource {
         return gallerySource.getPreviewImage(handle)
     }
 
-    override suspend fun getFile(handle: Int): ByteArray {
-        return gallerySource.getFile(handle)
+    override suspend fun getFile(
+        handle: Int,
+        downloadMode: TransferDownloadMode,
+    ): ByteArray {
+        return gallerySource.getFile(handle, downloadMode)
+    }
+
+    override suspend fun writeFile(
+        handle: Int,
+        downloadMode: TransferDownloadMode,
+        output: OutputStream,
+    ): Long {
+        return gallerySource.writeFile(handle, downloadMode, output)
     }
 
     fun getFileStream(handle: Int) = commands.getObjectStream(handle)
@@ -403,21 +420,24 @@ class CameraService(override val context: Context) : CameraFileSource {
         disconnect()
         val cleanupAddresses = bluetoothAddresses.distinct()
         pairingStore.rememberDeletedBluetoothAddresses(cleanupAddresses)
-        removeSystemBluetoothBonds(cleanupAddresses)
+        val remainingSystemBondAddresses = removeSystemBluetoothBonds(cleanupAddresses)
+        if (remainingSystemBondAddresses.isNotEmpty()) {
+            DiagnosticLog.append(context, TAG, "System BLE bonds still present after removal wait: $remainingSystemBondAddresses")
+        }
         pairingStore.clear()
         CameraVendorTerminalIdentityStore(context).clearRegisteredTerminalName()
         DiagnosticLog.append(context, TAG, "Cleared pairing store and registered terminal name for fresh pairing")
     }
 
     @SuppressLint("MissingPermission")
-    private fun removeSystemBluetoothBonds(bluetoothAddresses: List<String>) {
+    private suspend fun removeSystemBluetoothBonds(bluetoothAddresses: List<String>): List<String> {
         val normalizedAddresses = bluetoothAddresses
             .map(CameraVendorPairingForgetPolicy::normalizeBluetoothAddress)
             .toSet()
-        if (normalizedAddresses.isEmpty()) return
+        if (normalizedAddresses.isEmpty()) return emptyList()
         if (!CameraBluetoothPermissionPolicy.canReadSystemBonds(context)) {
             DiagnosticLog.append(context, TAG, "Skipped system BLE bond removal: missing BLUETOOTH_CONNECT")
-            return
+            return normalizedAddresses.toList()
         }
 
         val manager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
@@ -434,6 +454,25 @@ class CameraService(override val context: Context) : CameraFileSource {
                         DiagnosticLog.append(context, TAG, "System BLE bond remove failed", error)
                     }
             }
+        val remaining = waitForSystemBluetoothBondRemoval(normalizedAddresses)
+        return remaining
+    }
+
+    private suspend fun waitForSystemBluetoothBondRemoval(normalizedAddresses: Set<String>): List<String> {
+        val deadlineMs = SystemClock.elapsedRealtime() + SYSTEM_BOND_REMOVAL_WAIT_TIMEOUT_MS
+        var remaining = remainingSystemBondAddresses(normalizedAddresses)
+        while (remaining.isNotEmpty() && SystemClock.elapsedRealtime() < deadlineMs) {
+            delay(SYSTEM_BOND_REMOVAL_POLL_INTERVAL_MS)
+            remaining = remainingSystemBondAddresses(normalizedAddresses)
+        }
+        return remaining
+    }
+
+    private fun remainingSystemBondAddresses(normalizedAddresses: Set<String>): List<String> {
+        return CameraVendorPairingForgetPolicy.remainingSystemBondAddresses(
+            requestedAddresses = normalizedAddresses,
+            systemBonds = systemBluetoothBonds(),
+        )
     }
 
     private fun removeSystemBluetoothBond(device: BluetoothDevice): Boolean {
@@ -443,5 +482,7 @@ class CameraService(override val context: Context) : CameraFileSource {
 
     private companion object {
         const val TRANSFER_COMPRESSION_KEY = "downloadCompressionEnabled"
+        const val SYSTEM_BOND_REMOVAL_WAIT_TIMEOUT_MS = 2_500L
+        const val SYSTEM_BOND_REMOVAL_POLL_INTERVAL_MS = 250L
     }
 }

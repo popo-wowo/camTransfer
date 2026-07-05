@@ -1,6 +1,7 @@
 package com.camtransfer
 
 import com.camtransfer.viewmodel.ConnectionState
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -129,6 +130,14 @@ class CameraScreenRoutePolicyTest {
                 connectionState = ConnectionState.CONNECTED,
                 currentScreen = Screen.BROWSE,
             )
+        )
+    }
+
+    @Test
+    fun downloadStartOpensTransferScreen() {
+        assertEquals(
+            Screen.TRANSFER,
+            CameraScreenRoutePolicy.screenAfterDownloadStarted(currentScreen = Screen.BROWSE),
         )
     }
 }

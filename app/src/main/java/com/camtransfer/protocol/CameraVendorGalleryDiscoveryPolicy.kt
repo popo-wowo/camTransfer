@@ -18,7 +18,7 @@ object CameraVendorGalleryDiscoveryPolicy {
     }
 
     fun initialPlaceholderHandles(specifiedHandles: List<Int>): List<Int> =
-        specifiedHandles.distinct().sortedDescending()
+        specifiedHandles.distinct()
 
     fun captureDatesByHandle(
         specifiedHandles: List<Int>,

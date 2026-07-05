@@ -711,7 +711,7 @@ class CameraVendorBleHandshake(private val context: Context) {
         DiagnosticLog.append(context, TAG, "ReferenceApp activation write ImageTransferSettingEx=01")
         writeCharAny(
             CameraVendorBleProfile.IMAGE_RESIZE_SETTING_CHAR,
-            CameraVendorBleTransferActivationPolicy.resizePayload(preferCompressedDownloads),
+            CameraVendorBleTransferActivationPolicy.galleryActivationResizePayload(preferCompressedDownloads),
         )
         DiagnosticLog.append(
             context,
@@ -719,8 +719,15 @@ class CameraVendorBleHandshake(private val context: Context) {
             "ReferenceApp activation write ImageResizeSetting=${if (preferCompressedDownloads) "01" else "00"}",
         )
         delay(500)
-        writeCharAny(CameraVendorBleProfile.LAUNCH_REQUEST_CHAR, byteArrayOf(0x03, 0x00))
-        DiagnosticLog.append(context, TAG, "ReferenceApp activation write FunctionLaunchRequest=0300")
+        writeCharAny(
+            CameraVendorBleProfile.LAUNCH_REQUEST_CHAR,
+            CameraVendorBleTransferActivationPolicy.importImageLaunchRequestPayload(),
+        )
+        DiagnosticLog.append(
+            context,
+            TAG,
+            "ReferenceApp activation write FunctionLaunchRequest=${CameraVendorBleTransferActivationPolicy.importImageLaunchRequestHex()}",
+        )
     }
 
     private suspend fun waitForReferenceAppApReady() {

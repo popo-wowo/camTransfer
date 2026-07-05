@@ -245,6 +245,8 @@ class CameraGalleryConnectionCoordinator(
         connectPtpWithRetry(onStatus)
 
         onStep(CameraConnectionStep.LoadGallery)
+        onStatus("正在读取相机照片数量")
+        connection.loadCameraVendorGalleryObjectHandles()
         onStatus("已连接")
         Log.d(TAG, "Full connection established")
         DiagnosticLog.append(context, TAG, "Full connection established")
@@ -458,6 +460,7 @@ class CameraGalleryConnectionCoordinator(
                     CameraVendorBleEndpointPolicy.SystemBond(
                         name = device.name.orEmpty(),
                         address = device.address.orEmpty(),
+                        type = device.type,
                     )
                 }
                 .orEmpty()

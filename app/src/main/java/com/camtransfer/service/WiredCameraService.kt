@@ -14,6 +14,7 @@ import android.mtp.MtpObjectInfo
 import android.os.Build
 import com.camtransfer.model.CameraFile
 import com.camtransfer.model.ObjectInfo
+import com.camtransfer.model.TransferDownloadMode
 import com.camtransfer.protocol.PtpObjectFormat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -27,9 +28,13 @@ import kotlin.coroutines.resumeWithException
 private const val WIRED_USB_PERMISSION_ACTION = "com.camtransfer.USB_PERMISSION"
 
 class WiredCameraService(override val context: Context) : CameraFileSource {
+    override val displayName: String?
+        get() = connectedDeviceDisplayName
+
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
     private var mtpDevice: MtpDevice? = null
     private var objectHandleBySyntheticHandle: Map<Int, Int> = emptyMap()
+    private var connectedDeviceDisplayName: String? = null
 
     suspend fun connectFirstAvailableDevice() {
         withContext(Dispatchers.IO) {
@@ -45,6 +50,10 @@ class WiredCameraService(override val context: Context) : CameraFileSource {
                 throw IllegalStateException("USB 相机没有以 MTP/PTP 文件模式响应，请检查相机 USB 设置")
             }
             mtpDevice = mtp
+            connectedDeviceDisplayName = listOfNotNull(device.manufacturerName, device.productName)
+                .joinToString(" ")
+                .trim()
+                .ifBlank { "USB Camera" }
             DiagnosticLog.append(context, "WiredCamera", "USB MTP camera connected")
         }
     }
@@ -75,7 +84,10 @@ class WiredCameraService(override val context: Context) : CameraFileSource {
         mtp.getThumbnail(objectHandle) ?: ByteArray(0)
     }
 
-    override suspend fun getFile(handle: Int): ByteArray = withContext(Dispatchers.IO) {
+    override suspend fun getFile(
+        handle: Int,
+        downloadMode: TransferDownloadMode,
+    ): ByteArray = withContext(Dispatchers.IO) {
         val mtp = mtpDevice ?: throw IllegalStateException("请先连接 USB 相机")
         val objectHandle = objectHandleBySyntheticHandle[handle] ?: handle
         val info = mtp.getObjectInfo(objectHandle) ?: throw IllegalStateException("USB 相机文件已不可用")
@@ -89,6 +101,7 @@ class WiredCameraService(override val context: Context) : CameraFileSource {
             runCatching { mtpDevice?.close() }
             mtpDevice = null
             objectHandleBySyntheticHandle = emptyMap()
+            connectedDeviceDisplayName = null
         }
     }
 

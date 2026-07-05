@@ -21,6 +21,13 @@ enum IOSCameraConnectionStep: String, CaseIterable, Equatable {
     .loadGallery,
   ]
 
+  static func officialGalleryOrderPrefix(through step: IOSCameraConnectionStep) -> [IOSCameraConnectionStep] {
+    guard let index = officialGalleryOrder.firstIndex(of: step) else {
+      return []
+    }
+    return Array(officialGalleryOrder[...index])
+  }
+
   var androidDisplayName: String {
     switch self {
     case .reconnectPairedBle:
@@ -53,6 +60,12 @@ struct IOSCameraConnectionContext: Equatable {
 struct IOSCameraConnectionIssue: Error, Equatable {
   let step: IOSCameraConnectionStep
   let reason: String
+}
+
+extension IOSCameraConnectionIssue: LocalizedError {
+  var errorDescription: String? {
+    "\(step.androidDisplayName): \(reason)"
+  }
 }
 
 struct IOSCameraConnectionStepRunner {

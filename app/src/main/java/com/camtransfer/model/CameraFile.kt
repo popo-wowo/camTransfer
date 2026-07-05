@@ -42,19 +42,35 @@ data class ObjectInfo(
 data class CameraFile(
     val info: ObjectInfo,
     val thumbnail: ByteArray? = null,
+    val formatHints: Set<CameraFileFormatHint> = emptySet(),
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is CameraFile) return false
-        return info == other.info && thumbnail.contentEqualsNullable(other.thumbnail)
+        return info == other.info &&
+            thumbnail.contentEqualsNullable(other.thumbnail) &&
+            formatHints == other.formatHints
     }
     override fun hashCode(): Int =
-        31 * info.hashCode() + (thumbnail?.contentHashCode() ?: 0)
+        31 * (31 * info.hashCode() + (thumbnail?.contentHashCode() ?: 0)) + formatHints.hashCode()
 
     private fun ByteArray?.contentEqualsNullable(other: ByteArray?): Boolean {
         if (this == null || other == null) return this === other
         return contentEquals(other)
     }
+}
+
+enum class CameraFileFormatHint {
+    JPG,
+    HEIF,
+    RAW,
+    EXTENDED_STILL_CANDIDATE,
+    VIDEO,
+}
+
+enum class TransferDownloadMode {
+    ORIGINAL,
+    COMPRESSED,
 }
 
 enum class TransferState { PENDING, DOWNLOADING, SAVING, DONE, ERROR }
@@ -64,4 +80,5 @@ data class TransferItem(
     val state: TransferState = TransferState.PENDING,
     val progress: Float = 0f,
     val error: String? = null,
+    val downloadMode: TransferDownloadMode = TransferDownloadMode.ORIGINAL,
 )

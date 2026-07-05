@@ -1,5 +1,6 @@
 package com.camtransfer.ui
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -17,16 +18,19 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.camtransfer.model.CameraFile
 import com.camtransfer.model.TransferState
+import kotlinx.coroutines.flow.StateFlow
 import java.time.LocalDate
 
 @Composable
@@ -38,15 +42,14 @@ internal fun GalleryGrid(
     gridState: LazyGridState,
     selectedHandles: Set<Int>,
     downloadStates: Map<Int, TransferState?>,
-    isLoadingFullObjectInfo: Boolean,
-    visibleGridHandleSet: Set<Int>,
+    thumbnailState: (Int) -> StateFlow<ByteArray?>,
+    decodedThumbnailCache: GalleryDecodedThumbnailCache<Bitmap>,
     onColumnCountChange: (Int) -> Unit,
     onSelectionChange: (Set<Int>) -> Unit,
     onToggleDayHours: (LocalDate) -> Unit,
     onToggleDaySelection: (List<CameraFile>) -> Unit,
     onOpenFile: (CameraFile) -> Unit,
     onToggleSelection: (CameraFile) -> Unit,
-    onVisible: (CameraFile) -> Unit,
 ) {
     val stickySection by remember(sections, gridState) {
         derivedStateOf {
@@ -75,7 +78,7 @@ internal fun GalleryGrid(
                     downloadStates = downloadStates,
                     onSelectionChange = onSelectionChange,
                 ),
-            contentPadding = PaddingValues(start = 12.dp, top = 8.dp, end = 12.dp, bottom = 96.dp),
+            contentPadding = PaddingValues(start = 12.dp, top = 2.dp, end = 12.dp, bottom = 96.dp),
             horizontalArrangement = Arrangement.spacedBy(GalleryGridSpacingPolicy.HORIZONTAL_DP.dp),
             verticalArrangement = Arrangement.spacedBy(GalleryGridSpacingPolicy.VERTICAL_DP.dp),
         ) {
@@ -85,11 +88,10 @@ internal fun GalleryGrid(
                         file = file,
                         selectedHandles = selectedHandles,
                         downloadStates = downloadStates,
-                        isLoadingFullObjectInfo = isLoadingFullObjectInfo,
-                        visibleGridHandleSet = visibleGridHandleSet,
+                        thumbnailState = thumbnailState,
+                        decodedThumbnailCache = decodedThumbnailCache,
                         onOpenFile = onOpenFile,
                         onToggleSelection = onToggleSelection,
-                        onVisible = onVisible,
                     )
                 }
                 return@LazyVerticalGrid
@@ -125,11 +127,10 @@ internal fun GalleryGrid(
                                 file = file,
                                 selectedHandles = selectedHandles,
                                 downloadStates = downloadStates,
-                                isLoadingFullObjectInfo = isLoadingFullObjectInfo,
-                                visibleGridHandleSet = visibleGridHandleSet,
+                                thumbnailState = thumbnailState,
+                                decodedThumbnailCache = decodedThumbnailCache,
                                 onOpenFile = onOpenFile,
                                 onToggleSelection = onToggleSelection,
-                                onVisible = onVisible,
                             )
                         }
                     }
@@ -139,11 +140,10 @@ internal fun GalleryGrid(
                             file = file,
                             selectedHandles = selectedHandles,
                             downloadStates = downloadStates,
-                            isLoadingFullObjectInfo = isLoadingFullObjectInfo,
-                            visibleGridHandleSet = visibleGridHandleSet,
+                            thumbnailState = thumbnailState,
+                            decodedThumbnailCache = decodedThumbnailCache,
                             onOpenFile = onOpenFile,
                             onToggleSelection = onToggleSelection,
-                            onVisible = onVisible,
                         )
                     }
                 }
@@ -207,17 +207,24 @@ private fun DaySectionHeader(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 14.dp, bottom = 6.dp),
+            .padding(top = 9.dp, bottom = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            text = "${section.day.dayLabel(today)} ${section.files.size} 张",
+        Row(
             modifier = Modifier.weight(1f),
-            color = CamTransferColors.Ink,
-            fontSize = 15.sp,
-            fontWeight = FontWeight.Black,
-            maxLines = 1,
-        )
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = section.day.dayLabel(today),
+                color = CamTransferColors.Ink,
+                fontSize = GalleryTypeScale.ContentTitle,
+                fontWeight = FontWeight.Black,
+                maxLines = 1,
+            )
+            DayCountPill("${section.files.size} 张")
+        }
         HeaderPillButton(
             label = if (allSelected) "取消" else "全选",
             onClick = onToggleDaySelection,
@@ -232,6 +239,24 @@ private fun DaySectionHeader(
 }
 
 @Composable
+private fun DayCountPill(label: String) {
+    Box(
+        modifier = Modifier
+            .clip(CircleShape)
+            .background(CamTransferColors.Card.copy(alpha = 0.66f))
+            .padding(horizontal = 8.dp, vertical = 2.dp),
+    ) {
+        Text(
+            text = label,
+            color = CamTransferColors.SecondaryInk,
+            fontSize = GalleryTypeScale.Meta,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+        )
+    }
+}
+
+@Composable
 private fun HourSectionHeader(hour: Int) {
     Text(
         text = "%02d:00".format(hour),
@@ -239,7 +264,7 @@ private fun HourSectionHeader(hour: Int) {
             .fillMaxWidth()
             .padding(top = 8.dp, bottom = 5.dp),
         color = CamTransferColors.SecondaryInk,
-        fontSize = 12.sp,
+        fontSize = GalleryTypeScale.Level2,
         fontWeight = FontWeight.SemiBold,
         maxLines = 1,
     )
@@ -250,14 +275,14 @@ private fun HeaderPillButton(label: String, onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .clip(CircleShape)
-            .background(CamTransferColors.MutedFill)
+            .background(CamTransferColors.Card.copy(alpha = 0.48f))
             .clickable(onClick = onClick)
-            .padding(horizontal = 10.dp, vertical = 5.dp),
+            .padding(horizontal = 12.dp, vertical = 6.dp),
     ) {
         Text(
             text = label,
-            color = CamTransferColors.Ink,
-            fontSize = 12.sp,
+            color = CamTransferColors.SecondaryInk,
+            fontSize = GalleryTypeScale.Meta,
             fontWeight = FontWeight.Bold,
             maxLines = 1,
         )
@@ -270,27 +295,26 @@ private fun GalleryGridFileItem(
     modifier: Modifier = Modifier,
     selectedHandles: Set<Int>,
     downloadStates: Map<Int, TransferState?>,
-    isLoadingFullObjectInfo: Boolean,
-    visibleGridHandleSet: Set<Int>,
+    thumbnailState: (Int) -> StateFlow<ByteArray?>,
+    decodedThumbnailCache: GalleryDecodedThumbnailCache<Bitmap>,
     onOpenFile: (CameraFile) -> Unit,
     onToggleSelection: (CameraFile) -> Unit,
-    onVisible: (CameraFile) -> Unit,
 ) {
     val state = downloadStates[file.info.handle]
+    val loadedThumbnail by thumbnailState(file.info.handle).collectAsState()
     GalleryGridItem(
         file = file,
+        thumbnail = GalleryThumbnailDisplayPolicy.thumbnailFor(file, loadedThumbnail),
+        decodedThumbnailCache = decodedThumbnailCache,
         modifier = modifier,
         isSelected = file.info.handle in selectedHandles,
         downloadState = state,
-        isLoadingFullObjectInfo = isLoadingFullObjectInfo,
-        isItemVisible = file.info.handle in visibleGridHandleSet,
         onOpen = { onOpenFile(file) },
         onToggleSelection = {
             if (GalleryDownloadUiPolicy.canSelect(state)) {
                 onToggleSelection(file)
             }
         },
-        onVisible = { onVisible(file) },
     )
 }
 

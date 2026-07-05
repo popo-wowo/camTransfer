@@ -8,12 +8,24 @@
 
 ## 当前结论
 
-当前真正能把 HEIF/RAW 全量加载出来的关键，不是标准 PTP 全卡枚举，也不是 `D222` ready 轮询，而是：
+当前 Android X-T5 真正能把 HEIF/RAW 一开始加载出来的关键，不是标准 PTP 全卡枚举，也不是 `D222` ready 轮询，也不是 hidden gap 猜 handle，而是：
 
 1. 使用 ReferenceApp 的 BLE 传图激活流程进入相机 Wi-Fi / PTP 状态。
 2. 使用 CameraVendor legacy PTP 初始化和 ReferenceApp 图库链路读取相机当前列表。
-3. 当 `D621 SpecifiedObjectHandles` 只返回部分对象时，主动探测 handle 缺口。
-4. 对缺口 handle 执行 `GetObjectInfo`，把可访问但未出现在 `D621` 里的 HEIF/RAW 合并进图库。
+3. 先读取 `D604=31` 下的 `9053/D620/D621` 基线列表。
+4. 再设置 `D604=HEIF` 或 `D604=RAW` 并重新读取 `9053/D620/D621`。
+5. 如果相机返回更大的 specified handle 列表，把这个扩展 `D621` 提升为初始占位符来源。
+6. 保留相机返回的 `D621` 顺序发布占位符，不按 handle 数字倒序重排。
+
+2026-06-24 Android 实机验证:
+
+```text
+D604=31   -> 1152 handles, JPG=1138, Video=14
+D604=HEIF -> 1268 handles
+D604=RAW  -> 1268 handles
+full-object-info-final total=1268 formats={HEIF=37, RAW=79, JPG=1138, Video=14}
+hidden metadata selected=0
+```
 
 已验证有效的关键构建：
 
@@ -28,7 +40,7 @@
 4. 不要再加入“baseline IP 必须变化”的防误判逻辑。实测它会把已经连上的 CameraVendor Wi-Fi 也挡掉，导致 App 一直提示用户连接 Wi-Fi。
 5. 下载图片原图当前走 `downloadOriginal(for:) -> session.object() -> CameraVendorPhotoLibrarySaver.save(data:)`，图片下载已验证可用；不要再把照片强行改成统一文件流路径，否则容易绕过已有的图片数据修正逻辑。
 
-`FIX135` 的目的只是移除会破坏链路的 `D222` 轮询，不应删除 hidden handle gap 探测。后续任何连接修复都必须保留 `FIX134` 的 hidden handle gap 探测，以及 `FIX148` 的 Wi-Fi 放行规则。
+`FIX135` 的目的只是移除会破坏链路的 `D222` 轮询。hidden handle gap 探测现在只作为扩展 `D621` 失败后的兜底诊断，不应再作为 RAW/HEIF 的正式发现路径。后续任何连接修复都必须保留 `FIX148` 的 Wi-Fi 放行规则，并保持 2026-06-24 验证过的 `D604=HEIF/RAW -> D621` 初始全量列表逻辑。
 
 ## 高风险误区
 
@@ -258,7 +270,7 @@ D621 读取 SpecifiedObjectHandles
 - `getFiltersLoadThumbImg(searchModeAllInfo)` 先调用 `setSearchModeAll(searchModeAllInfo)`，随后调用 repository 的 `createImageHandlesByDate()`，也就是重新读取日期分组和 handles，再加载缩略图/对象信息。
 - `FilteringConditionsModel.getImageNum()` 为筛选面板数量逐个构造临时 `SearchMode`，读取 `getSpecifiedObjectCount()` 后恢复原 SearchMode。这个流程用于数量刷新，不等同于图库首屏加载。
 - 因此，未证明的实现禁止在主链路中发送手写 raw `9051` payload。实机日志已经证明“只改当前 `9052` blob 的 `D604` 值再读 `D621`”会让 HEIF/RAW/MOV/MP4 返回同一组 handles，污染格式筛选。
-- 当前 Android 正式路径恢复为 `9050 -> 9053 -> D620 -> D621`；占位对象格式必须保持 `UNDEFINED`；完整元数据结束后只允许用 bounded hidden handle gap 探测 HEIF/RAW。
+- 2026-06-24 更新: 当前 Android 正式路径不再依赖完整元数据后的 bounded hidden handle gap 探测 HEIF/RAW。首屏应先用 `D604=31` 读取基线 `9053/D620/D621`，再用 `D604=HEIF` 或 `D604=RAW` 读取扩展 `9053/D620/D621`，并把更大的相机返回列表提升为初始占位符来源。占位对象格式仍必须保持 `UNDEFINED`，直到 `ObjectInfo` 补齐。
 
 2026-06-21 Android 修正：
 
@@ -520,7 +532,8 @@ NativeDownloadTask
 
 - BLE 写入顺序
 - PTP handshake 顺序
-- hidden handle gap 探测
+- `D604=HEIF/RAW -> D621` 扩展初始列表逻辑
+- hidden handle gap 兜底探测
 - `D212/D222`
 - `SearchModeAll`
 

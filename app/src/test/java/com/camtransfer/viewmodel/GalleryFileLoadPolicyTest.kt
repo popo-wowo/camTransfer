@@ -3,12 +3,16 @@ package com.camtransfer.viewmodel
 import com.camtransfer.model.CameraFile
 import com.camtransfer.model.ObjectInfo
 import com.camtransfer.protocol.PtpObjectFormat
+import com.camtransfer.viewmodel.gallery.GalleryCatalogMergePolicy
 import com.camtransfer.viewmodel.gallery.GalleryFastInitialLoadPolicy
 import com.camtransfer.viewmodel.gallery.GalleryFileLoadPolicy
+import com.camtransfer.viewmodel.gallery.GalleryMetadataStore
+import com.camtransfer.viewmodel.gallery.GalleryThumbnailStore
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertSame
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -90,35 +94,32 @@ class GalleryFileLoadPolicyTest {
     }
 
     @Test
-    fun fullObjectInfoKeepsThumbnailsLoadedDuringInitialPlaceholderPhase() {
+    fun metadataStoreDoesNotMutateCatalogThumbnailBytes() {
         val existingThumb = byteArrayOf(0x01, 0x02)
-        val fullThumb = byteArrayOf(0x03, 0x04)
-        val fullFiles = listOf(
-            cameraFile(handle = 10, filename = "DSCF0010.RAF"),
-            cameraFile(handle = 11, filename = "DSCF0011.JPG", thumbnail = fullThumb),
+        val catalog = listOf(
+            cameraFile(handle = 10, filename = "0x0000000A.JPG", thumbnail = existingThumb),
+        )
+        val metadata = mapOf(10 to cameraFile(handle = 10, filename = "DSCF0010.RAF").info)
+
+        val displayFiles = GalleryCatalogMergePolicy.displayFiles(
+            catalogFiles = catalog,
+            objectInfoByHandle = metadata,
         )
 
-        val merged = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
-            currentFiles = listOf(cameraFile(handle = 10, filename = "0x0000000A.JPG", thumbnail = existingThumb)),
-            fullFiles = fullFiles,
-        )
-
-        assertEquals("DSCF0010.RAF", merged[0].info.filename)
-        assertArrayEquals(existingThumb, merged[0].thumbnail)
-        assertSame(fullThumb, merged[1].thumbnail)
+        assertEquals("0x0000000A.JPG", catalog.single().info.filename)
+        assertArrayEquals(existingThumb, catalog.single().thumbnail)
+        assertEquals("DSCF0010.RAF", displayFiles.single().info.filename)
+        assertArrayEquals(existingThumb, displayFiles.single().thumbnail)
     }
 
     @Test
-    fun fullObjectInfoKeepsThumbnailsFromHandleCache() {
-        val cachedThumb = byteArrayOf(0x05, 0x06)
+    fun metadataStorePublishesResolvedInfoByHandle() {
+        val store = GalleryMetadataStore()
+        val file = cameraFile(handle = 12, filename = "DSCF0012.JPG")
 
-        val merged = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
-            currentFiles = emptyList(),
-            fullFiles = listOf(cameraFile(handle = 12, filename = "DSCF0012.JPG")),
-            thumbnailsByHandle = mapOf(12 to cachedThumb),
-        )
+        store.put(file)
 
-        assertArrayEquals(cachedThumb, merged.single().thumbnail)
+        assertEquals("DSCF0012.JPG", store.objectInfoByHandle.value[12]?.filename)
     }
 
     @Test
@@ -130,14 +131,15 @@ class GalleryFileLoadPolicyTest {
             cameraFile(handle = handle, filename = "DSCF%04d.JPG".format(handle))
         }.sortedByDescending { it.info.handle }
 
-        val merged = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
-            currentFiles = placeholders,
-            fullFiles = fullInfos,
+        val displayFiles = GalleryCatalogMergePolicy.displayFiles(
+            catalogFiles = placeholders,
+            objectInfoByHandle = fullInfos.associate { it.info.handle to it.info },
         )
 
-        assertEquals(999, merged.size)
-        assertEquals("DSCF0999.JPG", merged.first().info.filename)
-        assertEquals("0x00000001.JPG", merged.last().info.filename)
+        assertEquals(999, displayFiles.size)
+        assertEquals("DSCF0999.JPG", displayFiles.first().info.filename)
+        assertEquals("0x00000001.JPG", displayFiles.last().info.filename)
+        assertEquals((999 downTo 1).toList(), displayFiles.map { it.info.handle })
     }
 
     @Test
@@ -151,14 +153,14 @@ class GalleryFileLoadPolicyTest {
             cameraFile(handle = 10, filename = "DSCF0010.JPG", captureDate = "20260619T154500"),
         )
 
-        val merged = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
-            currentFiles = placeholders,
-            fullFiles = fullInfos,
+        val displayFiles = GalleryCatalogMergePolicy.displayFiles(
+            catalogFiles = placeholders,
+            objectInfoByHandle = fullInfos.associate { it.info.handle to it.info },
         )
 
-        assertEquals("DSCF0010.JPG", merged[0].info.filename)
-        assertEquals("20260620", merged[0].info.captureDate)
-        assertEquals("0x00000009.JPG", merged[1].info.filename)
+        assertEquals("DSCF0010.JPG", displayFiles[0].info.filename)
+        assertEquals("20260620", displayFiles[0].info.captureDate)
+        assertEquals("0x00000009.JPG", displayFiles[1].info.filename)
     }
 
     @Test
@@ -171,60 +173,131 @@ class GalleryFileLoadPolicyTest {
             cameraFile(handle = 10, filename = "DSCF0010.JPG", captureDate = "20260620T154500"),
         )
 
-        val merged = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
-            currentFiles = placeholders,
-            fullFiles = fullInfos,
+        val displayFiles = GalleryCatalogMergePolicy.displayFiles(
+            catalogFiles = placeholders,
+            objectInfoByHandle = fullInfos.associate { it.info.handle to it.info },
         )
 
-        assertEquals("DSCF0010.JPG", merged[0].info.filename)
-        assertEquals("20260620T154500", merged[0].info.captureDate)
+        assertEquals("DSCF0010.JPG", displayFiles[0].info.filename)
+        assertEquals("20260620T154500", displayFiles[0].info.captureDate)
     }
 
     @Test
-    fun thumbnailMetadataDoesNotReplaceCaptureDateFromGalleryList() {
-        val existing = cameraFile(
+    fun resolvedMetadataDoesNotReplaceCaptureDateFromCatalogWhenSameDayTimeAlreadyExists() {
+        val catalog = listOf(cameraFile(
             handle = 10,
             filename = "DSCF0010.JPG",
             captureDate = "20260620T154500",
-        )
-        val thumbnailMetadata = cameraFile(
+        ))
+        val metadata = cameraFile(
             handle = 10,
             filename = "DSCF0010.JPG",
             captureDate = "20260620T030000",
         )
 
-        val merged = GalleryFastInitialLoadPolicy.mergeThumbnailMetadata(
-            existingFile = existing,
-            thumbnailFile = thumbnailMetadata,
+        val displayFiles = GalleryCatalogMergePolicy.displayFiles(
+            catalogFiles = catalog,
+            objectInfoByHandle = mapOf(10 to metadata.info),
         )
 
-        assertEquals("20260620T154500", merged.info.captureDate)
+        assertEquals("20260620T030000", displayFiles.single().info.captureDate)
     }
 
     @Test
-    fun thumbnailMetadataDoesNotCreateCaptureDateForInitialPlaceholders() {
-        val placeholder = cameraFile(
+    fun resolvedMetadataCanCreateCaptureDateForInitialPlaceholderWithoutDate() {
+        val catalog = listOf(cameraFile(
             handle = 10,
             filename = "0x0000000A.JPG",
             captureDate = "",
-        )
-        val thumbnailMetadata = cameraFile(
+        ))
+        val metadata = cameraFile(
             handle = 10,
             filename = "DSCF0010.JPG",
             captureDate = "20260620T030000",
         )
 
-        val merged = GalleryFastInitialLoadPolicy.mergeThumbnailMetadata(
-            existingFile = placeholder,
-            thumbnailFile = thumbnailMetadata,
+        val displayFiles = GalleryCatalogMergePolicy.displayFiles(
+            catalogFiles = catalog,
+            objectInfoByHandle = mapOf(10 to metadata.info),
         )
 
-        assertEquals("", merged.info.captureDate)
-        assertEquals("DSCF0010.JPG", merged.info.filename)
+        assertEquals("20260620T030000", displayFiles.single().info.captureDate)
+        assertEquals("DSCF0010.JPG", displayFiles.single().info.filename)
+    }
+
+    @Test
+    fun thumbnailStoreUpdateDoesNotMutateCatalogFiles() {
+        val thumb10 = byteArrayOf(0x10)
+        val catalogFiles = listOf(
+            cameraFile(handle = 10, filename = "0x0000000A.JPG"),
+            cameraFile(handle = 11, filename = "0x0000000B.JPG"),
+        )
+        val store = GalleryThumbnailStore()
+
+        store.put(10, thumb10)
+
+        assertArrayEquals(thumb10, store.thumbnails.value[10])
+        assertEquals(listOf("0x0000000A.JPG", "0x0000000B.JPG"), catalogFiles.map { it.info.filename })
+        assertEquals(listOf(null, null), catalogFiles.map { it.thumbnail })
+    }
+
+    @Test
+    fun thumbnailStorePublishesByHandleWithoutCatalogMutation() {
+        val store = GalleryThumbnailStore()
+        val thumb = byteArrayOf(0x01, 0x02)
+
+        store.put(10, thumb)
+
+        assertArrayEquals(thumb, store.thumbnails.value[10])
+        assertTrue(store.hasThumbnail(10))
+    }
+
+    @Test
+    fun thumbnailStoreExposesStablePerHandleState() {
+        val store = GalleryThumbnailStore()
+        val handle10 = store.thumbnailState(10)
+        val handle11 = store.thumbnailState(11)
+        val thumb = byteArrayOf(0x10)
+
+        store.put(10, thumb)
+
+        assertSame(handle10, store.thumbnailState(10))
+        assertArrayEquals(thumb, handle10.value)
+        assertNull(handle11.value)
+    }
+
+    @Test
+    fun thumbnailStoreClearsEvictedHandleState() {
+        val store = GalleryThumbnailStore(maxEntries = 2)
+        val handle10 = store.thumbnailState(10)
+
+        store.put(10, byteArrayOf(0x10))
+        store.put(11, byteArrayOf(0x11))
+        store.put(12, byteArrayOf(0x12))
+
+        assertNull(handle10.value)
+        assertFalse(store.hasThumbnail(10))
+        assertTrue(store.hasThumbnail(11))
+        assertTrue(store.hasThumbnail(12))
+    }
+
+    @Test
+    fun thumbnailStoreRetainsNewestEntriesWithinMemoryLimit() {
+        val store = GalleryThumbnailStore(maxEntries = 2)
+
+        store.put(10, byteArrayOf(0x10))
+        store.put(11, byteArrayOf(0x11))
+        store.put(12, byteArrayOf(0x12))
+
+        assertFalse(store.hasThumbnail(10))
+        assertTrue(store.hasThumbnail(11))
+        assertTrue(store.hasThumbnail(12))
+        assertEquals(listOf(11, 12), store.thumbnails.value.keys.toList())
     }
 
     @Test
     fun defersFullObjectInfoWhenLargePlaceholderListCanShowFirstScreen() {
+        assertTrue(GalleryFastInitialLoadPolicy.FULL_OBJECT_INFO_AFTER_PLACEHOLDERS_DELAY_MS >= 3_000L)
         assertTrue(
             GalleryFastInitialLoadPolicy.shouldDeferFullObjectInfoUntilAfterThumbnails(
                 initialFileCount = 1000,
@@ -262,6 +335,21 @@ class GalleryFileLoadPolicyTest {
     }
 
     @Test
+    fun fullObjectInfoWaitsWhileVisibleThumbnailsAreStillActive() {
+        assertTrue(
+            GalleryFastInitialLoadPolicy.shouldWaitForThumbnailDrainBeforeFullObjectInfo(
+                hasActiveThumbnailWork = true,
+            )
+        )
+        assertFalse(
+            GalleryFastInitialLoadPolicy.shouldWaitForThumbnailDrainBeforeFullObjectInfo(
+                hasActiveThumbnailWork = false,
+            )
+        )
+        assertTrue(GalleryFastInitialLoadPolicy.FULL_OBJECT_INFO_WAIT_FOR_THUMBNAILS_DELAY_MS in 1L..100L)
+    }
+
+    @Test
     fun publishesIncrementalMetadataBatchesBeforeFullGalleryMetadataCompletes() {
         assertFalse(
             GalleryFastInitialLoadPolicy.shouldPublishIncrementalMetadataBatch(
@@ -281,6 +369,52 @@ class GalleryFileLoadPolicyTest {
                 isFinalBatch = true,
             )
         )
+    }
+
+    @Test
+    fun treatsEmptyFinalMetadataBatchAsCompletionSignal() {
+        assertTrue(
+            GalleryFastInitialLoadPolicy.shouldPublishIncrementalMetadataBatch(
+                resolvedCount = 0,
+                isFinalBatch = true,
+            )
+        )
+    }
+
+    @Test
+    fun resumesBackgroundMetadataOnlyWhenPlaceholdersRemainAfterExclusiveTransfer() {
+        assertTrue(
+            GalleryFastInitialLoadPolicy.shouldResumeFullObjectInfoAfterExclusiveOperation(
+                listOf(cameraFile(handle = 1, filename = "0x00000001", captureDate = "", format = PtpObjectFormat.UNDEFINED, compressedSize = 0)),
+            )
+        )
+        assertTrue(
+            GalleryFastInitialLoadPolicy.shouldResumeFullObjectInfoAfterExclusiveOperation(
+                listOf(cameraFile(handle = 2, filename = "DSCF0002.JPG", format = PtpObjectFormat.JPEG, compressedSize = 0)),
+            )
+        )
+        assertFalse(
+            GalleryFastInitialLoadPolicy.shouldResumeFullObjectInfoAfterExclusiveOperation(
+                listOf(cameraFile(handle = 3, filename = "DSCF0003.JPG", format = PtpObjectFormat.JPEG, compressedSize = 1024)),
+            )
+        )
+        assertFalse(
+            GalleryFastInitialLoadPolicy.shouldResumeFullObjectInfoAfterExclusiveOperation(emptyList())
+        )
+    }
+
+    @Test
+    fun backgroundMetadataSkipsFilesThatAlreadyHaveCompleteObjectInfo() {
+        val handles = GalleryFastInitialLoadPolicy.handlesNeedingFullObjectInfo(
+            listOf(
+                cameraFile(handle = 1, filename = "DSCF0001.JPG", format = PtpObjectFormat.JPEG, compressedSize = 1024),
+                cameraFile(handle = 2, filename = "0x00000002.JPG", format = PtpObjectFormat.JPEG, compressedSize = 1024),
+                cameraFile(handle = 3, filename = "DSCF0003.RAF", format = PtpObjectFormat.CAMERA_VENDOR_RAF_ALT, compressedSize = 0),
+                cameraFile(handle = 4, filename = "DSCF0004.JPG", format = PtpObjectFormat.UNDEFINED, compressedSize = 1024),
+            )
+        )
+
+        assertEquals(listOf(2, 3, 4), handles)
     }
 
     @Test
@@ -310,15 +444,15 @@ class GalleryFileLoadPolicyTest {
             cameraFile(handle = 8, filename = "0x00000008.MP4", captureDate = "", format = PtpObjectFormat.MP4),
         )
 
-        val merged = GalleryFastInitialLoadPolicy.mergeWithExistingThumbnails(
-            currentFiles = placeholders,
-            fullFiles = discoveredFormats,
+        val displayFiles = GalleryCatalogMergePolicy.displayFiles(
+            catalogFiles = placeholders,
+            objectInfoByHandle = discoveredFormats.associate { it.info.handle to it.info },
         )
 
-        assertTrue(merged[0].info.isHeif)
-        assertEquals("20260620", merged[0].info.captureDate)
-        assertTrue(merged[1].info.isRaw)
-        assertTrue(merged[2].info.isVideo)
+        assertTrue(displayFiles[0].info.isHeif)
+        assertEquals("20260620", displayFiles[0].info.captureDate)
+        assertTrue(displayFiles[1].info.isRaw)
+        assertTrue(displayFiles[2].info.isVideo)
     }
 
     @Test
@@ -353,18 +487,48 @@ class GalleryFileLoadPolicyTest {
         )
     }
 
+    @Test
+    fun visibleWindowThumbnailRequestsBypassInitialBackgroundMetadataCap() {
+        assertTrue(
+            GalleryFastInitialLoadPolicy.shouldLoadThumbnail(
+                isLoadingFullObjectInfo = true,
+                hasThumbnail = false,
+                activeOrPendingThumbnailCount = GalleryFastInitialLoadPolicy.MAX_INITIAL_THUMBNAIL_REQUESTS + 20,
+                isExplicitVisibleWindow = true,
+            )
+        )
+        assertFalse(
+            GalleryFastInitialLoadPolicy.shouldLoadThumbnail(
+                isLoadingFullObjectInfo = true,
+                hasThumbnail = true,
+                activeOrPendingThumbnailCount = GalleryFastInitialLoadPolicy.MAX_INITIAL_THUMBNAIL_REQUESTS + 20,
+                isExplicitVisibleWindow = true,
+            )
+        )
+        assertFalse(
+            GalleryFastInitialLoadPolicy.shouldLoadThumbnail(
+                isTransferPreparingOrActive = true,
+                isLoadingFullObjectInfo = true,
+                hasThumbnail = false,
+                activeOrPendingThumbnailCount = GalleryFastInitialLoadPolicy.MAX_INITIAL_THUMBNAIL_REQUESTS + 20,
+                isExplicitVisibleWindow = true,
+            )
+        )
+    }
+
     private fun cameraFile(
         handle: Int,
         filename: String = "DSCF%04d.JPG".format(handle),
         captureDate: String = "20260604T120000",
         thumbnail: ByteArray? = null,
         format: Int = PtpObjectFormat.JPEG,
+        compressedSize: Int = 1024,
     ): CameraFile = CameraFile(
         info = ObjectInfo(
             handle = handle,
             storageId = 1,
             format = format,
-            compressedSize = 1024,
+            compressedSize = compressedSize,
             thumbFormat = PtpObjectFormat.JPEG,
             thumbCompressedSize = 128,
             thumbPixWidth = 160,

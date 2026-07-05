@@ -174,6 +174,13 @@ class ConnectionLiveGuidancePolicyTest {
     }
 
     @Test
+    fun galleryEntryModeSelectorShowsOnlyWhenPaired() {
+        assertFalse(ConnectionUiLayoutPolicy.shouldShowGalleryEntryModeSelector(ConnectionState.IDLE))
+        assertFalse(ConnectionUiLayoutPolicy.shouldShowGalleryEntryModeSelector(ConnectionState.CONNECTING_WIFI))
+        assertTrue(ConnectionUiLayoutPolicy.shouldShowGalleryEntryModeSelector(ConnectionState.PAIRED))
+    }
+
+    @Test
     fun pairedSupplementalActionsAreGroupedByIntentAndKeepDisclaimer() {
         assertEquals("接入方式", ConnectionSupplementalActionsPolicy.utilitySectionTitle())
         assertEquals("有线接入", ConnectionSupplementalActionsPolicy.wiredAccessLabel())
