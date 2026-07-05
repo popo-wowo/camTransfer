@@ -1653,7 +1653,7 @@ private enum WiredCameraPhotoLibrarySaver {
     try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
       PHPhotoLibrary.shared().performChanges({
         switch file.mediaType {
-        case .photo:
+        case .photo, .raw:
           let request = PHAssetCreationRequest.forAsset()
           let options = PHAssetResourceCreationOptions()
           options.originalFilename = file.filename
