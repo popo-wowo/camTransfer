@@ -11,15 +11,19 @@
 		01563AF1C08713172483FE8A /* CameraConnectionSteps.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1785535FDE4AE556AC351EB /* CameraConnectionSteps.swift */; };
 		082DDC9F626D556DD44A5273 /* CameraGalleryConnectionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B96D60CA53C8D03F99E89C22 /* CameraGalleryConnectionCoordinator.swift */; };
 		0D2FDF3FF21F2F7B30A519B2 /* NativeConnectViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23B33146CEC3C5DA80D096F8 /* NativeConnectViewController.swift */; };
+		10318AC1513B94E232296B17 /* CameraSessionLiveActivityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7F279EBDC716817439DE6C6 /* CameraSessionLiveActivityController.swift */; };
 		22BB0301059A7B18AB687B87 /* CameraAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = F57265682EC0C0E6093AB35F /* CameraAdapter.swift */; };
-		24A2106F3F7C43C384427AD0 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 24A2106F3F7C43C384427ACF /* Assets.xcassets */; };
+		24D142A045D34E67A8D3A001 /* CameraGalleryEntryCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24D142A045D34E67A8D3A002 /* CameraGalleryEntryCoordinator.swift */; };
 		26168D6E335307C680D37A7C /* RunnerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83E162AB02AF87B6A27F8F7D /* RunnerApp.swift */; };
 		27F7557CB539CADB953B92AB /* CameraVendorBluetoothService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D457106A89EA9C4C918EB6D0 /* CameraVendorBluetoothService.swift */; };
 		2982E8EDFAE95050894A8935 /* CameraDownloadModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 393CDF9EC2836EA5F98BCEE0 /* CameraDownloadModule.swift */; };
+		2D490BCE8C0BA250290AAC3B /* CameraSessionActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EB26EA8618168E48B7DE465 /* CameraSessionActivityAttributes.swift */; };
 		41A84F673A15B58C0680151D /* LocalProofingSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F9819ABFBC29A3F5568F282 /* LocalProofingSession.swift */; };
 		4729DBB685779356DA98DAC7 /* CameraGalleryModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDE56B4E4C26E5C8B4081933 /* CameraGalleryModule.swift */; };
 		65E6F39481CB19CDEEF3CAA2 /* FujifilmCameraAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 885AFF3A80513C34DC44ED4E /* FujifilmCameraAdapter.swift */; };
+		662E90E88CC81BD3CA102996 /* CameraSessionActivityWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = F983ADDEA06E54D64D8BDBE9 /* CameraSessionActivityWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		85B5B6854C8EE2B26A17285A /* WiredCameraImportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ECDADD41B7B41D631C7FA7E /* WiredCameraImportService.swift */; };
+		904B943B16FECFC1CC4C38DD /* CameraSessionActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E157140EF5819ABC146105D /* CameraSessionActivityWidget.swift */; };
 		93B1ECA3AC91631F6AA9B76C /* CameraAppFlowCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CB84B3B3F24064BF055CBF8 /* CameraAppFlowCoordinator.swift */; };
 		A3EFB62D951429A026DA058D /* WiredCameraImportViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 769F32414557A775543C8639 /* WiredCameraImportViewController.swift */; };
 		A5E8E3BBD16B08C09ED18943 /* ProAccessController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E412E8677CF860F78B6EC5B /* ProAccessController.swift */; };
@@ -28,7 +32,9 @@
 		B903C941DD4D21BEF9D7D864 /* CameraPairingModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85DC3285FFADBB45ADDC2E40 /* CameraPairingModule.swift */; };
 		C005391B19856E8E51D6BEBA /* WiredCameraImportModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20546164F7859705D226FCE /* WiredCameraImportModels.swift */; };
 		D73790471C7408BB145A1C23 /* CamTransferPaywallViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BC38F167D0C94A49E9C91AA /* CamTransferPaywallViewController.swift */; };
+		DC18D6045664645A1F5E31C1 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 510043DBEC3442DBC23147B8 /* Assets.xcassets */; };
 		E7BE625B6F1C444945049488 /* FujifilmXSeriesProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 863C640E1DFF7EEB915C907B /* FujifilmXSeriesProfile.swift */; };
+		FA556DCB3B834F4BB68B8612 /* CameraSessionActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EB26EA8618168E48B7DE465 /* CameraSessionActivityAttributes.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -39,17 +45,41 @@
 			remoteGlobalIDString = 0CE8B55E2312A581679889BF;
 			remoteInfo = Runner;
 		};
+		DAA4A8F8E067737758DF6CD8 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5FC4EA95F23E6A8CF0BD7276 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 1C5E1B219EEEA5967BCE690C;
+			remoteInfo = CameraSessionActivityWidget;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		889DE6F8664908D135C720D4 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				662E90E88CC81BD3CA102996 /* CameraSessionActivityWidget.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		18EF932F34DA5C981150C7FA /* CameraRegistrationGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraRegistrationGuard.swift; sourceTree = "<group>"; };
 		1B96651EFBF5171FE9A72C98 /* Runner.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Runner.entitlements; sourceTree = "<group>"; };
+		1E157140EF5819ABC146105D /* CameraSessionActivityWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSessionActivityWidget.swift; sourceTree = "<group>"; };
 		23B33146CEC3C5DA80D096F8 /* NativeConnectViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeConnectViewController.swift; sourceTree = "<group>"; };
-		24A2106F3F7C43C384427ACF /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		24D142A045D34E67A8D3A002 /* CameraGalleryEntryCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryEntryCoordinator.swift; sourceTree = "<group>"; };
+		2EB26EA8618168E48B7DE465 /* CameraSessionActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSessionActivityAttributes.swift; sourceTree = "<group>"; };
 		393CDF9EC2836EA5F98BCEE0 /* CameraDownloadModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraDownloadModule.swift; sourceTree = "<group>"; };
 		441BB440808680D6267F3889 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		48E2AFFE9BFB207202AD0539 /* RunnerTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = RunnerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		4E412E8677CF860F78B6EC5B /* ProAccessController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProAccessController.swift; sourceTree = "<group>"; };
+		510043DBEC3442DBC23147B8 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		5BC38F167D0C94A49E9C91AA /* CamTransferPaywallViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CamTransferPaywallViewController.swift; sourceTree = "<group>"; };
 		5CB84B3B3F24064BF055CBF8 /* CameraAppFlowCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraAppFlowCoordinator.swift; sourceTree = "<group>"; };
 		769F32414557A775543C8639 /* WiredCameraImportViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WiredCameraImportViewController.swift; sourceTree = "<group>"; };
@@ -68,13 +98,17 @@
 		CDE56B4E4C26E5C8B4081933 /* CameraGalleryModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryModule.swift; sourceTree = "<group>"; };
 		D457106A89EA9C4C918EB6D0 /* CameraVendorBluetoothService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorBluetoothService.swift; sourceTree = "<group>"; };
 		E20546164F7859705D226FCE /* WiredCameraImportModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WiredCameraImportModels.swift; sourceTree = "<group>"; };
+		EF5FB4318A26DD0D0A2B2D64 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		F57265682EC0C0E6093AB35F /* CameraAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraAdapter.swift; sourceTree = "<group>"; };
+		F7F279EBDC716817439DE6C6 /* CameraSessionLiveActivityController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSessionLiveActivityController.swift; sourceTree = "<group>"; };
+		F983ADDEA06E54D64D8BDBE9 /* CameraSessionActivityWidget.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = CameraSessionActivityWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
 		05D9A16B876157F93400D0B8 /* Products */ = {
 			isa = PBXGroup;
 			children = (
+				F983ADDEA06E54D64D8BDBE9 /* CameraSessionActivityWidget.appex */,
 				B2E448C1951CDAF54DC87758 /* Runner.app */,
 				48E2AFFE9BFB207202AD0539 /* RunnerTests.xctest */,
 			);
@@ -84,8 +118,9 @@
 		0F581CC3412D2F2F02AF1463 /* Runner */ = {
 			isa = PBXGroup;
 			children = (
+				510043DBEC3442DBC23147B8 /* Assets.xcassets */,
+				F7F279EBDC716817439DE6C6 /* CameraSessionLiveActivityController.swift */,
 				D457106A89EA9C4C918EB6D0 /* CameraVendorBluetoothService.swift */,
-				24A2106F3F7C43C384427ACF /* Assets.xcassets */,
 				5BC38F167D0C94A49E9C91AA /* CamTransferPaywallViewController.swift */,
 				441BB440808680D6267F3889 /* Info.plist */,
 				8F9819ABFBC29A3F5568F282 /* LocalProofingSession.swift */,
@@ -118,6 +153,23 @@
 				C129A9FB18F81555600E71B3 /* RunnerTests.swift */,
 			);
 			path = RunnerTests;
+			sourceTree = "<group>";
+		};
+		401D1E58DFDD11310CD6BDB0 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				2EB26EA8618168E48B7DE465 /* CameraSessionActivityAttributes.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		422863DDDF4ADAD718ED55E7 /* CameraSessionActivityWidget */ = {
+			isa = PBXGroup;
+			children = (
+				1E157140EF5819ABC146105D /* CameraSessionActivityWidget.swift */,
+				EF5FB4318A26DD0D0A2B2D64 /* Info.plist */,
+			);
+			path = CameraSessionActivityWidget;
 			sourceTree = "<group>";
 		};
 		4C31CDDBFAD26AE19914BC62 /* CameraAdapters */ = {
@@ -179,8 +231,10 @@
 		813DA9EE07BC3B30725BF5B2 = {
 			isa = PBXGroup;
 			children = (
+				422863DDDF4ADAD718ED55E7 /* CameraSessionActivityWidget */,
 				0F581CC3412D2F2F02AF1463 /* Runner */,
 				255F1CC48DAF4C9EEF8C9938 /* RunnerTests */,
+				401D1E58DFDD11310CD6BDB0 /* Shared */,
 				05D9A16B876157F93400D0B8 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -213,6 +267,7 @@
 			isa = PBXGroup;
 			children = (
 				5CB84B3B3F24064BF055CBF8 /* CameraAppFlowCoordinator.swift */,
+				24D142A045D34E67A8D3A002 /* CameraGalleryEntryCoordinator.swift */,
 			);
 			path = Orchestration;
 			sourceTree = "<group>";
@@ -225,11 +280,13 @@
 			buildConfigurationList = 1C8B6CAA696D8F432715C5A8 /* Build configuration list for PBXNativeTarget "Runner" */;
 			buildPhases = (
 				D735B3CFE9B0688D9736E917 /* Sources */,
-				24A2106F3F7C43C384427AD1 /* Resources */,
+				AF3954250A8A50E99B88AFA5 /* Resources */,
+				889DE6F8664908D135C720D4 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				9B8A2EF09BD6995C243B9932 /* PBXTargetDependency */,
 			);
 			name = Runner;
 			packageProductDependencies = (
@@ -237,6 +294,23 @@
 			productName = Runner;
 			productReference = B2E448C1951CDAF54DC87758 /* Runner.app */;
 			productType = "com.apple.product-type.application";
+		};
+		1C5E1B219EEEA5967BCE690C /* CameraSessionActivityWidget */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A46E46657B7354B670A5B453 /* Build configuration list for PBXNativeTarget "CameraSessionActivityWidget" */;
+			buildPhases = (
+				BCA98C59319A9B4F8A8E8329 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = CameraSessionActivityWidget;
+			packageProductDependencies = (
+			);
+			productName = CameraSessionActivityWidget;
+			productReference = F983ADDEA06E54D64D8BDBE9 /* CameraSessionActivityWidget.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 		ABAFB01E7FEA9C1DB0CE46CE /* RunnerTests */ = {
 			isa = PBXNativeTarget;
@@ -277,6 +351,10 @@
 							};
 						};
 					};
+					1C5E1B219EEEA5967BCE690C = {
+						DevelopmentTeam = 27C9C4H26H;
+						ProvisioningStyle = Automatic;
+					};
 					ABAFB01E7FEA9C1DB0CE46CE = {
 						DevelopmentTeam = 27C9C4H26H;
 						ProvisioningStyle = Automatic;
@@ -297,6 +375,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				1C5E1B219EEEA5967BCE690C /* CameraSessionActivityWidget */,
 				0CE8B55E2312A581679889BF /* Runner */,
 				ABAFB01E7FEA9C1DB0CE46CE /* RunnerTests */,
 			);
@@ -304,11 +383,11 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		24A2106F3F7C43C384427AD1 /* Resources */ = {
+		AF3954250A8A50E99B88AFA5 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				24A2106F3F7C43C384427AD0 /* Assets.xcassets in Resources */,
+				DC18D6045664645A1F5E31C1 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -323,6 +402,15 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		BCA98C59319A9B4F8A8E8329 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2D490BCE8C0BA250290AAC3B /* CameraSessionActivityAttributes.swift in Sources */,
+				904B943B16FECFC1CC4C38DD /* CameraSessionActivityWidget.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		D735B3CFE9B0688D9736E917 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -333,10 +421,13 @@
 				01563AF1C08713172483FE8A /* CameraConnectionSteps.swift in Sources */,
 				AAD5C220703D8BC74702480B /* CameraCoreModels.swift in Sources */,
 				2982E8EDFAE95050894A8935 /* CameraDownloadModule.swift in Sources */,
+				24D142A045D34E67A8D3A001 /* CameraGalleryEntryCoordinator.swift in Sources */,
 				082DDC9F626D556DD44A5273 /* CameraGalleryConnectionCoordinator.swift in Sources */,
 				4729DBB685779356DA98DAC7 /* CameraGalleryModule.swift in Sources */,
 				B903C941DD4D21BEF9D7D864 /* CameraPairingModule.swift in Sources */,
 				B4BB601B9F87A73C4A8256A1 /* CameraRegistrationGuard.swift in Sources */,
+				FA556DCB3B834F4BB68B8612 /* CameraSessionActivityAttributes.swift in Sources */,
+				10318AC1513B94E232296B17 /* CameraSessionLiveActivityController.swift in Sources */,
 				27F7557CB539CADB953B92AB /* CameraVendorBluetoothService.swift in Sources */,
 				65E6F39481CB19CDEEF3CAA2 /* FujifilmCameraAdapter.swift in Sources */,
 				E7BE625B6F1C444945049488 /* FujifilmXSeriesProfile.swift in Sources */,
@@ -353,6 +444,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		9B8A2EF09BD6995C243B9932 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 1C5E1B219EEEA5967BCE690C /* CameraSessionActivityWidget */;
+			targetProxy = DAA4A8F8E067737758DF6CD8 /* PBXContainerItemProxy */;
+		};
 		A1BDCC358D5033CC24618A73 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 0CE8B55E2312A581679889BF /* Runner */;
@@ -385,15 +481,36 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 5;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.0;
 				PRODUCT_NAME = Runner;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		41199C037274B93AA13A54DA /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CURRENT_PROJECT_VERSION = 5;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = CameraSessionActivityWidget/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.camtransfer.app.CameraSessionActivityWidget;
+				PRODUCT_NAME = CameraSessionActivityWidget;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -544,20 +661,41 @@
 			};
 			name = Debug;
 		};
+		95DE0EAC5F6B3072B3402006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CURRENT_PROJECT_VERSION = 5;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = CameraSessionActivityWidget/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.camtransfer.app.CameraSessionActivityWidget;
+				PRODUCT_NAME = CameraSessionActivityWidget;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 		A6D2F591E0A6A012D3F00F11 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Runner/Runner.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 5;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Runner/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.0;
 				PRODUCT_NAME = Runner;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -581,6 +719,15 @@
 			buildConfigurations = (
 				7CF6CFF957D9345E14BFCBE0 /* Debug */,
 				59902B3437269D7EDB4D0AFA /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		A46E46657B7354B670A5B453 /* Build configuration list for PBXNativeTarget "CameraSessionActivityWidget" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				41199C037274B93AA13A54DA /* Debug */,
+				95DE0EAC5F6B3072B3402006 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
