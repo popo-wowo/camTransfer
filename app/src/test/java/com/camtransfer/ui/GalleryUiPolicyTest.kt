@@ -635,7 +635,7 @@ class GalleryUiPolicyTest {
         assertFalse(cardBlock.contains("onStartDownload"))
         assertTrue(cardBlock.contains("HdQueueButton("))
         assertTrue(bottomBarBlock.contains("onStartDownload"))
-        assertTrue(bottomBarBlock.contains("Text(\"下载\""))
+        assertTrue(bottomBarBlock.contains("\"下载\""))
     }
 
     @Test
@@ -678,13 +678,30 @@ class GalleryUiPolicyTest {
             File("src/main/java/com/camtransfer/MainActivity.kt"),
             File("app/src/main/java/com/camtransfer/MainActivity.kt"),
         ).first { it.exists() }.readText()
-        val disconnectBlock = source.substring(
-            source.indexOf("                onDisconnect = {"),
-            source.indexOf("                },", source.indexOf("                onDisconnect = {")),
+        val albumExitBlock = source.substring(
+            source.indexOf("fun exitCameraAlbumToConnect("),
+            source.indexOf("    LaunchedEffect(debugEnterGallery", source.indexOf("fun exitCameraAlbumToConnect(")),
         )
 
         assertTrue(source.contains("browseVM.clearHighDefinitionPreviewSessionCache("))
-        assertTrue(disconnectBlock.contains("browseVM.clearHighDefinitionPreviewSessionCache("))
+        assertTrue(albumExitBlock.contains("browseVM.clearHighDefinitionPreviewSessionCache("))
+        assertTrue(albumExitBlock.contains("connectionVM.disconnect()"))
+        assertTrue(source.contains("onDisconnect = { exitCameraAlbumToConnect(reason = \"album-exit\") }"))
+    }
+
+    @Test
+    fun transferBrowseNavigationDoesNotDisconnectCameraSource() {
+        val source = listOf(
+            File("src/main/java/com/camtransfer/MainActivity.kt"),
+            File("app/src/main/java/com/camtransfer/MainActivity.kt"),
+        ).first { it.exists() }.readText()
+        val transferBlock = source.substring(
+            source.indexOf("        Screen.TRANSFER -> TransferScreen("),
+            source.indexOf("    if (showsDisclaimer)", source.indexOf("        Screen.TRANSFER -> TransferScreen(")),
+        )
+
+        assertTrue(transferBlock.contains("returnFromTransferToBrowse()"))
+        assertFalse(transferBlock.contains("disconnect()"))
     }
 
     @Test
@@ -711,8 +728,9 @@ class GalleryUiPolicyTest {
     fun galleryBackActionRequiresDisconnectConfirmation() {
         assertTrue(GalleryDisconnectPolicy.shouldConfirmBeforeDisconnect())
         assertEquals("确认断开相机连接？", GalleryDisconnectPolicy.confirmTitle)
-        assertTrue(GalleryDisconnectPolicy.confirmMessage.contains("保持在照片筛选页面"))
-        assertTrue(GalleryDisconnectPolicy.confirmMessage.contains("不会断开相机通讯"))
+        assertTrue(GalleryDisconnectPolicy.confirmMessage.contains("继续停留会保持相机连接"))
+        assertTrue(GalleryDisconnectPolicy.confirmMessage.contains("确认离开相册"))
+        assertTrue(GalleryDisconnectPolicy.confirmMessage.contains("断开相机连接"))
     }
 
     @Test

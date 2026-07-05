@@ -174,6 +174,31 @@ fun CamTransferApp(trialDays: Long) {
         currentScreen = Screen.BROWSE
     }
 
+    fun returnFromTransferToBrowse() {
+        val cameraSource = activeCameraSource ?: connectionVM.cameraService
+        DiagnosticLog.append(context, "Navigation", "Return from transfer to browse; resume gallery loading")
+        browseVM.resumeGalleryLoadingAfterTransfer(cameraSource)
+        currentScreen = Screen.BROWSE
+    }
+
+    fun exitCameraAlbumToConnect(reason: String) {
+        val cameraSource = activeCameraSource ?: connectionVM.cameraService
+        DiagnosticLog.append(context, "Navigation", "Exit camera album reason=$reason; disconnect camera source")
+        isReturningToConnect = true
+        browseVM.clearHighDefinitionPreviewSessionCache(cameraSource, reason = reason)
+        browseVM.reset()
+        scope.launch {
+            if (isWiredImport) {
+                wiredCameraService.disconnect()
+            } else {
+                connectionVM.disconnect()
+            }
+        }
+        isWiredImport = false
+        activeCameraSource = null
+        currentScreen = Screen.CONNECT
+    }
+
     LaunchedEffect(debugEnterGallery, connectionState) {
         if (
             debugEnterGallery &&
@@ -308,33 +333,16 @@ fun CamTransferApp(trialDays: Long) {
                     currentScreen = Screen.TRANSFER
                 },
                 onOpenDownloads = { currentScreen = Screen.TRANSFER },
-                onDisconnect = {
-                    isReturningToConnect = true
-                    browseVM.clearHighDefinitionPreviewSessionCache(cameraSource, reason = "disconnect")
-                    browseVM.reset()
-                    scope.launch {
-                        if (isWiredImport) {
-                            wiredCameraService.disconnect()
-                        } else {
-                            connectionVM.disconnect()
-                        }
-                    }
-                    isWiredImport = false
-                    activeCameraSource = null
-                    currentScreen = Screen.CONNECT
-                },
+                onDisconnect = { exitCameraAlbumToConnect(reason = "album-exit") },
             )
         }
         Screen.TRANSFER -> TransferScreen(
             viewModel = transferVM,
-            onBack = { currentScreen = Screen.BROWSE },
+            onBack = { returnFromTransferToBrowse() },
             onClearDownloadCache = { transferVM.clearDownloadedCache() },
             onPauseDownloads = {
                 transferVM.pauseTransfers {
-                    activeCameraSource?.let { source ->
-                        browseVM.resumeGalleryLoadingAfterTransfer(source)
-                    }
-                    currentScreen = Screen.BROWSE
+                    returnFromTransferToBrowse()
                 }
             },
         )

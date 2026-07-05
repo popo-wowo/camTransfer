@@ -8,15 +8,15 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredWidth
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -37,10 +37,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -374,46 +376,71 @@ private fun HighDefinitionPreviewBottomBar(
         modifier = modifier
             .fillMaxWidth()
             .navigationBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        shape = RoundedCornerShape(30.dp),
-        color = CamTransferColors.WarmFill,
-        border = BorderStroke(1.dp, CamTransferColors.Hairline),
-        shadowElevation = 14.dp,
+            .padding(horizontal = 18.dp, vertical = 12.dp),
+        shape = RoundedCornerShape(22.dp),
+        color = CamTransferColors.WarmFill.copy(alpha = 0.90f),
+        border = BorderStroke(0.dp, Color.Transparent),
+        shadowElevation = 10.dp,
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(58.dp)
-                .padding(horizontal = 14.dp),
+                .height(56.dp)
+                .padding(start = 10.dp, end = 7.dp),
             verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(9.dp),
         ) {
-            HdDownloadCountDot(
-                checked = downloadCount > 0,
-            )
-            Spacer(Modifier.width(9.dp))
-            Text(
-                "已加入 $downloadCount / 共 $totalCount 张",
+            Row(
                 modifier = Modifier.weight(1f),
-                color = CamTransferColors.Ink,
-                fontWeight = FontWeight.SemiBold,
-            )
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(9.dp),
+            ) {
+                HdDownloadCountDot(
+                    checked = downloadCount > 0,
+                )
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Text(
+                        if (downloadCount > 0) "已加入 $downloadCount 张" else "未加入照片",
+                        color = CamTransferColors.Ink,
+                        fontWeight = FontWeight.Black,
+                        fontSize = GalleryTypeScale.Level2,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        "共 $totalCount 张可下载",
+                        color = CamTransferColors.SecondaryInk,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = GalleryTypeScale.Micro,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
             TransferModeCapsule(
                 preferCompressedDownloads = preferCompressedDownloads,
                 enabled = canChangeTransferMode,
                 onPreferenceChanged = onPreferenceChanged,
             )
-            Spacer(Modifier.width(9.dp))
-            Button(
-                onClick = onStartDownload,
-                enabled = canStartDownload,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = CamTransferColors.Accent,
-                    contentColor = Color.White,
-                    disabledContainerColor = CamTransferColors.MutedFill,
-                    disabledContentColor = CamTransferColors.SecondaryInk,
-                ),
+            Box(
+                modifier = Modifier
+                    .height(40.dp)
+                    .requiredWidth(90.dp)
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(if (canStartDownload) CamTransferColors.Ink else CamTransferColors.MutedFill)
+                    .clickable(enabled = canStartDownload, onClick = onStartDownload),
+                contentAlignment = Alignment.Center,
             ) {
-                Text("下载", fontWeight = FontWeight.Bold)
+                Text(
+                    "下载",
+                    fontSize = GalleryTypeScale.Level1,
+                    fontWeight = FontWeight.Black,
+                    color = if (canStartDownload) CamTransferColors.Card else CamTransferColors.SecondaryInk,
+                    maxLines = 1,
+                )
             }
         }
     }
@@ -423,7 +450,7 @@ private fun HighDefinitionPreviewBottomBar(
 private fun HdDownloadCountDot(checked: Boolean) {
     Box(
         modifier = Modifier
-            .size(30.dp)
+            .size(34.dp)
             .background(
                 if (checked) CamTransferColors.Accent else CamTransferColors.MutedFill.copy(alpha = 0.55f),
                 CircleShape,
@@ -432,7 +459,8 @@ private fun HdDownloadCountDot(checked: Boolean) {
     ) {
         Text(
             if (checked) "✓" else "",
-            color = Color.White,
+            color = CamTransferColors.Card,
+            fontSize = GalleryTypeScale.Level1,
             fontWeight = FontWeight.Black,
         )
     }

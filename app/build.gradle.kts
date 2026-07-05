@@ -12,8 +12,8 @@ android {
         applicationId = "com.camtransfer"
         minSdk = 29
         targetSdk = 35
-        versionCode = 4
-        versionName = "0.2.0"
+        versionCode = 6
+        versionName = "0.6"
         buildConfigField("long", "TRIAL_START_EPOCH_MILLIS", "${System.currentTimeMillis()}L")
         buildConfigField("long", "TRIAL_DURATION_MINUTES", "86400L")
     }

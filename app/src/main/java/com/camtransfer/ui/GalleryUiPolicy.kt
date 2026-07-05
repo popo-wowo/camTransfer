@@ -525,7 +525,7 @@ object DownloadCenterActionPolicy {
 
 object GalleryDisconnectPolicy {
     const val confirmTitle = "确认断开相机连接？"
-    const val confirmMessage = "当前会保持在照片筛选页面，并且不会断开相机通讯。只有确认断开后，才会返回首页并断开相机连接。"
+    const val confirmMessage = "继续停留会保持相机连接；确认离开相册后，将返回首页并断开相机连接。"
 
     fun shouldConfirmBeforeDisconnect(): Boolean = true
 }
