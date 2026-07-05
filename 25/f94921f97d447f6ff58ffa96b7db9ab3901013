@@ -1,0 +1,32 @@
+app/src/main/java/com/camtransfer/MainActivity.kt
+  9576f18c92583d9d 177-201,336,341,345
+app/src/main/java/com/camtransfer/ui/GalleryUiPolicy.kt
+  9576f18c92583d9d 528
+app/src/main/java/com/camtransfer/ui/HighDefinitionPreviewScreen.kt
+  9576f18c92583d9d 11,18,40,45,379-383,388-389,391,393,395-422,428-435,437-443,453,462-463
+app/build.gradle.kts
+  9576f18c92583d9d 15-16
+app/src/test/java/com/camtransfer/ui/GalleryUiPolicyTest.kt
+  9576f18c92583d9d 638,681-683,687-704,731-733
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "25f94921f97d447f6ff58ffa96b7db9ab3901013",
+  "prompts": {
+    "9576f18c92583d9d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2a8e-ad93-7861-bcb5-05c7f662883c",
+        "model": "gpt-5.5"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 144,
+      "total_deletions": 61,
+      "accepted_lines": 144,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/08af85c3d3223ec7c3b7c925592bca1ec894299290bccbda5ea638ff1e50dcfe"
+    }
+  }
+}
