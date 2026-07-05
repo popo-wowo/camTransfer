@@ -1,0 +1,352 @@
+app/src/main/java/com/camtransfer/ui/GalleryImageDecode.kt
+  df865d53bb9b61e7 223
+  9576f18c92583d9d 103,173-222
+app/src/main/java/com/camtransfer/ui/GalleryGridItem.kt
+  9576f18c92583d9d 107-108,122,124-144,206,214,216,220-221
+app/src/main/java/com/camtransfer/viewmodel/gallery/GalleryFilesController.kt
+  9576f18c92583d9d 19-21,38,63,68,83,87-90,108,110,116-141,149,153-156,160-164,199,211-222,224,229-232,234-235,238-240,243-246,255,261,280-281,294-295,301-305,307-310,312-315,325,329-333
+  df865d53bb9b61e7 142-143,223,225-227,241,296,306,311
+app/src/main/java/com/camtransfer/service/connection/CameraGalleryConnectionCoordinator.kt
+  9576f18c92583d9d 248-249,463
+app/src/test/java/com/camtransfer/protocol/CameraVendorThumbnailReadPolicyTest.kt
+  9576f18c92583d9d 11-12,16-17,92-110,115-124,158-166,168-169
+  df865d53bb9b61e7 13-15,111-114,167,170-171
+app/src/main/java/com/camtransfer/service/gallery/PtpCameraGallerySource.kt
+  df865d53bb9b61e7 189-190,222
+  9576f18c92583d9d 5,7,10,14,18,46,51,58-59,147-164,168-188,193-221
+app/src/main/java/com/camtransfer/viewmodel/BrowseViewModel.kt
+  0d3a7c8954286186 108-109
+  9576f18c92583d9d 7-9,11,13,15,17-24,28-29,31-37,40-42,46,48-49,53,55,61,63-64,66-69,73,92-97,106-107,126-228,230-234,241-243,245,248-252,254-258
+app/src/test/java/com/camtransfer/service/CameraSessionKeepAliveArchitectureTest.kt
+  9576f18c92583d9d 94,103,111,117-135,319-357
+  df865d53bb9b61e7 116,358-359
+app/src/main/java/com/camtransfer/ui/GalleryDownloadBar.kt
+  9576f18c92583d9d 111,120-124,130,132,134,136-165,168,182,193,195,202,204,235,238,240-249,252-257,273,277-278,285-286,298
+  0581d0bb4205c39e 129,171,173-178,183-185,200-201,203,237,239
+  df865d53bb9b61e7 223-224
+app/src/main/java/com/camtransfer/ui/GalleryGestures.kt
+  9576f18c92583d9d 181-183,185-186,188-210
+ios/Runner/WiredCameraImportViewController.swift
+  369620b1d970ed9e 1656
+app/src/test/java/com/camtransfer/ui/ConnectionLiveGuidancePolicyTest.kt
+  9576f18c92583d9d 177-182
+  df865d53bb9b61e7 176
+app/src/main/java/com/camtransfer/service/DownloadedFileStore.kt
+  9576f18c92583d9d 18,63-76,78-81,93,103-109,150
+  df865d53bb9b61e7 110-112
+app/src/main/java/com/camtransfer/protocol/CameraVendorGalleryDiscoveryPolicy.kt
+  9576f18c92583d9d 21
+app/src/test/java/com/camtransfer/service/TransferDownloadFilePolicyTest.kt
+  9576f18c92583d9d 4,6-7,9,11,13,15,19-100,128-135,179-232,241-242,248,261
+  df865d53bb9b61e7 18,233-235
+app/src/main/java/com/camtransfer/ui/GalleryPreviewDialog.kt
+  9576f18c92583d9d 105-106,115,120,200,215-229,267-478,483-534,538
+  df865d53bb9b61e7 479-482,535-537
+app/src/main/java/com/camtransfer/service/CameraVendorBleEndpointPolicy.kt
+  9576f18c92583d9d 3-4,9,27,29-46,55
+app/src/test/java/com/camtransfer/service/CameraVendorBleEndpointPolicyTest.kt
+  9576f18c92583d9d 3,17-26,55-59,74-100,102-105
+  df865d53bb9b61e7 101,106-111
+app/src/test/java/com/camtransfer/CameraScreenRoutePolicyTest.kt
+  9576f18c92583d9d 4,135-140
+  df865d53bb9b61e7 141-142
+app/src/main/java/com/camtransfer/protocol/CameraVendorPtpDataParser.kt
+  df865d53bb9b61e7 132,134-135,204,419,480-487
+  9576f18c92583d9d 8-21,49,57-58,67-69,79,91,103,110-131,133,153,169,190,198-203,219,227,402-418,458-479
+app/src/main/java/com/camtransfer/ble/CameraVendorBleHandshake.kt
+  9576f18c92583d9d 714,722-730
+app/src/test/java/com/camtransfer/service/DownloadedFileStoreTest.kt
+  9576f18c92583d9d 9-10,48,63,80-83
+  df865d53bb9b61e7 84-85
+app/src/test/java/com/camtransfer/service/CameraVendorPairingForgetPolicyTest.kt
+  9576f18c92583d9d 47-74
+app/src/main/java/com/camtransfer/ui/GalleryGrid.kt
+  9576f18c92583d9d 3,21,26,33,45-46,81,91-92,130-131,143-144,210,212,214,216-227,241-255,267,278,280,284-285,298-299,304,307-308
+  df865d53bb9b61e7 256-258
+app/src/test/java/com/camtransfer/viewmodel/ThumbnailRequestTrackerTest.kt
+  df865d53bb9b61e7 108
+  9576f18c92583d9d 7-9,11-12,15,20,109-180,195-272,275,280
+app/src/main/java/com/camtransfer/MainActivity.kt
+  0d3a7c8954286186 295
+  9576f18c92583d9d 41,43,150,166,177-190,204-206,263,266-280,282-294,296-308,313,332-339,391-393,511-516
+app/src/main/java/com/camtransfer/ui/GalleryUiPolicy.kt
+  df865d53bb9b61e7 186-187,297,304-305,463,483,561,983
+  9576f18c92583d9d 4,9,106-109,114-138,177-180,184-185,282-296,298-303,317,323,326-335,342-346,350,359,361,363-366,434-462,464-465,471-482,515-516,521-523,534-536,547-550,553-560,671-673,819-824,900-982
+app/src/test/java/com/camtransfer/protocol/CameraVendorPtpDataParserImageTest.kt
+  df865d53bb9b61e7 109,111-112,308
+  9576f18c92583d9d 72-75,80-84,89-108,110,145-149,152-153,305-307
+app/src/main/java/com/camtransfer/viewmodel/gallery/GalleryRequestScheduler.kt
+  9576f18c92583d9d 3-4,17-20,26-30,34-83
+  0d3a7c8954286186 33
+docs/camera-vendor-camera-flow-and-product-notes.md
+  9576f18c92583d9d 11,15-28,43,273,535-536
+app/src/test/java/com/camtransfer/viewmodel/GalleryModularArchitectureTest.kt
+  9576f18c92583d9d 12,18,31,35-37
+docs/android-current-execution-logic.md
+  687dbfa99ff0e3d8 95,104
+  9576f18c92583d9d 3,7-14,94,96-103,109-115,137-141,143-150,152,156-157,163-178,185-186,212,214-222,259-382
+app/src/test/java/com/camtransfer/viewmodel/GalleryRequestSchedulerTest.kt
+  9576f18c92583d9d 5-6,50-114
+  df865d53bb9b61e7 115
+app/src/main/java/com/camtransfer/protocol/PtpConnection.kt
+  9576f18c92583d9d 3,35,37,41,43,59,61,172,174-180,185-194,218,220,224-236,241-255,259-263,268-289,291-292,294,298-300,302-314,316-336,343,345-351,356-362,369,371-461,464-533,542,549,551,553,555-559,561-575,586-592,633-641,643-648,650-702,705-719,739-778
+app/src/test/java/com/camtransfer/ble/CameraVendorBleTransferActivationPolicyTest.kt
+  9576f18c92583d9d 75-84,87,91
+ios/project.yml
+  369620b1d970ed9e 18-21,27-28,36,38-41,51,53-82,84
+app/src/test/java/com/camtransfer/viewmodel/GalleryFileLoadPolicyTest.kt
+  9576f18c92583d9d 6,9-10,14-15,97,99-100,102,104-106,109-112,116-118,120,122,134-136,139-142,156-158,161-163,176-178,181-182,186-187,191-192,198-200,203,207-208,212-213,219-221,224-226,228-233,235-290,292-295,300,338-351,374-413,416-417,447-449,452-455,490-514,525,531
+  df865d53bb9b61e7 227,234,291,337,414-415,418-419,515-518
+app/src/test/java/com/camtransfer/viewmodel/CameraConnectionStatusPolicyTest.kt
+  9576f18c92583d9d 67-73
+app/src/test/java/com/camtransfer/protocol/CameraVendorGalleryDiscoveryPolicyTest.kt
+  9576f18c92583d9d 62-63,67,72,81,83
+app/src/test/java/com/camtransfer/viewmodel/CameraConnectionEntryPolicyTest.kt
+  9576f18c92583d9d 9-10
+app/src/main/java/com/camtransfer/service/TransferService.kt
+  9576f18c92583d9d 6-7,10,39-45,51-57,60-66,76,80-86,93-94,119,122-127,129-130,132-144,146-154,156-201,203-243,246-252,291-292,302-341,361-395
+app/src/test/java/com/camtransfer/protocol/CameraVendorOfficialGalleryStartupPolicyTest.kt
+  9576f18c92583d9d 28-48
+app/src/main/java/com/camtransfer/viewmodel/gallery/GalleryThumbnailController.kt
+  df865d53bb9b61e7 38,287-289,430
+  9576f18c92583d9d 5-7,16-17,21,23-24,30-32,37,39-40,43-50,53-54,56,61,71-73,119-125,136-137,143,177-188,192,196,207-209,216-286,293-295,379-429
+app/src/main/java/com/camtransfer/service/CameraFileSource.kt
+  9576f18c92583d9d 5-6,10,31-44
+app/src/main/java/com/camtransfer/service/WiredCameraService.kt
+  9576f18c92583d9d 17,31-33,37,53-56,87-90,104
+app/src/main/java/com/camtransfer/viewmodel/TransferViewModel.kt
+  9576f18c92583d9d 7,12,15,21,32,37,41-45,47-97
+app/src/main/java/com/camtransfer/protocol/CameraVendorOfficialGalleryStartupPolicy.kt
+  9576f18c92583d9d 17-29
+app/src/main/java/com/camtransfer/service/CameraVendorPairingForgetPolicy.kt
+  9576f18c92583d9d 16-32
+app/src/main/java/com/camtransfer/ui/GalleryHeader.kt
+  0581d0bb4205c39e 588-603,608,610,612-628,699-785
+  9576f18c92583d9d 54,98,111,114-117,119-120,122,124,126-135,139-140,143-145,157,159,162-168,170-171,173-185,187-245,247-257,260,262-265,267-268,271-272,281,283-284,292,296,307,358-415,452-459,461-496,502-534,536-547,549-587,604-607,609,611,629-638,640,642-663,669-670,676-677,683-684,690-693,695-698
+  df865d53bb9b61e7 169,172,186,246,416-419,460,535,548,694,786
+app/src/main/java/com/camtransfer/ble/CameraVendorBleTransferActivationPolicy.kt
+  9576f18c92583d9d 6,28,31-33
+  df865d53bb9b61e7 34
+app/src/test/java/com/camtransfer/ui/GalleryUiPolicyTest.kt
+  9576f18c92583d9d 4,13,18-22,144-178,389-399,403-408,410-413,415-418,423-426,456-479,508-531,577-590,593,597-687,724-818,826-827,830,838-841,844-864,867-873,894,913,987-1024,1031-1041,1066-1128,1152-1164,1184-1249,1251-1253
+  df865d53bb9b61e7 17,179-180,422,532-533,819-820,842-843,865-866,986,1042-1043,1129-1130,1165-1167,1250,1254-1255
+app/src/main/java/com/camtransfer/ui/GalleryFilterPanel.kt
+  df865d53bb9b61e7 247-249,255-256
+  9576f18c92583d9d 103,125-126,130-131,134-136,138-140,160-246,250-254,257-325,341,373-376,402,477-478,480-485,488,492-498,502,508,516
+app/src/main/java/com/camtransfer/ui/GalleryDialogs.kt
+  9576f18c92583d9d 54,58,99-102,112-376,446-448,469,477-496,502-503,509-515,517-519,521,525,534-571
+  df865d53bb9b61e7 111,572-573
+app/src/main/java/com/camtransfer/viewmodel/gallery/GalleryPreviewController.kt
+  9576f18c92583d9d 5,7,9-10,17,21,23,25-28,30-31,36-40,42-56,58-65,69-71,73,82,84,86-88,90-92,95,97,99-104,106-118,121-123,126-134,136-138,140-154,157-163,166-178,183,185-189,191-194,196-206,209-243,245-249,251,254,258-262,264,271,273-280,282,284,286,290-292,296-300,303-338,341-351,353,356-382,386,389,392-394,396-405,409-413,417-419,440-490
+  df865d53bb9b61e7 41,164-165,287-289,293,339-340
+  0d3a7c8954286186 83,85,89,93-94,96,98,105,119-120,124-125,135,139,155-156,179-182,184,263,294-295,301-302,352,354-355,383-385,387-388,390-391,395
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "3233321f03f42d8d51a84af57215758e585007d1",
+  "prompts": {
+    "0581d0bb4205c39e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f311f-5024-77b1-bf74-835fd1991134",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 159,
+      "total_deletions": 53,
+      "accepted_lines": 138,
+      "overriden_lines": 0
+    },
+    "0d3a7c8954286186": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f0994-040e-7381-a9db-8c82bac2f947",
+        "model": "gpt-5.5"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 390,
+      "total_deletions": 66,
+      "accepted_lines": 52,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/296f4be956516e117afd9fa6874b6cf8cf556b2fec83b96d76546b9bf9ddb200"
+    },
+    "20798f43cfba4117": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cfe9bf44-ae21-407f-a83b-544f5af19690",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 18701,
+      "overriden_lines": 121,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/b40f40ab8cf0ebbe9c8cd70dcb8dcaba837ecbf1a9ce8c712fab20e6e3b853de"
+    },
+    "247ba1264ceefdeb": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019eef18-fd1d-7561-8b2a-6a45bfb8081e",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 4,
+      "overriden_lines": 0
+    },
+    "369620b1d970ed9e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f1124-2b76-7932-9796-9e1961e20363",
+        "model": "gpt-5.5"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 368271,
+      "total_deletions": 363,
+      "accepted_lines": 327077,
+      "overriden_lines": 6,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/52e31dbc4b6cdf918927b351d03dde832cd6d06a8ee02471463e5383cb52335e"
+    },
+    "4af0a2ded9c014fd": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019eef04-1434-7ad2-a889-d9c5692b5884",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 2,
+      "overriden_lines": 0
+    },
+    "687dbfa99ff0e3d8": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ee972-68b9-75a3-b8a0-9b3b19272efa",
+        "model": "gpt-5.5"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 4592,
+      "total_deletions": 787,
+      "accepted_lines": 8842,
+      "overriden_lines": 65,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/6a3f88c700afc492feb6df9957a926bec1d382e28f497d70f40dcc05b086c739"
+    },
+    "6eb17f8cf3bf5502": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f18ce-7476-7822-a3d8-b73ababc4689",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 840,
+      "total_deletions": 0,
+      "accepted_lines": 840,
+      "overriden_lines": 0
+    },
+    "9576f18c92583d9d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2a8e-ad93-7861-bcb5-05c7f662883c",
+        "model": "gpt-5.5"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 23166,
+      "total_deletions": 2994,
+      "accepted_lines": 21539,
+      "overriden_lines": 154,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/57ba7f7a02ce2d9e9afb5dc35fe1461c85b512149c159ea45a8dc58157418282"
+    },
+    "9857825ebccb647e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ef4bd-c2e0-7c12-bacd-e955ed7d7951",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 503,
+      "overriden_lines": 4
+    },
+    "9bafd00506acbc05": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019eeea1-73e4-7dc1-a86b-52d87193710c",
+        "model": "gpt-5.5"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 654,
+      "total_deletions": 0,
+      "accepted_lines": 2698,
+      "overriden_lines": 4,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/337fcce4c8083b81ab4173da9783bfdc7c0cf19e6e99e2495ae7baf10e4bc44c"
+    },
+    "b4c46d00cd7b4f79": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019eef6a-b39b-7243-bfb5-d2d8e96891fa",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 15,
+      "overriden_lines": 0
+    },
+    "ded8c6060dbbb413": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ef329-a941-7c90-bb36-28d45e43f4a3",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 1,
+      "overriden_lines": 0
+    },
+    "df865d53bb9b61e7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019eeab5-9ebb-7ba1-9a34-9751dc9fe15a",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 30159,
+      "overriden_lines": 9
+    },
+    "fbc1fde1cf86fa38": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f03fc-49e3-72d3-835d-08e5102977e4",
+        "model": "gpt-5.5"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 305,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/18dd26d1ee3d7f31ddfb96225afe2a42fb6bf63bf4dd0c87218bcfd40f5f6c71"
+    }
+  }
+}
