@@ -1,0 +1,50 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "4d54bb96239242ec463296b63c510e73c6e38184",
+  "prompts": {
+    "7cd259df8f7c4c63": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3a80-92e2-76c1-a89a-c387f10b2909",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 471,
+      "total_deletions": 0,
+      "accepted_lines": 471,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/b83e30f859779159a63e6be53d434f86050acd95ac98bd37b6265d5a1b754557"
+    },
+    "9576f18c92583d9d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2a8e-ad93-7861-bcb5-05c7f662883c",
+        "model": "gpt-5.5"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 29,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/3212f14b07733edce2d3158733b2cb3aa9091e3e459ae22a81993dccadaec00d"
+    },
+    "971387f982c8762c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f3609-cd7d-7bd3-9651-be6bd1ec35bb",
+        "model": "gpt-5.4"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 11046,
+      "total_deletions": 30,
+      "accepted_lines": 10812,
+      "overriden_lines": 175,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/1d2669c255b7036216bbb101d65d7ce5df4d27fd6a685d621efe443c1a35e666"
+    }
+  }
+}
