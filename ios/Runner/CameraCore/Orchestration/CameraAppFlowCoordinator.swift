@@ -15,12 +15,20 @@ struct IOSCameraAppFlowCoordinator {
     self.galleryConnector = galleryConnector
   }
 
-  func startPairing() async throws -> IOSCameraPairingResult {
+  func startPairing() async throws {
     let issue = await registrationGuard()
     guard issue == .pass else {
       throw IOSCameraAppFlowIssue.registrationBlocked(issue)
     }
-    return try await pairingModule.pair()
+    try await pairingModule.startPairing()
+  }
+
+  func confirmPairing() async throws -> IOSCameraPairingResult {
+    let issue = await registrationGuard()
+    guard issue == .pass else {
+      throw IOSCameraAppFlowIssue.registrationBlocked(issue)
+    }
+    return try await pairingModule.confirmPairing()
   }
 
   func enterCameraGallery(cameraID: String) async throws -> IOSCameraConnectionContext {
@@ -35,4 +43,3 @@ struct IOSCameraAppFlowCoordinator {
 enum IOSCameraAppFlowIssue: Error, Equatable {
   case registrationBlocked(IOSCameraRegistrationIssue)
 }
-

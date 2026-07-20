@@ -5,6 +5,7 @@ import UIKit
 struct RunnerApp: App {
   init() {
     AppLifecycleDiagnostics.install()
+    _ = CameraSessionRuntimeAppContainer.shared
   }
 
   var body: some Scene {
@@ -17,12 +18,86 @@ struct RunnerApp: App {
 
 private struct NativeRootViewControllerContainer: UIViewControllerRepresentable {
   func makeUIViewController(context: Context) -> UINavigationController {
-    let controller = NativeNavigationController(rootViewController: NativeConnectViewController())
+    let rootViewController = NativeConnectViewController(
+      runtime: CameraSessionRuntimeAppContainer.shared.runtime
+    )
+    let controller = NativeNavigationController(
+      rootViewController: rootViewController
+    )
     controller.overrideUserInterfaceStyle = .light
     return controller
   }
 
   func updateUIViewController(_ uiViewController: UINavigationController, context: Context) {}
+}
+
+@MainActor
+final class CameraSessionRuntimeAppContainer {
+  static let shared = CameraSessionRuntimeAppContainer()
+
+  let runtime: CameraSessionRuntime
+  private let bridge: CameraVendorConnectFlowBridge
+  private let recoveryConnector: CameraSessionRuntimeDeferredRecoveryConnector
+  private let executionAuthority: CameraSessionUIKitExecutionAuthority
+  private let lifecycleAdapter: CameraSessionRuntimeLifecycleAdapter
+
+  private init() {
+    let bridge = CameraVendorConnectFlowBridge()
+    let transport = CameraSessionRuntimeDeferredTransport()
+    let backgroundMaintainer = CameraSessionRuntimeDeferredBackgroundMaintainer()
+    let executionAuthority = CameraSessionUIKitExecutionAuthority()
+    let recoveryConnector = CameraSessionRuntimeDeferredRecoveryConnector()
+    let runtime = CameraSessionRuntime(
+      transport: transport,
+      recoveryStore: CameraDownloadSessionRuntimeRecoveryStore(),
+      savedHandleStore: CameraSessionRuntimeSavedHandleStore(),
+      executionAuthority: executionAuthority,
+      backgroundMaintainer: backgroundMaintainer,
+      activityReporter: CameraSessionLiveActivityController(),
+      recoveryConnector: recoveryConnector,
+      connectionWorker: CameraSessionRuntimeConnectionWorker(
+        flow: IOSCameraConnectFlowRuntime(environment: bridge)
+      ),
+      gallerySessionActivator: CameraVendorRuntimeGallerySessionActivator(
+        bridge: bridge,
+        deferredTransport: transport,
+        deferredBackgroundMaintainer: backgroundMaintainer
+      ),
+      connectionController: bridge,
+      legacyResumeMigrator: CameraSessionRuntimeLegacyResumeMigrator()
+    )
+    self.bridge = bridge
+    self.recoveryConnector = recoveryConnector
+    self.executionAuthority = executionAuthority
+    self.runtime = runtime
+    self.lifecycleAdapter = CameraSessionRuntimeLifecycleAdapter(runtime: runtime)
+    executionAuthority.onExpired = { [weak runtime] in
+      runtime?.send(.backgroundExecutionExpired)
+    }
+    recoveryConnector.attach(
+      { [weak runtime] identity, completion in
+        guard let runtime,
+              let peripheralID = identity.peripheralID,
+              let record = runtime.rememberedCameraRecords.first(where: { $0.peripheralID == peripheralID }),
+              !runtime.isConnectionWorkerActive,
+              !runtime.requiresSystemBluetoothPairingCleanup else {
+          completion(false)
+          return
+        }
+        runtime.startRememberedGalleryConnection(record: record) { state in
+          if case .galleryReady = state {
+            completion(true)
+          } else {
+            completion(false)
+          }
+        }
+      },
+      cancellationHandler: { [weak runtime] reason in
+        runtime?.cancelConnectionWorker(reason: "runtime-recovery-\(reason)")
+      }
+    )
+  }
+
 }
 
 private final class NativeNavigationController: UINavigationController {
@@ -72,7 +147,7 @@ private enum AppLifecycleDiagnostics {
   private static func log(_ event: String) {
     CameraVendorFileLogger.log(
       "[APP_LIFECYCLE] event=\(event) state=\(applicationStateDescription) " +
-      "backgroundRemaining=\(NativeGalleryBackgroundRuntimePolicy.formattedBackgroundTimeRemaining(UIApplication.shared.backgroundTimeRemaining))"
+      "backgroundRemaining=\(CameraSessionRuntimeLifecycleLogPolicy.formattedBackgroundTimeRemaining(UIApplication.shared.backgroundTimeRemaining))"
     )
   }
 

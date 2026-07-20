@@ -1,5 +1,24 @@
 import Foundation
 
+struct IOSCameraGallerySession: Equatable {
+  let cameraID: String
+  let rememberedPeripheralID: UUID?
+  let ptpSessionID: String
+  let presentation: IOSCameraGalleryPresentation?
+
+  init(
+    cameraID: String,
+    rememberedPeripheralID: UUID? = nil,
+    ptpSessionID: String,
+    presentation: IOSCameraGalleryPresentation? = nil
+  ) {
+    self.cameraID = cameraID
+    self.rememberedPeripheralID = rememberedPeripheralID
+    self.ptpSessionID = ptpSessionID
+    self.presentation = presentation
+  }
+}
+
 enum IOSCameraGalleryDateFilter: Equatable {
   case all
   case today

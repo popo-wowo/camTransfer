@@ -12,14 +12,20 @@ struct CameraSessionActivityWidgetBundle: WidgetBundle {
 struct CameraSessionActivityWidget: Widget {
   var body: some WidgetConfiguration {
     ActivityConfiguration(for: CameraSessionActivityAttributes.self) { context in
-      VStack(alignment: .leading, spacing: 4) {
+      VStack(alignment: .leading, spacing: 8) {
         Text(context.attributes.cameraName)
           .font(.headline)
-        Text(context.state.phase)
-          .font(.subheadline)
-        Text(context.state.detail)
-          .font(.caption)
-          .foregroundStyle(.secondary)
+        if context.state.isShowingDownloadProgress {
+          Text("还剩 \(context.state.downloadRemainingCount) 张")
+            .font(.title3)
+            .fontWeight(.semibold)
+          ProgressView(value: context.state.downloadProgressFraction)
+            .progressViewStyle(.linear)
+        } else {
+          Text("\(context.state.galleryItemCount) 张可查看")
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+        }
       }
       .padding()
     } dynamicIsland: { context in
@@ -29,19 +35,36 @@ struct CameraSessionActivityWidget: Widget {
             .font(.caption)
         }
         DynamicIslandExpandedRegion(.trailing) {
-          Text(context.state.isDownloading ? "Downloading" : "Connected")
-            .font(.caption)
+          if context.state.isShowingDownloadProgress {
+            Text("还剩 \(context.state.downloadRemainingCount) 张")
+              .font(.caption)
+          } else {
+            Text("\(context.state.galleryItemCount) 张")
+              .font(.caption)
+          }
         }
         DynamicIslandExpandedRegion(.bottom) {
-          Text(context.state.detail)
-            .font(.caption2)
+          if context.state.isShowingDownloadProgress {
+            VStack(alignment: .leading, spacing: 6) {
+              Text("还剩 \(context.state.downloadRemainingCount) 张")
+                .font(.caption2)
+              ProgressView(value: context.state.downloadProgressFraction)
+            }
+          } else {
+            Text("\(context.state.galleryItemCount) 张可查看")
+              .font(.caption2)
+          }
         }
       } compactLeading: {
-        Image(systemName: context.state.isDownloading ? "arrow.down.circle" : "camera")
+        Image(systemName: context.state.isShowingDownloadProgress ? "arrow.down.circle.fill" : "camera")
       } compactTrailing: {
-        Text("\(context.state.itemCount)")
+        if context.state.isShowingDownloadProgress {
+          Text("\(context.state.downloadRemainingCount)")
+        } else {
+          Text("\(context.state.galleryItemCount)")
+        }
       } minimal: {
-        Image(systemName: "camera")
+        Image(systemName: context.state.isShowingDownloadProgress ? "arrow.down.circle.fill" : "camera")
       }
     }
   }

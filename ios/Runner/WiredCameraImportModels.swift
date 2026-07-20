@@ -9,6 +9,7 @@ struct WiredCameraImportDevice: Codable, Equatable {
 
 struct WiredCameraImportItem: Codable, Equatable {
   let id: String
+  let ptpObjectHandle: UInt32
   let name: String
   let uti: String?
   let fileSize: Int64
@@ -18,6 +19,7 @@ struct WiredCameraImportItem: Codable, Equatable {
 
   enum CodingKeys: String, CodingKey {
     case id
+    case ptpObjectHandle
     case name
     case uti
     case fileSize
@@ -27,6 +29,7 @@ struct WiredCameraImportItem: Codable, Equatable {
 
   init(
     id: String,
+    ptpObjectHandle: UInt32 = 0,
     name: String,
     uti: String?,
     fileSize: Int64,
@@ -35,6 +38,7 @@ struct WiredCameraImportItem: Codable, Equatable {
     isImportable: Bool
   ) {
     self.id = id
+    self.ptpObjectHandle = ptpObjectHandle
     self.name = name
     self.uti = uti
     self.fileSize = fileSize
@@ -46,6 +50,7 @@ struct WiredCameraImportItem: Codable, Equatable {
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     id = try container.decode(String.self, forKey: .id)
+    ptpObjectHandle = try container.decodeIfPresent(UInt32.self, forKey: .ptpObjectHandle) ?? 0
     name = try container.decode(String.self, forKey: .name)
     uti = try container.decodeIfPresent(String.self, forKey: .uti)
     fileSize = try container.decode(Int64.self, forKey: .fileSize)
@@ -57,6 +62,7 @@ struct WiredCameraImportItem: Codable, Equatable {
   func encode(to encoder: Encoder) throws {
     var container = encoder.container(keyedBy: CodingKeys.self)
     try container.encode(id, forKey: .id)
+    try container.encode(ptpObjectHandle, forKey: .ptpObjectHandle)
     try container.encode(name, forKey: .name)
     try container.encodeIfPresent(uti, forKey: .uti)
     try container.encode(fileSize, forKey: .fileSize)
@@ -289,6 +295,167 @@ struct WiredCameraImportState {
 
   mutating func clearSelection() {
     selectedItemIDs.removeAll()
+  }
+}
+
+enum WiredCameraDeletePolicy {
+  static func selectedItem(
+    from state: WiredCameraImportState,
+    isDeleting: Bool
+  ) -> WiredCameraImportItem? {
+    guard state.isLiveCatalogReady, !state.isImporting, !isDeleting else { return nil }
+    let selectedItems = state.items.filter {
+      state.selectedItemIDs.contains($0.id) &&
+        $0.isImportable &&
+        !state.importedItemIDs.contains($0.id)
+    }
+    guard selectedItems.count == 1 else { return nil }
+    return selectedItems[0]
+  }
+}
+
+enum WiredCameraThumbnailQueuePolicy {
+  static func shouldStartRequest(
+    isDeleteInFlight: Bool,
+    isForegroundOperationInFlight: Bool = false,
+    hasActiveThumbnailRequest: Bool
+  ) -> Bool {
+    !isDeleteInFlight && !isForegroundOperationInFlight && !hasActiveThumbnailRequest
+  }
+}
+
+enum WiredCameraPreviewPolicy {
+  static let gridMaximumPixelSize = 320
+  static let maximumPixelSize = 1_536
+}
+
+enum WiredCameraImportSortPolicy {
+  static func newestFirst(_ items: [WiredCameraImportItem]) -> [WiredCameraImportItem] {
+    items.sorted(by: shouldPlaceBefore)
+  }
+
+  private static func shouldPlaceBefore(
+    _ left: WiredCameraImportItem,
+    _ right: WiredCameraImportItem
+  ) -> Bool {
+    switch (left.createdAt, right.createdAt) {
+    case let (lhs?, rhs?) where lhs != rhs:
+      return lhs > rhs
+    case (_?, nil):
+      return true
+    case (nil, _?):
+      return false
+    default:
+      if left.ptpObjectHandle != right.ptpObjectHandle {
+        return left.ptpObjectHandle > right.ptpObjectHandle
+      }
+      if left.name != right.name {
+        return left.name > right.name
+      }
+      return left.id > right.id
+    }
+  }
+}
+
+struct WiredCameraImportDaySection: Equatable {
+  let day: Date?
+  let title: String
+  let items: [WiredCameraImportItem]
+}
+
+enum WiredCameraImportSectionPolicy {
+  static func sections(
+    from items: [WiredCameraImportItem],
+    now: Date = Date(),
+    calendar: Calendar = Calendar(identifier: .gregorian)
+  ) -> [WiredCameraImportDaySection] {
+    guard !items.isEmpty else { return [] }
+
+    var orderedDays: [Date] = []
+    var itemsByDay: [Date: [WiredCameraImportItem]] = [:]
+    var unknownDateItems: [WiredCameraImportItem] = []
+    for item in items {
+      guard let createdAt = item.createdAt else {
+        unknownDateItems.append(item)
+        continue
+      }
+      let day = calendar.startOfDay(for: createdAt)
+      if itemsByDay[day] == nil {
+        orderedDays.append(day)
+        itemsByDay[day] = []
+      }
+      itemsByDay[day]?.append(item)
+    }
+
+    var sections = orderedDays.compactMap { day -> WiredCameraImportDaySection? in
+      guard let dayItems = itemsByDay[day], !dayItems.isEmpty else { return nil }
+      return WiredCameraImportDaySection(
+        day: day,
+        title: "\(dayLabel(for: day, now: now, calendar: calendar)) · \(dayItems.count) 张",
+        items: dayItems
+      )
+    }
+    if !unknownDateItems.isEmpty {
+      sections.append(
+        WiredCameraImportDaySection(
+          day: nil,
+          title: "未知日期 · \(unknownDateItems.count) 张",
+          items: unknownDateItems
+        )
+      )
+    }
+    return sections
+  }
+
+  private static func dayLabel(for day: Date, now: Date, calendar: Calendar) -> String {
+    if calendar.isDate(day, inSameDayAs: now) {
+      return "今天"
+    }
+    guard let yesterday = calendar.date(byAdding: .day, value: -1, to: now) else {
+      return formattedDay(day)
+    }
+    if calendar.isDate(day, inSameDayAs: yesterday) {
+      return "昨天"
+    }
+    return formattedDay(day)
+  }
+
+  private static func formattedDay(_ day: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "zh_CN")
+    formatter.dateFormat = "yyyy年M月d日"
+    return formatter.string(from: day)
+  }
+}
+
+enum WiredCameraThumbnailRequestWindowPolicy {
+  private static let prefetchRowsBefore = 1
+  private static let prefetchRowsAfter = 2
+
+  static func itemIDsToRequest(
+    orderedItemIDs: [String],
+    visibleItemIDs: [String],
+    columnCount: Int
+  ) -> [String] {
+    guard !orderedItemIDs.isEmpty, !visibleItemIDs.isEmpty else { return [] }
+    let indexByID = Dictionary(uniqueKeysWithValues: orderedItemIDs.enumerated().map { ($0.element, $0.offset) })
+    let visibleOrdered = visibleItemIDs
+      .filter { indexByID[$0] != nil }
+      .reduce(into: [String]()) { result, itemID in
+        if !result.contains(itemID) { result.append(itemID) }
+      }
+      .sorted { (indexByID[$0] ?? .max) < (indexByID[$1] ?? .max) }
+    guard let firstVisibleIndex = visibleOrdered.compactMap({ indexByID[$0] }).min(),
+          let lastVisibleIndex = visibleOrdered.compactMap({ indexByID[$0] }).max() else {
+      return []
+    }
+
+    let safeColumnCount = max(columnCount, 1)
+    let start = max(0, firstVisibleIndex - safeColumnCount * prefetchRowsBefore)
+    let end = min(orderedItemIDs.count - 1, lastVisibleIndex + safeColumnCount * prefetchRowsAfter)
+    let visibleSet = Set(visibleOrdered)
+    let nearby = orderedItemIDs[start...end].filter { !visibleSet.contains($0) }
+    return visibleOrdered + nearby
   }
 }
 

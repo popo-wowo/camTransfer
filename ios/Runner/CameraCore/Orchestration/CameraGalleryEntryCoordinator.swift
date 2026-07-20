@@ -1,25 +1,14 @@
 import Foundation
 
-final class CameraVendorGalleryEntryCoordinator {
-  private let startupCoordinator: CameraVendorGalleryStartupCoordinator
-
-  init(startupCoordinator: CameraVendorGalleryStartupCoordinator = CameraVendorGalleryStartupCoordinator()) {
-    self.startupCoordinator = startupCoordinator
-  }
-
-  func loadEntryEvidence(
-    using galleryService: CameraVendorGalleryService
-  ) async throws -> CameraVendorGalleryReadyEvidence {
-    let evidence = try await startupCoordinator.loadGalleryReadyEvidence(using: galleryService)
-    guard evidence.hasGalleryReadyEvidence else {
+final class IOSCameraGalleryEntryCoordinator {
+  func validate(_ session: IOSCameraGallerySession) throws -> IOSCameraGallerySession {
+    guard !session.ptpSessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       throw NSError(
-        domain: "CameraVendorGalleryEntryCoordinator",
+        domain: "IOSCameraGalleryEntryCoordinator",
         code: 1,
-        userInfo: [
-          NSLocalizedDescriptionKey: "相机相册尚未返回可进入的照片列表"
-        ]
+        userInfo: [NSLocalizedDescriptionKey: "相机相册 PTP 会话尚未完成"]
       )
     }
-    return evidence
+    return session
   }
 }

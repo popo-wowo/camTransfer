@@ -8,6 +8,15 @@
 
 ## 当前结论
 
+> **2026-07-16 口径更新：** 本节中 2026-06-24 的 Android
+> `D604=31` / `D604=HEIF` / `D604=RAW` 结果，是“初始占位符发现/扩展
+> 目录”证据，不是精确的 HEIF 或 RAW 筛选证据。两种扩展请求曾返回同一
+> 批更大的 handle 集合，后续依赖 ObjectInfo 分类。它必须作为历史经验
+> 保留，但不能作为当前 iOS catalog membership 的实现依据。当前 iOS
+> Gallery 的唯一权威规范是
+> `docs/superpowers/specs/2026-07-13-ios-camera-filter-download-final-solution.md`；
+> HEIF 精确 transaction 当前明确延期，不得宣称已支持。
+
 当前 Android X-T5 真正能把 HEIF/RAW 一开始加载出来的关键，不是标准 PTP 全卡枚举，也不是 `D222` ready 轮询，也不是 hidden gap 猜 handle，而是：
 
 1. 使用 ReferenceApp 的 BLE 传图激活流程进入相机 Wi-Fi / PTP 状态。
@@ -27,6 +36,12 @@ full-object-info-final total=1268 formats={HEIF=37, RAW=79, JPG=1138, Video=14}
 hidden metadata selected=0
 ```
 
+上述结果证明的是“扩展目录可以让初始列表看到更多对象”，不证明
+`D604=HEIF` 返回的 1268 个 handle 全部是 HEIF，也不证明
+`D604=RAW` 返回的 1268 个 handle 全部是 RAW。后续筛选若把这个扩展目录
+当作精确格式目录，就会出现 HEIF/RAW 互相污染、数量随 ObjectInfo 补齐
+变化，以及全目录被错误发布的问题。
+
 已验证有效的关键构建：
 
 - `BUILD_MARK_20260504_FIX134_PROBE_HIDDEN_HANDLE_GAPS`
@@ -40,7 +55,12 @@ hidden metadata selected=0
 4. 不要再加入“baseline IP 必须变化”的防误判逻辑。实测它会把已经连上的 CameraVendor Wi-Fi 也挡掉，导致 App 一直提示用户连接 Wi-Fi。
 5. 下载图片原图当前走 `downloadOriginal(for:) -> session.object() -> CameraVendorPhotoLibrarySaver.save(data:)`，图片下载已验证可用；不要再把照片强行改成统一文件流路径，否则容易绕过已有的图片数据修正逻辑。
 
-`FIX135` 的目的只是移除会破坏链路的 `D222` 轮询。hidden handle gap 探测现在只作为扩展 `D621` 失败后的兜底诊断，不应再作为 RAW/HEIF 的正式发现路径。后续任何连接修复都必须保留 `FIX148` 的 Wi-Fi 放行规则，并保持 2026-06-24 验证过的 `D604=HEIF/RAW -> D621` 初始全量列表逻辑。
+`FIX135` 的目的只是移除会破坏链路的 `D222` 轮询。hidden handle gap 探测现在只作为扩展 `D621` 失败后的兜底诊断，不应再作为 RAW/HEIF 的正式发现路径。对于 Android 历史初始占位符路径，仍可记录并复现 2026-06-24 的 `D604=HEIF/RAW -> D621` 扩展列表；但它不是 iOS 精确筛选逻辑，也不得被当作格式 catalog membership。
+
+这条 Android 经验不能直接迁移成 iOS 精确筛选逻辑。对于 iOS，旧的
+format-pass、candidate promotion、`formatHints` 和 ObjectInfo-owned
+membership 路径均已被终态规格否定；保留它们只会把“对象可见”误当成
+“格式筛选正确”。
 
 ## 高风险误区
 
