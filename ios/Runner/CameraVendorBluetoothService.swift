@@ -545,6 +545,16 @@ enum CameraVendorSpecifiedObjectSnapshotPolicy {
   static let shouldCompareBeforeAndAfterEmptySearchMode = false
 }
 
+enum CameraVendorInitialCatalogBootstrapRecoveryPolicy {
+  static let storeNotAvailableResponseCode = 0x2013
+
+  static func shouldRecover(after error: Error) -> Bool {
+    let nsError = error as NSError
+    return nsError.domain == "CameraVendorPtpSession"
+      && nsError.code == storeNotAvailableResponseCode
+  }
+}
+
 struct CameraVendorSpecifiedObjectDateGroup: Equatable {
   let dateText: String
   let objectCount: UInt32
@@ -2342,6 +2352,33 @@ enum CameraVendorTransferDownloadMode: Equatable {
   case compressed
 }
 
+enum CameraVendorOriginalDownloadD226Lifetime: Equatable {
+  case batch
+  case session
+
+  var label: String {
+    switch self {
+    case .batch: return "batch"
+    case .session: return "session"
+    }
+  }
+}
+
+enum CameraVendorDebugOriginalDownloadD226LifetimePolicy {
+  static let argumentPrefix = "--camtransfer-debug-d226-lifetime="
+
+  static func resolve(
+    arguments: [String],
+    debugBuild: Bool
+  ) -> CameraVendorOriginalDownloadD226Lifetime {
+    guard debugBuild else { return .batch }
+    guard let argument = arguments.first(where: { $0.hasPrefix(argumentPrefix) }) else {
+      return .batch
+    }
+    return argument == "\(argumentPrefix)session" ? .session : .batch
+  }
+}
+
 enum CameraVendorOriginalDownloadBatchModeAction: Equatable {
   case prepare(CameraVendorTransferDownloadMode)
   case reset
@@ -2349,6 +2386,11 @@ enum CameraVendorOriginalDownloadBatchModeAction: Equatable {
 
 struct CameraVendorOriginalDownloadBatchModeState {
   private var preparedMode: CameraVendorTransferDownloadMode?
+
+  mutating func begin(lifetime: CameraVendorOriginalDownloadD226Lifetime) {
+    guard lifetime == .batch else { return }
+    preparedMode = nil
+  }
 
   mutating func actionsForPreparing(
     _ mode: CameraVendorTransferDownloadMode
@@ -2366,6 +2408,17 @@ struct CameraVendorOriginalDownloadBatchModeState {
     guard preparedMode != nil else { return [] }
     preparedMode = nil
     return [.reset]
+  }
+
+  mutating func actionsForEndingBatch(
+    lifetime: CameraVendorOriginalDownloadD226Lifetime
+  ) -> [CameraVendorOriginalDownloadBatchModeAction] {
+    guard lifetime == .batch else { return [] }
+    return actionsForEndingBatch()
+  }
+
+  mutating func resetForSessionEnd() {
+    preparedMode = nil
   }
 }
 
@@ -2784,6 +2837,7 @@ final class CameraVendorGalleryRequestScheduler {
   private var nextWaiterID = 0
   private var isPriorityDownloadBarrierActive = false
   private var isExclusiveMutationBarrierActive = false
+  private var idleWaiters: [CheckedContinuation<Void, Never>] = []
   private let onWaiterQueued: ((CameraVendorGalleryRequestPriority) -> Void)?
 
   init(onWaiterQueued: ((CameraVendorGalleryRequestPriority) -> Void)? = nil) {
@@ -2829,13 +2883,32 @@ final class CameraVendorGalleryRequestScheduler {
 
   func beginPriorityDownloadBarrier() {
     let cancelledWaiters: [Waiter]
+    let idleContinuations: [CheckedContinuation<Void, Never>]
     lock.lock()
     isPriorityDownloadBarrierActive = true
     cancelledWaiters = waiters.filter { $0.priority != .downloadOriginal }
     waiters.removeAll { $0.priority != .downloadOriginal }
+    idleContinuations = takeIdleWaitersIfReadyLocked()
     lock.unlock()
     for waiter in cancelledWaiters {
       waiter.continuation.resume(throwing: CancellationError())
+    }
+    idleContinuations.forEach { $0.resume() }
+  }
+
+  func waitUntilIdle() async {
+    await withCheckedContinuation { continuation in
+      var shouldResumeImmediately = false
+      lock.lock()
+      if isIdleLocked {
+        shouldResumeImmediately = true
+      } else {
+        idleWaiters.append(continuation)
+      }
+      lock.unlock()
+      if shouldResumeImmediately {
+        continuation.resume()
+      }
     }
   }
 
@@ -2890,6 +2963,8 @@ final class CameraVendorGalleryRequestScheduler {
         lock.lock()
         if Task.isCancelled {
           shouldResumeCancelled = true
+        } else if isPriorityDownloadBarrierActive && priority != .downloadOriginal {
+          shouldResumeCancelled = true
         } else if !isCameraReadActive
           && canRunImmediatelyLocked(priority: priority)
           && (waiters.isEmpty || isPriorityDownloadBarrierActive) {
@@ -2933,15 +3008,30 @@ final class CameraVendorGalleryRequestScheduler {
 
   private func releaseNext() {
     let next: Waiter?
+    let idleContinuations: [CheckedContinuation<Void, Never>]
     lock.lock()
     if let runnable = removeNextRunnableWaiterLocked() {
       next = runnable
+      idleContinuations = []
     } else {
       isCameraReadActive = false
       next = nil
+      idleContinuations = takeIdleWaitersIfReadyLocked()
     }
     lock.unlock()
     next?.continuation.resume()
+    idleContinuations.forEach { $0.resume() }
+  }
+
+  private var isIdleLocked: Bool {
+    !isCameraReadActive && waiters.isEmpty
+  }
+
+  private func takeIdleWaitersIfReadyLocked() -> [CheckedContinuation<Void, Never>] {
+    guard isIdleLocked else { return [] }
+    let continuations = idleWaiters
+    idleWaiters.removeAll(keepingCapacity: false)
+    return continuations
   }
 
   private func canRunImmediatelyLocked(priority: CameraVendorGalleryRequestPriority) -> Bool {
@@ -3727,6 +3817,7 @@ protocol CameraVendorBleBackgroundKeepAlive: AnyObject {
 
 protocol CameraVendorExclusiveDownloadWindowControlling: AnyObject {
   func beginExclusiveDownloadWindow()
+  func awaitExclusiveDownloadWindowReady() async
   func endExclusiveDownloadWindow()
   func withExclusiveDownloadWindow<T>(_ operation: () async throws -> T) async rethrows -> T
 }
@@ -4785,6 +4876,84 @@ private func getWifiIPv4Address() -> String? {
   return nil
 }
 
+enum CameraVendorPtpNetworkServiceProfile: Equatable {
+  case current
+  case responsiveData
+}
+
+enum CameraVendorDebugPtpNetworkServicePolicy {
+  static let responsiveDataArgument = "--camtransfer-debug-ptp-network-service=responsive-data"
+
+  static func resolve(
+    arguments: [String],
+    debugBuild: Bool
+  ) -> CameraVendorPtpNetworkServiceProfile {
+    guard debugBuild, arguments.contains(responsiveDataArgument) else {
+      return .current
+    }
+    return .responsiveData
+  }
+}
+
+// MARK: - Socket Buffer Profile Experiment (Branch C3/C4)
+
+/// Controls SO_RCVBUF/SO_SNDBUF behavior on the PTP command socket.
+///
+/// Hypothesis: XApp's ~283 KiB advertised window (vs CamTransfer's ~2.1 MiB) creates
+/// TCP backpressure that keeps the camera's WiFi/SD pipeline steady, avoiding the
+/// burst-pause pattern that produces 100-900ms data gaps.
+///
+/// - `production`: current 2 MiB explicit buffer (Window Scale 5, ~2.1 MiB window)
+/// - `kernelAutotuning`: no explicit SO_RCVBUF/SO_SNDBUF — let Darwin TCP autotuning
+///   dynamically size the window based on RTT and throughput
+/// - `xappWindowMatch`: 256 KiB explicit buffer — target Window Scale ~2-3 and
+///   advertised window ~256 KiB to approximate XApp's observed TCP feedback profile
+/// - `minimal`: 64 KiB explicit buffer — aggressive backpressure test
+enum CameraVendorPtpSocketBufferProfile: String, CustomStringConvertible {
+  case production = "production"
+  case kernelAutotuning = "kernel-autotuning"
+  case xappWindowMatch = "xapp-window-match"
+  case minimal = "minimal"
+
+  var description: String { rawValue }
+
+  /// Returns the SO_RCVBUF value to set, or nil to skip setsockopt entirely.
+  var receiveBufferBytes: Int32? {
+    switch self {
+    case .production: return 2 * 1024 * 1024
+    case .kernelAutotuning: return nil
+    case .xappWindowMatch: return 256 * 1024
+    case .minimal: return 64 * 1024
+    }
+  }
+
+  /// Returns the SO_SNDBUF value to set, or nil to skip setsockopt entirely.
+  var sendBufferBytes: Int32? {
+    switch self {
+    case .production: return 2 * 1024 * 1024
+    case .kernelAutotuning: return nil
+    case .xappWindowMatch: return 256 * 1024
+    case .minimal: return 64 * 1024
+    }
+  }
+}
+
+enum CameraVendorDebugPtpSocketBufferPolicy {
+  static let argumentPrefix = "--camtransfer-debug-socket-buffer="
+
+  static func resolve(
+    arguments: [String],
+    debugBuild: Bool
+  ) -> CameraVendorPtpSocketBufferProfile {
+    guard debugBuild else { return .production }
+    guard let argument = arguments.first(where: { $0.hasPrefix(argumentPrefix) }) else {
+      return .production
+    }
+    let value = String(argument.dropFirst(argumentPrefix.count))
+    return CameraVendorPtpSocketBufferProfile(rawValue: value) ?? .production
+  }
+}
+
 private final class CameraVendorPtpSocket {
   private var fd: Int32 = -1
 
@@ -4792,9 +4961,11 @@ private final class CameraVendorPtpSocket {
     host: String,
     port: Int,
     timeout: TimeInterval = 10,
-    diagnosticHandler: ((String) -> Void)? = nil
+    diagnosticHandler: ((String) -> Void)? = nil,
+    networkServiceProfile: CameraVendorPtpNetworkServiceProfile = .current,
+    socketBufferProfile: CameraVendorPtpSocketBufferProfile = .production
   ) throws {
-    CameraVendorFileLogger.log("CameraVendorPtpSocket.connect 开始: \(host):\(port)")
+    CameraVendorFileLogger.log("CameraVendorPtpSocket.connect 开始: \(host):\(port) bufferProfile=\(socketBufferProfile)")
     diagnosticHandler?("PTP socket 连接 \(host):\(port)")
 
     let sock = socket(AF_INET, SOCK_STREAM, 0)
@@ -4806,10 +4977,41 @@ private final class CameraVendorPtpSocket {
     var flag: Int32 = 1
     setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &flag, socklen_t(MemoryLayout<Int32>.size))
 
-    // Keep the established 2 MiB production baseline.
-    var bufBytes: Int32 = 2 * 1024 * 1024
-    setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &bufBytes, socklen_t(MemoryLayout<Int32>.size))
-    setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &bufBytes, socklen_t(MemoryLayout<Int32>.size))
+    // Socket buffer sizing — controlled by experiment profile.
+    // production: explicit 2 MiB (current baseline, Window Scale 5)
+    // kernelAutotuning: skip setsockopt, let Darwin TCP autotuning manage
+    // xappWindowMatch: 256 KiB to approximate XApp's ~283 KiB advertised window
+    // minimal: 64 KiB aggressive backpressure
+    if let rcvBuf = socketBufferProfile.receiveBufferBytes {
+      var bufBytes = rcvBuf
+      setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &bufBytes, socklen_t(MemoryLayout<Int32>.size))
+    }
+    if let sndBuf = socketBufferProfile.sendBufferBytes {
+      var bufBytes = sndBuf
+      setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &bufBytes, socklen_t(MemoryLayout<Int32>.size))
+    }
+
+    // Log actual kernel buffer sizes for experiment correlation with pcap.
+    var actualRcvBuf: Int32 = 0
+    var actualSndBuf: Int32 = 0
+    var optLen = socklen_t(MemoryLayout<Int32>.size)
+    getsockopt(sock, SOL_SOCKET, SO_RCVBUF, &actualRcvBuf, &optLen)
+    optLen = socklen_t(MemoryLayout<Int32>.size)
+    getsockopt(sock, SOL_SOCKET, SO_SNDBUF, &actualSndBuf, &optLen)
+    CameraVendorFileLogger.log(
+      "[OBS] PTP_SOCKET_BUFFER_PROFILE " +
+      "profile=\(socketBufferProfile) " +
+      "requestedRcv=\(socketBufferProfile.receiveBufferBytes.map(String.init) ?? "auto") " +
+      "requestedSnd=\(socketBufferProfile.sendBufferBytes.map(String.init) ?? "auto") " +
+      "actualRcv=\(actualRcvBuf) actualSnd=\(actualSndBuf)"
+    )
+
+    do {
+      try applyNetworkServiceProfile(networkServiceProfile, to: sock)
+    } catch {
+      Darwin.close(sock)
+      throw error
+    }
 
     // Set non-blocking for connect with timeout
     let flags = fcntl(sock, F_GETFL, 0)
@@ -4887,6 +5089,62 @@ private final class CameraVendorPtpSocket {
     fd = sock
     CameraVendorFileLogger.log("CameraVendorPtpSocket: 连接成功 \(host):\(port) fd=\(sock)")
     diagnosticHandler?("PTP socket 已连接 \(host):\(port)")
+  }
+
+  private func applyNetworkServiceProfile(
+    _ networkServiceProfile: CameraVendorPtpNetworkServiceProfile,
+    to socket: Int32
+  ) throws {
+    guard networkServiceProfile == .responsiveData else { return }
+
+    var requested = Int32(NET_SERVICE_TYPE_RD)
+    let optionLength = socklen_t(MemoryLayout<Int32>.size)
+    guard setsockopt(
+      socket,
+      SOL_SOCKET,
+      SO_NET_SERVICE_TYPE,
+      &requested,
+      optionLength
+    ) == 0 else {
+      let err = String(cString: strerror(errno))
+      throw NSError(
+        domain: "CameraVendorPtpSocket",
+        code: 10,
+        userInfo: [NSLocalizedDescriptionKey: "设置 responsive-data 网络服务类型失败: \(err)"]
+      )
+    }
+
+    var applied: Int32 = 0
+    var appliedLength = optionLength
+    guard getsockopt(
+      socket,
+      SOL_SOCKET,
+      SO_NET_SERVICE_TYPE,
+      &applied,
+      &appliedLength
+    ) == 0 else {
+      let err = String(cString: strerror(errno))
+      throw NSError(
+        domain: "CameraVendorPtpSocket",
+        code: 10,
+        userInfo: [NSLocalizedDescriptionKey: "读取 responsive-data 网络服务类型失败: \(err)"]
+      )
+    }
+    guard applied == requested else {
+      throw NSError(
+        domain: "CameraVendorPtpSocket",
+        code: 10,
+        userInfo: [
+          NSLocalizedDescriptionKey:
+            "responsive-data 网络服务类型校验失败: requested=\(requested) applied=\(applied)"
+        ]
+      )
+    }
+
+    CameraVendorFileLogger.log(
+      "[OBS] PTP_NETWORK_SERVICE_PROFILE branch=responsive-data " +
+      "requested=\(requested) applied=\(applied)"
+    )
   }
 
   func write(_ data: Data) throws {
@@ -5097,6 +5355,14 @@ private final class CameraVendorPtpSession {
     guard isConnected else { return nil }
     return "\(connectedHost)-\(connectionNumber)-\(physicalSessionSequence)"
   }
+
+  private var debugPhysicalSessionLabel: String {
+    return physicalSessionID ?? "none"
+  }
+  #endif
+
+  #if !DEBUG
+  private var debugPhysicalSessionLabel: String { "none" }
   #endif
 
   func configureTransferProfile(cameraSerialNumber: String?) {
@@ -5109,6 +5375,36 @@ private final class CameraVendorPtpSession {
   private var connectedPurpose: CameraVendorPtpSessionPurpose = .gallery
   private var priorityDownloadInterruptionGeneration: UInt64 = 0
   private var originalDownloadBatchModeState = CameraVendorOriginalDownloadBatchModeState()
+  private let networkServiceProfile: CameraVendorPtpNetworkServiceProfile = {
+    #if DEBUG
+    return CameraVendorDebugPtpNetworkServicePolicy.resolve(
+      arguments: ProcessInfo.processInfo.arguments,
+      debugBuild: true
+    )
+    #else
+    return .current
+    #endif
+  }()
+  private let socketBufferProfile: CameraVendorPtpSocketBufferProfile = {
+    #if DEBUG
+    return CameraVendorDebugPtpSocketBufferPolicy.resolve(
+      arguments: ProcessInfo.processInfo.arguments,
+      debugBuild: true
+    )
+    #else
+    return .production
+    #endif
+  }()
+  private let originalDownloadD226Lifetime: CameraVendorOriginalDownloadD226Lifetime = {
+    #if DEBUG
+    return CameraVendorDebugOriginalDownloadD226LifetimePolicy.resolve(
+      arguments: ProcessInfo.processInfo.arguments,
+      debugBuild: true
+    )
+    #else
+    return .batch
+    #endif
+  }()
   private var cameraVendorSpecifiedObjectHandles: [UInt32] = []
   private var cameraVendorSpecifiedObjectDateGroups: [CameraVendorSpecifiedObjectDateGroup] = []
   private var cameraVendorSpecifiedObjectHandlesByFormatMask: [UInt16: [UInt32]] = [:]
@@ -5145,7 +5441,9 @@ private final class CameraVendorPtpSession {
       host: host,
       port: CameraVendorPtpConstants.commandPort,
       timeout: commandConnectTimeout,
-      diagnosticHandler: diagnosticHandler
+      diagnosticHandler: diagnosticHandler,
+      networkServiceProfile: networkServiceProfile,
+      socketBufferProfile: socketBufferProfile
     )
     let initResult = try performInitHandshake(host: host, clientName: clientName)
     connectionNumber = initResult.connectionNumber
@@ -5229,17 +5527,29 @@ private final class CameraVendorPtpSession {
     )
   }
 
-  func beginPriorityDownloadBatch() {
-    originalDownloadBatchModeState = CameraVendorOriginalDownloadBatchModeState()
-    report("[OBS] PTP_PRIORITY_DOWNLOAD_BATCH_BEGIN")
+  func beginPriorityDownloadBatch(generation: UInt64) {
+    originalDownloadBatchModeState.begin(lifetime: originalDownloadD226Lifetime)
+    report(
+      "[OBS] PTP_PRIORITY_DOWNLOAD_BATCH_BEGIN " +
+      "d226Lifetime=\(originalDownloadD226Lifetime.label) " +
+      "session=\(debugPhysicalSessionLabel) generation=\(generation)"
+    )
   }
 
   func finishPriorityDownloadBatch() {
-    let actions = originalDownloadBatchModeState.actionsForEndingBatch()
+    let actions = originalDownloadBatchModeState.actionsForEndingBatch(
+      lifetime: originalDownloadD226Lifetime
+    )
     guard isConnected else {
       report("[OBS] PTP_PRIORITY_DOWNLOAD_BATCH_RESET_SKIPPED_DISCONNECTED")
       report("[OBS] PTP_PRIORITY_DOWNLOAD_BATCH_FINISH")
       return
+    }
+    if originalDownloadD226Lifetime == .session, actions.isEmpty {
+      report(
+        "[OBS] PTP_PRIORITY_DOWNLOAD_BATCH_D226_RESET_SUPPRESSED " +
+        "branch=d226-session-lifetime session=\(debugPhysicalSessionLabel)"
+      )
     }
     for action in actions {
       guard action == .reset else { continue }
@@ -5289,7 +5599,7 @@ private final class CameraVendorPtpSession {
         return false
       }
     } catch {
-      originalDownloadBatchModeState = CameraVendorOriginalDownloadBatchModeState()
+      originalDownloadBatchModeState.resetForSessionEnd()
       throw error
     }
   }
@@ -5473,6 +5783,11 @@ private final class CameraVendorPtpSession {
   func prepareCameraVendorLegacyGalleryLoadIfNeeded() throws {
     guard operationTransport == .cameraVendorLegacy else { return }
     try prepareCameraVendorLegacyGalleryLoad()
+  }
+
+  func recoverInitialCameraCatalogAfterStoreNotAvailable() throws {
+    report("[OBS] PTP_INITIAL_CAMERA_CATALOG_BOOTSTRAP_RECOVERY response=0x2013")
+    try prepareCameraVendorLegacyGalleryLoadIfNeeded()
   }
 
   private func performCameraVendorReservedReceiveDiagnosticHandshake() throws {
@@ -6231,7 +6546,9 @@ private final class CameraVendorPtpSession {
           host: host,
           port: CameraVendorPtpConstants.commandPort,
           timeout: CameraVendorPtpConnectionStartupPolicy.commandConnectTimeoutSeconds,
-          diagnosticHandler: diagnosticHandler
+          diagnosticHandler: diagnosticHandler,
+          networkServiceProfile: networkServiceProfile,
+          socketBufferProfile: socketBufferProfile
         )
       }
 
@@ -7536,7 +7853,7 @@ private final class CameraVendorPtpSession {
     eventSocket.close()
     isConnected = false
     didConfirmGalleryMode = false
-    originalDownloadBatchModeState = CameraVendorOriginalDownloadBatchModeState()
+    originalDownloadBatchModeState.resetForSessionEnd()
     diagnosticHandler = nil
   }
 
@@ -8592,12 +8909,17 @@ private final class CameraVendorPtpSessionRuntime {
     defer {
       endExclusiveDownloadWindow()
     }
+    await awaitExclusiveDownloadWindowReady()
     return try await operation()
   }
 
   func beginExclusiveDownloadWindow() {
     requestScheduler.beginPriorityDownloadBarrier()
     activateExclusiveDownloadWindow()
+  }
+
+  func awaitExclusiveDownloadWindowReady() async {
+    await requestScheduler.waitUntilIdle()
   }
 
   func endExclusiveDownloadWindow() {
@@ -8732,7 +9054,15 @@ private final class CameraVendorPtpSessionRuntime {
 
   func fetchInitialCameraCatalog() async throws -> CameraVendorCatalogSnapshot {
     try await requestScheduler.runExclusiveMutation {
-      try self.session.cameraVendorInitialCatalogSnapshot()
+      do {
+        return try self.session.cameraVendorInitialCatalogSnapshot()
+      } catch {
+        guard CameraVendorInitialCatalogBootstrapRecoveryPolicy.shouldRecover(after: error) else {
+          throw error
+        }
+        try self.session.recoverInitialCameraCatalogAfterStoreNotAvailable()
+        return try self.session.cameraVendorInitialCatalogSnapshot()
+      }
     }
   }
 
@@ -8881,6 +9211,7 @@ final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVend
   private var isFetching = false
   private var communicationTerminationGeneration: UInt64 = 0
   private var hasExclusiveDownloadLease = false
+  private var hasStartedPriorityDownloadBatch = false
 
   func configure(connectionSummary: CameraVendorConnectionSummary) {
     terminateCameraCommunication(reason: "configure-gallery-connection")
@@ -8941,21 +9272,40 @@ final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVend
     defer {
       endExclusiveDownloadWindow()
     }
+    await awaitExclusiveDownloadWindowReady()
     return try await operation()
   }
 
   func beginExclusiveDownloadWindow() {
     guard !hasExclusiveDownloadLease else { return }
     hasExclusiveDownloadLease = true
+    hasStartedPriorityDownloadBatch = false
     report("[OBS] PTP_EXCLUSIVE_DOWNLOAD_WINDOW_BEGIN")
-    session.beginPriorityDownloadBatch()
     ptpRuntime.beginExclusiveDownloadWindow()
+  }
+
+  func awaitExclusiveDownloadWindowReady() async {
+    await ptpRuntime.awaitExclusiveDownloadWindowReady()
+    guard hasExclusiveDownloadLease, !Task.isCancelled else { return }
+    session.beginPriorityDownloadBatch(
+      generation: currentCommunicationGeneration()
+    )
+    hasStartedPriorityDownloadBatch = true
+    let counts = ptpRuntime.galleryRequestCounts()
+    report(
+      "[OBS] PTP_EXCLUSIVE_DOWNLOAD_ADMISSION_READY " +
+        "active=\(counts.activeThumbnailCount + counts.activeBackgroundMetadataCount) " +
+        "pendingNonDownload=0 schedulerIdle=true"
+    )
   }
 
   func endExclusiveDownloadWindow() {
     guard hasExclusiveDownloadLease else { return }
-    session.finishPriorityDownloadBatch()
+    if hasStartedPriorityDownloadBatch {
+      session.finishPriorityDownloadBatch()
+    }
     ptpRuntime.endExclusiveDownloadWindow()
+    hasStartedPriorityDownloadBatch = false
     hasExclusiveDownloadLease = false
     report("[OBS] PRIORITY_DOWNLOAD_FINISH")
   }
