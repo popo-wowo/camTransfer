@@ -1,0 +1,496 @@
+import Foundation
+
+enum CameraVendorPartialObjectRequestPolicy {
+  /// Conservative default for formats/modes not yet verified against XApp.
+  static let referenceAppInitialReadSize: UInt32 = 1 * 1_048_576
+  static let fileDownloadReadSize: UInt32 = 4 * 1_048_576
+  static let fileDownloadFallbackReadSize = referenceAppInitialReadSize
+  static let fileDownloadReadTimeoutSeconds: TimeInterval = 60
+  static let maxReadBytesWithoutKnownObjectSize = 128 * 1_024 * 1_024
+
+  static func fileDownloadRequestSize(remaining: UInt64, useFallback: Bool = false) -> UInt32 {
+    let preferredSize = useFallback ? fileDownloadFallbackReadSize : fileDownloadReadSize
+    return UInt32(min(UInt64(preferredSize), remaining))
+  }
+
+  static func maximumReadableByteCount(expectedSize: UInt32?) -> UInt64 {
+    if let expectedSize, expectedSize > 0 {
+      return UInt64(expectedSize)
+    }
+    return UInt64(maxReadBytesWithoutKnownObjectSize)
+  }
+
+  static func extensionPartialObjectParameters(
+    handle: UInt32,
+    offset: UInt64 = 0,
+    size: UInt32 = referenceAppInitialReadSize
+  ) -> [UInt32] {
+    [
+      handle,
+      UInt32(offset & 0xFFFF_FFFF),
+      size,
+      UInt32(offset >> 32),
+    ]
+  }
+
+  static func standardPartialObjectParameters(
+    handle: UInt32,
+    offset: UInt64 = 0,
+    size: UInt32 = referenceAppInitialReadSize
+  ) -> [UInt32] {
+    [
+      handle,
+      UInt32(offset & 0xFFFF_FFFF),
+      size,
+    ]
+  }
+}
+
+struct CameraVendorOriginalTransferCapabilityRecord: Codable, Equatable {
+  let readSize: UInt32
+  let updatedAt: Date
+}
+
+final class CameraVendorOriginalTransferCapabilityStore {
+  private let defaults: UserDefaults
+  private let storageKey = "cameraVendor.originalTransferCapability.v1"
+
+  init(defaults: UserDefaults = .standard) {
+    self.defaults = defaults
+  }
+
+  func readSize(serialNumber: String?) -> UInt32? {
+    guard let serial = normalizedSerialNumber(serialNumber),
+          let record = records()[serial],
+          CameraVendorTransferChunkProfile.isSupportedReadSize(record.readSize) else {
+      return nil
+    }
+    return record.readSize
+  }
+
+  func persist(readSize: UInt32, serialNumber: String?) {
+    guard let serial = normalizedSerialNumber(serialNumber),
+          CameraVendorTransferChunkProfile.isSupportedReadSize(readSize) else {
+      return
+    }
+    var updatedRecords = records()
+    updatedRecords[serial] = CameraVendorOriginalTransferCapabilityRecord(
+      readSize: readSize,
+      updatedAt: Date()
+    )
+    guard let encoded = try? JSONEncoder().encode(updatedRecords) else { return }
+    defaults.set(encoded, forKey: storageKey)
+  }
+
+  private func records() -> [String: CameraVendorOriginalTransferCapabilityRecord] {
+    guard let data = defaults.data(forKey: storageKey),
+          let decoded = try? JSONDecoder().decode(
+            [String: CameraVendorOriginalTransferCapabilityRecord].self,
+            from: data
+          ) else {
+      return [:]
+    }
+    return decoded
+  }
+
+  private func normalizedSerialNumber(_ serialNumber: String?) -> String? {
+    let serial = serialNumber?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !serial.isEmpty, serial != "-" else { return nil }
+    return serial.uppercased()
+  }
+}
+
+enum CameraVendorTransferChunkProfile {
+  /// Observed in the XApp original-import trace: 12 MiB minus PTP overhead.
+  static let maximumReadSize: UInt32 = 0x00BFFFE0
+
+  static func preferredReadSize(cachedReadSize: UInt32?) -> UInt32 {
+    guard let cachedReadSize, isSupportedReadSize(cachedReadSize) else {
+      return maximumReadSize
+    }
+    return cachedReadSize
+  }
+
+  static func requestSize(remaining: UInt64, selectedReadSize: UInt32) -> UInt32 {
+    UInt32(min(remaining, UInt64(selectedReadSize)))
+  }
+
+  static func isSupportedReadSize(_ readSize: UInt32) -> Bool {
+    readSize == maximumReadSize ||
+      readSize == CameraVendorPartialObjectRequestPolicy.fileDownloadReadSize ||
+      readSize == CameraVendorPartialObjectRequestPolicy.fileDownloadFallbackReadSize
+  }
+
+  static func fallbackReadSize(after currentReadSize: UInt32) -> UInt32? {
+    if currentReadSize > CameraVendorPartialObjectRequestPolicy.fileDownloadReadSize {
+      return CameraVendorPartialObjectRequestPolicy.fileDownloadReadSize
+    }
+    if currentReadSize > CameraVendorPartialObjectRequestPolicy.referenceAppInitialReadSize {
+      return CameraVendorPartialObjectRequestPolicy.referenceAppInitialReadSize
+    }
+    return nil
+  }
+
+  static func shouldFallback(after error: Error, sessionIsConnected: Bool) -> Bool {
+    guard sessionIsConnected else { return false }
+    let error = error as NSError
+    return error.domain == "CameraVendorPtpSession" && (0x2000...0x2FFF).contains(error.code)
+  }
+}
+
+enum CameraVendorOriginalTransferCompletionPolicy {
+  static func shouldPersistCapability(
+    totalBytes: Int,
+    expectedBytes: UInt64?,
+    hasJpegEndMarker: Bool
+  ) -> Bool {
+    if let expectedBytes {
+      return totalBytes > 0 && UInt64(totalBytes) >= expectedBytes
+    }
+    return totalBytes > 0 && hasJpegEndMarker
+  }
+}
+
+struct CameraVendorAdaptiveDownloadChunkState: Equatable {
+  var readSize: UInt32 = CameraVendorPartialObjectRequestPolicy.fileDownloadReadSize
+  var consecutiveFastChunks: Int = 0
+  var consecutiveSlowLargeChunks: Int = 0
+  var lastSlowLargeBytesPerSecond: Double?
+}
+
+enum CameraVendorAdaptiveDownloadChunkPolicy {
+  static let isEnabled = false
+  static let slowChunkBytesPerSecond: Double = 1.2 * 1_048_576
+  static let fastChunkBytesPerSecond: Double = 2.5 * 1_048_576
+  static let fastChunksRequiredForUpgrade = 2
+  static let slowLargeChunksRequiredForDowngrade = 1
+  static let fallbackImprovementFactor = 1.15
+  static let strategyName = "android-fixed-4mb"
+
+  static func requestSize(remaining: UInt64, state: CameraVendorAdaptiveDownloadChunkState) -> UInt32 {
+    UInt32(min(UInt64(state.readSize), remaining))
+  }
+
+  static func recordChunk(
+    byteCount: Int,
+    elapsedMs: Int,
+    state: inout CameraVendorAdaptiveDownloadChunkState
+  ) {
+    guard isEnabled, byteCount > 0, elapsedMs > 0 else { return }
+    let bytesPerSecond = Double(byteCount) / (Double(elapsedMs) / 1000.0)
+    let largeReadSize = CameraVendorPartialObjectRequestPolicy.fileDownloadReadSize
+    let fallbackReadSize = CameraVendorPartialObjectRequestPolicy.fileDownloadFallbackReadSize
+
+    if state.readSize >= largeReadSize {
+      if bytesPerSecond < slowChunkBytesPerSecond {
+        state.consecutiveSlowLargeChunks += 1
+        state.lastSlowLargeBytesPerSecond = bytesPerSecond
+        state.consecutiveFastChunks = 0
+        if state.consecutiveSlowLargeChunks >= slowLargeChunksRequiredForDowngrade {
+          state.readSize = fallbackReadSize
+        }
+      } else {
+        state.consecutiveSlowLargeChunks = 0
+        state.lastSlowLargeBytesPerSecond = nil
+      }
+      return
+    }
+
+    if let baseline = state.lastSlowLargeBytesPerSecond,
+       bytesPerSecond < baseline * fallbackImprovementFactor {
+      state.readSize = largeReadSize
+      state.consecutiveFastChunks = 0
+      state.consecutiveSlowLargeChunks = 0
+      state.lastSlowLargeBytesPerSecond = nil
+      return
+    }
+
+    if bytesPerSecond < slowChunkBytesPerSecond {
+      state.consecutiveFastChunks = 0
+      return
+    }
+
+    if bytesPerSecond > fastChunkBytesPerSecond {
+      state.consecutiveFastChunks += 1
+      if state.consecutiveFastChunks >= fastChunksRequiredForUpgrade {
+        state.readSize = largeReadSize
+        state.consecutiveSlowLargeChunks = 0
+        state.lastSlowLargeBytesPerSecond = nil
+      }
+    } else {
+      state.consecutiveFastChunks = 0
+    }
+  }
+}
+
+
+enum CameraVendorOriginalDownloadPolicy {
+  // ReferenceApp only sets this before its ReadImage transfer state machine. Pairing it
+  // with plain GetObject leaves this camera waiting without a useful response.
+  static let shouldSetForceCompressionBeforeStandardGetObject = false
+  static let shouldAttemptStandardGetObjectDownload = false
+  static let shouldDownloadUsingPartialObjectFallback = true
+  static let shouldPreparePartialObjectFileDownload = true
+  static let shouldPreferReferenceAppPreparationForFileDownload = true
+  static let referenceAppFileDownloadForceCompressionMode: UInt32 = 2
+
+  static func shouldUseReferenceAppFastStartPreparation(formatLabel: String) -> Bool {
+    shouldPreferReferenceAppPreparationForFileDownload && formatLabel == "RAW"
+  }
+
+  static func correctFileSizePayload(enabled: Bool) -> Data {
+    var value = UInt16(enabled ? 1 : 0).littleEndian
+    return withUnsafeBytes(of: &value) { Data($0) }
+  }
+
+  static func expectedDownloadSize(
+    formatLabel: String,
+    freshCompressedSize: UInt32?,
+    cachedExpectedSize: UInt32?
+  ) -> UInt32? {
+    if formatLabel == "RAW", let cachedExpectedSize {
+      return cachedExpectedSize
+    }
+    return freshCompressedSize ?? cachedExpectedSize
+  }
+
+  static func shouldSkipFreshFileInfoProbe(
+    formatLabel: String,
+    cachedExpectedSize: UInt32?
+  ) -> Bool {
+    guard cachedExpectedSize != nil else { return false }
+    return formatLabel == "RAW"
+  }
+
+  static func shouldPrepareTransferStateBeforeFileDownload(
+    formatLabel _: String,
+    cachedExpectedSize _: UInt32?
+  ) -> Bool {
+    shouldPreparePartialObjectFileDownload
+  }
+
+  static func shouldReadReferenceAppContextBeforeDataDownload() -> Bool {
+    true
+  }
+
+  static func shouldReadCompressionCutOffBeforeDataDownload() -> Bool {
+    true
+  }
+
+  static func shouldUseCachedObjectInfoForDataDownload(
+    formatLabel: String,
+    cachedExpectedSize: UInt32?,
+    mode: CameraVendorTransferDownloadMode
+  ) -> Bool {
+    false
+  }
+
+  static func shouldSetCorrectFileSizeBeforeFileDownload(
+    formatLabel: String,
+    cachedExpectedSize: UInt32?
+  ) -> Bool {
+    shouldPrepareTransferStateBeforeFileDownload(
+      formatLabel: formatLabel,
+      cachedExpectedSize: cachedExpectedSize
+    ) && !shouldUseReferenceAppFastStartPreparation(formatLabel: formatLabel)
+  }
+
+  static func shouldSetForceCompressionBeforeFileDownload(
+    formatLabel: String,
+    cachedExpectedSize: UInt32?
+  ) -> Bool {
+    shouldPrepareTransferStateBeforeFileDownload(
+      formatLabel: formatLabel,
+      cachedExpectedSize: cachedExpectedSize
+    ) && shouldUseReferenceAppFastStartPreparation(formatLabel: formatLabel)
+  }
+
+  static func shouldReadCompressionCutOffBeforeFreshFileInfo(
+    formatLabel: String,
+    cachedExpectedSize: UInt32?
+  ) -> Bool {
+    shouldSetCorrectFileSizeBeforeFileDownload(
+      formatLabel: formatLabel,
+      cachedExpectedSize: cachedExpectedSize
+    )
+  }
+
+  static func shouldReadCompressionCutOffAfterFreshFileInfo(
+    formatLabel: String,
+    cachedExpectedSize: UInt32?
+  ) -> Bool {
+    shouldPrepareTransferStateBeforeFileDownload(
+      formatLabel: formatLabel,
+      cachedExpectedSize: cachedExpectedSize
+    ) && shouldUseReferenceAppFastStartPreparation(formatLabel: formatLabel)
+  }
+}
+
+enum CameraVendorDownloadModePolicy {
+  private static let resizeRateS: UInt32 = 1
+  private static let forceCompressed: UInt32 = 1
+  private static let forceOriginal: UInt32 = 2
+  private static let forceReset: UInt32 = 0
+
+  static func prepareProperties(
+    mode: CameraVendorTransferDownloadMode
+  ) -> [CameraVendorDownloadModeProperty] {
+    switch mode {
+    case .compressed:
+      return [
+        CameraVendorDownloadModeProperty(
+          code: CameraVendorDevicePropCode.objectCompressionSetting,
+          value: resizeRateS,
+          width: .uint16
+        ),
+        imageForceCompression(forceCompressed),
+      ]
+    case .original:
+      return [imageForceCompression(forceOriginal)]
+    }
+  }
+
+  static func resetProperty(
+    for property: CameraVendorDownloadModeProperty
+  ) -> CameraVendorDownloadModeProperty? {
+    guard property.code == CameraVendorDevicePropCode.imageForceCompression else {
+      return nil
+    }
+    return imageForceCompression(forceReset)
+  }
+
+  static func payload(for property: CameraVendorDownloadModeProperty) -> Data {
+    switch property.width {
+    case .uint16:
+      var value = UInt16(property.value).littleEndian
+      return withUnsafeBytes(of: &value) { Data($0) }
+    case .uint32:
+      var value = UInt32(property.value).littleEndian
+      return withUnsafeBytes(of: &value) { Data($0) }
+    }
+  }
+
+  private static func imageForceCompression(_ value: UInt32) -> CameraVendorDownloadModeProperty {
+    CameraVendorDownloadModeProperty(
+      code: CameraVendorDevicePropCode.imageForceCompression,
+      value: value,
+      width: .uint16
+    )
+  }
+}
+
+enum CameraVendorThumbnailFetchPolicy {
+  static let shouldReadObjectInfoBeforeGetThumb = true
+  static let shouldTryStandardGetThumbFirst = true
+  static let shouldUsePartialPreviewFallback = false
+  static let standardGetThumbReadTimeoutSeconds: TimeInterval = 3
+  static let partialPreviewReadSize: UInt32 = 256 * 1_024
+  static let minimumUsefulThumbnailBytes = 100
+}
+
+enum CameraVendorPartialObjectDownloadPolicy {
+  static func shouldStopAfterChunk(
+    totalBytes: Int,
+    expectedBytes: UInt64?,
+    isJpegObject: Bool,
+    hasJpegEndMarker: Bool
+  ) -> Bool {
+    if hasJpegEndMarker {
+      return true
+    }
+    if let expectedBytes, UInt64(totalBytes) >= expectedBytes {
+      return true
+    }
+    return false
+  }
+}
+
+enum CameraVendorDownloadSizeSourcePolicy {
+  static func resolution(
+    freshSize: UInt32,
+    cachedSize: UInt32?
+  ) -> (size: UInt32?, label: String) {
+    if let freshSize = freshSize.nonzero {
+      return (freshSize, "fresh-object-info")
+    }
+    if let cachedSize {
+      return (cachedSize, "cached-after-empty-fresh")
+    }
+    return (nil, "unknown-after-empty-fresh")
+  }
+}
+
+enum CameraVendorTransferDownloadMode: Equatable {
+  case original
+  case compressed
+}
+
+enum CameraVendorOriginalDownloadD226Lifetime: Equatable {
+  case batch
+  case session
+
+  var label: String {
+    switch self {
+    case .batch: return "batch"
+    case .session: return "session"
+    }
+  }
+}
+
+enum CameraVendorDebugOriginalDownloadD226LifetimePolicy {
+  static let argumentPrefix = "--camtransfer-debug-d226-lifetime="
+
+  static func resolve(
+    arguments: [String],
+    debugBuild: Bool
+  ) -> CameraVendorOriginalDownloadD226Lifetime {
+    guard debugBuild else { return .batch }
+    guard let argument = arguments.first(where: { $0.hasPrefix(argumentPrefix) }) else {
+      return .batch
+    }
+    return argument == "\(argumentPrefix)session" ? .session : .batch
+  }
+}
+
+enum CameraVendorOriginalDownloadBatchModeAction: Equatable {
+  case prepare(CameraVendorTransferDownloadMode)
+  case reset
+}
+
+struct CameraVendorOriginalDownloadBatchModeState {
+  private var preparedMode: CameraVendorTransferDownloadMode?
+
+  mutating func begin(lifetime: CameraVendorOriginalDownloadD226Lifetime) {
+    guard lifetime == .batch else { return }
+    preparedMode = nil
+  }
+
+  mutating func actionsForPreparing(
+    _ mode: CameraVendorTransferDownloadMode
+  ) -> [CameraVendorOriginalDownloadBatchModeAction] {
+    guard let preparedMode else {
+      self.preparedMode = mode
+      return [.prepare(mode)]
+    }
+    guard preparedMode != mode else { return [] }
+    self.preparedMode = mode
+    return [.reset, .prepare(mode)]
+  }
+
+  mutating func actionsForEndingBatch() -> [CameraVendorOriginalDownloadBatchModeAction] {
+    guard preparedMode != nil else { return [] }
+    preparedMode = nil
+    return [.reset]
+  }
+
+  mutating func actionsForEndingBatch(
+    lifetime: CameraVendorOriginalDownloadD226Lifetime
+  ) -> [CameraVendorOriginalDownloadBatchModeAction] {
+    guard lifetime == .batch else { return [] }
+    return actionsForEndingBatch()
+  }
+
+  mutating func resetForSessionEnd() {
+    preparedMode = nil
+  }
+}
