@@ -3148,8 +3148,60 @@ struct CameraVendorOriginalReadImageTransactionResult {
   let requestToFirstByteMs: Int
   let socketReceiveMs: Int
   let fileWriteMs: Int
+  let receiveCadence: CameraVendorPtpReceiveCadenceSummary
   let responseCode: UInt16
   let responseTransactionID: UInt32
+
+  init(
+    byteCount: Int,
+    prefix: Data,
+    requestToFirstByteMs: Int,
+    socketReceiveMs: Int,
+    fileWriteMs: Int,
+    receiveCadence: CameraVendorPtpReceiveCadenceSummary = CameraVendorPtpReceiveCadenceSummary(),
+    responseCode: UInt16,
+    responseTransactionID: UInt32
+  ) {
+    self.byteCount = byteCount
+    self.prefix = prefix
+    self.requestToFirstByteMs = requestToFirstByteMs
+    self.socketReceiveMs = socketReceiveMs
+    self.fileWriteMs = fileWriteMs
+    self.receiveCadence = receiveCadence
+    self.responseCode = responseCode
+    self.responseTransactionID = responseTransactionID
+  }
+}
+
+struct CameraVendorPtpReceiveCadenceSummary: Equatable, Sendable {
+  private(set) var pollWaitMs = 0
+  private(set) var maxPollWaitMs = 0
+  private(set) var pollWaitCount = 0
+  private(set) var immediatePollCount = 0
+  private(set) var recvCallCount = 0
+
+  mutating func recordPoll(waitMs: Int) {
+    let normalizedWaitMs = max(0, waitMs)
+    pollWaitMs += normalizedWaitMs
+    maxPollWaitMs = max(maxPollWaitMs, normalizedWaitMs)
+    if normalizedWaitMs > 0 {
+      pollWaitCount += 1
+    } else {
+      immediatePollCount += 1
+    }
+  }
+
+  mutating func recordRecv() {
+    recvCallCount += 1
+  }
+
+  mutating func merge(_ other: CameraVendorPtpReceiveCadenceSummary) {
+    pollWaitMs += other.pollWaitMs
+    maxPollWaitMs = max(maxPollWaitMs, other.maxPollWaitMs)
+    pollWaitCount += other.pollWaitCount
+    immediatePollCount += other.immediatePollCount
+    recvCallCount += other.recvCallCount
+  }
 }
 
 struct CameraVendorOriginalReadImageExecutionResult {
@@ -3158,9 +3210,32 @@ struct CameraVendorOriginalReadImageExecutionResult {
   let requestToFirstByteMs: Int
   let socketReceiveMs: Int
   let fileWriteMs: Int
+  let receiveCadence: CameraVendorPtpReceiveCadenceSummary
   let elapsedMs: Int
   let finalReadSize: UInt32
   let fallbackCount: Int
+
+  init(
+    byteCount: Int,
+    prefix: Data,
+    requestToFirstByteMs: Int,
+    socketReceiveMs: Int,
+    fileWriteMs: Int,
+    receiveCadence: CameraVendorPtpReceiveCadenceSummary = CameraVendorPtpReceiveCadenceSummary(),
+    elapsedMs: Int,
+    finalReadSize: UInt32,
+    fallbackCount: Int
+  ) {
+    self.byteCount = byteCount
+    self.prefix = prefix
+    self.requestToFirstByteMs = requestToFirstByteMs
+    self.socketReceiveMs = socketReceiveMs
+    self.fileWriteMs = fileWriteMs
+    self.receiveCadence = receiveCadence
+    self.elapsedMs = elapsedMs
+    self.finalReadSize = finalReadSize
+    self.fallbackCount = fallbackCount
+  }
 }
 
 final class CameraVendorOriginalTransferWorker {
@@ -3251,6 +3326,7 @@ struct CameraVendorOriginalReadImageExecutor {
       var requestToFirstByteMs = 0
       var socketReceiveMs = 0
       var fileWriteMs = 0
+      var receiveCadence = CameraVendorPtpReceiveCadenceSummary()
       var fallbackCount = 0
 
       while offset < maximumByteCount {
@@ -3316,6 +3392,7 @@ struct CameraVendorOriginalReadImageExecutor {
         requestToFirstByteMs += streamedChunk.requestToFirstByteMs
         socketReceiveMs += streamedChunk.socketReceiveMs
         fileWriteMs += streamedChunk.fileWriteMs
+        receiveCadence.merge(streamedChunk.receiveCadence)
 
         let chunkElapsedMs = Int(Date().timeIntervalSince(chunkStartedAt) * 1000)
         CameraVendorAdaptiveDownloadChunkPolicy.recordChunk(
@@ -3345,6 +3422,7 @@ struct CameraVendorOriginalReadImageExecutor {
         requestToFirstByteMs: requestToFirstByteMs,
         socketReceiveMs: socketReceiveMs,
         fileWriteMs: fileWriteMs,
+        receiveCadence: receiveCadence,
         elapsedMs: Int(Date().timeIntervalSince(startedAt) * 1000),
         finalReadSize: state.readSize,
         fallbackCount: fallbackCount
@@ -4930,10 +5008,16 @@ enum CameraVendorPtpSocketBufferProfile: String, CustomStringConvertible {
   /// Returns the SO_SNDBUF value to set, or nil to skip setsockopt entirely.
   var sendBufferBytes: Int32? {
     switch self {
-    case .production: return 2 * 1024 * 1024
-    case .kernelAutotuning: return nil
-    case .xappWindowMatch: return 256 * 1024
-    case .minimal: return 64 * 1024
+    case .production:
+      return 2 * 1024 * 1024
+    case .kernelAutotuning:
+      return nil
+    case .xappWindowMatch:
+      // Keep request-side buffering at the production baseline. This branch
+      // is intended to vary only the receive-side TCP feedback.
+      return 2 * 1024 * 1024
+    case .minimal:
+      return 64 * 1024
     }
   }
 }
@@ -4945,12 +5029,12 @@ enum CameraVendorDebugPtpSocketBufferPolicy {
     arguments: [String],
     debugBuild: Bool
   ) -> CameraVendorPtpSocketBufferProfile {
-    guard debugBuild else { return .production }
+    guard debugBuild else { return .kernelAutotuning }
     guard let argument = arguments.first(where: { $0.hasPrefix(argumentPrefix) }) else {
-      return .production
+      return .kernelAutotuning
     }
     let value = String(argument.dropFirst(argumentPrefix.count))
-    return CameraVendorPtpSocketBufferProfile(rawValue: value) ?? .production
+    return CameraVendorPtpSocketBufferProfile(rawValue: value) ?? .kernelAutotuning
   }
 }
 
@@ -4963,7 +5047,7 @@ private final class CameraVendorPtpSocket {
     timeout: TimeInterval = 10,
     diagnosticHandler: ((String) -> Void)? = nil,
     networkServiceProfile: CameraVendorPtpNetworkServiceProfile = .current,
-    socketBufferProfile: CameraVendorPtpSocketBufferProfile = .production
+    socketBufferProfile: CameraVendorPtpSocketBufferProfile = .kernelAutotuning
   ) throws {
     CameraVendorFileLogger.log("CameraVendorPtpSocket.connect 开始: \(host):\(port) bufferProfile=\(socketBufferProfile)")
     diagnosticHandler?("PTP socket 连接 \(host):\(port)")
@@ -5245,11 +5329,17 @@ private final class CameraVendorPtpSocket {
     fileHandle: FileHandle,
     timeout: TimeInterval = 10,
     prefixByteCount: Int = 64
-  ) throws -> (byteCount: Int, prefix: Data, socketReceiveMs: Int, fileWriteMs: Int) {
+  ) throws -> (
+    byteCount: Int,
+    prefix: Data,
+    socketReceiveMs: Int,
+    fileWriteMs: Int,
+    receiveCadence: CameraVendorPtpReceiveCadenceSummary
+  ) {
     guard fd >= 0 else {
       throw NSError(domain: "CameraVendorPtpSocket", code: 6, userInfo: [NSLocalizedDescriptionKey: "socket 未建立"])
     }
-    guard length > 0 else { return (0, Data(), 0, 0) }
+    guard length > 0 else { return (0, Data(), 0, 0, CameraVendorPtpReceiveCadenceSummary()) }
 
     let deadline = Date().addingTimeInterval(timeout)
     // A PTP partial-object payload is bounded by the negotiated request size
@@ -5259,6 +5349,7 @@ private final class CameraVendorPtpSocket {
     let receiveStartedAt = Date()
     var payload = Data(count: length)
     var offset = 0
+    var cadence = CameraVendorPtpReceiveCadenceSummary()
     try payload.withUnsafeMutableBytes { rawBuffer in
       guard let baseAddress = rawBuffer.bindMemory(to: UInt8.self).baseAddress else { return }
       while offset < length {
@@ -5269,7 +5360,10 @@ private final class CameraVendorPtpSocket {
 
         var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
         let pollMs = Int32(min(remaining * 1000, Double(Int32.max)))
+        let pollStartedAt = DispatchTime.now().uptimeNanoseconds
         let pollResult = poll(&pfd, 1, pollMs)
+        let pollWaitMs = Int((DispatchTime.now().uptimeNanoseconds - pollStartedAt) / 1_000_000)
+        cadence.recordPoll(waitMs: pollWaitMs)
         if pollResult < 0 {
           let err = String(cString: strerror(errno))
           throw NSError(domain: "CameraVendorPtpSocket", code: 7, userInfo: [NSLocalizedDescriptionKey: "读取失败: \(err)"])
@@ -5290,6 +5384,7 @@ private final class CameraVendorPtpSocket {
         if count == 0 {
           throw NSError(domain: "CameraVendorPtpSocket", code: 8, userInfo: [NSLocalizedDescriptionKey: "相机提前断开连接 (已读 \(offset)/\(length) 字节)"])
         }
+        cadence.recordRecv()
         offset += count
       }
     }
@@ -5298,7 +5393,7 @@ private final class CameraVendorPtpSocket {
     let writeStartedAt = Date()
     try fileHandle.write(contentsOf: payload)
     let fileWriteMs = Int(Date().timeIntervalSince(writeStartedAt) * 1000)
-    return (offset, prefix, socketReceiveMs, fileWriteMs)
+    return (offset, prefix, socketReceiveMs, fileWriteMs, cadence)
   }
 
   func close() {
@@ -5392,7 +5487,7 @@ private final class CameraVendorPtpSession {
       debugBuild: true
     )
     #else
-    return .production
+    return .kernelAutotuning
     #endif
   }()
   private let originalDownloadD226Lifetime: CameraVendorOriginalDownloadD226Lifetime = {
@@ -7242,6 +7337,15 @@ private final class CameraVendorPtpSession {
       let headHex = CameraVendorDownloadDataDiagnosticPolicy.headHex(from: result.prefix)
       let ftypOffset = CameraVendorDownloadDataDiagnosticPolicy.firstFtypOffset(in: result.prefix)
       report(
+        "[OBS] PTP_ORIGINAL_RECEIVE_CADENCE " +
+        "handle=0x\(String(format: "%08X", handle)) " +
+        "pollWaitMs=\(result.receiveCadence.pollWaitMs) " +
+        "maxPollWaitMs=\(result.receiveCadence.maxPollWaitMs) " +
+        "pollWaitCount=\(result.receiveCadence.pollWaitCount) " +
+        "immediatePollCount=\(result.receiveCadence.immediatePollCount) " +
+        "recvCallCount=\(result.receiveCadence.recvCallCount)"
+      )
+      report(
         "[OBS] PTP_ORIGINAL_READ_IMAGE_HEAD purpose=\(purpose) " +
         "handle=0x\(String(format: "%08X", handle)) bytes=\(result.byteCount) " +
         "head=\(headHex) ftypOffset=\(ftypOffset.map(String.init) ?? "nil")"
@@ -8035,6 +8139,7 @@ private final class CameraVendorPtpSession {
             requestToFirstByteMs: 0,
             socketReceiveMs: 0,
             fileWriteMs: 0,
+            receiveCadence: CameraVendorPtpReceiveCadenceSummary(),
             responseCode: response.responseCode,
             responseTransactionID: response.transactionID
           )
@@ -8051,6 +8156,7 @@ private final class CameraVendorPtpSession {
       var requestToFirstByteMs = 0
       var socketReceiveMs = 0
       var fileWriteMs = 0
+      var receiveCadence = CameraVendorPtpReceiveCadenceSummary()
       while true {
         let packet = try readCameraVendorLegacyFilePacket(
           from: commandSocket,
@@ -8063,6 +8169,7 @@ private final class CameraVendorPtpSession {
           requestToFirstByteMs += packet.requestToFirstByteMs
           socketReceiveMs += packet.socketReceiveMs
           fileWriteMs += packet.fileWriteMs
+          receiveCadence.merge(packet.receiveCadence)
         }
         if prefix.count < 64 {
           prefix.append(packet.prefix.prefix(64 - prefix.count))
@@ -8087,6 +8194,7 @@ private final class CameraVendorPtpSession {
           requestToFirstByteMs: requestToFirstByteMs,
           socketReceiveMs: socketReceiveMs,
           fileWriteMs: fileWriteMs,
+          receiveCadence: receiveCadence,
           responseCode: response.responseCode,
           responseTransactionID: response.transactionID
         )
@@ -8448,7 +8556,8 @@ private final class CameraVendorPtpSession {
     prefix: Data,
     requestToFirstByteMs: Int,
     socketReceiveMs: Int,
-    fileWriteMs: Int
+    fileWriteMs: Int,
+    receiveCadence: CameraVendorPtpReceiveCadenceSummary
   ) {
     let requestWaitStartedAt = Date()
     let header = try socket.readExactly(4, timeout: timeout)
@@ -8481,7 +8590,8 @@ private final class CameraVendorPtpSession {
         result.prefix,
         requestToFirstByteMs,
         result.socketReceiveMs,
-        result.fileWriteMs
+        result.fileWriteMs,
+        result.receiveCadence
       )
     }
 
@@ -8500,10 +8610,19 @@ private final class CameraVendorPtpSession {
         Data(),
         0,
         0,
-        0
+        0,
+        CameraVendorPtpReceiveCadenceSummary()
       )
     default:
-      return (CameraVendorPtpPacket(type: Int(kind), payload: body), 0, Data(), 0, 0, 0)
+      return (
+        CameraVendorPtpPacket(type: Int(kind), payload: body),
+        0,
+        Data(),
+        0,
+        0,
+        0,
+        CameraVendorPtpReceiveCadenceSummary()
+      )
     }
   }
 

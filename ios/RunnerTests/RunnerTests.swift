@@ -2467,23 +2467,23 @@ final class RunnerTests: XCTestCase {
 
   // MARK: - Socket Buffer Profile Experiment Tests
 
-  func testSocketBufferPolicyDefaultsToProductionWithoutArgument() {
+  func testSocketBufferPolicyDefaultsToKernelAutotuningWithoutArgument() {
     XCTAssertEqual(
       CameraVendorDebugPtpSocketBufferPolicy.resolve(
         arguments: [],
         debugBuild: true
       ),
-      .production
+      .kernelAutotuning
     )
   }
 
   func testSocketBufferPolicyIgnoresArgumentOutsideDebugBuild() {
     XCTAssertEqual(
       CameraVendorDebugPtpSocketBufferPolicy.resolve(
-        arguments: ["--camtransfer-debug-socket-buffer=kernel-autotuning"],
+        arguments: ["--camtransfer-debug-socket-buffer=production"],
         debugBuild: false
       ),
-      .production
+      .kernelAutotuning
     )
   }
 
@@ -2518,13 +2518,13 @@ final class RunnerTests: XCTestCase {
     )
   }
 
-  func testSocketBufferPolicyFallsBackToProductionForUnknownValue() {
+  func testSocketBufferPolicyFallsBackToKernelAutotuningForUnknownValue() {
     XCTAssertEqual(
       CameraVendorDebugPtpSocketBufferPolicy.resolve(
         arguments: ["--camtransfer-debug-socket-buffer=unknown-value"],
         debugBuild: true
       ),
-      .production
+      .kernelAutotuning
     )
   }
 
@@ -8153,6 +8153,45 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(CameraVendorOriginalDownloadPolicy.shouldAttemptStandardGetObjectDownload)
     XCTAssertTrue(CameraVendorOriginalDownloadPolicy.shouldDownloadUsingPartialObjectFallback)
     XCTAssertTrue(CameraVendorOriginalDownloadPolicy.shouldPreparePartialObjectFileDownload)
+  }
+
+  func testCameraVendorPtpReceiveCadenceSummarySeparatesPollWaitsFromImmediateReads() {
+    var summary = CameraVendorPtpReceiveCadenceSummary()
+
+    summary.recordPoll(waitMs: 0)
+    summary.recordRecv()
+    summary.recordPoll(waitMs: 125)
+    summary.recordRecv()
+    summary.recordPoll(waitMs: -3)
+    var nextChunk = CameraVendorPtpReceiveCadenceSummary()
+    nextChunk.recordPoll(waitMs: 80)
+    nextChunk.recordRecv()
+    summary.merge(nextChunk)
+
+    XCTAssertEqual(summary.pollWaitMs, 205)
+    XCTAssertEqual(summary.maxPollWaitMs, 125)
+    XCTAssertEqual(summary.pollWaitCount, 2)
+    XCTAssertEqual(summary.immediatePollCount, 2)
+    XCTAssertEqual(summary.recvCallCount, 3)
+  }
+
+  func testOriginalDownloadAggregatesReceiveCadenceWithoutPerRecvLogging() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/CameraVendorBluetoothService.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let readStart = try XCTUnwrap(source.range(of: "func readExactlyToFile(")?.lowerBound)
+    let readEnd = try XCTUnwrap(
+      source.range(of: "func close()", range: readStart..<source.endIndex)?.lowerBound
+    )
+    let readBody = String(source[readStart..<readEnd])
+
+    XCTAssertTrue(readBody.contains("var cadence = CameraVendorPtpReceiveCadenceSummary()"))
+    XCTAssertTrue(readBody.contains("cadence.recordPoll(waitMs:"))
+    XCTAssertTrue(readBody.contains("cadence.recordRecv()"))
+    XCTAssertFalse(readBody.contains("CameraVendorFileLogger.log"))
+    XCTAssertTrue(source.contains("[OBS] PTP_ORIGINAL_RECEIVE_CADENCE"))
   }
 
   func testCameraVendorOriginalDownloadPolicyUsesUInt16PayloadForCorrectFileSize() {
