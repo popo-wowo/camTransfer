@@ -5395,7 +5395,6 @@ private final class CameraVendorPtpSocket {
     pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0)
     defer { pthread_set_qos_class_self_np(previousQoS, 0) }
 
-    let deadline = Date().addingTimeInterval(timeout)
     // A PTP partial-object payload is bounded by the negotiated request size
     // (currently at most 12 MiB).  Receive it into one bounded allocation and
     // issue one file write, instead of allocating Data and synchronously
@@ -5404,17 +5403,29 @@ private final class CameraVendorPtpSocket {
     var payload = Data(count: length)
     var offset = 0
     var cadence = CameraVendorPtpReceiveCadenceSummary()
+    // Use mach_absolute_time for deadline checks — avoids Date() syscall overhead
+    // in the tight recv loop (called thousands of times per 12 MiB chunk).
+    var timebaseInfo = mach_timebase_info_data_t()
+    mach_timebase_info(&timebaseInfo)
+    let deadlineNanos = mach_absolute_time() + UInt64(timeout * 1_000_000_000) * UInt64(timebaseInfo.denom) / UInt64(timebaseInfo.numer)
+    // Cap each recv() request to 256 KiB. The kernel returns whatever is
+    // available (often much less), but a bounded request ensures we cycle back
+    // to poll() regularly, giving the kernel natural ACK pacing opportunities
+    // without needing setsockopt.
+    let maxRecvChunk = 256 * 1024
     try payload.withUnsafeMutableBytes { rawBuffer in
       guard let baseAddress = rawBuffer.bindMemory(to: UInt8.self).baseAddress else { return }
       while offset < length {
-        let remaining = deadline.timeIntervalSinceNow
-        if remaining <= 0 {
+        if mach_absolute_time() >= deadlineNanos {
           throw NSError(domain: "CameraVendorPtpSocket", code: 9, userInfo: [NSLocalizedDescriptionKey: "等待相机返回数据超时"])
         }
 
         var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-        let pollMs = Int32(min(remaining * 1000, Double(Int32.max)))
-        let pollResult = poll(&pfd, 1, pollMs)
+        let remainingMs = Int32(min(
+          Int64(deadlineNanos - mach_absolute_time()) * Int64(timebaseInfo.numer) / Int64(timebaseInfo.denom) / 1_000_000,
+          Int64(Int32.max)
+        ))
+        let pollResult = poll(&pfd, 1, max(remainingMs, 1))
         if pollResult < 0 {
           let err = String(cString: strerror(errno))
           throw NSError(domain: "CameraVendorPtpSocket", code: 7, userInfo: [NSLocalizedDescriptionKey: "读取失败: \(err)"])
@@ -5426,7 +5437,8 @@ private final class CameraVendorPtpSocket {
           throw NSError(domain: "CameraVendorPtpSocket", code: 8, userInfo: [NSLocalizedDescriptionKey: "相机断开连接"])
         }
 
-        let count = Darwin.recv(fd, baseAddress.advanced(by: offset), length - offset, 0)
+        let toRead = min(length - offset, maxRecvChunk)
+        let count = Darwin.recv(fd, baseAddress.advanced(by: offset), toRead, 0)
         if count < 0 {
           if errno == EINTR { continue }
           let err = String(cString: strerror(errno))
