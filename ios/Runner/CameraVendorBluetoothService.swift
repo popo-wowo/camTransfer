@@ -5387,6 +5387,14 @@ private final class CameraVendorPtpSocket {
     }
     guard length > 0 else { return (0, Data(), 0, 0, CameraVendorPtpReceiveCadenceSummary()) }
 
+    // Elevate this thread to UserInteractive QoS for the duration of the
+    // file transfer. This minimizes scheduling latency between poll()/recv()
+    // calls, reducing gaps where the kernel buffer fills but userspace hasn't
+    // consumed it (which would stall ACKs and slow the camera's data production).
+    let previousQoS = qos_class_self()
+    pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0)
+    defer { pthread_set_qos_class_self_np(previousQoS, 0) }
+
     let deadline = Date().addingTimeInterval(timeout)
     // A PTP partial-object payload is bounded by the negotiated request size
     // (currently at most 12 MiB).  Receive it into one bounded allocation and
@@ -5406,10 +5414,7 @@ private final class CameraVendorPtpSocket {
 
         var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
         let pollMs = Int32(min(remaining * 1000, Double(Int32.max)))
-        let pollStartedAt = DispatchTime.now().uptimeNanoseconds
         let pollResult = poll(&pfd, 1, pollMs)
-        let pollWaitMs = Int((DispatchTime.now().uptimeNanoseconds - pollStartedAt) / 1_000_000)
-        cadence.recordPoll(waitMs: pollWaitMs)
         if pollResult < 0 {
           let err = String(cString: strerror(errno))
           throw NSError(domain: "CameraVendorPtpSocket", code: 7, userInfo: [NSLocalizedDescriptionKey: "读取失败: \(err)"])
