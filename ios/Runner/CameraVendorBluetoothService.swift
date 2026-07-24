@@ -5038,6 +5038,44 @@ enum CameraVendorDebugPtpSocketBufferPolicy {
   }
 }
 
+// MARK: - TCP_NODELAY Experiment
+
+/// Controls whether TCP_NODELAY is set on the PTP command socket.
+///
+/// Hypothesis: TCP_NODELAY forces immediate ACK transmission, resulting in
+/// ACK ratio ~0.10. XApp (likely using NWConnection) shows ACK ratio ~0.04,
+/// suggesting delayed/coalesced ACKs. The camera's WiFi firmware may produce
+/// steadier data flow when receiving fewer, batched ACKs.
+///
+/// - `enabled`: current behavior — TCP_NODELAY=1, low-latency ACKs
+/// - `disabled`: skip TCP_NODELAY — let kernel use delayed ACK (40ms coalescing)
+enum CameraVendorPtpTcpNoDelayPolicy: String, CustomStringConvertible {
+  case enabled = "enabled"
+  case disabled = "disabled"
+
+  var description: String { rawValue }
+
+  var shouldSetNoDelay: Bool {
+    self == .enabled
+  }
+}
+
+enum CameraVendorDebugPtpTcpNoDelayPolicy {
+  static let argumentPrefix = "--camtransfer-debug-tcp-nodelay="
+
+  static func resolve(
+    arguments: [String],
+    debugBuild: Bool
+  ) -> CameraVendorPtpTcpNoDelayPolicy {
+    guard debugBuild else { return .enabled }
+    guard let argument = arguments.first(where: { $0.hasPrefix(argumentPrefix) }) else {
+      return .enabled
+    }
+    let value = String(argument.dropFirst(argumentPrefix.count))
+    return CameraVendorPtpTcpNoDelayPolicy(rawValue: value) ?? .enabled
+  }
+}
+
 private final class CameraVendorPtpSocket {
   private var fd: Int32 = -1
 
@@ -5047,9 +5085,10 @@ private final class CameraVendorPtpSocket {
     timeout: TimeInterval = 10,
     diagnosticHandler: ((String) -> Void)? = nil,
     networkServiceProfile: CameraVendorPtpNetworkServiceProfile = .current,
-    socketBufferProfile: CameraVendorPtpSocketBufferProfile = .kernelAutotuning
+    socketBufferProfile: CameraVendorPtpSocketBufferProfile = .kernelAutotuning,
+    tcpNoDelayPolicy: CameraVendorPtpTcpNoDelayPolicy = .enabled
   ) throws {
-    CameraVendorFileLogger.log("CameraVendorPtpSocket.connect 开始: \(host):\(port) bufferProfile=\(socketBufferProfile)")
+    CameraVendorFileLogger.log("CameraVendorPtpSocket.connect 开始: \(host):\(port) bufferProfile=\(socketBufferProfile) tcpNoDelay=\(tcpNoDelayPolicy)")
     diagnosticHandler?("PTP socket 连接 \(host):\(port)")
 
     let sock = socket(AF_INET, SOCK_STREAM, 0)
@@ -5057,9 +5096,16 @@ private final class CameraVendorPtpSocket {
       throw NSError(domain: "CameraVendorPtpSocket", code: 1, userInfo: [NSLocalizedDescriptionKey: "无法创建 socket"])
     }
 
-    // Enable TCP_NODELAY (CameraVendor protocol requires low latency)
-    var flag: Int32 = 1
-    setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &flag, socklen_t(MemoryLayout<Int32>.size))
+    // TCP_NODELAY — controlled by experiment policy.
+    // enabled: force immediate small-packet send (current baseline, ACK ratio ~0.10)
+    // disabled: let kernel use Nagle + delayed ACK (target ACK ratio ~0.04 like XApp)
+    if tcpNoDelayPolicy.shouldSetNoDelay {
+      var flag: Int32 = 1
+      setsockopt(sock, IPPROTO_TCP, TCP_NODELAY, &flag, socklen_t(MemoryLayout<Int32>.size))
+    }
+    CameraVendorFileLogger.log(
+      "[OBS] PTP_TCP_NODELAY_POLICY policy=\(tcpNoDelayPolicy)"
+    )
 
     // Socket buffer sizing — controlled by experiment profile.
     // production: explicit 2 MiB (current baseline, Window Scale 5)
@@ -5490,6 +5536,16 @@ private final class CameraVendorPtpSession {
     return .kernelAutotuning
     #endif
   }()
+  private let tcpNoDelayPolicy: CameraVendorPtpTcpNoDelayPolicy = {
+    #if DEBUG
+    return CameraVendorDebugPtpTcpNoDelayPolicy.resolve(
+      arguments: ProcessInfo.processInfo.arguments,
+      debugBuild: true
+    )
+    #else
+    return .enabled
+    #endif
+  }()
   private let originalDownloadD226Lifetime: CameraVendorOriginalDownloadD226Lifetime = {
     #if DEBUG
     return CameraVendorDebugOriginalDownloadD226LifetimePolicy.resolve(
@@ -5538,7 +5594,8 @@ private final class CameraVendorPtpSession {
       timeout: commandConnectTimeout,
       diagnosticHandler: diagnosticHandler,
       networkServiceProfile: networkServiceProfile,
-      socketBufferProfile: socketBufferProfile
+      socketBufferProfile: socketBufferProfile,
+      tcpNoDelayPolicy: tcpNoDelayPolicy
     )
     let initResult = try performInitHandshake(host: host, clientName: clientName)
     connectionNumber = initResult.connectionNumber
@@ -6643,7 +6700,8 @@ private final class CameraVendorPtpSession {
           timeout: CameraVendorPtpConnectionStartupPolicy.commandConnectTimeoutSeconds,
           diagnosticHandler: diagnosticHandler,
           networkServiceProfile: networkServiceProfile,
-          socketBufferProfile: socketBufferProfile
+          socketBufferProfile: socketBufferProfile,
+          tcpNoDelayPolicy: tcpNoDelayPolicy
         )
       }
 
