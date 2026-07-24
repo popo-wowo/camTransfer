@@ -1,0 +1,42 @@
+ios/Runner.xcodeproj/project.pbxproj
+  f2c4495fe7216a61 37,141,166,513
+ios/Runner/CameraVendorBluetoothService.swift
+  3e294bf97024a90d 411-414,439-467,3682,3754-3761,6084-6094,6098-6149,6178-6274,6352-6569,9526-9531,10098-10101
+ios/Runner/CameraVendorDiagnostics.swift
+  f2c4495fe7216a61 1-165
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "3f2088921a8d09b52c1f15103c12197e0951429f",
+  "prompts": {
+    "3e294bf97024a90d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8653bd30-efe0-4885-9ca4-64f95fdd123a",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 947,
+      "total_deletions": 261,
+      "accepted_lines": 719,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/8d9180084244c5c95ef5aae586e74249dec5ee1d3144311b1aac4bcb9d2794f5"
+    },
+    "f2c4495fe7216a61": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b4d9db24-ec1f-4ae8-9e24-717aa8e483f8",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 10438,
+      "total_deletions": 162,
+      "accepted_lines": 10438,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/35e312ce73f263958132ccd701073ec069de1d229746e553497c11c0f41a2586"
+    }
+  }
+}
