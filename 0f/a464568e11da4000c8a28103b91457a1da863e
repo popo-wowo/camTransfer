@@ -1,0 +1,40 @@
+ios/Runner/NativeConnectViewController.swift
+  f2c4495fe7216a61 163,170,177,193,3109
+ios/Runner.xcodeproj/project.pbxproj
+  f2c4495fe7216a61 32,124,220,575
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "0fa464568e11da4000c8a28103b91457a1da863e",
+  "prompts": {
+    "3e294bf97024a90d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8653bd30-efe0-4885-9ca4-64f95fdd123a",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 314,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/3c7abc18c9ddd53424d0d9fec6f19c5cbcb130c2d38359e80b7d79bfa95762dd"
+    },
+    "f2c4495fe7216a61": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b4d9db24-ec1f-4ae8-9e24-717aa8e483f8",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 9,
+      "total_deletions": 5,
+      "accepted_lines": 12541,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/838f93f7c629a56a703c48ca23ab0a73c707c82e5b5b90efeec43c3eba957178"
+    }
+  }
+}
