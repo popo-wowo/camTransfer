@@ -434,6 +434,9 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     NativeLuxuryTheme.applyNavigationAppearance(to: navigationController)
     applyTopChromeNavigationState(animated: animated)
     protectGalleryExitNavigation()
+    if browseMode == .highDefinition, !runtime.isDownloading {
+      hdCoordinator.resumeAfterDownload()
+    }
   }
 
   override func viewDidAppear(_ animated: Bool) {
@@ -1251,9 +1254,16 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       self.refreshHDCell(for: handle)
     }
     cell.onQueueRawTapped = { [weak self] in
-      guard let self else { return }
-      // RAW sidecar queuing not yet implemented on iOS
-      self.showToast("RAW 文件加入功能开发中")
+      guard let self,
+            let rawSidecar = previewItem.rawSidecar,
+            NativeGalleryDownloadModePresentationPolicy.canInteractWithGallery(isDownloading: self.runtime.isDownloading),
+            NativeGalleryDownloadSelectionPolicy.canSelect(
+              downloadState: self.runtime.downloadState(for: rawSidecar.handle)
+            ) else {
+        return
+      }
+      self.toggleSelection(for: rawSidecar)
+      self.refreshHDCell(for: handle)
     }
     cell.onImageTapped = { [weak self] in
       guard let self else { return }
@@ -1565,7 +1575,32 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       showDownloadListForCurrentTasks()
       return
     }
-    let handlesToDownload = runtime.downloadableHandles(from: handles)
+    let candidateRequests: [CameraSessionQueuedDownload]
+    if browseMode == .highDefinition, let snapshot = hdPresentationState?.snapshot {
+      let selected = Set(handles)
+      candidateRequests = NativeGalleryHDDownloadRequestPolicy.requests(
+        displayHandles: snapshot.items
+          .map(\.displayItem.handle)
+          .filter { selected.contains($0) },
+        rawHandles: snapshot.items
+          .compactMap(\.rawSidecar?.handle)
+          .filter { selected.contains($0) },
+        preferCompressedDisplay: currentPreferCompressedDownloads
+      )
+    } else {
+      candidateRequests = handles.compactMap { handle in
+        UInt32(exactly: handle).map {
+          CameraSessionQueuedDownload(handle: $0, mode: currentTransferDownloadMode)
+        }
+      }
+    }
+    let downloadableHandles = Set(runtime.downloadableHandles(
+      from: candidateRequests.map { Int($0.handle) }
+    ))
+    let requestsToDownload = candidateRequests.filter {
+      downloadableHandles.contains(Int($0.handle))
+    }
+    let handlesToDownload = requestsToDownload.map { Int($0.handle) }
     guard !handlesToDownload.isEmpty else {
       showToast("已下载过，无需重复下载")
       return
@@ -1575,7 +1610,31 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     selectedHandles = NativeGalleryPostDownloadSelectionPolicy.selectionAfterStartingDownload(
       selectedHandles: selectedHandles
     )
-    runtime.send(.startDownload(handles: handlesToDownload.map(UInt32.init), mode: currentTransferDownloadMode))
+    let startDownload = { [weak self] in
+      guard let self else { return }
+      self.runtime.send(.startDownloadRequests(requestsToDownload))
+      self.finishOpeningDownloadCenter(
+        handlesToDownload: handlesToDownload,
+        itemsToDownload: itemsToDownload,
+        previousSelection: previousSelection
+      )
+    }
+    if browseMode == .highDefinition {
+      enqueueHDTransition { [weak self] in
+        guard let self else { return }
+        await self.hdCoordinator.pauseForDownload()
+        startDownload()
+      }
+      return
+    }
+    startDownload()
+  }
+
+  private func finishOpeningDownloadCenter(
+    handlesToDownload: [Int],
+    itemsToDownload: [CameraVendorGalleryItem],
+    previousSelection: Set<Int>
+  ) {
     guard runtime.isDownloading else {
       showToast("下载未启动，请重新进入相册后重试")
       return

@@ -31,6 +31,7 @@ enum CameraSessionRuntimeLifecycleLogPolicy {
 enum CameraSessionCommand {
   case enterGallery(CameraSessionIdentity)
   case startDownload(handles: [UInt32], mode: CameraVendorTransferDownloadMode)
+  case startDownloadRequests([CameraSessionQueuedDownload])
   case cancelDownloadByUser
   case galleryPresentationDetached
   case applicationWillResignActive
@@ -536,41 +537,10 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
         .prepareBackgroundExecution()
 
     case .startDownload(let handles, let mode):
-      guard identity != nil,
-            presentation.phase == .galleryReady,
-            pendingTransportFailureCleanup == nil,
-            !handles.isEmpty else {
-        return
-      }
-      queuedDownloads = handles.map { CameraSessionQueuedDownload(handle: $0, mode: mode) }
-      itemStates = itemStates.filter { $0.value == .saved }
-      for handle in handles {
-        itemStates[handle] = .queued
-      }
-      itemProgress = [:]
-      completedCount = 0
-      failedCount = 0
-      ensureActivitySessionID()
-      acquireDownloadLease()
-      if isApplicationInBackground {
-        guard hasBackgroundExecutionAuthority else {
-          interruptQueuedDownloadBeforeStarting(reason: "background-execution-unavailable")
-          return
-        }
-        backgroundMaintainer?.start(allowingPtpKeepAlive: false)
-        startNextDownload(phase: .downloadingBackground)
-      } else if isApplicationTransitioningToBackground {
-        let acquiredBackgroundExecution = hasBackgroundExecutionAuthority ||
-          (executionAuthority?.acquire(reason: "download-background-transition") ?? false)
-        hasBackgroundExecutionAuthority = acquiredBackgroundExecution
-        guard acquiredBackgroundExecution else {
-          interruptQueuedDownloadBeforeStarting(reason: "background-execution-unavailable")
-          return
-        }
-        presentQueuedDownloadAwaitingLifecycleTransition()
-      } else {
-        startNextDownload(phase: .downloadingForeground)
-      }
+      beginDownload(requests: handles.map { CameraSessionQueuedDownload(handle: $0, mode: mode) })
+
+    case .startDownloadRequests(let requests):
+      beginDownload(requests: requests)
 
     case .galleryPresentationDetached:
       return
@@ -869,6 +839,44 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
       endActivity(reason: reason)
       presentation = .idle
 
+    }
+  }
+
+  private func beginDownload(requests: [CameraSessionQueuedDownload]) {
+    guard identity != nil,
+          presentation.phase == .galleryReady,
+          pendingTransportFailureCleanup == nil,
+          !requests.isEmpty else {
+      return
+    }
+    queuedDownloads = requests
+    itemStates = itemStates.filter { $0.value == .saved }
+    for request in requests {
+      itemStates[request.handle] = .queued
+    }
+    itemProgress = [:]
+    completedCount = 0
+    failedCount = 0
+    ensureActivitySessionID()
+    acquireDownloadLease()
+    if isApplicationInBackground {
+      guard hasBackgroundExecutionAuthority else {
+        interruptQueuedDownloadBeforeStarting(reason: "background-execution-unavailable")
+        return
+      }
+      backgroundMaintainer?.start(allowingPtpKeepAlive: false)
+      startNextDownload(phase: .downloadingBackground)
+    } else if isApplicationTransitioningToBackground {
+      let acquiredBackgroundExecution = hasBackgroundExecutionAuthority ||
+        (executionAuthority?.acquire(reason: "download-background-transition") ?? false)
+      hasBackgroundExecutionAuthority = acquiredBackgroundExecution
+      guard acquiredBackgroundExecution else {
+        interruptQueuedDownloadBeforeStarting(reason: "background-execution-unavailable")
+        return
+      }
+      presentQueuedDownloadAwaitingLifecycleTransition()
+    } else {
+      startNextDownload(phase: .downloadingForeground)
     }
   }
 

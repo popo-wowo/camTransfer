@@ -1201,6 +1201,28 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(cancelled.failedHandles.contains(7))
   }
 
+  func testCameraSessionRuntimeAcceptsMixedDisplayAndRawDownloadModes() {
+    let requests = NativeGalleryHDDownloadRequestPolicy.requests(
+      displayHandles: [20],
+      rawHandles: [19],
+      preferCompressedDisplay: true
+    )
+
+    XCTAssertEqual(requests.map(\.handle), [20, 19])
+    XCTAssertEqual(requests.map(\.mode), [.compressed, .original])
+  }
+
+  func testNativeGalleryHDDownloadRequestsDeduplicateHandles() {
+    let requests = NativeGalleryHDDownloadRequestPolicy.requests(
+      displayHandles: [20, 20],
+      rawHandles: [19, 19],
+      preferCompressedDisplay: false
+    )
+
+    XCTAssertEqual(requests.map(\.handle), [20, 19])
+    XCTAssertEqual(requests.map(\.mode), [.original, .original])
+  }
+
   func testNativeGalleryHighDefinitionPreviewCacheKeepsLoadedStateAfterMemoryEviction() throws {
     let directory = FileManager.default.temporaryDirectory
       .appendingPathComponent("hd-preview-cache-\(UUID().uuidString)", isDirectory: true)

@@ -140,6 +140,14 @@ final class NativeGalleryHDPreviewCoordinator {
     startLoadingIfNeeded()
   }
 
+  func pauseForDownload() async {
+    await cancelLoading()
+  }
+
+  func resumeAfterDownload() {
+    startLoadingIfNeeded()
+  }
+
   func stop(resumeCatalogChildWork: Bool) async {
     await cancelLoading()
     loadState = NativeGalleryHDPreviewLoadState()
@@ -210,6 +218,30 @@ final class NativeGalleryHDPreviewCoordinator {
       loadedHandles: cache.loadedHandles,
       loadState: loadState
     )
+  }
+}
+
+enum NativeGalleryHDDownloadRequestPolicy {
+  static func requests(
+    displayHandles: [Int],
+    rawHandles: [Int],
+    preferCompressedDisplay: Bool
+  ) -> [CameraSessionQueuedDownload] {
+    var seen = Set<Int>()
+    var result: [CameraSessionQueuedDownload] = []
+
+    for handle in displayHandles where seen.insert(handle).inserted {
+      guard let requestHandle = UInt32(exactly: handle) else { continue }
+      result.append(CameraSessionQueuedDownload(
+        handle: requestHandle,
+        mode: preferCompressedDisplay ? .compressed : .original
+      ))
+    }
+    for handle in rawHandles where seen.insert(handle).inserted {
+      guard let requestHandle = UInt32(exactly: handle) else { continue }
+      result.append(CameraSessionQueuedDownload(handle: requestHandle, mode: .original))
+    }
+    return result
   }
 }
 
