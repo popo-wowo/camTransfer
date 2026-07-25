@@ -25,6 +25,194 @@ struct NativeGalleryHDPreviewSnapshot: Equatable {
   }
 }
 
+struct NativeGalleryHDPreviewLoadState: Equatable {
+  var loadingHandles: Set<Int> = []
+  var failedHandles: Set<Int> = []
+}
+
+enum NativeGalleryHDPreviewLoadEvent: Equatable {
+  case started(handle: Int)
+  case succeeded(handle: Int)
+  case failed(handle: Int)
+  case cancelled(handle: Int)
+  case reset
+}
+
+enum NativeGalleryHDPreviewLoadReducer {
+  static func reduce(
+    state: NativeGalleryHDPreviewLoadState,
+    event: NativeGalleryHDPreviewLoadEvent
+  ) -> NativeGalleryHDPreviewLoadState {
+    var next = state
+    switch event {
+    case .started(let handle):
+      next.loadingHandles.insert(handle)
+      next.failedHandles.remove(handle)
+    case .succeeded(let handle):
+      next.loadingHandles.remove(handle)
+      next.failedHandles.remove(handle)
+    case .failed(let handle):
+      next.loadingHandles.remove(handle)
+      next.failedHandles.insert(handle)
+    case .cancelled(let handle):
+      next.loadingHandles.remove(handle)
+    case .reset:
+      next = NativeGalleryHDPreviewLoadState()
+    }
+    return next
+  }
+}
+
+struct NativeGalleryHDPreviewState: Equatable {
+  let snapshot: NativeGalleryHDPreviewSnapshot
+  let loadedHandles: Set<Int>
+  let loadState: NativeGalleryHDPreviewLoadState
+
+  init(
+    snapshot: NativeGalleryHDPreviewSnapshot,
+    loadedHandles: Set<Int>,
+    loadState: NativeGalleryHDPreviewLoadState = NativeGalleryHDPreviewLoadState()
+  ) {
+    self.snapshot = snapshot
+    self.loadedHandles = loadedHandles
+    self.loadState = loadState
+  }
+
+  var loadedCount: Int {
+    NativeGalleryHDPreviewSessionPolicy.loadedCount(
+      sessionHandles: Set(snapshot.displayHandles),
+      loadedHandles: loadedHandles
+    )
+  }
+
+  var totalCount: Int {
+    snapshot.items.count
+  }
+}
+
+@MainActor
+final class NativeGalleryHDPreviewCoordinator {
+  typealias SuspendChildWork = () async -> Void
+  typealias ResumeChildWork = () async -> Void
+  typealias FetchPreview = (Int) async throws -> CameraVendorGalleryPreview
+  typealias StatePublisher = (NativeGalleryHDPreviewState?) -> Void
+
+  private let cache: NativeGalleryHighDefinitionPreviewCache
+  private let suspendChildWork: SuspendChildWork
+  private let resumeChildWork: ResumeChildWork
+  private let fetchPreview: FetchPreview
+  private let publish: StatePublisher
+  private var loadTask: Task<Void, Never>?
+  private var loadState = NativeGalleryHDPreviewLoadState()
+  private var visibleHandles: [Int] = []
+  private(set) var state: NativeGalleryHDPreviewState?
+
+  init(
+    cache: NativeGalleryHighDefinitionPreviewCache,
+    suspendChildWork: @escaping SuspendChildWork,
+    resumeChildWork: @escaping ResumeChildWork,
+    fetchPreview: @escaping FetchPreview,
+    publish: @escaping StatePublisher
+  ) {
+    self.cache = cache
+    self.suspendChildWork = suspendChildWork
+    self.resumeChildWork = resumeChildWork
+    self.fetchPreview = fetchPreview
+    self.publish = publish
+  }
+
+  func activate(
+    snapshot: NativeGalleryHDPreviewSnapshot,
+    visibleHandles: [Int]
+  ) async {
+    await cancelLoading()
+    loadState = NativeGalleryHDPreviewLoadState()
+    self.visibleHandles = visibleHandles
+    state = makeState(snapshot: snapshot)
+    publish(state)
+    await suspendChildWork()
+    guard state?.snapshot == snapshot else { return }
+    startLoadingIfNeeded()
+  }
+
+  func updateVisibleHandles(_ handles: [Int]) {
+    visibleHandles = handles
+    startLoadingIfNeeded()
+  }
+
+  func stop(resumeCatalogChildWork: Bool) async {
+    await cancelLoading()
+    loadState = NativeGalleryHDPreviewLoadState()
+    visibleHandles = []
+    state = nil
+    publish(nil)
+    if resumeCatalogChildWork {
+      await resumeChildWork()
+    }
+  }
+
+  private func startLoadingIfNeeded() {
+    guard loadTask == nil, state != nil else { return }
+    loadTask = Task { @MainActor [weak self] in
+      await self?.pump()
+    }
+  }
+
+  private func pump() async {
+    defer { loadTask = nil }
+    while !Task.isCancelled, let snapshot = state?.snapshot {
+      let pending = NativeGalleryHDPreviewSessionPolicy.priorityWindow(
+        orderedHandles: snapshot.displayHandles,
+        visibleHandles: visibleHandles.isEmpty ? Array(snapshot.displayHandles.prefix(3)) : visibleHandles,
+        loadedHandles: cache.loadedHandles,
+        loadingHandles: loadState.loadingHandles,
+        failedHandles: loadState.failedHandles
+      )
+      guard let handle = pending.first else { return }
+      apply(.started(handle: handle), snapshot: snapshot)
+      do {
+        let preview = try await fetchPreview(handle)
+        try Task.checkCancellation()
+        cache.store(preview.data, for: handle, objectOrientation: preview.item?.orientation)
+        apply(.succeeded(handle: handle), snapshot: snapshot)
+      } catch is CancellationError {
+        apply(.cancelled(handle: handle), snapshot: snapshot)
+        return
+      } catch {
+        guard !Task.isCancelled else {
+          apply(.cancelled(handle: handle), snapshot: snapshot)
+          return
+        }
+        apply(.failed(handle: handle), snapshot: snapshot)
+      }
+    }
+  }
+
+  private func cancelLoading() async {
+    let task = loadTask
+    loadTask = nil
+    task?.cancel()
+    await task?.value
+  }
+
+  private func apply(
+    _ event: NativeGalleryHDPreviewLoadEvent,
+    snapshot: NativeGalleryHDPreviewSnapshot
+  ) {
+    loadState = NativeGalleryHDPreviewLoadReducer.reduce(state: loadState, event: event)
+    state = makeState(snapshot: snapshot)
+    publish(state)
+  }
+
+  private func makeState(snapshot: NativeGalleryHDPreviewSnapshot) -> NativeGalleryHDPreviewState {
+    NativeGalleryHDPreviewState(
+      snapshot: snapshot,
+      loadedHandles: cache.loadedHandles,
+      loadState: loadState
+    )
+  }
+}
+
 enum NativeGalleryHDPreviewSessionPolicy {
   static func availableDates(
     items: [CameraVendorGalleryItem],

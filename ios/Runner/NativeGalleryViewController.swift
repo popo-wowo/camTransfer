@@ -36,11 +36,26 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
   // MARK: - HD Preview Mode
 
   private var browseMode: NativeGalleryBrowseMode = .thumbnail
-  private let hdModeController = NativeGalleryHighDefinitionPreviewModeController()
   private let hdPreviewCache = NativeGalleryHighDefinitionPreviewCache()
-  private var hdLoadTask: Task<Void, Never>?
-  private var hdLoadingHandles: Set<Int> = []
-  private var hdFailedHandles: Set<Int> = []
+  private var hdPresentationState: NativeGalleryHDPreviewState?
+  private var hdRenderedDisplayHandles: [Int] = []
+  private var hdTransitionTask: Task<Void, Never>?
+  private lazy var hdCoordinator = NativeGalleryHDPreviewCoordinator(
+    cache: hdPreviewCache,
+    suspendChildWork: { [weak self] in
+      await self?.runtime.suspendGalleryChildWorkForHighDefinitionPreview()
+    },
+    resumeChildWork: { [weak self] in
+      await self?.runtime.resumeGalleryChildWorkAfterHighDefinitionPreview()
+    },
+    fetchPreview: { [weak self] handle in
+      guard let self else { throw CancellationError() }
+      return try await self.runtime.requestPreviewImageWithInfo(for: handle)
+    },
+    publish: { [weak self] state in
+      self?.applyHDPreviewState(state)
+    }
+  )
 
   private let browseModeSegment: UISegmentedControl = {
     let control = UISegmentedControl(items: ["缩略", "高清"])
@@ -398,10 +413,14 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     let runtime = runtime
     let visibleThumbnailRefreshTask = visibleThumbnailRefreshTask
     let thumbnailRehydrateTasks = thumbnailRehydrateTasks
-    let hdLoadTask = hdLoadTask
+    let hdTransitionTask = hdTransitionTask
+    let hdCoordinator = hdCoordinator
+    let hdPreviewCache = hdPreviewCache
     Task { @MainActor in
       visibleThumbnailRefreshTask?.cancel()
-      hdLoadTask?.cancel()
+      await hdTransitionTask?.value
+      await hdCoordinator.stop(resumeCatalogChildWork: false)
+      hdPreviewCache.reset()
       thumbnailRehydrateTasks.values.forEach { $0.cancel() }
       if let observerID {
         runtime.removeObserver(observerID)
@@ -1061,162 +1080,119 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       return
     }
 
-    // HD mode requires a specific date selected (not "全部")
-    if mode == .highDefinition {
-      guard filterState.date != .all else {
-        browseModeSegment.selectedSegmentIndex = 0
-        showToast("请先选择日期再切换高清预览")
-        return
-      }
-    }
-
     browseMode = mode
     switch mode {
     case .thumbnail:
       hdCollectionView.isHidden = true
       collectionView.isHidden = false
       hdStatusLabel.isHidden = true
-      hdLoadTask?.cancel()
-      hdLoadTask = nil
-      hdModeController.stop()
-      hdLoadingHandles.removeAll()
-      hdFailedHandles.removeAll()
+      enqueueHDTransition { [weak self] in
+        await self?.hdCoordinator.stop(resumeCatalogChildWork: true)
+      }
       view.backgroundColor = NativeLuxuryTheme.background
+      scheduleVisibleThumbnailRefresh(after: 0.05)
     case .highDefinition:
-      // Stop thumbnail loading to free PTP transport for HD preview
       visibleThumbnailRefreshTask?.cancel()
       visibleThumbnailRefreshTask = nil
 
       collectionView.isHidden = true
       hdCollectionView.isHidden = false
       view.backgroundColor = .black
-      hdCollectionView.reloadData()
       startHDPreviewLoading()
     }
   }
 
   private func startHDPreviewLoading() {
-    hdLoadTask?.cancel()
-    hdLoadingHandles.removeAll()
-    hdFailedHandles.removeAll()
-
-    let items = catalogPresentation.items
-    guard !items.isEmpty else {
-      updateHDStatusLabel()
-      return
-    }
-
-    // Only load previews for JPG/HEIF items (same filter as full-screen preview)
-    let previewableHandles = items
-      .filter { NativeGalleryPreviewImageLoadPolicy.shouldRequestPreviewImage(item: $0, hasPreviewImage: false) }
-      .map(\.handle)
-
-    guard !previewableHandles.isEmpty else {
-      print("CamTransferHD [SKIP] no previewable items (all RAW/video?)")
-      updateHDStatusLabel()
-      return
-    }
-
-    let visibleCenter = hdVisibleCenterHandle() ?? previewableHandles.first ?? 0
-    hdModeController.begin(
-      orderedHandles: previewableHandles,
-      currentHandle: visibleCenter,
-      alreadyLoadedHandles: hdPreviewCache.loadedHandles
+    let activeDate = preferredHDActiveDate()
+    let snapshot = NativeGalleryHDPreviewSessionPolicy.snapshot(
+      items: catalogPresentation.items,
+      activeDate: activeDate
     )
-    updateHDStatusLabel()
-    print("CamTransferHD [START] \(previewableHandles.count) previewable items out of \(items.count) total")
-
-    hdLoadTask = Task { [weak self] in
+    hdRenderedDisplayHandles = []
+    applyHDPreviewState(NativeGalleryHDPreviewState(
+      snapshot: snapshot,
+      loadedHandles: hdPreviewCache.loadedHandles
+    ))
+    let visibleHandles = hdVisibleHandles()
+    enqueueHDTransition { [weak self] in
       guard let self else { return }
-
-      // Cancel any in-flight thumbnail PTP operations to free the transport
-      await self.runtime.cancelActiveThumbnailWork()
-      print("CamTransferHD [INIT] thumbnail work cancelled, transport should be free")
-
-      // Brief delay to ensure transport settles after cancellation
-      try? await Task.sleep(nanoseconds: 300_000_000) // 300ms
-
-      while !Task.isCancelled, self.hdModeController.hasPendingPreviews {
-        guard let handle = self.hdModeController.pendingHandles.first else { break }
-
-        // Ensure PTP transport is available before requesting
-        guard self.runtime.canAcceptCatalogCommands else {
-          print("CamTransferHD [WAIT] canAcceptCatalogCommands=false, backoff 1s")
-          try? await Task.sleep(nanoseconds: 1_000_000_000) // 1s backoff
-          continue
-        }
-
-        self.hdLoadingHandles.insert(handle)
-        self.refreshHDCell(for: handle)
-        print("CamTransferHD [LOAD] handle=\(handle) starting preview fetch")
-
-        do {
-          let preview = try await self.runtime.requestPreviewImageWithInfo(for: handle)
-          guard !Task.isCancelled else { return }
-          let orientation = preview.item?.orientation
-          self.hdPreviewCache.store(preview.data, for: handle, objectOrientation: orientation)
-          self.hdModeController.markLoaded(handle)
-          self.hdLoadingHandles.remove(handle)
-          self.refreshHDCell(for: handle)
-          self.updateHDStatusLabel()
-          print("CamTransferHD [OK] handle=\(handle) loaded \(preview.data.count) bytes")
-        } catch is CancellationError {
-          guard !Task.isCancelled else { return }
-          // Transport busy — wait and retry this handle
-          self.hdLoadingHandles.remove(handle)
-          print("CamTransferHD [BUSY] handle=\(handle) transport busy, retry in 1s")
-          try? await Task.sleep(nanoseconds: 1_000_000_000)
-          continue
-        } catch {
-          guard !Task.isCancelled else { return }
-          self.hdLoadingHandles.remove(handle)
-          self.hdFailedHandles.insert(handle)
-          self.hdModeController.markLoaded(handle)
-          self.refreshHDCell(for: handle)
-          self.updateHDStatusLabel()
-          print("CamTransferHD [FAIL] handle=\(handle) error=\(error)")
-        }
-
-        // Brief pause between requests to avoid PTP congestion
-        try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
-      }
-      if !Task.isCancelled {
-        self.hdStatusLabel.isHidden = true
-      }
+      await self.hdCoordinator.activate(
+        snapshot: snapshot,
+        visibleHandles: visibleHandles
+      )
     }
   }
 
-  private func hdVisibleCenterHandle() -> Int? {
-    let visible = hdCollectionView.indexPathsForVisibleItems
-      .filter { $0.item >= 0 && $0.section < gallerySections.count }
-      .sorted { ($0.section, $0.item) < ($1.section, $1.item) }
-    guard let mid = visible[hdSafe: visible.count / 2] else { return nil }
-    return gallerySections[hdSafe: mid.section]?.items[hdSafe: mid.item]?.handle
+  private func preferredHDActiveDate() -> Date {
+    switch filterState.date {
+    case .specificDay(let date):
+      return date
+    case .range(_, let to):
+      return NativeGalleryHDPreviewSessionPolicy.preferredActiveDate(
+        items: catalogPresentation.items,
+        currentDate: to
+      )
+    case .all, .today:
+      return NativeGalleryHDPreviewSessionPolicy.preferredActiveDate(
+        items: catalogPresentation.items,
+        currentDate: Date()
+      )
+    }
+  }
+
+  private func enqueueHDTransition(_ operation: @escaping @MainActor () async -> Void) {
+    let previous = hdTransitionTask
+    hdTransitionTask = Task { @MainActor in
+      await previous?.value
+      await operation()
+    }
+  }
+
+  private func hdVisibleHandles() -> [Int] {
+    guard let snapshot = hdPresentationState?.snapshot else { return [] }
+    return hdCollectionView.indexPathsForVisibleItems
+      .sorted { $0.item < $1.item }
+      .compactMap { snapshot.items[hdSafe: $0.item]?.displayItem.handle }
+  }
+
+  private func applyHDPreviewState(_ state: NativeGalleryHDPreviewState?) {
+    guard browseMode == .highDefinition else { return }
+    hdPresentationState = state
+    let handles = state?.snapshot.displayHandles ?? []
+    if handles != hdRenderedDisplayHandles {
+      hdRenderedDisplayHandles = handles
+      hdCollectionView.reloadData()
+    } else {
+      for indexPath in hdCollectionView.indexPathsForVisibleItems {
+        guard let item = state?.snapshot.items[hdSafe: indexPath.item],
+              let cell = hdCollectionView.cellForItem(at: indexPath) as? NativeGalleryHDPreviewCell else {
+          continue
+        }
+        configureHDCell(cell, previewItem: item)
+      }
+      hdCollectionView.collectionViewLayout.invalidateLayout()
+    }
+    updateHDStatusLabel(state)
   }
 
   private func refreshHDCell(for handle: Int) {
     guard browseMode == .highDefinition else { return }
-    for section in 0..<gallerySections.count {
-      if let row = gallerySections[section].items.firstIndex(where: { $0.handle == handle }) {
-        let indexPath = IndexPath(item: row, section: section)
-        if let cell = hdCollectionView.cellForItem(at: indexPath) as? NativeGalleryHDPreviewCell {
-          configureHDCell(cell, item: gallerySections[section].items[row])
-        }
-        return
-      }
+    guard let items = hdPresentationState?.snapshot.items,
+          let row = items.firstIndex(where: { $0.displayItem.handle == handle }) else {
+      return
+    }
+    let indexPath = IndexPath(item: row, section: 0)
+    if let cell = hdCollectionView.cellForItem(at: indexPath) as? NativeGalleryHDPreviewCell {
+      configureHDCell(cell, previewItem: items[row])
     }
   }
 
-  private func updateHDStatusLabel() {
-    let previewableCount = catalogPresentation.items
-      .filter { NativeGalleryPreviewImageLoadPolicy.shouldRequestPreviewImage(item: $0, hasPreviewImage: false) }
-      .count
-    let loaded = hdPreviewCache.loadedHandles.count
-    guard previewableCount > 0, loaded < previewableCount else {
+  private func updateHDStatusLabel(_ state: NativeGalleryHDPreviewState?) {
+    guard let state, state.totalCount > 0 else {
       hdStatusLabel.isHidden = true
       return
     }
-    hdStatusLabel.text = "  \(loaded)/\(previewableCount)  "
+    hdStatusLabel.text = "  \(state.loadedCount)/\(state.totalCount)  "
     hdStatusLabel.isHidden = false
   }
 
@@ -1235,17 +1211,21 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     if !NativeGalleryPreviewImageLoadPolicy.shouldRequestPreviewImage(item: item, hasPreviewImage: false) {
       return .waiting
     }
-    if hdFailedHandles.contains(handle) { return .failed }
-    if hdLoadingHandles.contains(handle) { return .loading }
+    if hdPresentationState?.loadState.failedHandles.contains(handle) == true { return .failed }
+    if hdPresentationState?.loadState.loadingHandles.contains(handle) == true { return .loading }
     return .waiting
   }
 
-  private func configureHDCell(_ cell: NativeGalleryHDPreviewCell, item: CameraVendorGalleryItem) {
+  private func configureHDCell(
+    _ cell: NativeGalleryHDPreviewCell,
+    previewItem: NativeGalleryHDPreviewItem
+  ) {
+    let item = previewItem.displayItem
     let handle = item.handle
     let state = hdLoadState(for: item)
     let isQueued = selectedHandles.contains(handle)
-    let hasRaw = item.formatHints.contains(.raw)
-    let isRawQueued = false // RAW sidecar handle not tracked separately on iOS yet
+    let hasRaw = previewItem.rawSidecar != nil
+    let isRawQueued = previewItem.rawSidecar.map { selectedHandles.contains($0.handle) } ?? false
 
     cell.configure(
       loadState: state,
@@ -2864,10 +2844,14 @@ extension NativeDownloadListViewController: UICollectionViewDataSource, UICollec
 
 extension NativeGalleryViewController: UICollectionViewDataSource {
   func numberOfSections(in collectionView: UICollectionView) -> Int {
-    gallerySections.isEmpty ? 1 : gallerySections.count
+    if collectionView === hdCollectionView { return 1 }
+    return gallerySections.isEmpty ? 1 : gallerySections.count
   }
 
   func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
+    if collectionView === hdCollectionView {
+      return hdPresentationState?.snapshot.items.count ?? 0
+    }
     guard gallerySections.indices.contains(section) else { return 0 }
     return gallerySections[section].items.count
   }
@@ -2883,8 +2867,8 @@ extension NativeGalleryViewController: UICollectionViewDataSource {
       ) as? NativeGalleryHDPreviewCell else {
         return UICollectionViewCell()
       }
-      if let item = gallerySections[hdSafe: indexPath.section]?.items[hdSafe: indexPath.item] {
-        configureHDCell(cell, item: item)
+      if let item = hdPresentationState?.snapshot.items[hdSafe: indexPath.item] {
+        configureHDCell(cell, previewItem: item)
       }
       return cell
     }
@@ -2955,7 +2939,7 @@ extension NativeGalleryViewController: UICollectionViewDelegateFlowLayout {
   ) -> CGSize {
     if collectionView === hdCollectionView {
       let width = collectionView.bounds.width
-      let handle = gallerySections[hdSafe: indexPath.section]?.items[hdSafe: indexPath.item]?.handle
+      let handle = hdPresentationState?.snapshot.items[hdSafe: indexPath.item]?.displayItem.handle
       // Use actual image dimensions from cache if loaded, otherwise default 3:2 landscape
       if let handle, let data = hdPreviewCache.restoreLoadedData(for: handle),
          let image = UIImage(data: data) {
@@ -2998,7 +2982,7 @@ extension NativeGalleryViewController: UICollectionViewDelegateFlowLayout {
   ) -> CGSize {
     guard gallerySections.indices.contains(section) else { return .zero }
     if collectionView === hdCollectionView {
-      return CGSize(width: collectionView.bounds.width, height: 36)
+      return .zero
     }
     return CGSize(width: collectionView.bounds.width, height: 44)
   }
@@ -3042,10 +3026,8 @@ extension NativeGalleryViewController: UICollectionViewDelegateFlowLayout {
   }
 
   private func hdScrollDidSettle() {
-    guard browseMode == .highDefinition, hdModeController.isActive else { return }
-    if let centerHandle = hdVisibleCenterHandle() {
-      hdModeController.promoteCurrentHandle(centerHandle, alreadyLoadedHandles: hdPreviewCache.loadedHandles)
-    }
+    guard browseMode == .highDefinition else { return }
+    hdCoordinator.updateVisibleHandles(hdVisibleHandles())
   }
 }
 

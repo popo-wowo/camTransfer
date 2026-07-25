@@ -1172,6 +1172,35 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(Array(window.suffix(5)), [5, 6, 7, 8, 9])
   }
 
+  func testNativeGalleryHDCoordinatorCountsOnlyActiveDateLoadedHandles() throws {
+    let date = try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 7, day: 24)))
+    let items = [1, 2].map {
+      CameraVendorGalleryItem(
+        handle: $0,
+        filename: "DSCF000\($0).JPG",
+        formatLabel: "JPG",
+        captureDate: "20260724T120000",
+        byteSizeText: ""
+      )
+    }
+    let snapshot = NativeGalleryHDPreviewSessionPolicy.snapshot(items: items, activeDate: date)
+    let state = NativeGalleryHDPreviewState(snapshot: snapshot, loadedHandles: [1, 99])
+
+    XCTAssertEqual(state.loadedCount, 1)
+    XCTAssertEqual(state.totalCount, 2)
+  }
+
+  func testNativeGalleryHDCoordinatorCancellationDoesNotMarkHandleFailed() {
+    let state = NativeGalleryHDPreviewLoadReducer.reduce(
+      state: NativeGalleryHDPreviewLoadState(),
+      event: .started(handle: 7)
+    )
+    let cancelled = NativeGalleryHDPreviewLoadReducer.reduce(state: state, event: .cancelled(handle: 7))
+
+    XCTAssertFalse(cancelled.loadingHandles.contains(7))
+    XCTAssertFalse(cancelled.failedHandles.contains(7))
+  }
+
   func testNativeGalleryHighDefinitionPreviewCacheKeepsLoadedStateAfterMemoryEviction() throws {
     let directory = FileManager.default.temporaryDirectory
       .appendingPathComponent("hd-preview-cache-\(UUID().uuidString)", isDirectory: true)
