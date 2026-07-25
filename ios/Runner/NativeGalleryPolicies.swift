@@ -15,6 +15,68 @@ enum NativeGalleryAndroidParityChromePolicy {
   }
 }
 
+enum NativeGalleryHDCardQueueState: Equatable {
+  case idle
+  case queued
+  case downloading
+  case saved
+  case failed
+}
+
+enum NativeGalleryHDCardActionPolicy {
+  static func displayTitle(hasImage: Bool, state: NativeGalleryHDCardQueueState) -> String {
+    switch state {
+    case .idle: return hasImage ? "加入" : "加载后加入"
+    case .queued: return "已加入"
+    case .downloading: return "下载中"
+    case .saved: return "已下载"
+    case .failed: return "重试加入"
+    }
+  }
+
+  static func rawTitle(hasImage: Bool, state: NativeGalleryHDCardQueueState) -> String {
+    switch state {
+    case .idle: return hasImage ? "加入 RAW" : "加载后 RAW"
+    case .queued: return "RAW 已加入"
+    case .downloading: return "RAW 下载中"
+    case .saved: return "RAW 已下载"
+    case .failed: return "重试 RAW"
+    }
+  }
+
+  static func canQueue(hasImage: Bool, state: NativeGalleryHDCardQueueState) -> Bool {
+    switch state {
+    case .idle, .queued:
+      return hasImage
+    case .failed:
+      return true
+    case .downloading, .saved:
+      return false
+    }
+  }
+}
+
+struct NativeGalleryHDBottomBarPresentation: Equatable {
+  let queuedCount: Int
+  let totalCount: Int
+  let title: String
+}
+
+enum NativeGalleryHDBottomBarPolicy {
+  static func presentation(
+    snapshotDownloadHandles: [Int],
+    queuedHandles: Set<Int>
+  ) -> NativeGalleryHDBottomBarPresentation {
+    let snapshotHandles = Set(snapshotDownloadHandles)
+    let queuedCount = snapshotHandles.intersection(queuedHandles).count
+    return NativeGalleryHDBottomBarPresentation(
+      queuedCount: queuedCount,
+      totalCount: snapshotHandles.count,
+      title: "已加入 \(queuedCount) 张"
+    )
+  }
+}
+
 enum NativePhotoPreviewRotationPolicy {
   static func nextManualRotationDegrees(_ currentDegrees: Int) -> Int {
     normalizedDegrees(currentDegrees + 90)

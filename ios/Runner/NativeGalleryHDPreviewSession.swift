@@ -140,6 +140,18 @@ final class NativeGalleryHDPreviewCoordinator {
     startLoadingIfNeeded()
   }
 
+  func retry(handle: Int) {
+    guard let snapshot = state?.snapshot,
+          snapshot.displayHandles.contains(handle) else {
+      return
+    }
+    loadState.failedHandles.remove(handle)
+    visibleHandles = [handle] + visibleHandles.filter { $0 != handle }
+    state = makeState(snapshot: snapshot)
+    publish(state)
+    startLoadingIfNeeded()
+  }
+
   func pauseForDownload() async {
     await cancelLoading()
   }

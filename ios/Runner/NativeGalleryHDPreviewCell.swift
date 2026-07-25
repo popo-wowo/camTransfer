@@ -105,7 +105,8 @@ final class NativeGalleryHDPreviewCell: UICollectionViewCell {
     onQueueRawTapped = nil
     onImageTapped = nil
     queueRawButton.isHidden = true
-    updateQueueButtonTitle(queued: false)
+    queueButton.isEnabled = false
+    queueRawButton.isEnabled = false
   }
 
   private func setup() {
@@ -148,24 +149,29 @@ final class NativeGalleryHDPreviewCell: UICollectionViewCell {
   func configure(
     loadState: LoadState,
     hasRawSidecar: Bool,
-    isQueued: Bool,
-    isRawQueued: Bool
+    displayQueueState: NativeGalleryHDCardQueueState,
+    rawQueueState: NativeGalleryHDCardQueueState
   ) {
+    let hasImage: Bool
     switch loadState {
     case .waiting:
+      hasImage = false
       imageView.image = nil
       statusLabel.text = "等待预览"
       statusLabel.isHidden = false
       spinner.stopAnimating()
     case .loading:
+      hasImage = false
       imageView.image = nil
       statusLabel.isHidden = true
       spinner.startAnimating()
     case .loaded(let image):
+      hasImage = true
       imageView.image = image
       statusLabel.isHidden = true
       spinner.stopAnimating()
     case .failed:
+      hasImage = false
       imageView.image = nil
       statusLabel.text = "预览失败"
       statusLabel.isHidden = false
@@ -173,8 +179,16 @@ final class NativeGalleryHDPreviewCell: UICollectionViewCell {
     }
 
     queueRawButton.isHidden = !hasRawSidecar
-    updateQueueButtonTitle(queued: isQueued)
-    updateRawQueueButtonTitle(queued: isRawQueued)
+    updateQueueButton(
+      title: NativeGalleryHDCardActionPolicy.displayTitle(hasImage: hasImage, state: displayQueueState),
+      enabled: NativeGalleryHDCardActionPolicy.canQueue(hasImage: hasImage, state: displayQueueState),
+      queued: displayQueueState == .queued
+    )
+    updateRawQueueButton(
+      title: NativeGalleryHDCardActionPolicy.rawTitle(hasImage: hasImage, state: rawQueueState),
+      enabled: hasRawSidecar && NativeGalleryHDCardActionPolicy.canQueue(hasImage: hasImage, state: rawQueueState),
+      queued: rawQueueState == .queued
+    )
   }
 
   func setAspectRatio(width: CGFloat, height: CGFloat) {
@@ -192,22 +206,22 @@ final class NativeGalleryHDPreviewCell: UICollectionViewCell {
     heightConstraint = constraint
   }
 
-  private func updateQueueButtonTitle(queued: Bool) {
-    let title = queued ? "已加入" : "加入"
+  private func updateQueueButton(title: String, enabled: Bool, queued: Bool) {
     let alpha: CGFloat = queued ? 0.72 : 1.0
+    queueButton.isEnabled = enabled
     queueButton.configuration?.attributedTitle = AttributedString(title, attributes: AttributeContainer([
       .font: UIFont.systemFont(ofSize: 12, weight: .bold)
     ]))
-    queueButton.configuration?.baseBackgroundColor = NativeLuxuryTheme.accent.withAlphaComponent(alpha)
+    queueButton.configuration?.baseBackgroundColor = NativeLuxuryTheme.accent.withAlphaComponent(enabled ? alpha : 0.35)
   }
 
-  private func updateRawQueueButtonTitle(queued: Bool) {
-    let title = queued ? "RAW 已加入" : "加入 RAW"
+  private func updateRawQueueButton(title: String, enabled: Bool, queued: Bool) {
     let alpha: CGFloat = queued ? 0.72 : 1.0
+    queueRawButton.isEnabled = enabled
     queueRawButton.configuration?.attributedTitle = AttributedString(title, attributes: AttributeContainer([
       .font: UIFont.systemFont(ofSize: 12, weight: .bold)
     ]))
-    queueRawButton.configuration?.baseBackgroundColor = NativeLuxuryTheme.accent.withAlphaComponent(alpha)
+    queueRawButton.configuration?.baseBackgroundColor = NativeLuxuryTheme.accent.withAlphaComponent(enabled ? alpha : 0.35)
   }
 
   // MARK: - Actions

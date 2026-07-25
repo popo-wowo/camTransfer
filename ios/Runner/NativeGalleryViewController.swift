@@ -144,6 +144,19 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     return label
   }()
 
+  private let hdDateLabel: UILabel = {
+    let label = UILabel()
+    label.translatesAutoresizingMaskIntoConstraints = false
+    label.font = .systemFont(ofSize: 12, weight: .bold)
+    label.textColor = .white
+    label.textAlignment = .center
+    label.backgroundColor = UIColor.black.withAlphaComponent(0.48)
+    label.layer.cornerRadius = 12
+    label.clipsToBounds = true
+    label.isHidden = true
+    return label
+  }()
+
   private let galleryBackButton = NativeGalleryHeaderIconButton(icon: .back, accessibilityLabel: "返回")
   private let galleryHeaderTitleLabel: UILabel = {
     let label = UILabel()
@@ -555,6 +568,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     view.addSubview(filterContentStack)
     view.addSubview(collectionView)
     view.addSubview(hdCollectionView)
+    view.addSubview(hdDateLabel)
     view.addSubview(hdStatusLabel)
     view.addSubview(bottomDownloadBar)
     view.addSubview(toastLabel)
@@ -645,7 +659,12 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       hdCollectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
       hdCollectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
-      hdStatusLabel.topAnchor.constraint(equalTo: hdCollectionView.topAnchor, constant: 12),
+      hdDateLabel.topAnchor.constraint(equalTo: hdCollectionView.topAnchor, constant: 12),
+      hdDateLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+      hdDateLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 88),
+      hdDateLabel.heightAnchor.constraint(equalToConstant: 24),
+
+      hdStatusLabel.topAnchor.constraint(equalTo: hdDateLabel.bottomAnchor, constant: 6),
       hdStatusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
       hdStatusLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 56),
       hdStatusLabel.heightAnchor.constraint(equalToConstant: 24),
@@ -1131,6 +1150,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       hdCollectionView.isHidden = true
       collectionView.isHidden = false
       hdStatusLabel.isHidden = true
+      hdDateLabel.isHidden = true
       enqueueHDTransition { [weak self] in
         await self?.hdCoordinator.stop(resumeCatalogChildWork: true)
       }
@@ -1148,6 +1168,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       view.backgroundColor = .black
       startHDPreviewLoading()
     }
+    refreshBottomDownloadBar()
   }
 
   private func startHDPreviewLoading() {
@@ -1238,8 +1259,14 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
   private func updateHDStatusLabel(_ state: NativeGalleryHDPreviewState?) {
     guard let state, state.totalCount > 0 else {
       hdStatusLabel.isHidden = true
+      hdDateLabel.isHidden = true
       return
     }
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "zh_CN")
+    formatter.dateFormat = "yyyy年M月d日"
+    hdDateLabel.text = "  \(formatter.string(from: state.snapshot.activeDate))  "
+    hdDateLabel.isHidden = false
     hdStatusLabel.text = "  \(state.loadedCount)/\(state.totalCount)  "
     hdStatusLabel.isHidden = false
   }
@@ -1274,12 +1301,24 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     let isQueued = selectedHandles.contains(handle)
     let hasRaw = previewItem.rawSidecar != nil
     let isRawQueued = previewItem.rawSidecar.map { selectedHandles.contains($0.handle) } ?? false
+    let displayQueueState = hdCardQueueState(
+      handle: handle,
+      isLocallyQueued: isQueued,
+      previewLoadState: state
+    )
+    let rawQueueState = previewItem.rawSidecar.map {
+      hdCardQueueState(
+        handle: $0.handle,
+        isLocallyQueued: isRawQueued,
+        previewLoadState: state
+      )
+    } ?? .idle
 
     cell.configure(
       loadState: state,
       hasRawSidecar: hasRaw,
-      isQueued: isQueued,
-      isRawQueued: isRawQueued
+      displayQueueState: displayQueueState,
+      rawQueueState: rawQueueState
     )
 
     // Use image size from loaded preview, else default 3:2 landscape
@@ -1290,7 +1329,12 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     }
 
     cell.onQueueTapped = { [weak self] in
-      guard let self,
+      guard let self else { return }
+      if case .failed = state {
+        self.hdCoordinator.retry(handle: handle)
+        return
+      }
+      guard case .loaded = state,
             NativeGalleryDownloadModePresentationPolicy.canInteractWithGallery(isDownloading: self.runtime.isDownloading),
             NativeGalleryDownloadSelectionPolicy.canSelect(
               downloadState: self.runtime.downloadState(for: handle)
@@ -1299,8 +1343,13 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       self.refreshHDCell(for: handle)
     }
     cell.onQueueRawTapped = { [weak self] in
-      guard let self,
-            let rawSidecar = previewItem.rawSidecar,
+      guard let self else { return }
+      if case .failed = state {
+        self.hdCoordinator.retry(handle: handle)
+        return
+      }
+      guard let rawSidecar = previewItem.rawSidecar,
+            case .loaded = state,
             NativeGalleryDownloadModePresentationPolicy.canInteractWithGallery(isDownloading: self.runtime.isDownloading),
             NativeGalleryDownloadSelectionPolicy.canSelect(
               downloadState: self.runtime.downloadState(for: rawSidecar.handle)
@@ -1317,6 +1366,26 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
           self.presentPreview(startingAt: flatIndex)
         }
       }
+    }
+  }
+
+  private func hdCardQueueState(
+    handle: Int,
+    isLocallyQueued: Bool,
+    previewLoadState: NativeGalleryHDPreviewCell.LoadState
+  ) -> NativeGalleryHDCardQueueState {
+    if case .failed = previewLoadState { return .failed }
+    switch runtime.downloadState(for: handle) {
+    case .idle:
+      return isLocallyQueued ? .queued : .idle
+    case .queued:
+      return .queued
+    case .downloading:
+      return .downloading
+    case .saved:
+      return .saved
+    case .failed:
+      return .failed
     }
   }
 
@@ -1867,11 +1936,24 @@ extension NativeGalleryViewController {
   }
 
   private func refreshBottomDownloadBar() {
+    if browseMode == .highDefinition, let snapshot = hdPresentationState?.snapshot {
+      let presentation = NativeGalleryHDBottomBarPolicy.presentation(
+        snapshotDownloadHandles: Array(snapshot.allDownloadHandles),
+        queuedHandles: selectedHandles
+      )
+      bottomDownloadBar.isHidden = false
+      bottomSelectAllButton.isHidden = true
+      bottomDownloadLabel.text = "\(presentation.title) · 共 \(presentation.totalCount) 张"
+      bottomDownloadButton.isEnabled = presentation.queuedCount > 0 && !runtime.isDownloading
+      bottomCompressionSwitch.isEnabled = !runtime.isDownloading
+      return
+    }
     let summary = NativeGallerySelectionSummaryPolicy.summary(
       items: catalogPresentation.items,
       state: selectionProjectionState
     )
     bottomDownloadBar.isHidden = false
+    bottomSelectAllButton.isHidden = false
     bottomDownloadLabel.text = summary.text
     bottomDownloadButton.isEnabled = NativeGalleryDownloadBarPolicy.canStartDownload(
       selectedCount: summary.selectedCount,

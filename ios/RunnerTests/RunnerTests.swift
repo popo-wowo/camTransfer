@@ -1234,6 +1234,29 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(NativeGalleryAndroidParityChromePolicy.canExpandFilters(mode: .highDefinition))
   }
 
+  func testNativeGalleryHDCardRequiresLoadedPreviewBeforeQueueing() {
+    XCTAssertEqual(
+      NativeGalleryHDCardActionPolicy.displayTitle(hasImage: false, state: .idle),
+      "加载后加入"
+    )
+    XCTAssertFalse(NativeGalleryHDCardActionPolicy.canQueue(hasImage: false, state: .idle))
+    XCTAssertEqual(
+      NativeGalleryHDCardActionPolicy.rawTitle(hasImage: true, state: .queued),
+      "RAW 已加入"
+    )
+  }
+
+  func testNativeGalleryHDBottomBarCountsOnlyActiveSnapshotQueuedHandles() {
+    let presentation = NativeGalleryHDBottomBarPolicy.presentation(
+      snapshotDownloadHandles: [10, 11, 12],
+      queuedHandles: [11, 99]
+    )
+
+    XCTAssertEqual(presentation.queuedCount, 1)
+    XCTAssertEqual(presentation.totalCount, 3)
+    XCTAssertEqual(presentation.title, "已加入 1 张")
+  }
+
   func testNativeGalleryHighDefinitionPreviewCacheKeepsLoadedStateAfterMemoryEviction() throws {
     let directory = FileManager.default.temporaryDirectory
       .appendingPathComponent("hd-preview-cache-\(UUID().uuidString)", isDirectory: true)
