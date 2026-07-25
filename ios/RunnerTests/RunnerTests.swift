@@ -1257,6 +1257,33 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(presentation.title, "已加入 1 张")
   }
 
+  func testNativeGalleryThumbnailLayoutMatchesAndroidGridSpacing() {
+    XCTAssertEqual(NativeGalleryGridLayoutPolicy.androidGridSpacing, 2)
+    XCTAssertEqual(NativeGalleryAndroidParityGridPolicy.horizontalInset, 0)
+    XCTAssertEqual(NativeGalleryAndroidParityGridPolicy.sectionHeaderHeight, 44)
+  }
+
+  func testNativeGalleryContentUpdatesDoNotReloadWholeCollection() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let observerStart = try XCTUnwrap(
+      source.range(of: "runtime.observeIncrementalCatalogUpdates")?.lowerBound
+    )
+    let observerEnd = try XCTUnwrap(
+      source.range(
+        of: "NotificationCenter.default.addObserver",
+        range: observerStart..<source.endIndex
+      )?.lowerBound
+    )
+    let observerBody = String(source[observerStart..<observerEnd])
+
+    XCTAssertFalse(observerBody.contains("collectionView.reloadData()"))
+    XCTAssertTrue(observerBody.contains("refreshVisibleCells"))
+  }
+
   func testNativeGalleryHighDefinitionPreviewCacheKeepsLoadedStateAfterMemoryEviction() throws {
     let directory = FileManager.default.temporaryDirectory
       .appendingPathComponent("hd-preview-cache-\(UUID().uuidString)", isDirectory: true)

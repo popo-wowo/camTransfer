@@ -321,6 +321,11 @@ enum NativeGalleryGridLayoutPolicy {
   }
 }
 
+enum NativeGalleryAndroidParityGridPolicy {
+  static let horizontalInset: CGFloat = 0
+  static let sectionHeaderHeight: CGFloat = 44
+}
+
 enum NativeGalleryChromeCopy {
   static let title = "CAMERA GALLERY"
   static let filterTitle = "筛选"

@@ -363,9 +363,14 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
 
   private let collectionView: UICollectionView = {
     let layout = UICollectionViewFlowLayout()
-    layout.minimumInteritemSpacing = 8
-    layout.minimumLineSpacing = 12
-    layout.sectionInset = UIEdgeInsets(top: 8, left: 12, bottom: 24, right: 12)
+    layout.minimumInteritemSpacing = NativeGalleryGridLayoutPolicy.androidGridSpacing
+    layout.minimumLineSpacing = NativeGalleryGridLayoutPolicy.androidGridSpacing
+    layout.sectionInset = UIEdgeInsets(
+      top: 0,
+      left: NativeGalleryAndroidParityGridPolicy.horizontalInset,
+      bottom: 0,
+      right: NativeGalleryAndroidParityGridPolicy.horizontalInset
+    )
     let collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
     collectionView.translatesAutoresizingMaskIntoConstraints = false
     collectionView.backgroundColor = .clear
@@ -3112,7 +3117,7 @@ extension NativeGalleryViewController: UICollectionViewDelegateFlowLayout {
   }
 
   private var horizontalInsetForCurrentLayout: CGFloat {
-    12
+    NativeGalleryAndroidParityGridPolicy.horizontalInset
   }
 
   private var spacingForCurrentLayout: CGFloat {
@@ -3171,7 +3176,10 @@ extension NativeGalleryViewController: UICollectionViewDelegateFlowLayout {
     if collectionView === hdCollectionView {
       return .zero
     }
-    return CGSize(width: collectionView.bounds.width, height: 44)
+    return CGSize(
+      width: collectionView.bounds.width,
+      height: NativeGalleryAndroidParityGridPolicy.sectionHeaderHeight
+    )
   }
 
   func collectionView(
