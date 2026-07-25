@@ -18,6 +18,7 @@ protocol CameraSessionRuntimeTransport: AnyObject {
   /// sending any command to the shared physical PTP service.
   func retireForSessionSupersession()
   func terminateCameraCommunication(reason: String)
+  func executeCountSweepExperiment() async throws -> CameraVendorCountSweepResult
 }
 
 extension CameraSessionRuntimeTransport {
@@ -46,6 +47,14 @@ extension CameraSessionRuntimeTransport {
       domain: "CameraSessionRuntimeTransport",
       code: NSURLErrorUnsupportedURL,
       userInfo: [NSLocalizedDescriptionKey: "当前传输层不支持读取对象信息 handle=\(handle)"]
+    )
+  }
+
+  func executeCountSweepExperiment() async throws -> CameraVendorCountSweepResult {
+    throw NSError(
+      domain: "CameraSessionRuntimeTransport",
+      code: NSURLErrorUnsupportedURL,
+      userInfo: [NSLocalizedDescriptionKey: "当前传输层不支持 count sweep 实验"]
     )
   }
 }
@@ -176,6 +185,10 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
   }
 
   func loadCatalog(for intent: CameraGalleryFilterIntent) async throws -> CameraGalleryCatalogSnapshot {
+    // "All" uses the same expanded initial catalog logic (which includes HEIF handles)
+    if intent.format == .all && intent.date == .all {
+      return try await loadInitialCatalog()
+    }
     let query = try cameraCatalogQuery(for: intent)
     do {
       let snapshot = try await transport.fetchCameraCatalog(query: query)
@@ -235,13 +248,6 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
   private func cameraCatalogQuery(
     for intent: CameraGalleryFilterIntent
   ) throws -> CameraVendorCatalogQuery {
-    guard intent.date == .all else {
-      throw CameraGalleryCatalogTransactionFailure(
-        primaryMessage: CameraGalleryUnsupportedReason.dateWireFormatUnproven.message,
-        restorationMessage: nil,
-        provesTransportLost: false
-      )
-    }
     switch intent.format {
     case .all:
       return CameraVendorCatalogQuery(conditions: [], label: "all")
@@ -266,16 +272,26 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
         label: "format-raw"
       )
     case .heif:
-      throw CameraGalleryCatalogTransactionFailure(
-        primaryMessage: CameraGalleryUnsupportedReason.heifCatalogUnverified.message,
-        restorationMessage: nil,
-        provesTransportLost: false
+      return CameraVendorCatalogQuery(
+        conditions: [
+          .uint16(
+            propertyCode: CameraVendorSearchModeAllPayload.objectFormatPropertyCode,
+            value: CameraVendorSearchModeAllPayload.heifObjectFormatMask
+          ),
+        ],
+        label: "format-heif",
+        membershipPolicy: .subtractBaseline
       )
     case .video:
-      throw CameraGalleryCatalogTransactionFailure(
-        primaryMessage: CameraGalleryUnsupportedReason.videoCatalogUnverified.message,
-        restorationMessage: nil,
-        provesTransportLost: false
+      return CameraVendorCatalogQuery(
+        conditions: [
+          .uint16(
+            propertyCode: CameraVendorSearchModeAllPayload.objectFormatPropertyCode,
+            value: CameraVendorSearchModeAllPayload.movObjectFormatMask | CameraVendorSearchModeAllPayload.mp4ObjectFormatMask
+          ),
+        ],
+        label: "format-video",
+        membershipPolicy: .subtractBaseline
       )
     }
   }
@@ -372,6 +388,7 @@ final class CameraVendorGallerySessionRuntimeTransport: CameraSessionRuntimeTran
   private var onFileSaveFailed: ((UInt32, Error) -> Void)?
   private let onFileSaved: ((UInt32) -> Void)?
   private let onRuntimeTermination: (() -> Void)?
+  var onThumbnailGenerated: ((UInt32, UIImage) -> Void)?
   private weak var boundRuntime: CameraSessionRuntime?
   private var binding: CameraSessionRuntimeBinding?
   private var activeTransferTask: Task<Void, Never>?
@@ -428,6 +445,10 @@ final class CameraVendorGallerySessionRuntimeTransport: CameraSessionRuntimeTran
           self.finishCancelledTransfer(handle: handle, transferID: transferID)
           return
         }
+
+        // Generate thumbnail from downloaded file before saving to Photo Library
+        self.generateAndCacheThumbnail(handle: handle, fileURL: file.fileURL)
+
         let photoSaveStartedAt = Date()
         do {
           try await fileSaver.save(
@@ -520,6 +541,10 @@ final class CameraVendorGallerySessionRuntimeTransport: CameraSessionRuntimeTran
     try await galleryService.fetchCameraCatalog(query: query)
   }
 
+  func executeCountSweepExperiment() async throws -> CameraVendorCountSweepResult {
+    try await galleryService.executeCountSweepExperiment()
+  }
+
   func fetchObjectInfo(for handle: Int) async throws -> CameraVendorCameraObjectInfo {
     guard let source = galleryService as? CameraVendorGalleryObjectInfoSource else {
       throw NSError(
@@ -588,5 +613,20 @@ final class CameraVendorGallerySessionRuntimeTransport: CameraSessionRuntimeTran
     clearActiveTransfer(transferID)
     guard let runtime = boundRuntime, runtime.acceptsTransportCallback(binding) else { return }
     runtime.send(.transferCancelled(handle: handle))
+  }
+
+  private func generateAndCacheThumbnail(handle: UInt32, fileURL: URL) {
+    let targetSize = CGSize(width: 200, height: 200)
+    guard let source = CGImageSourceCreateWithURL(fileURL as CFURL, nil),
+          let options: [CFString: Any] = [
+            kCGImageSourceThumbnailMaxPixelSize: max(targetSize.width, targetSize.height),
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+          ] as? [CFString: Any],
+          let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+      return
+    }
+    let thumbnail = UIImage(cgImage: cgImage)
+    onThumbnailGenerated?(handle, thumbnail)
   }
 }

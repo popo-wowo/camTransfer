@@ -929,23 +929,9 @@ final class CameraVendorPtpSession {
 
     report("[OBS] PTP_INITIAL_CAMERA_CATALOG_BEGIN")
 
-    // Reset SearchMode before reading initial directory
-    let resetPayload = CameraVendorSearchModeAllPayload.payload(for: [])
-    report("[OBS] PTP_INITIAL_CATALOG_RESET_SEARCH_MODE payload=\(resetPayload.map { String(format: "%02x", $0) }.joined())")
-    _ = try sendCommandWithData(
-      operationCode: UInt16(CameraVendorPtpOperationCode.cameraVendorSetSearchModeAll),
-      data: resetPayload
-    )
-
-    // Read the default directory first
-    let defaultSnapshot = try requestCameraVendorSpecifiedObjectSnapshot(
-      stage: "initial-camera-catalog",
-      allowsEmptyRetry: false
-    )
-    report("[OBS] PTP_INITIAL_CATALOG_DEFAULT handles=\(defaultSnapshot.handles.count)")
-
-    // Also read D604=2 (HEIF) which on this camera returns ALL handles including HEIF
-    // The default directory (1808) is missing ~617 HEIF handles
+    // Write D604=2 (HEIF mask) which on this camera returns the complete directory
+    // including all formats (JPG + HEIF + RAW + Video = ~2425).
+    // The default empty SearchMode only returns ~1808 (missing HEIF handles).
     let heifPayload = CameraVendorSearchModeAllPayload.objectFormatMaskPayload(
       CameraVendorSearchModeAllPayload.heifObjectFormatMask
     )
@@ -953,26 +939,23 @@ final class CameraVendorPtpSession {
       operationCode: UInt16(CameraVendorPtpOperationCode.cameraVendorSetSearchModeAll),
       data: heifPayload
     )
-    let expandedSnapshot = try requestCameraVendorSpecifiedObjectSnapshot(
-      stage: "initial-camera-catalog-expanded",
+    let snapshot = try requestCameraVendorSpecifiedObjectSnapshot(
+      stage: "initial-camera-catalog",
       allowsEmptyRetry: false
     )
-    report("[OBS] PTP_INITIAL_CATALOG_EXPANDED handles=\(expandedSnapshot.handles.count)")
+    report("[OBS] PTP_INITIAL_CATALOG_EXPANDED handles=\(snapshot.handles.count)")
 
-    // Restore SearchMode to empty
+    // Restore SearchMode to empty after reading
+    let resetPayload = CameraVendorSearchModeAllPayload.payload(for: [])
     _ = try sendCommandWithData(
       operationCode: UInt16(CameraVendorPtpOperationCode.cameraVendorSetSearchModeAll),
       data: resetPayload
     )
 
-    // Use whichever has more handles as the initial catalog
-    let bestSnapshot = expandedSnapshot.handles.count > defaultSnapshot.handles.count
-      ? expandedSnapshot : defaultSnapshot
-
     guard CameraVendorCatalogSnapshotValidationPolicy.isPublishable(
-      declaredCount: bestSnapshot.declaredCount,
-      dateGroups: bestSnapshot.dateGroups,
-      orderedHandles: bestSnapshot.handles
+      declaredCount: snapshot.declaredCount,
+      dateGroups: snapshot.dateGroups,
+      orderedHandles: snapshot.handles
     ) else {
       throw NSError(
         domain: "CameraVendorPtpSession",
@@ -981,11 +964,11 @@ final class CameraVendorPtpSession {
       )
     }
     let catalog = CameraVendorCatalogSnapshot(
-      dateGroups: bestSnapshot.dateGroups,
-      orderedHandles: bestSnapshot.handles,
+      dateGroups: snapshot.dateGroups,
+      orderedHandles: snapshot.handles,
       items: CameraVendorCatalogPlaceholderPolicy.placeholderItems(
-        from: bestSnapshot.handles,
-        dateGroups: bestSnapshot.dateGroups
+        from: snapshot.handles,
+        dateGroups: snapshot.dateGroups
       )
     )
     report(

@@ -92,11 +92,16 @@ struct CameraGalleryFilterIntent: Equatable, Sendable {
   )
 
   var requiresCameraCatalogTransaction: Bool {
-    date != .all || format != .all
+    switch format {
+    case .all:
+      return false
+    case .jpg, .raw, .heif, .video:
+      return true
+    }
   }
 
   func hasSameCameraMembership(as other: CameraGalleryFilterIntent) -> Bool {
-    date == other.date && format == other.format
+    format == other.format
   }
 }
 

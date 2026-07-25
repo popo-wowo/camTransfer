@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 
 struct CameraSessionIdentity: Equatable {
@@ -169,6 +170,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   var onConnectionSnapshotChanged: ((IOSCameraHomeSnapshot) -> Void)?
   var onConnectionLogAppended: ((String) -> Void)?
   var onPresentationDestinationReady: ((CameraSessionRuntimePresentationDestination) -> Void)?
+  var onDownloadThumbnailGenerated: ((UInt32, UIImage) -> Void)?
 
   init(
     transport: CameraSessionRuntimeTransport,
@@ -229,6 +231,10 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     Task {
       await catalogRuntime.requestVisibleThumbnails(handles: handles)
     }
+  }
+
+  func cancelActiveThumbnailWork() async {
+    await catalogRuntime?.cancelActiveThumbnailWork()
   }
 
   private func configureCatalogRuntime() {

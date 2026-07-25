@@ -2010,10 +2010,17 @@ final class NativeConnectViewController: UIViewController {
       )
       controller.onMovedFromParent = { [weak self] in
         guard let self else { return }
+        self.cameraSessionRuntime.onDownloadThumbnailGenerated = nil
         if self.autoDownloadRule.disconnectAfterDownload {
           self.cameraSessionRuntime.send(.disconnectCamera(reason: "auto-download-complete-disconnect"))
         }
         self.updateRememberedCameraCard()
+      }
+      // Wire thumbnail generation: when a file finishes downloading, its thumbnail
+      // is generated from the temp file and displayed immediately in the download center
+      self.cameraSessionRuntime.onDownloadThumbnailGenerated = { [weak controller] handle, image in
+        guard let controller else { return }
+        controller.setDownloadThumbnail(handle: Int(handle), image: image)
       }
       self.navigationController?.pushViewController(controller, animated: true)
     }

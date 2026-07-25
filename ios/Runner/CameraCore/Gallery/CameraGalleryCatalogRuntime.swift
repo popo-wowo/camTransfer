@@ -2,6 +2,7 @@ import Foundation
 
 actor CameraGalleryCatalogRuntime {
   typealias PresentationPublisher = @MainActor (CameraGalleryPresentation) -> Void
+  typealias IncrementalUpdatePublisher = @MainActor (CameraGalleryPresentation, Set<Int>) -> Void
   typealias TransportEvidenceReporter = @MainActor (CameraGalleryCatalogFailure) -> Void
 
   private struct PendingTransaction {
@@ -24,6 +25,7 @@ actor CameraGalleryCatalogRuntime {
 
   private let source: CameraGalleryCatalogRuntimeSource
   private let publishPresentation: PresentationPublisher
+  private let publishIncrementalUpdate: IncrementalUpdatePublisher
   private let reportTransportEvidence: TransportEvidenceReporter
   private var repository = CameraGalleryRepository()
   private var nextGenerationRawValue: UInt64 = 0
@@ -45,10 +47,12 @@ actor CameraGalleryCatalogRuntime {
   init(
     source: CameraGalleryCatalogRuntimeSource,
     publishPresentation: @escaping PresentationPublisher,
+    publishIncrementalUpdate: @escaping IncrementalUpdatePublisher = { _, _ in },
     reportTransportEvidence: @escaping TransportEvidenceReporter
   ) {
     self.source = source
     self.publishPresentation = publishPresentation
+    self.publishIncrementalUpdate = publishIncrementalUpdate
     self.reportTransportEvidence = reportTransportEvidence
   }
 
@@ -130,6 +134,13 @@ actor CameraGalleryCatalogRuntime {
     await activeTransactionTask?.value
     activeTransactionTask = nil
     enrichedObjectInfos = [:]
+  }
+
+  func cancelActiveThumbnailWork() async {
+    thumbnailTask?.cancel()
+    await thumbnailTask?.value
+    thumbnailTask = nil
+    activeThumbnailRequest = nil
   }
 
   func markTransportLost(_ message: String) async {
@@ -366,7 +377,7 @@ actor CameraGalleryCatalogRuntime {
     guard isCurrentChild(identity) else { return }
     guard repository.applyThumbnail(thumbnail, identity: identity) else { return }
     currentPresentation = makeReadyPresentation()
-    await publishCurrentPresentation()
+    await publishIncrementalUpdate(currentPresentation, [identity.handle])
   }
 
   private func applyDetails(
@@ -382,7 +393,7 @@ actor CameraGalleryCatalogRuntime {
       enrichedObjectInfos[identity.handle] = objectInfo
     }
     currentPresentation = makeReadyPresentation()
-    await publishCurrentPresentation()
+    await publishIncrementalUpdate(currentPresentation, [identity.handle])
   }
 
   private func verifiedObjectInfo(handle: Int) -> CameraVendorCameraObjectInfo? {
@@ -461,15 +472,7 @@ actor CameraGalleryCatalogRuntime {
   private func unsupportedReason(
     for intent: CameraGalleryFilterIntent
   ) -> CameraGalleryUnsupportedReason? {
-    guard intent.date == .all else { return .dateWireFormatUnproven }
-    switch intent.format {
-    case .all, .jpg, .raw:
-      return nil
-    case .heif:
-      return .heifCatalogUnverified
-    case .video:
-      return .videoCatalogUnverified
-    }
+    nil
   }
 
   private var isTransportLost: Bool {
@@ -518,15 +521,61 @@ actor CameraGalleryCatalogRuntime {
     _ items: [CameraVendorGalleryItem],
     intent: CameraGalleryFilterIntent
   ) -> [CameraVendorGalleryItem] {
+    let dateFiltered = clientSideDateFilter(items, date: intent.date)
     switch intent.sort {
     case .newest:
-      return items
+      return dateFiltered
     case .oldest:
-      return Array(items.reversed())
+      return Array(dateFiltered.reversed())
     case .notDownloaded:
-      return items.filter { !downloadedHandles.contains($0.handle) } +
-        items.filter { downloadedHandles.contains($0.handle) }
+      return dateFiltered.filter { !downloadedHandles.contains($0.handle) } +
+        dateFiltered.filter { downloadedHandles.contains($0.handle) }
     }
+  }
+
+  private func clientSideDateFilter(
+    _ items: [CameraVendorGalleryItem],
+    date: CameraGalleryDateIntent
+  ) -> [CameraVendorGalleryItem] {
+    guard date != .all else { return items }
+    let calendar = Calendar(identifier: .gregorian)
+    let now = Date()
+    return items.filter { item in
+      guard let captureDate = parseCaptureDate(item.captureDate) else { return false }
+      switch date {
+      case .all:
+        return true
+      case .today:
+        return calendar.isDate(captureDate, inSameDayAs: now)
+      case .specificDay(let day):
+        return calendar.isDate(captureDate, inSameDayAs: day)
+      case .range(let from, let to):
+        let startOfFrom = calendar.startOfDay(for: from)
+        let startOfDayAfterTo = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: to)) ?? to
+        return captureDate >= startOfFrom && captureDate < startOfDayAfterTo
+      }
+    }
+  }
+
+  private func parseCaptureDate(_ text: String) -> Date? {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    // Format: "20260711T094525" or "2026-07-11"
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    if trimmed.count >= 15, trimmed.contains("T") {
+      formatter.dateFormat = "yyyyMMdd'T'HHmmss"
+      return formatter.date(from: String(trimmed.prefix(15)))
+    }
+    if trimmed.count >= 10, trimmed.contains("-") {
+      formatter.dateFormat = "yyyy-MM-dd"
+      return formatter.date(from: String(trimmed.prefix(10)))
+    }
+    if trimmed.count >= 8 {
+      formatter.dateFormat = "yyyyMMdd"
+      return formatter.date(from: String(trimmed.prefix(8)))
+    }
+    return nil
   }
 
   private func publishCurrentPresentation() async {

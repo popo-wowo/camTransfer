@@ -30,11 +30,11 @@
 		A1B2C3D4E5F6000DA0000001 /* NativeGalleryPolicies.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000DA0000000 /* NativeGalleryPolicies.swift */; };
 		A1B2C3D4E5F6000EA0000001 /* NativeScanViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000EA0000000 /* NativeScanViewController.swift */; };
 		A1B2C3D4E5F6000FA0000001 /* NativeGalleryViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000FA0000000 /* NativeGalleryViewController.swift */; };
+		A1B2C3D4E5F6001AA0000001 /* NativeGalleryHDPreviewCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6001AA0000000 /* NativeGalleryHDPreviewCell.swift */; };
 		A1B2C3D4E5F60010A0000001 /* NativePhotoPreviewViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60010A0000000 /* NativePhotoPreviewViewController.swift */; };
 		A1B2C3D4E5F60011A0000001 /* CameraAutoDownloadRule.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60011A0000000 /* CameraAutoDownloadRule.swift */; };
 		A1B2C3D4E5F60012A0000001 /* NativeAutoDownloadSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60012A0000000 /* NativeAutoDownloadSettingsViewController.swift */; };
 		A1B2C3D4E5F60013A0000001 /* CameraPhotoLibraryProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60013A0000000 /* CameraPhotoLibraryProvider.swift */; };
-		A1B2C3D4E5F60014A0000001 /* CameraVendorPairingProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60014A0000000 /* CameraVendorPairingProbe.swift */; };
 		0D2FDF3FF21F2F7B30A519B2 /* NativeConnectViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23B33146CEC3C5DA80D096F8 /* NativeConnectViewController.swift */; };
 		10318AC1513B94E232296B17 /* CameraSessionLiveActivityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7F279EBDC716817439DE6C6 /* CameraSessionLiveActivityController.swift */; };
 		22BB0301059A7B18AB687B87 /* CameraAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = F57265682EC0C0E6093AB35F /* CameraAdapter.swift */; };
@@ -53,7 +53,7 @@
 		A1B2C3D4E5F60009A0000001 /* CameraVendorWifiPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60009A0000000 /* CameraVendorWifiPolicy.swift */; };
 		A1B2C3D4E5F6000AA0000001 /* CameraVendorOriginalTransferWorker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000AA0000000 /* CameraVendorOriginalTransferWorker.swift */; };
 		A1B2C3D4E5F6000BA0000001 /* CameraVendorRealtimeGalleryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000BA0000000 /* CameraVendorRealtimeGalleryService.swift */; };
-		A1B2C3D4E5F60011A0000001 /* CameraVendorPairingProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60011A0000000 /* CameraVendorPairingProbe.swift */; };
+		A1B2C3D4E5F60015A0000001 /* CameraVendorPairingProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60015A0000000 /* CameraVendorPairingProbe.swift */; };
 		A1B2C3D4E5F6000CA0000001 /* CameraVendorPtpSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000CA0000000 /* CameraVendorPtpSession.swift */; };
 		6F12AA01C0D1E2F300000001 /* CameraVendorConnectFlowBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F12AA01C0D1E2F300000000 /* CameraVendorConnectFlowBridge.swift */; };
 		6F12AA01C0D1E2F300000003 /* CameraVendorGalleryMainlineSessionLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F12AA01C0D1E2F300000002 /* CameraVendorGalleryMainlineSessionLoader.swift */; };
@@ -128,11 +128,11 @@
 		A1B2C3D4E5F6000DA0000000 /* NativeGalleryPolicies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeGalleryPolicies.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000EA0000000 /* NativeScanViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeScanViewController.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000FA0000000 /* NativeGalleryViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeGalleryViewController.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6001AA0000000 /* NativeGalleryHDPreviewCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeGalleryHDPreviewCell.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60010A0000000 /* NativePhotoPreviewViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePhotoPreviewViewController.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60011A0000000 /* CameraAutoDownloadRule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraAutoDownloadRule.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60012A0000000 /* NativeAutoDownloadSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAutoDownloadSettingsViewController.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60013A0000000 /* CameraPhotoLibraryProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPhotoLibraryProvider.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60014A0000000 /* CameraVendorPairingProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorPairingProbe.swift; sourceTree = "<group>"; };
 		24D142A045D34E67A8D3A002 /* CameraGalleryEntryCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryEntryCoordinator.swift; sourceTree = "<group>"; };
 		2A420E455CC10F65BDB40D00 /* CameraConnectFlowCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraConnectFlowCoordinator.swift; sourceTree = "<group>"; };
 		2EB26EA8618168E48B7DE465 /* CameraSessionActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSessionActivityAttributes.swift; sourceTree = "<group>"; };
@@ -175,7 +175,7 @@
 		A1B2C3D4E5F60007A0000000 /* CameraVendorSecureHandshake.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorSecureHandshake.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60008A0000000 /* CameraVendorCatalogPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorCatalogPolicy.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60009A0000000 /* CameraVendorWifiPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorWifiPolicy.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60011A0000000 /* CameraVendorPairingProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorPairingProbe.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60015A0000000 /* CameraVendorPairingProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorPairingProbe.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000AA0000000 /* CameraVendorOriginalTransferWorker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorOriginalTransferWorker.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000BA0000000 /* CameraVendorRealtimeGalleryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorRealtimeGalleryService.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000CA0000000 /* CameraVendorPtpSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorPtpSession.swift; sourceTree = "<group>"; };
@@ -212,7 +212,7 @@
 				A1B2C3D4E5F60007A0000000 /* CameraVendorSecureHandshake.swift */,
 				A1B2C3D4E5F60008A0000000 /* CameraVendorCatalogPolicy.swift */,
 				A1B2C3D4E5F60009A0000000 /* CameraVendorWifiPolicy.swift */,
-				A1B2C3D4E5F60011A0000000 /* CameraVendorPairingProbe.swift */,
+				A1B2C3D4E5F60015A0000000 /* CameraVendorPairingProbe.swift */,
 				A1B2C3D4E5F6000AA0000000 /* CameraVendorOriginalTransferWorker.swift */,
 				A1B2C3D4E5F6000BA0000000 /* CameraVendorRealtimeGalleryService.swift */,
 				A1B2C3D4E5F6000CA0000000 /* CameraVendorPtpSession.swift */,
@@ -231,11 +231,11 @@
 				A1B2C3D4E5F6000DA0000000 /* NativeGalleryPolicies.swift */,
 				A1B2C3D4E5F6000EA0000000 /* NativeScanViewController.swift */,
 				A1B2C3D4E5F6000FA0000000 /* NativeGalleryViewController.swift */,
+				A1B2C3D4E5F6001AA0000000 /* NativeGalleryHDPreviewCell.swift */,
 				A1B2C3D4E5F60010A0000000 /* NativePhotoPreviewViewController.swift */,
 				A1B2C3D4E5F60011A0000000 /* CameraAutoDownloadRule.swift */,
 				A1B2C3D4E5F60012A0000000 /* NativeAutoDownloadSettingsViewController.swift */,
 				A1B2C3D4E5F60013A0000000 /* CameraPhotoLibraryProvider.swift */,
-				A1B2C3D4E5F60014A0000000 /* CameraVendorPairingProbe.swift */,
 				4E412E8677CF860F78B6EC5B /* ProAccessController.swift */,
 				1B96651EFBF5171FE9A72C98 /* Runner.entitlements */,
 				83E162AB02AF87B6A27F8F7D /* RunnerApp.swift */,
@@ -579,7 +579,7 @@
 				A1B2C3D4E5F60007A0000001 /* CameraVendorSecureHandshake.swift in Sources */,
 				A1B2C3D4E5F60008A0000001 /* CameraVendorCatalogPolicy.swift in Sources */,
 				A1B2C3D4E5F60009A0000001 /* CameraVendorWifiPolicy.swift in Sources */,
-				A1B2C3D4E5F60011A0000001 /* CameraVendorPairingProbe.swift in Sources */,
+				A1B2C3D4E5F60015A0000001 /* CameraVendorPairingProbe.swift in Sources */,
 				A1B2C3D4E5F6000AA0000001 /* CameraVendorOriginalTransferWorker.swift in Sources */,
 				A1B2C3D4E5F6000BA0000001 /* CameraVendorRealtimeGalleryService.swift in Sources */,
 				A1B2C3D4E5F6000CA0000001 /* CameraVendorPtpSession.swift in Sources */,
@@ -592,11 +592,11 @@
 				A1B2C3D4E5F6000DA0000001 /* NativeGalleryPolicies.swift in Sources */,
 				A1B2C3D4E5F6000EA0000001 /* NativeScanViewController.swift in Sources */,
 				A1B2C3D4E5F6000FA0000001 /* NativeGalleryViewController.swift in Sources */,
+				A1B2C3D4E5F6001AA0000001 /* NativeGalleryHDPreviewCell.swift in Sources */,
 				A1B2C3D4E5F60010A0000001 /* NativePhotoPreviewViewController.swift in Sources */,
 				A1B2C3D4E5F60011A0000001 /* CameraAutoDownloadRule.swift in Sources */,
 				A1B2C3D4E5F60012A0000001 /* NativeAutoDownloadSettingsViewController.swift in Sources */,
 				A1B2C3D4E5F60013A0000001 /* CameraPhotoLibraryProvider.swift in Sources */,
-				A1B2C3D4E5F60014A0000001 /* CameraVendorPairingProbe.swift in Sources */,
 				A5E8E3BBD16B08C09ED18943 /* ProAccessController.swift in Sources */,
 				26168D6E335307C680D37A7C /* RunnerApp.swift in Sources */,
 				C005391B19856E8E51D6BEBA /* WiredCameraImportModels.swift in Sources */,

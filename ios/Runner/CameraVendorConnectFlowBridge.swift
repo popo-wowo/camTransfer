@@ -55,6 +55,9 @@ final class CameraVendorRuntimeGallerySessionActivator: CameraSessionRuntimeGall
       )
     )
     transport.bind(to: runtime, binding: binding)
+    transport.onThumbnailGenerated = { [weak runtime] handle, image in
+      runtime?.onDownloadThumbnailGenerated?(handle, image)
+    }
     deferredTransport.attach(transport, binding: binding)
     deferredBackgroundMaintainer.attach(
       CameraVendorSessionRuntimeBackgroundMaintainer(
