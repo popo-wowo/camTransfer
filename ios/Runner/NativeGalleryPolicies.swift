@@ -1,6 +1,20 @@
 import Foundation
 import UIKit
 
+enum NativeGalleryAndroidParityChromePolicy {
+  static let toolRowHeight: CGFloat = 42
+  static let toolSurfaceCount = 3
+  static let usesSeparateModeRow = false
+
+  static func showsFilterSurface(mode _: NativeGalleryBrowseMode) -> Bool {
+    true
+  }
+
+  static func canExpandFilters(mode: NativeGalleryBrowseMode) -> Bool {
+    mode == .thumbnail
+  }
+}
+
 enum NativePhotoPreviewRotationPolicy {
   static func nextManualRotationDegrees(_ currentDegrees: Int) -> Int {
     normalizedDegrees(currentDegrees + 90)
@@ -1596,4 +1610,3 @@ enum NativeGalleryEntryNavigationPolicy {
     fetchSucceeded
   }
 }
-

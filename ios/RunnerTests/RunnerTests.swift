@@ -1223,6 +1223,17 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(requests.map(\.mode), [.original, .original])
   }
 
+  func testNativeGalleryAndroidParityChromeUsesOneToolRow() {
+    XCTAssertEqual(NativeGalleryAndroidParityChromePolicy.toolRowHeight, 42)
+    XCTAssertEqual(NativeGalleryAndroidParityChromePolicy.toolSurfaceCount, 3)
+    XCTAssertFalse(NativeGalleryAndroidParityChromePolicy.usesSeparateModeRow)
+  }
+
+  func testNativeGalleryHDModeKeepsFilterSurfaceButDisablesExpansion() {
+    XCTAssertTrue(NativeGalleryAndroidParityChromePolicy.showsFilterSurface(mode: .highDefinition))
+    XCTAssertFalse(NativeGalleryAndroidParityChromePolicy.canExpandFilters(mode: .highDefinition))
+  }
+
   func testNativeGalleryHighDefinitionPreviewCacheKeepsLoadedStateAfterMemoryEviction() throws {
     let directory = FileManager.default.temporaryDirectory
       .appendingPathComponent("hd-preview-cache-\(UUID().uuidString)", isDirectory: true)

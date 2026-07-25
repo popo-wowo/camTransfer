@@ -73,6 +73,46 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     return control
   }()
 
+  private let galleryFilterButton: UIButton = {
+    let button = UIButton(type: .system)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    var configuration = UIButton.Configuration.filled()
+    configuration.title = "筛选"
+    configuration.image = UIImage(systemName: "line.3.horizontal.decrease")
+    configuration.imagePadding = 5
+    configuration.cornerStyle = .capsule
+    configuration.baseBackgroundColor = NativeLuxuryTheme.warmFill
+    configuration.baseForegroundColor = NativeLuxuryTheme.ink
+    configuration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)
+    button.configuration = configuration
+    return button
+  }()
+
+  private let galleryToolsButton: UIButton = {
+    let button = UIButton(type: .system)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    var configuration = UIButton.Configuration.filled()
+    configuration.title = "工具"
+    configuration.image = UIImage(systemName: "ellipsis.circle")
+    configuration.imagePadding = 5
+    configuration.cornerStyle = .capsule
+    configuration.baseBackgroundColor = NativeLuxuryTheme.warmFill
+    configuration.baseForegroundColor = NativeLuxuryTheme.ink
+    configuration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)
+    button.configuration = configuration
+    button.showsMenuAsPrimaryAction = true
+    return button
+  }()
+
+  private lazy var galleryToolRow: UIStackView = {
+    let stack = UIStackView(arrangedSubviews: [galleryFilterButton, browseModeSegment, galleryToolsButton])
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    stack.axis = .horizontal
+    stack.alignment = .fill
+    stack.spacing = 8
+    return stack
+  }()
+
   private let hdCollectionView: UICollectionView = {
     let layout = UICollectionViewFlowLayout()
     layout.minimumInteritemSpacing = 0
@@ -105,8 +145,6 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
   }()
 
   private let galleryBackButton = NativeGalleryHeaderIconButton(icon: .back, accessibilityLabel: "返回")
-  private let galleryShareButton = NativeGalleryHeaderIconButton(icon: .share, accessibilityLabel: "现场分享")
-  private let galleryDownloadListButton = NativeGalleryHeaderIconButton(icon: .downloads, accessibilityLabel: "下载中心")
   private let galleryHeaderTitleLabel: UILabel = {
     let label = UILabel()
     label.translatesAutoresizingMaskIntoConstraints = false
@@ -480,8 +518,6 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     let headerFrame = NativeTopHeaderFrameView()
     headerBar.addSubview(galleryBackButton)
     headerBar.addSubview(galleryHeaderTitleLabel)
-    headerBar.addSubview(galleryShareButton)
-    headerBar.addSubview(galleryDownloadListButton)
     headerFrame.addSubview(headerStack)
     view.addSubview(headerFrame)
     view.addSubview(copyRow)
@@ -514,16 +550,9 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     filterContentStack.addArrangedSubview(dateChips)
     filterContentStack.addArrangedSubview(formatChips)
     filterContentStack.addArrangedSubview(sortChips)
-    filterHeaderView.addSubview(filterTitleLabel)
-    filterHeaderView.addSubview(filterSummaryLabel)
-    filterHeaderView.addSubview(filterChevronLabel)
-    let filterStack = UIStackView(arrangedSubviews: [filterHeaderView, filterContentStack])
-    filterStack.translatesAutoresizingMaskIntoConstraints = false
-    filterStack.axis = .vertical
-    filterStack.spacing = 8
 
-    view.addSubview(browseModeSegment)
-    view.addSubview(filterStack)
+    view.addSubview(galleryToolRow)
+    view.addSubview(filterContentStack)
     view.addSubview(collectionView)
     view.addSubview(hdCollectionView)
     view.addSubview(hdStatusLabel)
@@ -535,9 +564,8 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     bottomDownloadBar.addSubview(bottomDownloadButton)
 
     galleryBackButton.addTarget(self, action: #selector(exitGalleryTapped), for: .touchUpInside)
-    galleryShareButton.addTarget(self, action: #selector(localProofingTapped), for: .touchUpInside)
-    galleryDownloadListButton.addTarget(self, action: #selector(downloadListTapped), for: .touchUpInside)
-    filterHeaderView.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(toggleFilterPanel)))
+    galleryFilterButton.addTarget(self, action: #selector(toggleFilterPanel), for: .touchUpInside)
+    configureGalleryToolsMenu()
     reservedReceiveProbeButton.addTarget(self, action: #selector(reservedReceiveProbeTapped), for: .touchUpInside)
     bottomSelectAllButton.addTarget(self, action: #selector(selectAllTapped), for: .touchUpInside)
     bottomCompressionSwitch.addTarget(self, action: #selector(bottomTransferSizeChanged), for: .valueChanged)
@@ -575,11 +603,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       galleryHeaderTitleLabel.centerXAnchor.constraint(equalTo: headerBar.centerXAnchor),
       galleryHeaderTitleLabel.centerYAnchor.constraint(equalTo: headerBar.centerYAnchor),
       galleryHeaderTitleLabel.leadingAnchor.constraint(greaterThanOrEqualTo: galleryBackButton.trailingAnchor, constant: NativeGalleryTopChromePolicy.actionSpacing),
-      galleryShareButton.trailingAnchor.constraint(equalTo: galleryDownloadListButton.leadingAnchor, constant: -NativeGalleryTopChromePolicy.actionSpacing),
-      galleryShareButton.centerYAnchor.constraint(equalTo: headerBar.centerYAnchor),
-      galleryDownloadListButton.trailingAnchor.constraint(equalTo: headerBar.trailingAnchor),
-      galleryDownloadListButton.centerYAnchor.constraint(equalTo: headerBar.centerYAnchor),
-      galleryHeaderTitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: galleryShareButton.leadingAnchor, constant: -NativeGalleryTopChromePolicy.actionSpacing),
+      galleryHeaderTitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: headerBar.trailingAnchor, constant: -44),
 
       copyRow.topAnchor.constraint(equalTo: headerFrame.bottomAnchor, constant: 8),
       copyRow.leadingAnchor.constraint(equalTo: headerFrame.leadingAnchor, constant: 2),
@@ -594,30 +618,22 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       diagnosticsView.trailingAnchor.constraint(equalTo: headerFrame.trailingAnchor),
       diagnosticsView.heightAnchor.constraint(equalToConstant: 0),
 
-      filterStack.topAnchor.constraint(
+      galleryToolRow.topAnchor.constraint(
         equalTo: diagnosticsView.bottomAnchor,
         constant: NativeGalleryAndroidParityLayoutPolicy.filterTopSpacing
       ),
-      filterStack.leadingAnchor.constraint(equalTo: headerFrame.leadingAnchor),
-      filterStack.trailingAnchor.constraint(equalTo: headerFrame.trailingAnchor),
+      galleryToolRow.leadingAnchor.constraint(equalTo: headerFrame.leadingAnchor),
+      galleryToolRow.trailingAnchor.constraint(equalTo: headerFrame.trailingAnchor),
+      galleryToolRow.heightAnchor.constraint(equalToConstant: NativeGalleryAndroidParityChromePolicy.toolRowHeight),
+      galleryFilterButton.widthAnchor.constraint(equalToConstant: 76),
+      galleryToolsButton.widthAnchor.constraint(equalToConstant: 76),
 
-      filterHeaderView.heightAnchor.constraint(equalToConstant: NativeGalleryAndroidParityLayoutPolicy.filterHeaderHeight),
-      filterTitleLabel.leadingAnchor.constraint(equalTo: filterHeaderView.leadingAnchor, constant: 42),
-      filterTitleLabel.centerYAnchor.constraint(equalTo: filterHeaderView.centerYAnchor),
-      filterSummaryLabel.leadingAnchor.constraint(equalTo: filterTitleLabel.trailingAnchor, constant: 10),
-      filterSummaryLabel.trailingAnchor.constraint(equalTo: filterChevronLabel.leadingAnchor, constant: -8),
-      filterSummaryLabel.centerYAnchor.constraint(equalTo: filterHeaderView.centerYAnchor),
-      filterChevronLabel.trailingAnchor.constraint(equalTo: filterHeaderView.trailingAnchor, constant: -14),
-      filterChevronLabel.centerYAnchor.constraint(equalTo: filterHeaderView.centerYAnchor),
-      filterChevronLabel.widthAnchor.constraint(equalToConstant: 18),
-
-      browseModeSegment.topAnchor.constraint(equalTo: filterStack.bottomAnchor, constant: 8),
-      browseModeSegment.leadingAnchor.constraint(equalTo: headerFrame.leadingAnchor),
-      browseModeSegment.trailingAnchor.constraint(equalTo: headerFrame.trailingAnchor),
-      browseModeSegment.heightAnchor.constraint(equalToConstant: 32),
+      filterContentStack.topAnchor.constraint(equalTo: galleryToolRow.bottomAnchor, constant: 8),
+      filterContentStack.leadingAnchor.constraint(equalTo: headerFrame.leadingAnchor),
+      filterContentStack.trailingAnchor.constraint(equalTo: headerFrame.trailingAnchor),
 
       collectionView.topAnchor.constraint(
-        equalTo: browseModeSegment.bottomAnchor,
+        equalTo: filterContentStack.bottomAnchor,
         constant: NativeGalleryAndroidParityLayoutPolicy.filterToGridSpacing
       ),
       collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -673,7 +689,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       let trailing = pinchHintBubble.leadingAnchor.constraint(equalTo: view.trailingAnchor)
       pinchHintTrailingConstraint = trailing
       NSLayoutConstraint.activate([
-        pinchHintBubble.topAnchor.constraint(equalTo: filterStack.bottomAnchor, constant: 12),
+        pinchHintBubble.topAnchor.constraint(equalTo: galleryToolRow.bottomAnchor, constant: 12),
         trailing,
         pinchHintBubble.heightAnchor.constraint(equalToConstant: 32),
 
@@ -1047,6 +1063,27 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     refreshFilterSummary()
   }
 
+  private func configureGalleryToolsMenu() {
+    galleryToolsButton.menu = UIMenu(children: [
+      UIAction(title: "现场分享", image: UIImage(systemName: "square.and.arrow.up")) { [weak self] _ in
+        self?.localProofingTapped()
+      },
+      UIAction(title: "下载中心", image: UIImage(systemName: "arrow.down.circle")) { [weak self] _ in
+        self?.showDownloadListForCurrentTasks()
+      },
+      UIAction(title: "下载目录", image: UIImage(systemName: "photo.on.rectangle")) { [weak self] _ in
+        self?.showDownloadListForCurrentTasks()
+      },
+      UIAction(
+        title: "清理下载记录",
+        image: UIImage(systemName: "trash"),
+        attributes: .destructive
+      ) { [weak self] _ in
+        self?.clearAllDownloadCacheTapped()
+      },
+    ])
+  }
+
   private func submitGalleryIntent() {
     prioritizeGalleryInteraction()
     appendDiagnostic(
@@ -1058,6 +1095,10 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
 
   @objc private func toggleFilterPanel() {
     guard NativeGalleryDownloadModePresentationPolicy.canInteractWithGallery(isDownloading: runtime.isDownloading) else {
+      return
+    }
+    guard NativeGalleryAndroidParityChromePolicy.canExpandFilters(mode: browseMode) else {
+      showToast("高清模式使用当前日期，筛选面板已锁定")
       return
     }
     isFilterPanelExpanded.toggle()
@@ -1084,6 +1125,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     }
 
     browseMode = mode
+    galleryFilterButton.isEnabled = NativeGalleryAndroidParityChromePolicy.canExpandFilters(mode: mode)
     switch mode {
     case .thumbnail:
       hdCollectionView.isHidden = true
@@ -1095,6 +1137,9 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       view.backgroundColor = NativeLuxuryTheme.background
       scheduleVisibleThumbnailRefresh(after: 0.05)
     case .highDefinition:
+      isFilterPanelExpanded = false
+      filterContentStack.isHidden = true
+      filterChevronLabel.text = "⌄"
       visibleThumbnailRefreshTask?.cancel()
       visibleThumbnailRefreshTask = nil
 
@@ -1818,6 +1863,7 @@ extension NativeGalleryViewController {
       sortText = "未下载优先"
     }
     filterSummaryLabel.text = "\(dateText) · \(formatText) · \(sortText)"
+    galleryFilterButton.accessibilityValue = filterSummaryLabel.text
   }
 
   private func refreshBottomDownloadBar() {
@@ -1842,7 +1888,7 @@ extension NativeGalleryViewController {
     let canLeave = NativeGalleryNavigationPolicy.canLeaveGallery(isDownloading: runtime.isDownloading)
     galleryBackButton.isEnabled = true
     isModalInPresentation = !canLeave
-    galleryDownloadListButton.isEnabled = true
+    galleryToolsButton.isEnabled = true
     let selectableCount = NativeGallerySelectionSummaryPolicy.summary(
       items: catalogPresentation.items,
       state: selectionProjectionState
