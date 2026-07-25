@@ -1,12 +1,5 @@
 import UIKit
 
-// MARK: - Browse Mode
-
-enum NativeGalleryBrowseMode {
-  case thumbnail
-  case highDefinition
-}
-
 // MARK: - HD Preview Cell
 
 final class NativeGalleryHDPreviewCell: UICollectionViewCell {

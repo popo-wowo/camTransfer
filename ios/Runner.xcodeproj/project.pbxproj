@@ -31,6 +31,7 @@
 		A1B2C3D4E5F6000EA0000001 /* NativeScanViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000EA0000000 /* NativeScanViewController.swift */; };
 		A1B2C3D4E5F6000FA0000001 /* NativeGalleryViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000FA0000000 /* NativeGalleryViewController.swift */; };
 		A1B2C3D4E5F6001AA0000001 /* NativeGalleryHDPreviewCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6001AA0000000 /* NativeGalleryHDPreviewCell.swift */; };
+		A1B2C3D4E5F6001BA0000001 /* NativeGalleryHDPreviewSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6001BA0000000 /* NativeGalleryHDPreviewSession.swift */; };
 		A1B2C3D4E5F60010A0000001 /* NativePhotoPreviewViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60010A0000000 /* NativePhotoPreviewViewController.swift */; };
 		A1B2C3D4E5F60011A0000001 /* CameraAutoDownloadRule.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60011A0000000 /* CameraAutoDownloadRule.swift */; };
 		A1B2C3D4E5F60012A0000001 /* NativeAutoDownloadSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60012A0000000 /* NativeAutoDownloadSettingsViewController.swift */; };
@@ -129,6 +130,7 @@
 		A1B2C3D4E5F6000EA0000000 /* NativeScanViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeScanViewController.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000FA0000000 /* NativeGalleryViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeGalleryViewController.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6001AA0000000 /* NativeGalleryHDPreviewCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeGalleryHDPreviewCell.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6001BA0000000 /* NativeGalleryHDPreviewSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeGalleryHDPreviewSession.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60010A0000000 /* NativePhotoPreviewViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePhotoPreviewViewController.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60011A0000000 /* CameraAutoDownloadRule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraAutoDownloadRule.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60012A0000000 /* NativeAutoDownloadSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAutoDownloadSettingsViewController.swift; sourceTree = "<group>"; };
@@ -232,6 +234,7 @@
 				A1B2C3D4E5F6000EA0000000 /* NativeScanViewController.swift */,
 				A1B2C3D4E5F6000FA0000000 /* NativeGalleryViewController.swift */,
 				A1B2C3D4E5F6001AA0000000 /* NativeGalleryHDPreviewCell.swift */,
+				A1B2C3D4E5F6001BA0000000 /* NativeGalleryHDPreviewSession.swift */,
 				A1B2C3D4E5F60010A0000000 /* NativePhotoPreviewViewController.swift */,
 				A1B2C3D4E5F60011A0000000 /* CameraAutoDownloadRule.swift */,
 				A1B2C3D4E5F60012A0000000 /* NativeAutoDownloadSettingsViewController.swift */,
@@ -593,6 +596,7 @@
 				A1B2C3D4E5F6000EA0000001 /* NativeScanViewController.swift in Sources */,
 				A1B2C3D4E5F6000FA0000001 /* NativeGalleryViewController.swift in Sources */,
 				A1B2C3D4E5F6001AA0000001 /* NativeGalleryHDPreviewCell.swift in Sources */,
+				A1B2C3D4E5F6001BA0000001 /* NativeGalleryHDPreviewSession.swift in Sources */,
 				A1B2C3D4E5F60010A0000001 /* NativePhotoPreviewViewController.swift in Sources */,
 				A1B2C3D4E5F60011A0000001 /* CameraAutoDownloadRule.swift in Sources */,
 				A1B2C3D4E5F60012A0000001 /* NativeAutoDownloadSettingsViewController.swift in Sources */,

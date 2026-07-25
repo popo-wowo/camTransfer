@@ -1115,6 +1115,63 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(controller.pendingHandles, [2, 1])
   }
 
+  func testNativeGalleryHDSessionChoosesNewestAvailableDateWhenCurrentDateHasNoPreview() throws {
+    let current = try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 7, day: 25)))
+    let older = CameraVendorGalleryItem(
+      handle: 10,
+      filename: "DSCF0010.JPG",
+      formatLabel: "JPG",
+      captureDate: "20260724T120000",
+      byteSizeText: ""
+    )
+
+    let selected = NativeGalleryHDPreviewSessionPolicy.preferredActiveDate(
+      items: [older],
+      currentDate: current
+    )
+
+    XCTAssertEqual(Calendar.current.component(.day, from: selected), 24)
+  }
+
+  func testNativeGalleryHDSessionPairsSameStemRawSidecarWithoutAddingRawToTimeline() throws {
+    let date = try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 7, day: 24)))
+    let jpg = CameraVendorGalleryItem(
+      handle: 102,
+      filename: "DSCF0102.JPG",
+      formatLabel: "JPG",
+      captureDate: "20260724T120000",
+      byteSizeText: ""
+    )
+    let raw = CameraVendorGalleryItem(
+      handle: 101,
+      filename: "DSCF0102.RAF",
+      formatLabel: "RAW",
+      captureDate: "20260724T120000",
+      byteSizeText: ""
+    )
+
+    let snapshot = NativeGalleryHDPreviewSessionPolicy.snapshot(items: [raw, jpg], activeDate: date)
+
+    XCTAssertEqual(snapshot.items.map(\.displayItem.handle), [102])
+    XCTAssertEqual(snapshot.items.first?.rawSidecar?.handle, 101)
+  }
+
+  func testNativeGalleryHDWindowPrioritizesVisibleThenTwentyAfterThenFiveBefore() {
+    let ordered = Array(1...40)
+
+    let window = NativeGalleryHDPreviewSessionPolicy.priorityWindow(
+      orderedHandles: ordered,
+      visibleHandles: [10, 11, 12],
+      loadedHandles: [],
+      loadingHandles: [],
+      failedHandles: []
+    )
+
+    XCTAssertEqual(Array(window.prefix(3)), [10, 11, 12])
+    XCTAssertEqual(Array(window.dropFirst(3).prefix(20)), Array(13...32))
+    XCTAssertEqual(Array(window.suffix(5)), [5, 6, 7, 8, 9])
+  }
+
   func testNativeGalleryHighDefinitionPreviewCacheKeepsLoadedStateAfterMemoryEviction() throws {
     let directory = FileManager.default.temporaryDirectory
       .appendingPathComponent("hd-preview-cache-\(UUID().uuidString)", isDirectory: true)
