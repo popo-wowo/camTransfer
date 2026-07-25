@@ -2692,6 +2692,12 @@ final class CameraVendorBluetoothService: NSObject {
   private var shouldAutoReconnectRememberedCamera = false
   private var isNextRememberedCameraConnectionUserApproved = false
 
+  // MARK: - Pairing Probe (silent BLE validation on app launch)
+  private var pairingProbeState: CameraVendorPairingProbeState = .idle
+  private var pairingProbeContinuation: CheckedContinuation<CameraVendorPairingProbeResult, Never>?
+  private var pairingProbeTimeoutWorkItem: DispatchWorkItem?
+  private var pairingProbePeripheral: CBPeripheral?
+
   init(pairingStore: CameraVendorPairedCameraStore = CameraVendorPairedCameraStore()) {
     self.pairingStore = pairingStore
     let savedRecords = pairingStore.loadAll()
@@ -2774,6 +2780,143 @@ final class CameraVendorBluetoothService: NSObject {
       return false
     }
     return connectPairedCamera(peripheralID: record.peripheralID)
+  }
+
+  // MARK: - Pairing Probe API
+
+  /// Silently probe whether the remembered camera's BLE pairing is still valid.
+  /// Returns the probe result. If successful (.online), the BLE connection is kept
+  /// alive for fast gallery entry.
+  func probePairing(peripheralID: UUID) async -> CameraVendorPairingProbeResult {
+    // Don't probe if a connection flow is already active.
+    guard selectedPeripheral == nil,
+          autoReconnectTargetPeripheralID == nil,
+          !isRunningTransferActivation else {
+      return .offline
+    }
+
+    guard central.state == .poweredOn else {
+      return .bluetoothOff
+    }
+
+    // Cancel any existing probe.
+    cancelPairingProbe(reason: "new-probe-requested")
+
+    appendObservation("PAIRING_PROBE_BEGIN peripheralID=\(peripheralID.uuidString)")
+
+    return await withCheckedContinuation { continuation in
+      pairingProbeContinuation = continuation
+      pairingProbeState = .connecting(peripheralID: peripheralID)
+
+      // Set timeout.
+      let timeoutWork = DispatchWorkItem { [weak self] in
+        self?.completePairingProbe(result: .offline, reason: "timeout")
+      }
+      pairingProbeTimeoutWorkItem = timeoutWork
+      DispatchQueue.main.asyncAfter(
+        deadline: .now() + CameraVendorPairingProbePolicy.timeoutSeconds,
+        execute: timeoutWork
+      )
+
+      // Try system retrieve first (faster than scanning).
+      if CameraVendorPairingProbePolicy.shouldTrySystemRetrieveFirst {
+        let peripherals = central.retrievePeripherals(withIdentifiers: [peripheralID])
+        if let peripheral = peripherals.first {
+          pairingProbePeripheral = peripheral
+          peripheral.delegate = self
+          central.connect(peripheral, options: nil)
+          return
+        }
+      }
+
+      // Fall back to scanning.
+      pairingProbeState = .scanning(peripheralID: peripheralID)
+      central.scanForPeripherals(
+        withServices: nil,
+        options: [CBCentralManagerScanOptionAllowDuplicatesKey: false]
+      )
+    }
+  }
+
+  /// Whether the probe has successfully pre-connected and the BLE link is ready.
+  var hasPreconnectedProbe: Bool {
+    pairingProbeState.preconnectedPeripheralID != nil
+  }
+
+  /// Returns the pre-connected peripheral ID if probe succeeded.
+  var preconnectedProbePeripheralID: UUID? {
+    pairingProbeState.preconnectedPeripheralID
+  }
+
+  /// Consume the pre-connected state — transition probe back to idle.
+  /// The BLE connection remains; caller takes ownership.
+  func consumePreconnectedProbe() -> CBPeripheral? {
+    guard case .preconnected = pairingProbeState,
+          let peripheral = pairingProbePeripheral else {
+      return nil
+    }
+    pairingProbeState = .idle
+    pairingProbePeripheral = nil
+    appendObservation("PAIRING_PROBE_CONSUMED peripheralID=\(peripheral.identifier.uuidString)")
+    return peripheral
+  }
+
+  /// Cancel any in-progress probe (e.g., when user taps connect).
+  func cancelPairingProbe(reason: String) {
+    guard pairingProbeState.isActive || pairingProbeState.preconnectedPeripheralID != nil else { return }
+    pairingProbeTimeoutWorkItem?.cancel()
+    pairingProbeTimeoutWorkItem = nil
+
+    // If we were scanning for the probe, stop.
+    if case .scanning = pairingProbeState {
+      central.stopScan()
+    }
+
+    // If we have a probe peripheral connected but not consumed, disconnect it.
+    if let peripheral = pairingProbePeripheral, pairingProbeState.isActive {
+      central.cancelPeripheralConnection(peripheral)
+    }
+
+    let previousState = pairingProbeState
+    pairingProbeState = .idle
+    pairingProbePeripheral = nil
+
+    appendObservation("PAIRING_PROBE_CANCELLED reason=\(reason) previousState=\(previousState)")
+
+    // Resume continuation if it's still pending.
+    if let continuation = pairingProbeContinuation {
+      pairingProbeContinuation = nil
+      continuation.resume(returning: .offline)
+    }
+  }
+
+  private func completePairingProbe(result: CameraVendorPairingProbeResult, reason: String) {
+    pairingProbeTimeoutWorkItem?.cancel()
+    pairingProbeTimeoutWorkItem = nil
+
+    if case .scanning = pairingProbeState {
+      central.stopScan()
+    }
+
+    switch result {
+    case .online:
+      pairingProbeState = .preconnected(peripheralID: pairingProbePeripheral?.identifier ?? UUID())
+      // Keep the peripheral connected for fast gallery entry.
+    case .pairingInvalid, .offline, .bluetoothOff:
+      // Disconnect if we connected during probe.
+      if let peripheral = pairingProbePeripheral, pairingProbeState.isActive {
+        central.cancelPeripheralConnection(peripheral)
+      }
+      pairingProbeState = .completed(result)
+      pairingProbePeripheral = nil
+    }
+
+    appendObservation("PAIRING_PROBE_COMPLETE result=\(result) reason=\(reason)")
+
+    if let continuation = pairingProbeContinuation {
+      pairingProbeContinuation = nil
+      continuation.resume(returning: result)
+    }
   }
 
   @discardableResult
@@ -4393,6 +4536,17 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
     updateStatus("已发现 \(discoveredCameras.count) 台相机", isBusy: false)
     notifyDevicesChanged()
 
+    // Pairing probe: if we're scanning for the probe target, connect it silently.
+    if case .scanning(let probeTargetID) = pairingProbeState,
+       peripheral.identifier == probeTargetID {
+      central.stopScan()
+      pairingProbeState = .connecting(peripheralID: probeTargetID)
+      pairingProbePeripheral = peripheral
+      peripheral.delegate = self
+      central.connect(peripheral, options: nil)
+      return
+    }
+
     if let autoReconnectTargetPeripheralID,
        peripheral.identifier == autoReconnectTargetPeripheralID {
       scanTimeoutWorkItem?.cancel()
@@ -4455,6 +4609,15 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
   }
 
   func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+    // Pairing probe: if this is the probe peripheral, discover services silently.
+    if case .connecting(let probeID) = pairingProbeState,
+       peripheral.identifier == probeID {
+      pairingProbeState = .discoveringServices(peripheralID: probeID)
+      peripheral.delegate = self
+      peripheral.discoverServices([CameraVendorPairingProbePolicy.validationServiceUUID])
+      return
+    }
+
     recordBackgroundHardwareActivity()
     appendLog("蓝牙连接成功: \(peripheral.name ?? peripheral.identifier.uuidString)")
     appendObservation("BLE_CONNECTED name=\(peripheral.name ?? "nil") id=\(peripheral.identifier.uuidString)")
@@ -4468,6 +4631,16 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
     didFailToConnect peripheral: CBPeripheral,
     error: Error?
   ) {
+    // Pairing probe: if the probe peripheral failed to connect, check if pairing is invalid.
+    if pairingProbeState.targetPeripheralID == peripheral.identifier {
+      if CameraVendorPairingProbePolicy.isConnectionFailurePairingInvalid(error) {
+        completePairingProbe(result: .pairingInvalid(reason: error?.localizedDescription ?? "connect-failed"), reason: "didFailToConnect-pairing-invalid")
+      } else {
+        completePairingProbe(result: .offline, reason: "didFailToConnect")
+      }
+      return
+    }
+
     let errorDescription = error?.localizedDescription
     appendLog("连接失败: \(errorDescription ?? "unknown")")
     if CameraVendorBluetoothConnectFailurePolicy.requiresSystemBluetoothPairingCleanup(for: errorDescription) {
@@ -4487,6 +4660,16 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
     didDisconnectPeripheral peripheral: CBPeripheral,
     error: Error?
   ) {
+    // Pairing probe: if the probe peripheral disconnected, the probe failed.
+    if pairingProbeState.targetPeripheralID == peripheral.identifier {
+      if let error, CameraVendorPairingProbePolicy.isPairingInvalidError(error) {
+        completePairingProbe(result: .pairingInvalid(reason: error.localizedDescription), reason: "didDisconnect-pairing-invalid")
+      } else {
+        completePairingProbe(result: .offline, reason: "didDisconnect")
+      }
+      return
+    }
+
     if let error {
       appendLog("连接断开: \(error.localizedDescription)")
       appendObservation("BLE_DISCONNECTED error=\(error.localizedDescription)")
@@ -4583,6 +4766,32 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
 
 extension CameraVendorBluetoothService: CBPeripheralDelegate {
   func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+    // Pairing probe: only discover the validation service's characteristics.
+    if case .discoveringServices(let probeID) = pairingProbeState,
+       peripheral.identifier == probeID {
+      if let error {
+        completePairingProbe(
+          result: CameraVendorPairingProbePolicy.isPairingInvalidError(error)
+            ? .pairingInvalid(reason: error.localizedDescription)
+            : .offline,
+          reason: "didDiscoverServices-error"
+        )
+        return
+      }
+      guard let service = peripheral.services?.first(where: {
+        $0.uuid == CameraVendorPairingProbePolicy.validationServiceUUID
+      }) else {
+        completePairingProbe(result: .offline, reason: "validation-service-not-found")
+        return
+      }
+      pairingProbeState = .readingCharacteristic(peripheralID: probeID)
+      peripheral.discoverCharacteristics(
+        [CameraVendorPairingProbePolicy.validationCharacteristicUUID],
+        for: service
+      )
+      return
+    }
+
     if let error {
       appendLog("发现服务失败: \(error.localizedDescription)")
       updateStatus("读取服务失败", isBusy: false)
@@ -4615,6 +4824,28 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
     didDiscoverCharacteristicsFor service: CBService,
     error: Error?
   ) {
+    // Pairing probe: read the validation characteristic to test encryption.
+    if case .readingCharacteristic(let probeID) = pairingProbeState,
+       peripheral.identifier == probeID {
+      if let error {
+        completePairingProbe(
+          result: CameraVendorPairingProbePolicy.isPairingInvalidError(error)
+            ? .pairingInvalid(reason: error.localizedDescription)
+            : .offline,
+          reason: "didDiscoverCharacteristics-error"
+        )
+        return
+      }
+      guard let characteristic = service.characteristics?.first(where: {
+        $0.uuid == CameraVendorPairingProbePolicy.validationCharacteristicUUID
+      }) else {
+        completePairingProbe(result: .offline, reason: "validation-characteristic-not-found")
+        return
+      }
+      peripheral.readValue(for: characteristic)
+      return
+    }
+
     if let error {
       appendLog("发现特征失败: \(error.localizedDescription)")
       updateStatus("读取特征失败", isBusy: false)
@@ -4663,6 +4894,23 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
     didUpdateValueFor characteristic: CBCharacteristic,
     error: Error?
   ) {
+    // Pairing probe: characteristic read result determines pairing validity.
+    if case .readingCharacteristic(let probeID) = pairingProbeState,
+       peripheral.identifier == probeID,
+       characteristic.uuid == CameraVendorPairingProbePolicy.validationCharacteristicUUID {
+      if let error {
+        if CameraVendorPairingProbePolicy.isPairingInvalidError(error) {
+          completePairingProbe(result: .pairingInvalid(reason: error.localizedDescription), reason: "characteristic-read-pairing-invalid")
+        } else {
+          completePairingProbe(result: .offline, reason: "characteristic-read-error: \(error.localizedDescription)")
+        }
+      } else {
+        // Read succeeded — encryption link is valid, pairing is good.
+        completePairingProbe(result: .online, reason: "characteristic-read-success")
+      }
+      return
+    }
+
     let isMetadataCharacteristic = isHandshakeMetadataCharacteristic(characteristic)
 
     if let error {

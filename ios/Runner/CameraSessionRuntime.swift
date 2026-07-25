@@ -165,6 +165,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   private var pendingGalleryActivation: PendingGalleryActivation?
   private var hasRequestedRecoveredConnection = false
   private var presentationObservers: [UUID: (CameraSessionPresentation) -> Void] = [:]
+  private var incrementalCatalogObservers: [UUID: (CameraGalleryPresentation, Set<Int>) -> Void] = [:]
   var onConnectionSnapshotChanged: ((IOSCameraHomeSnapshot) -> Void)?
   var onConnectionLogAppended: ((String) -> Void)?
   var onPresentationDestinationReady: ((CameraSessionRuntimePresentationDestination) -> Void)?
@@ -247,6 +248,10 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
         publishPresentation: { [weak self] catalog in
           guard self?.catalogSessionID == sessionID else { return }
           self?.installCatalogPresentation(catalog)
+        },
+        publishIncrementalUpdate: { [weak self] catalog, handles in
+          guard self?.catalogSessionID == sessionID else { return }
+          self?.publishIncrementalCatalogUpdate(catalog, handles)
         },
         reportTransportEvidence: { [weak self] failure in
           guard failure.provesTransportLost,
@@ -380,6 +385,24 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
 
   func isRememberedCamera(_ camera: IOSCameraDiscoveredCamera) -> Bool {
     rememberedCameraRecords.contains { $0.peripheralID == camera.id }
+  }
+
+  // MARK: - Pairing Probe
+
+  func probePairing(peripheralID: UUID) async -> CameraVendorPairingProbeResult {
+    await connectionController?.probePairing(peripheralID: peripheralID) ?? .bluetoothOff
+  }
+
+  var hasPreconnectedProbe: Bool {
+    connectionController?.hasPreconnectedProbe ?? false
+  }
+
+  var preconnectedProbePeripheralID: UUID? {
+    connectionController?.preconnectedProbePeripheralID
+  }
+
+  func cancelPairingProbe(reason: String) {
+    connectionController?.cancelPairingProbe(reason: reason)
   }
 
   var isConnectionWorkerActive: Bool { connectionWorker?.isActive ?? false }
@@ -845,6 +868,33 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
 
   func removeObserver(_ id: UUID) {
     presentationObservers.removeValue(forKey: id)
+    incrementalCatalogObservers.removeValue(forKey: id)
+  }
+
+  @discardableResult
+  func observeIncrementalCatalogUpdates(_ observer: @escaping (CameraGalleryPresentation, Set<Int>) -> Void) -> UUID {
+    let id = UUID()
+    incrementalCatalogObservers[id] = observer
+    return id
+  }
+
+  private func publishIncrementalCatalogUpdate(_ catalog: CameraGalleryPresentation, _ handles: Set<Int>) {
+    // Update the session presentation's catalog without triggering full observer publish
+    presentation = CameraSessionPresentation(
+      phase: presentation.phase,
+      queuedHandles: presentation.queuedHandles,
+      inFlightHandle: presentation.inFlightHandle,
+      catalog: catalog
+    )
+    // Keep galleryItemsByHandle in sync so recordSavedHandle can find real filenames
+    for handle in handles {
+      if let item = catalog.items.first(where: { $0.handle == Int(handle) }) {
+        galleryItemsByHandle[UInt32(handle)] = item
+      }
+    }
+    for observer in incrementalCatalogObservers.values {
+      observer(catalog, handles)
+    }
   }
 
   var isDownloading: Bool { isDownloadingPhase || presentation.phase == .cancelling }
@@ -1361,6 +1411,44 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   private func publishPresentation() {
     for observer in presentationObservers.values {
       observer(presentation)
+    }
+  }
+
+  // MARK: - HEIF Count Sweep Experiment (Diagnostic Only)
+
+  /// Fetch the ALL baseline catalog (empty SearchMode conditions).
+  /// Used by auto-download to compute HEIF handles via set subtraction.
+  func fetchBaselineCatalog() async throws -> CameraVendorCatalogSnapshot {
+    let query = CameraVendorCatalogQuery(conditions: [], label: "auto-download-baseline")
+    return try await transport.fetchCameraCatalog(query: query)
+  }
+
+  func runCountSweepExperiment() {
+    guard presentation.phase == .galleryReady else {
+      onConnectionLogAppended?("[OBS] COUNT_SWEEP_REJECTED phase=\(presentation.phase)")
+      return
+    }
+    onConnectionLogAppended?("[OBS] COUNT_SWEEP_EXPERIMENT_REQUESTED")
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      do {
+        let result = try await self.transport.executeCountSweepExperiment()
+        self.onConnectionLogAppended?(result.diagnosticSummary)
+        if result.heifExact616 {
+          self.onConnectionLogAppended?("[OBS] COUNT_SWEEP_SUCCESS exact_616=true — HEIF catalog verified")
+        } else {
+          self.onConnectionLogAppended?(
+            "[OBS] COUNT_SWEEP_FAILED exact_616=false — HEIF remains unverified " +
+            "(declared=\(result.heifDeclaredCount.map(String.init) ?? "nil") handles=\(result.heifHandleCount))"
+          )
+        }
+        // Reload the initial catalog to restore normal gallery state
+        await self.catalogRuntime?.start(initial: .all)
+      } catch {
+        self.onConnectionLogAppended?("[OBS] COUNT_SWEEP_ERROR \(error.localizedDescription)")
+        // Attempt to restore gallery state even after failure
+        await self.catalogRuntime?.start(initial: .all)
+      }
     }
   }
 }

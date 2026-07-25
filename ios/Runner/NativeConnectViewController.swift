@@ -906,6 +906,8 @@ final class NativeConnectViewController: UIViewController {
 
   private let cameraSessionRuntime: CameraSessionRuntime
   private let wiredImportProbeService = WiredCameraImportService()
+  private var autoDownloadRule = CameraAutoDownloadRuleStore.load()
+  private var isAutoDownloadPending = false
   private var cameras: [IOSCameraDiscoveredCamera] = []
   private var wiredImportDevices: [WiredCameraImportDevice] = []
   private weak var scanController: NativeScanViewController?
@@ -1037,6 +1039,44 @@ final class NativeConnectViewController: UIViewController {
     guard !offerPendingDownloadRecoveryIfNeeded() else { return }
     updateRememberedCameraCard()
     startInitialCameraSearchIfNeeded()
+    beginPairingProbeIfNeeded()
+  }
+
+  // MARK: - Pairing Probe
+
+  private var pairingProbeTask: Task<Void, Never>?
+
+  private func beginPairingProbeIfNeeded() {
+    guard let record = cameraSessionRuntime.rememberedCameraRecords.first else { return }
+    guard !cameraSessionRuntime.isConnectionWorkerActive else { return }
+    guard pairingProbeTask == nil else { return }
+
+    CameraVendorFileLogger.log("[PAIRING_PROBE_UI_BEGIN] peripheralID=\(record.peripheralID)")
+
+    pairingProbeTask = Task { @MainActor [weak self] in
+      guard let self else { return }
+      let result = await self.cameraSessionRuntime.probePairing(peripheralID: record.peripheralID)
+      self.pairingProbeTask = nil
+
+      CameraVendorFileLogger.log("[PAIRING_PROBE_UI_RESULT] result=\(result)")
+
+      switch result {
+      case .online:
+        // Camera is reachable and pairing is valid — BLE pre-connected.
+        self.updateRememberedCameraCard()
+      case .pairingInvalid(let reason):
+        // Pairing has been invalidated on the camera side.
+        CameraVendorFileLogger.log("[PAIRING_PROBE_INVALID] reason=\(reason) — clearing pairing record")
+        self.cameraSessionRuntime.forgetRememberedCamera(peripheralID: record.peripheralID)
+        self.updateRememberedCameraCard()
+      case .offline:
+        // Camera not in range — no action needed, card remains as-is.
+        self.updateRememberedCameraCard()
+      case .bluetoothOff:
+        // Bluetooth is off — no action, system will prompt if needed.
+        break
+      }
+    }
   }
 
   private func requestRememberedGalleryResume(peripheralID: UUID, reason: String) {
@@ -1551,6 +1591,11 @@ final class NativeConnectViewController: UIViewController {
   }
 
   private func connectRememberedCamera(_ record: IOSCameraRememberedCameraRecord) {
+    // Cancel any in-progress probe — user is explicitly connecting now.
+    pairingProbeTask?.cancel()
+    pairingProbeTask = nil
+    cameraSessionRuntime.cancelPairingProbe(reason: "user-initiated-connect")
+
     isDisconnectingActiveRememberedCamera = false
     if cameraSessionRuntime.publishSystemBluetoothCleanupBlockIfNeeded() {
       logView.text = ""
@@ -1632,6 +1677,9 @@ final class NativeConnectViewController: UIViewController {
       "[HOME_CONNECT_FLOW_COMMAND] reason=\(reason) workerActive=\(cameraSessionRuntime.isConnectionWorkerActive) " +
       "rememberedEntry=\(isEnteringGalleryFromRememberedCamera)"
     )
+    pairingProbeTask?.cancel()
+    pairingProbeTask = nil
+    cameraSessionRuntime.cancelPairingProbe(reason: reason)
     cameraSessionRuntime.cancelConnectionWorker(reason: reason)
   }
 
@@ -1840,10 +1888,139 @@ final class NativeConnectViewController: UIViewController {
     _ destination: CameraSessionRuntimePresentationDestination
   ) {
     switch destination {
-    case .gallery:
-      finishRememberedGalleryEntryIfPossible()
+    case .gallery(_):
+      if isAutoDownloadPending {
+        isAutoDownloadPending = false
+        startAutoDownload()
+      } else {
+        finishRememberedGalleryEntryIfPossible()
+      }
     case .recoveryDownloadCenter(let payload):
       finishRecoveredDownloadEntryIfPossible(payload: payload)
+    }
+  }
+
+  private func startAutoDownload() {
+    guard cameraSessionRuntime.galleryPresentationPayload != nil else {
+      finishRememberedGalleryEntryIfPossible()
+      return
+    }
+    let catalog = cameraSessionRuntime.presentation.catalog
+    CameraVendorFileLogger.log(
+      "[AUTO_DOWNLOAD] checking rule=\(autoDownloadRule.summaryText) " +
+      "catalogState=\(catalog.state) items=\(catalog.items.count)"
+    )
+
+    // If catalog isn't ready yet (still loading), fall back to gallery and wait
+    guard case .ready = catalog.state, !catalog.items.isEmpty else {
+      CameraVendorFileLogger.log("[AUTO_DOWNLOAD] catalog not ready, falling back to gallery")
+      finishRememberedGalleryEntryIfPossible()
+      return
+    }
+
+    let items = catalog.items
+    let savedHandles = cameraSessionRuntime.savedDownloadHandles()
+
+    // For HEIF format rule, we need the HEIF handle set (from subtractBaseline).
+    // Use the catalog's full handle set minus the baseline (ALL directory = non-HEIF).
+    // The initial catalog was loaded via D604=2 which returns ALL+HEIF (~2427).
+    // We need to identify which handles are HEIF-only.
+    // For now, if format requires HEIF, fetch the baseline and subtract.
+    let needsHeifHandles = [.heif, .jpgAndHeif].contains(autoDownloadRule.format)
+
+    if needsHeifHandles {
+      // Async fetch the baseline to compute HEIF handles
+      Task { @MainActor [weak self] in
+        guard let self else { return }
+        do {
+          let baselineSnapshot = try await self.cameraSessionRuntime.fetchBaselineCatalog()
+          let baselineSet = Set(baselineSnapshot.orderedHandles.map { Int($0) })
+          let heifHandles = Set(items.map(\.handle)).subtracting(baselineSet)
+          CameraVendorFileLogger.log("[AUTO_DOWNLOAD] heifHandles=\(heifHandles.count) baseline=\(baselineSet.count)")
+          self.executeAutoDownload(items: items, savedHandles: savedHandles, heifHandles: heifHandles)
+        } catch {
+          CameraVendorFileLogger.log("[AUTO_DOWNLOAD] baseline fetch failed: \(error.localizedDescription)")
+          self.finishRememberedGalleryEntryIfPossible()
+        }
+      }
+    } else {
+      executeAutoDownload(items: items, savedHandles: savedHandles, heifHandles: [])
+    }
+  }
+
+  private func executeAutoDownload(
+    items: [CameraVendorGalleryItem],
+    savedHandles: Set<Int>,
+    heifHandles: Set<Int>
+  ) {
+    let matchedHandles = CameraAutoDownloadRuleFilter.matchingHandles(
+      items: items,
+      rule: autoDownloadRule,
+      savedHandles: savedHandles,
+      heifHandles: heifHandles
+    )
+
+    CameraVendorFileLogger.log(
+      "[AUTO_DOWNLOAD] rule=\(autoDownloadRule.summaryText) " +
+      "totalItems=\(items.count) matched=\(matchedHandles.count)"
+    )
+
+    guard !matchedHandles.isEmpty else {
+      latestServiceStatus = "没有匹配的新照片"
+      statusBadgeLabel.text = latestServiceStatus
+      spinner.stopAnimating()
+      isEnteringGalleryFromRememberedCamera = false
+      hideConnectingOverlay()
+      finishRememberedGalleryEntryIfPossible()
+      return
+    }
+
+    cameraSessionRuntime.send(
+      .startDownload(handles: matchedHandles, mode: autoDownloadRule.downloadMode.transferMode)
+    )
+
+    latestServiceStatus = "自动下载 \(matchedHandles.count) 张"
+    statusBadgeLabel.text = latestServiceStatus
+    spinner.stopAnimating()
+    isEnteringGalleryFromRememberedCamera = false
+
+    let pushDownloadCenter: () -> Void = { [weak self] in
+      guard let self else { return }
+      let controller = NativeDownloadListViewController(
+        runtime: self.cameraSessionRuntime,
+        itemsProvider: { [weak runtime = self.cameraSessionRuntime] in
+          guard let runtime else { return [] }
+          return runtime.presentation.catalog.items.filter { runtime.downloadState(for: $0.handle) != .idle }
+        },
+        stateProvider: { [weak runtime = self.cameraSessionRuntime] handle in
+          runtime?.downloadState(for: handle) ?? .idle
+        },
+        progressProvider: { [weak runtime = self.cameraSessionRuntime] handle in
+          runtime?.downloadProgressText(for: handle)
+        },
+        isTransferActiveProvider: { [weak runtime = self.cameraSessionRuntime] in
+          runtime?.canCancelDownload == true
+        },
+        onTerminateDownload: { [weak self] in
+          self?.cameraSessionRuntime.send(.cancelDownloadByUser)
+        },
+        onClearDownloadCache: { [weak self] item in
+          self?.cameraSessionRuntime.send(.clearSavedDownloadHistory(handle: UInt32(item.handle)))
+        }
+      )
+      controller.onMovedFromParent = { [weak self] in
+        guard let self else { return }
+        if self.autoDownloadRule.disconnectAfterDownload {
+          self.cameraSessionRuntime.send(.disconnectCamera(reason: "auto-download-complete-disconnect"))
+        }
+        self.updateRememberedCameraCard()
+      }
+      self.navigationController?.pushViewController(controller, animated: true)
+    }
+
+    hideConnectingOverlay()
+    dismissPairingUIAfterSuccess(event: .didCompleteHandshake) {
+      pushDownloadCenter()
     }
   }
 
@@ -2086,7 +2263,17 @@ final class NativeConnectViewController: UIViewController {
         showsDisconnectAction: isActiveSession && !isDisconnectingActiveRememberedCamera,
         onConnect: { [weak self] in
           guard let self else { return }
-          self.connectRememberedCamera(record)
+          if isActiveSession, let payload = self.cameraSessionRuntime.galleryPresentationPayload {
+            // Session still alive — push Gallery instantly without reconnecting
+            let controller = NativeGalleryViewController(
+              summary: payload.summary,
+              rememberedPeripheralID: record.peripheralID,
+              runtime: self.cameraSessionRuntime
+            )
+            self.navigationController?.pushViewController(controller, animated: true)
+          } else {
+            self.connectRememberedCamera(record)
+          }
         },
         onDisconnect: { [weak self] in
           self?.disconnectActiveRememberedCamera(record)
@@ -2096,9 +2283,102 @@ final class NativeConnectViewController: UIViewController {
         }
       )
       pairedCameraStack.addArrangedSubview(card)
+
+      // Auto-download button for this camera
+      let autoDownloadButton = UIButton(type: .system)
+      autoDownloadButton.translatesAutoresizingMaskIntoConstraints = false
+      var autoConfig = UIButton.Configuration.filled()
+      autoConfig.title = "⚡ 自动下载"
+      autoConfig.subtitle = autoDownloadRule.isEnabled ? autoDownloadRule.summaryText : "点击设置规则"
+      autoConfig.titleAlignment = .leading
+      autoConfig.baseBackgroundColor = NativeLuxuryTheme.ink.withAlphaComponent(0.06)
+      autoConfig.baseForegroundColor = NativeLuxuryTheme.ink
+      autoConfig.cornerStyle = .large
+      autoConfig.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16)
+      autoDownloadButton.configuration = autoConfig
+      let capturedRecord = record
+      autoDownloadButton.addAction(UIAction { [weak self] _ in
+        guard let self else { return }
+        if self.autoDownloadRule.isEnabled {
+          self.isAutoDownloadPending = true
+          self.connectRememberedCamera(capturedRecord)
+        } else {
+          self.autoDownloadSettingsTapped()
+        }
+      }, for: .touchUpInside)
+      pairedCameraStack.addArrangedSubview(autoDownloadButton)
     }
 
+    // Settings row for auto-download rule
+    let settingsRow = makeAutoDownloadRuleRow()
+    pairedCameraStack.addArrangedSubview(settingsRow)
+
     confirmPairingButton.isHidden = true
+  }
+
+  private func makeAutoDownloadRuleRow() -> UIView {
+    let container = UIView()
+    container.translatesAutoresizingMaskIntoConstraints = false
+
+    let icon = UIImageView(image: UIImage(systemName: "arrow.down.circle.fill"))
+    icon.translatesAutoresizingMaskIntoConstraints = false
+    icon.tintColor = NativeLuxuryTheme.ink.withAlphaComponent(0.6)
+    icon.contentMode = .scaleAspectFit
+
+    let titleLabel = UILabel()
+    titleLabel.translatesAutoresizingMaskIntoConstraints = false
+    titleLabel.text = "自动下载"
+    titleLabel.font = .systemFont(ofSize: 14, weight: .medium)
+    titleLabel.textColor = NativeLuxuryTheme.ink
+
+    let detailLabel = UILabel()
+    detailLabel.translatesAutoresizingMaskIntoConstraints = false
+    detailLabel.text = autoDownloadRule.isEnabled ? autoDownloadRule.summaryText : "未启用（点击设置）"
+    detailLabel.font = .systemFont(ofSize: 12, weight: .regular)
+    detailLabel.textColor = NativeLuxuryTheme.ink.withAlphaComponent(0.5)
+
+    let chevron = UIImageView(image: UIImage(systemName: "chevron.right"))
+    chevron.translatesAutoresizingMaskIntoConstraints = false
+    chevron.tintColor = NativeLuxuryTheme.ink.withAlphaComponent(0.3)
+    chevron.contentMode = .scaleAspectFit
+
+    container.addSubview(icon)
+    container.addSubview(titleLabel)
+    container.addSubview(detailLabel)
+    container.addSubview(chevron)
+
+    NSLayoutConstraint.activate([
+      container.heightAnchor.constraint(equalToConstant: 44),
+      icon.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 4),
+      icon.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+      icon.widthAnchor.constraint(equalToConstant: 20),
+      icon.heightAnchor.constraint(equalToConstant: 20),
+      titleLabel.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 8),
+      titleLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor, constant: -8),
+      detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
+      detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
+      chevron.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -4),
+      chevron.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+      chevron.widthAnchor.constraint(equalToConstant: 14),
+      chevron.heightAnchor.constraint(equalToConstant: 14),
+    ])
+
+    let tap = UITapGestureRecognizer(target: self, action: #selector(autoDownloadSettingsTapped))
+    container.addGestureRecognizer(tap)
+    container.isUserInteractionEnabled = true
+    return container
+  }
+
+  @objc private func autoDownloadSettingsTapped() {
+    let controller = NativeAutoDownloadSettingsViewController(
+      rule: autoDownloadRule
+    ) { [weak self] updatedRule in
+      guard let self else { return }
+      self.autoDownloadRule = updatedRule
+      CameraAutoDownloadRuleStore.save(updatedRule)
+      self.updateRememberedCameraCard()
+    }
+    navigationController?.pushViewController(controller, animated: true)
   }
 
   private func rememberedCameraRecord(for peripheralID: UUID) -> IOSCameraRememberedCameraRecord? {

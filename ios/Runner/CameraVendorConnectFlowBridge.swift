@@ -164,6 +164,24 @@ final class CameraVendorConnectFlowBridge: NSObject, IOSCameraConnectFlowRuntime
     service.rememberedCameraRecords.contains { $0.peripheralID == camera.id }
   }
 
+  // MARK: - Pairing Probe
+
+  func probePairing(peripheralID: UUID) async -> CameraVendorPairingProbeResult {
+    await service.probePairing(peripheralID: peripheralID)
+  }
+
+  var hasPreconnectedProbe: Bool {
+    service.hasPreconnectedProbe
+  }
+
+  var preconnectedProbePeripheralID: UUID? {
+    service.preconnectedProbePeripheralID
+  }
+
+  func cancelPairingProbe(reason: String) {
+    service.cancelPairingProbe(reason: reason)
+  }
+
   func consumeGalleryDestination(for peripheralID: UUID) -> IOSCameraGalleryDestination? {
     activeGalleryDestinationByPeripheralID.removeValue(forKey: peripheralID)
   }
