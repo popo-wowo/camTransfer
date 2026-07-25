@@ -10617,6 +10617,62 @@ final class RunnerTests: XCTestCase {
   }
 
   @MainActor
+  func testCatalogRuntimeHDPreviewSuspensionCancelsChildWorkAndRejectsNewThumbnailRequests() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    source.suspendsChildRequests = true
+    let ready = expectation(description: "catalog ready before HD suspension")
+    var didObserveReady = false
+    let runtime = CameraGalleryCatalogRuntime(
+      source: source,
+      publishPresentation: { presentation in
+        guard !didObserveReady, case .ready = presentation.state else { return }
+        didObserveReady = true
+        ready.fulfill()
+      },
+      reportTransportEvidence: { _ in }
+    )
+
+    await runtime.start(initial: .all)
+    await fulfillment(of: [ready], timeout: 1)
+    await runtime.suspendChildWorkForHighDefinitionPreview()
+    await runtime.requestVisibleThumbnails(handles: [1])
+
+    XCTAssertEqual(source.requestedThumbnailHandles, [])
+    let isSuspended = await runtime.isChildWorkSuspendedForHighDefinitionPreview()
+    XCTAssertTrue(isSuspended)
+    await runtime.cancelAllChildren()
+  }
+
+  @MainActor
+  func testCatalogRuntimeHDPreviewResumeAcceptsThumbnailRequestsAgain() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    source.initialSnapshotHandles = [1]
+    let ready = expectation(description: "catalog ready before HD resume")
+    var didObserveReady = false
+    let runtime = CameraGalleryCatalogRuntime(
+      source: source,
+      publishPresentation: { presentation in
+        guard !didObserveReady, case .ready = presentation.state else { return }
+        didObserveReady = true
+        ready.fulfill()
+      },
+      reportTransportEvidence: { _ in }
+    )
+
+    await runtime.start(initial: .all)
+    await fulfillment(of: [ready], timeout: 1)
+    await runtime.suspendChildWorkForHighDefinitionPreview()
+    await runtime.resumeChildWorkAfterHighDefinitionPreview()
+    await runtime.requestVisibleThumbnails(handles: [1])
+    for _ in 0..<100 where source.requestedThumbnailHandles.isEmpty {
+      await Task.yield()
+    }
+
+    XCTAssertEqual(source.requestedThumbnailHandles, [1])
+    await runtime.cancelAllChildren()
+  }
+
+  @MainActor
   func testCatalogRepositoryRejectsUnknownOrStaleChildResults() {
     var repository = CameraGalleryRepository()
     let generation = CameraGalleryGenerationID(rawValue: 1)

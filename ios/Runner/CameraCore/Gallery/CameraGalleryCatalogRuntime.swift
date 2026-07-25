@@ -42,6 +42,7 @@ actor CameraGalleryCatalogRuntime {
   private var downloadedHandles: Set<Int> = []
   private var installedMembershipIntent: CameraGalleryFilterIntent?
   private var isAcceptingChildWork = false
+  private var hdPreviewSuspensionCount = 0
   private var isShuttingDown = false
 
   init(
@@ -124,6 +125,35 @@ actor CameraGalleryCatalogRuntime {
       )
       await self.finishThumbnailRequest(id: request.id)
     }
+  }
+
+  func suspendChildWorkForHighDefinitionPreview() async {
+    hdPreviewSuspensionCount += 1
+    guard hdPreviewSuspensionCount == 1 else { return }
+    isAcceptingChildWork = false
+    await cancelAndJoinChildWork()
+  }
+
+  func resumeChildWorkAfterHighDefinitionPreview() {
+    guard hdPreviewSuspensionCount > 0 else { return }
+    hdPreviewSuspensionCount -= 1
+    guard hdPreviewSuspensionCount == 0,
+          !isShuttingDown,
+          case .ready(let generation, let snapshotID) = currentPresentation.state,
+          repository.generation == generation,
+          repository.snapshotID == snapshotID else {
+      return
+    }
+    isAcceptingChildWork = true
+    startDetailsWork(
+      handles: repository.items.map(\.handle),
+      generation: generation,
+      snapshotID: snapshotID
+    )
+  }
+
+  func isChildWorkSuspendedForHighDefinitionPreview() -> Bool {
+    hdPreviewSuspensionCount > 0
   }
 
   func cancelAllChildren() async {
@@ -249,13 +279,15 @@ actor CameraGalleryCatalogRuntime {
       installedMembershipIntent = transaction.intent
       currentIntent = transaction.intent
       currentPresentation = makeReadyPresentation()
-      isAcceptingChildWork = true
+      isAcceptingChildWork = hdPreviewSuspensionCount == 0
       await publishCurrentPresentation()
-      startDetailsWork(
-        handles: snapshot.items.map(\.handle),
-        generation: transaction.generation,
-        snapshotID: snapshot.snapshotID
-      )
+      if isAcceptingChildWork {
+        startDetailsWork(
+          handles: snapshot.items.map(\.handle),
+          generation: transaction.generation,
+          snapshotID: snapshot.snapshotID
+        )
+      }
     } catch is CancellationError {
       // A cancelled transaction may still finish mandatory transport cleanup.
       // It never publishes and the latest pending intent is started below.

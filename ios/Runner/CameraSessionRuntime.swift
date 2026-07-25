@@ -237,6 +237,14 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     await catalogRuntime?.cancelActiveThumbnailWork()
   }
 
+  func suspendGalleryChildWorkForHighDefinitionPreview() async {
+    await catalogRuntime?.suspendChildWorkForHighDefinitionPreview()
+  }
+
+  func resumeGalleryChildWorkAfterHighDefinitionPreview() async {
+    await catalogRuntime?.resumeChildWorkAfterHighDefinitionPreview()
+  }
+
   private func configureCatalogRuntime() {
     let sessionID = UUID()
     let previousRuntime = catalogRuntime
