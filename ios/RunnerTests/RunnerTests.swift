@@ -5518,7 +5518,7 @@ final class RunnerTests: XCTestCase {
       source.range(of: "func downloadOriginal(for handle: Int, expectedSize: UInt32?) async throws -> Data {", range: runtimeMethodStart..<source.endIndex)?.lowerBound
     )
     let runtimeBody = String(source[runtimeMethodStart..<runtimeNextMethodStart])
-    XCTAssertTrue(runtimeBody.contains("requestScheduler.run(priority: .backgroundMetadata)"))
+    XCTAssertTrue(runtimeBody.contains("commandLane.run(priority: .keepAlive)"))
     XCTAssertTrue(runtimeBody.contains("cameraVendorLatestObjectInfo("))
     XCTAssertTrue(runtimeBody.contains("readImageInfoKeepAliveHandle"))
     XCTAssertTrue(runtimeBody.contains("readTimeout: CameraVendorBackgroundMetadataRefreshPolicy.readImageInfoTimeoutSeconds"))
@@ -9396,12 +9396,21 @@ final class RunnerTests: XCTestCase {
     )
   }
 
-  func testGalleryRequestSchedulerPrioritizesVisibleThumbnailBeforeBackgroundMetadata() async {
+  func testCameraCommandLaneUsesOnePriorityOrderForAllPtpConsumers() {
+    XCTAssertEqual(CameraCommandPriority.sessionMutation.rawValue, -1)
+    XCTAssertEqual(CameraCommandPriority.download.rawValue, 0)
+    XCTAssertEqual(CameraCommandPriority.hdPreview.rawValue, 1)
+    XCTAssertEqual(CameraCommandPriority.visibleThumbnail.rawValue, 2)
+    XCTAssertEqual(CameraCommandPriority.details.rawValue, 3)
+    XCTAssertEqual(CameraCommandPriority.keepAlive.rawValue, 4)
+  }
+
+  func testCameraCommandLanePrioritizesVisibleThumbnailBeforeKeepAlive() async {
     let backgroundQueued = expectation(description: "background waiter queued")
     let thumbnailQueued = expectation(description: "thumbnail waiter queued")
-    let scheduler = CameraVendorGalleryRequestScheduler { priority in
+    let lane = CameraCommandLane { priority in
       switch priority {
-      case .backgroundMetadata:
+      case .keepAlive:
         backgroundQueued.fulfill()
       case .visibleThumbnail:
         thumbnailQueued.fulfill()
@@ -9415,7 +9424,7 @@ final class RunnerTests: XCTestCase {
     var order: [String] = []
 
     let active = Task {
-      try await scheduler.run(priority: .backgroundMetadata) {
+      try await lane.run(priority: .keepAlive) {
         activeStarted.fulfill()
         releaseActive.wait()
       }
@@ -9423,7 +9432,7 @@ final class RunnerTests: XCTestCase {
     await fulfillment(of: [activeStarted], timeout: 1)
 
     let background = Task {
-      try await scheduler.run(priority: .backgroundMetadata) {
+      try await lane.run(priority: .keepAlive) {
         orderLock.lock()
         order.append("background")
         orderLock.unlock()
@@ -9431,7 +9440,7 @@ final class RunnerTests: XCTestCase {
     }
     await fulfillment(of: [backgroundQueued], timeout: 1)
     let thumbnail = Task {
-      try await scheduler.run(priority: .visibleThumbnail) {
+      try await lane.run(priority: .visibleThumbnail) {
         orderLock.lock()
         order.append("thumbnail")
         orderLock.unlock()
@@ -9447,13 +9456,13 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(order, ["thumbnail", "background"])
   }
 
-  func testGalleryRequestSchedulerRemovesCancelledWaitersLikeAndroid() async {
-    let scheduler = CameraVendorGalleryRequestScheduler()
+  func testCameraCommandLaneRemovesCancelledWaitersLikeAndroid() async {
+    let lane = CameraCommandLane()
     let activeStarted = expectation(description: "active request started")
     let releaseActive = DispatchSemaphore(value: 0)
 
     let active = Task {
-      try await scheduler.run(priority: .backgroundMetadata) {
+      try await lane.run(priority: .keepAlive) {
         activeStarted.fulfill()
         releaseActive.wait()
       }
@@ -9462,7 +9471,7 @@ final class RunnerTests: XCTestCase {
 
     let cancelled = Task { () -> String in
       do {
-        try await scheduler.run(priority: .backgroundMetadata) {
+        try await lane.run(priority: .keepAlive) {
           XCTFail("cancelled waiter should not run")
         }
         return "ran"
@@ -9477,7 +9486,7 @@ final class RunnerTests: XCTestCase {
 
     let thumbnail = Task { () -> String in
       do {
-        return try await scheduler.run(priority: .visibleThumbnail) {
+        return try await lane.run(priority: .visibleThumbnail) {
           "thumbnail"
         }
       } catch {
@@ -9495,14 +9504,14 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(cancelledResult, "cancelled")
   }
 
-  func testGalleryRequestSchedulerRejectsNewNonDownloadRequestsDuringPriorityDownload() async {
-    let scheduler = CameraVendorGalleryRequestScheduler()
-    scheduler.beginPriorityDownloadBarrier()
+  func testCameraCommandLaneRejectsNewNonDownloadRequestsDuringExclusiveDownload() async {
+    let lane = CameraCommandLane()
+    let lease = await lane.acquireExclusiveDownloadLease()
     var didRunThumbnail = false
 
     let thumbnail = Task { () -> String in
       do {
-        return try await scheduler.run(priority: .visibleThumbnail) {
+        return try await lane.run(priority: .visibleThumbnail) {
           didRunThumbnail = true
           return "thumbnail"
         }
@@ -9514,33 +9523,33 @@ final class RunnerTests: XCTestCase {
     }
 
     let result = await thumbnail.value
-    scheduler.endPriorityDownloadBarrier()
+    lease.release()
 
     XCTAssertEqual(result, "cancelled")
     XCTAssertFalse(didRunThumbnail)
   }
 
-  func testGalleryRequestSchedulerAllowsDownloadRequestsDuringPriorityDownloadBarrier() async {
-    let scheduler = CameraVendorGalleryRequestScheduler()
-    scheduler.beginPriorityDownloadBarrier()
+  func testCameraCommandLaneAllowsDownloadRequestsDuringExclusiveDownload() async {
+    let lane = CameraCommandLane()
+    let lease = await lane.acquireExclusiveDownloadLease()
 
-    let result = try? await scheduler.run(priority: .downloadOriginal) {
+    let result = try? await lane.run(priority: .download) {
       "download"
     }
 
-    scheduler.endPriorityDownloadBarrier()
+    lease.release()
     XCTAssertEqual(result, "download")
   }
 
-  func testGalleryRequestSchedulerCancelsQueuedNonDownloadWorkBeforeAdmittingDownload() async {
-    let scheduler = CameraVendorGalleryRequestScheduler()
+  func testCameraCommandLaneCancelsQueuedNonDownloadWorkBeforeAdmittingDownload() async {
+    let lane = CameraCommandLane()
     let activeMetadataStarted = expectation(description: "active metadata started")
     let releaseActiveMetadata = DispatchSemaphore(value: 0)
-    let orderQueue = DispatchQueue(label: "CameraVendorGalleryRequestSchedulerTests.order")
+    let orderQueue = DispatchQueue(label: "CameraCommandLaneTests.order")
     var order: [String] = []
 
     let activeMetadata = Task {
-      try await scheduler.run(priority: .backgroundMetadata) {
+      try await lane.run(priority: .details) {
         activeMetadataStarted.fulfill()
         releaseActiveMetadata.wait()
         orderQueue.sync {
@@ -9552,7 +9561,7 @@ final class RunnerTests: XCTestCase {
 
     let queuedThumbnail = Task { () -> String in
       do {
-        try await scheduler.run(priority: .visibleThumbnail) {
+        try await lane.run(priority: .visibleThumbnail) {
           XCTFail("queued thumbnail must not run after download barrier starts")
         }
         return "ran"
@@ -9564,9 +9573,13 @@ final class RunnerTests: XCTestCase {
     }
     try? await Task.sleep(nanoseconds: 30_000_000)
 
-    scheduler.beginPriorityDownloadBarrier()
+    let leaseTask = Task {
+      await lane.acquireExclusiveDownloadLease()
+    }
     let download = Task {
-      try await scheduler.run(priority: .downloadOriginal) {
+      let lease = await leaseTask.value
+      defer { lease.release() }
+      try await lane.run(priority: .download) {
         orderQueue.sync {
           order.append("download-started")
         }
@@ -9580,7 +9593,6 @@ final class RunnerTests: XCTestCase {
     releaseActiveMetadata.signal()
     _ = try? await activeMetadata.value
     _ = try? await download.value
-    scheduler.endPriorityDownloadBarrier()
     let queuedThumbnailResult = await queuedThumbnail.value
 
     let finalOrder = orderQueue.sync { order }
@@ -9588,27 +9600,27 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(finalOrder, ["active-metadata-ended", "download-started"])
   }
 
-  func testGalleryRequestSchedulerWaitsForActiveTransactionToDrainBeforeAdmissionIsReady() async {
-    let scheduler = CameraVendorGalleryRequestScheduler()
+  func testCameraCommandLaneWaitsForActiveTransactionToDrainBeforeDownloadLeaseIsReady() async {
+    let lane = CameraCommandLane()
     let activeMetadataStarted = expectation(description: "active metadata started")
     let releaseActiveMetadata = DispatchSemaphore(value: 0)
     let stateLock = NSLock()
     var didBecomeReady = false
 
     let activeMetadata = Task {
-      try await scheduler.run(priority: .backgroundMetadata) {
+      try await lane.run(priority: .details) {
         activeMetadataStarted.fulfill()
         releaseActiveMetadata.wait()
       }
     }
     await fulfillment(of: [activeMetadataStarted], timeout: 1)
 
-    scheduler.beginPriorityDownloadBarrier()
     let admission = Task {
-      await scheduler.waitUntilIdle()
-      stateLock.lock()
-      didBecomeReady = true
-      stateLock.unlock()
+      let lease = await lane.acquireExclusiveDownloadLease()
+      stateLock.withLock {
+        didBecomeReady = true
+      }
+      return lease
     }
 
     try? await Task.sleep(nanoseconds: 50_000_000)
@@ -9616,13 +9628,13 @@ final class RunnerTests: XCTestCase {
 
     releaseActiveMetadata.signal()
     _ = try? await activeMetadata.value
-    await admission.value
+    let lease = await admission.value
     XCTAssertTrue(stateLock.withLock { didBecomeReady })
-    scheduler.endPriorityDownloadBarrier()
+    lease.release()
   }
 
-  func testGalleryRequestSchedulerExclusiveMutationWaitsForActiveReadAndBlocksDownloads() async {
-    let scheduler = CameraVendorGalleryRequestScheduler()
+  func testCameraCommandLaneExclusiveSessionMutationWaitsForActiveReadAndBlocksDownloads() async {
+    let lane = CameraCommandLane()
     let activeReadStarted = expectation(description: "active read started")
     let releaseActiveRead = DispatchSemaphore(value: 0)
     let mutationStarted = expectation(description: "mutation started")
@@ -9631,7 +9643,7 @@ final class RunnerTests: XCTestCase {
     var order: [String] = []
 
     let activeRead = Task {
-      try await scheduler.run(priority: .visibleThumbnail) {
+      try await lane.run(priority: .visibleThumbnail) {
         activeReadStarted.fulfill()
         releaseActiveRead.wait()
       }
@@ -9639,7 +9651,7 @@ final class RunnerTests: XCTestCase {
     await fulfillment(of: [activeReadStarted], timeout: 1)
 
     let mutation = Task {
-      try await scheduler.runExclusiveMutation {
+      try await lane.runExclusiveSessionMutation {
         orderLock.lock()
         order.append("mutation")
         orderLock.unlock()
@@ -9649,7 +9661,7 @@ final class RunnerTests: XCTestCase {
     }
 
     let download = Task {
-      try await scheduler.run(priority: .downloadOriginal) {
+      try await lane.run(priority: .download) {
         orderLock.lock()
         order.append("download")
         orderLock.unlock()
@@ -9667,6 +9679,28 @@ final class RunnerTests: XCTestCase {
     _ = try? await mutation.value
     _ = try? await download.value
     XCTAssertEqual(order, ["mutation", "download"])
+  }
+
+  func testCameraCommandLeaseReleaseIsIdempotent() async throws {
+    let lane = CameraCommandLane()
+    let lease = await lane.acquireExclusiveDownloadLease()
+
+    lease.release()
+    lease.release()
+
+    let result = try await lane.run(priority: .visibleThumbnail) { "thumbnail" }
+    XCTAssertEqual(result, "thumbnail")
+  }
+
+  func testCameraCommandLeaseDeinitReleasesDownloadBarrier() async throws {
+    let lane = CameraCommandLane()
+    var lease: CameraCommandLease? = await lane.acquireExclusiveDownloadLease()
+    XCTAssertNotNil(lease)
+
+    lease = nil
+
+    let result = try await lane.run(priority: .visibleThumbnail) { "thumbnail" }
+    XCTAssertEqual(result, "thumbnail")
   }
 
   func testCameraVendorPlaceholderObjectInfoUsesUndefinedFormatLikeAndroid() {
@@ -10020,7 +10054,7 @@ final class RunnerTests: XCTestCase {
     let sourceURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
-      .appendingPathComponent("Runner/CameraVendorBluetoothService.swift")
+      .appendingPathComponent("Runner/CameraVendorRealtimeGalleryService.swift")
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
     let serviceStart = try XCTUnwrap(source.range(of: "final class CameraVendorRealtimeGalleryService")?.lowerBound)
     let configureStart = try XCTUnwrap(source.range(of: "func configure(connectionSummary:", range: serviceStart..<source.endIndex)?.lowerBound)
@@ -10028,6 +10062,7 @@ final class RunnerTests: XCTestCase {
 
     XCTAssertTrue(serviceBody.contains("private lazy var ptpRuntime = CameraVendorPtpSessionRuntime("))
     XCTAssertTrue(serviceBody.contains("session: session"))
+    XCTAssertTrue(source.contains("private let commandLane = CameraCommandLane()"))
     XCTAssertFalse(serviceBody.contains("private let requestScheduler = CameraVendorGalleryRequestScheduler()"))
     XCTAssertFalse(serviceBody.contains("private let priorityDownloadLock = NSLock()"))
   }

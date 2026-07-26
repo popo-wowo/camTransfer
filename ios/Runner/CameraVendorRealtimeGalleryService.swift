@@ -102,11 +102,54 @@ extension CameraVendorGalleryReadySummaryProviding {
 }
 
 final class CameraVendorPtpSessionRuntime {
+  private final class ExclusiveDownloadLeaseAcquisition {
+    private let lock = NSLock()
+    private var isCancelled = false
+    private var lease: CameraCommandLease?
+    private var task: Task<Void, Never>?
+
+    func start(commandLane: CameraCommandLane) {
+      task = Task { [weak self] in
+        let lease = await commandLane.acquireExclusiveDownloadLease()
+        self?.install(lease)
+      }
+    }
+
+    func waitUntilReady() async {
+      await task?.value
+    }
+
+    func cancel() {
+      let leaseToRelease: CameraCommandLease?
+      lock.lock()
+      isCancelled = true
+      leaseToRelease = lease
+      lease = nil
+      lock.unlock()
+      leaseToRelease?.release()
+    }
+
+    private func install(_ lease: CameraCommandLease) {
+      let shouldRelease: Bool
+      lock.lock()
+      shouldRelease = isCancelled
+      if !shouldRelease {
+        self.lease = lease
+      }
+      lock.unlock()
+      if shouldRelease {
+        lease.release()
+      }
+    }
+  }
+
   private let session: CameraVendorPtpSession
-  private let requestScheduler = CameraVendorGalleryRequestScheduler()
+  private let commandLane = CameraCommandLane()
   private let stateLock = NSLock()
+  private let exclusiveDownloadLeaseLock = NSLock()
   private let diagnosticHandler: (String) -> Void
   private let communicationGeneration: () -> UInt64
+  private var exclusiveDownloadLeaseAcquisition: ExclusiveDownloadLeaseAcquisition?
   private var isExclusiveDownloadWindowActive = false
   private var activeThumbnailRequestCount = 0
   private var activeBackgroundMetadataRequestCount = 0
@@ -134,17 +177,32 @@ final class CameraVendorPtpSessionRuntime {
   }
 
   func beginExclusiveDownloadWindow() {
-    requestScheduler.beginPriorityDownloadBarrier()
     activateExclusiveDownloadWindow()
+    exclusiveDownloadLeaseLock.lock()
+    guard exclusiveDownloadLeaseAcquisition == nil else {
+      exclusiveDownloadLeaseLock.unlock()
+      return
+    }
+    let acquisition = ExclusiveDownloadLeaseAcquisition()
+    exclusiveDownloadLeaseAcquisition = acquisition
+    exclusiveDownloadLeaseLock.unlock()
+    acquisition.start(commandLane: commandLane)
   }
 
   func awaitExclusiveDownloadWindowReady() async {
-    await requestScheduler.waitUntilIdle()
+    exclusiveDownloadLeaseLock.lock()
+    let acquisition = exclusiveDownloadLeaseAcquisition
+    exclusiveDownloadLeaseLock.unlock()
+    await acquisition?.waitUntilReady()
   }
 
   func endExclusiveDownloadWindow() {
     deactivateExclusiveDownloadWindow()
-    requestScheduler.endPriorityDownloadBarrier()
+    exclusiveDownloadLeaseLock.lock()
+    let acquisition = exclusiveDownloadLeaseAcquisition
+    exclusiveDownloadLeaseAcquisition = nil
+    exclusiveDownloadLeaseLock.unlock()
+    acquisition?.cancel()
   }
 
   func beginVisibleThumbnailBatch(handles: [Int]) {
@@ -169,7 +227,7 @@ final class CameraVendorPtpSessionRuntime {
     for handle: Int,
     expectedSize: UInt32?
   ) async throws -> (thumbnail: CameraVendorGalleryThumbnail, objectInfo: CameraVendorCameraObjectInfo?) {
-    try await requestScheduler.run(priority: .visibleThumbnail) {
+    try await commandLane.run(priority: .visibleThumbnail) {
       try self.beginThumbnailRequest(handle: handle)
       defer { self.endThumbnailRequest(handle: handle) }
       let result = try self.session.thumbWithInfo(
@@ -197,7 +255,7 @@ final class CameraVendorPtpSessionRuntime {
   }
 
   func fetchPreviewImage(for handle: Int) async throws -> Data {
-    try await requestScheduler.run(priority: .previewImage) {
+    try await commandLane.run(priority: .hdPreview) {
       try self.session.previewImage(handle: UInt32(handle))
     }
   }
@@ -205,13 +263,13 @@ final class CameraVendorPtpSessionRuntime {
   func fetchPreviewImageWithInfo(
     for handle: Int
   ) async throws -> CameraVendorPreviewImageFetchResult {
-    try await requestScheduler.run(priority: .previewImage) {
+    try await commandLane.run(priority: .hdPreview) {
       try self.session.previewImageWithInfo(handle: UInt32(handle))
     }
   }
 
   func performBackgroundKeepAlive() async throws {
-    try await requestScheduler.run(priority: .backgroundMetadata) {
+    try await commandLane.run(priority: .keepAlive) {
       let handle = Int(CameraVendorBackgroundMetadataRefreshPolicy.readImageInfoKeepAliveHandle)
       try self.beginBackgroundMetadataRequest(handle: handle)
       defer { self.endBackgroundMetadataRequest(handle: handle) }
@@ -227,7 +285,7 @@ final class CameraVendorPtpSessionRuntime {
   }
 
   func downloadOriginal(for handle: Int, expectedSize: UInt32?) async throws -> Data {
-    try await requestScheduler.run(priority: .downloadOriginal) {
+    try await commandLane.run(priority: .download) {
       self.reportExclusiveDownloadWindowReadyIfNeeded()
       try self.session.ensureConnectedForPriorityDownload()
       return try self.session.object(handle: UInt32(handle), expectedSize: expectedSize)
@@ -239,7 +297,7 @@ final class CameraVendorPtpSessionRuntime {
     mode: CameraVendorTransferDownloadMode,
     cachedInfo: CameraVendorCameraObjectInfo?
   ) async throws -> (Data, CameraVendorCameraObjectInfo?) {
-    try await requestScheduler.run(priority: .downloadOriginal) {
+    try await commandLane.run(priority: .download) {
       self.reportExclusiveDownloadWindowReadyIfNeeded()
       try self.session.ensureConnectedForPriorityDownload()
       let info = try (cachedInfo ?? self.session.objectInfo(handle: UInt32(handle)).reliableDownloadMetadata)
@@ -260,7 +318,7 @@ final class CameraVendorPtpSessionRuntime {
     mode: CameraVendorTransferDownloadMode,
     cachedInfo: CameraVendorCameraObjectInfo?
   ) async throws -> (URL, CameraVendorCameraObjectInfo?, CameraVendorOriginalFileTransferTiming) {
-    try await requestScheduler.run(priority: .downloadOriginal) {
+    try await commandLane.run(priority: .download) {
       self.reportExclusiveDownloadWindowReadyIfNeeded()
       try self.session.ensureConnectedForPriorityDownload()
       let fileResult = try self.session.objectFile(
@@ -274,7 +332,7 @@ final class CameraVendorPtpSessionRuntime {
   }
 
   func fetchInitialCameraCatalog() async throws -> CameraVendorCatalogSnapshot {
-    try await requestScheduler.runExclusiveMutation {
+    try await commandLane.runExclusiveSessionMutation {
       do {
         return try self.session.cameraVendorInitialCatalogSnapshot()
       } catch {
@@ -288,13 +346,13 @@ final class CameraVendorPtpSessionRuntime {
   }
 
   func fetchCameraCatalog(query: CameraVendorCatalogQuery) async throws -> CameraVendorCatalogSnapshot {
-    try await requestScheduler.runExclusiveMutation {
+    try await commandLane.runExclusiveSessionMutation {
       try self.session.cameraVendorCatalogSnapshot(query: query)
     }
   }
 
   func executeCountSweepExperiment() async throws -> CameraVendorCountSweepResult {
-    try await requestScheduler.runExclusiveMutation {
+    try await commandLane.runExclusiveSessionMutation {
       try self.session.cameraVendorCountSweepExperiment()
     }
   }
@@ -303,7 +361,7 @@ final class CameraVendorPtpSessionRuntime {
     handle: UInt32,
     readTimeout: TimeInterval
   ) async throws -> CameraVendorCameraObjectInfo {
-    try await requestScheduler.run(priority: .backgroundMetadata) {
+    try await commandLane.run(priority: .details) {
       try self.beginBackgroundMetadataRequest(handle: Int(handle))
       defer { self.endBackgroundMetadataRequest(handle: Int(handle)) }
       return try self.session.objectInfo(handle: handle, readTimeout: readTimeout)

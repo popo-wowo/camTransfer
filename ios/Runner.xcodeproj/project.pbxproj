@@ -48,7 +48,7 @@
 		A1B2C3D4E5F60002A0000001 /* CameraVendorPtpSocket.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60002A0000000 /* CameraVendorPtpSocket.swift */; };
 		A1B2C3D4E5F60003A0000001 /* CameraVendorPtpProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60003A0000000 /* CameraVendorPtpProtocol.swift */; };
 		A1B2C3D4E5F60004A0000001 /* CameraVendorPairingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60004A0000000 /* CameraVendorPairingStore.swift */; };
-		A1B2C3D4E5F60005A0000001 /* CameraVendorGalleryRequestScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60005A0000000 /* CameraVendorGalleryRequestScheduler.swift */; };
+		A1B2C3D4E5F60005A0000001 /* CameraCommandLane.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60005A0000000 /* CameraCommandLane.swift */; };
 		A1B2C3D4E5F60006A0000001 /* CameraVendorTransferPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60006A0000000 /* CameraVendorTransferPolicy.swift */; };
 		A1B2C3D4E5F60007A0000001 /* CameraVendorSecureHandshake.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60007A0000000 /* CameraVendorSecureHandshake.swift */; };
 		A1B2C3D4E5F60008A0000001 /* CameraVendorCatalogPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60008A0000000 /* CameraVendorCatalogPolicy.swift */; };
@@ -174,7 +174,7 @@
 		A1B2C3D4E5F60002A0000000 /* CameraVendorPtpSocket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorPtpSocket.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60003A0000000 /* CameraVendorPtpProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorPtpProtocol.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60004A0000000 /* CameraVendorPairingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorPairingStore.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60005A0000000 /* CameraVendorGalleryRequestScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorGalleryRequestScheduler.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60005A0000000 /* CameraCommandLane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraCommandLane.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60006A0000000 /* CameraVendorTransferPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorTransferPolicy.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60007A0000000 /* CameraVendorSecureHandshake.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorSecureHandshake.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60008A0000000 /* CameraVendorCatalogPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorCatalogPolicy.swift; sourceTree = "<group>"; };
@@ -211,7 +211,7 @@
 				A1B2C3D4E5F60002A0000000 /* CameraVendorPtpSocket.swift */,
 				A1B2C3D4E5F60003A0000000 /* CameraVendorPtpProtocol.swift */,
 				A1B2C3D4E5F60004A0000000 /* CameraVendorPairingStore.swift */,
-				A1B2C3D4E5F60005A0000000 /* CameraVendorGalleryRequestScheduler.swift */,
+				A1B2C3D4E5F60005A0000000 /* CameraCommandLane.swift */,
 				A1B2C3D4E5F60006A0000000 /* CameraVendorTransferPolicy.swift */,
 				A1B2C3D4E5F60007A0000000 /* CameraVendorSecureHandshake.swift */,
 				A1B2C3D4E5F60008A0000000 /* CameraVendorCatalogPolicy.swift */,
@@ -580,7 +580,7 @@
 				A1B2C3D4E5F60002A0000001 /* CameraVendorPtpSocket.swift in Sources */,
 				A1B2C3D4E5F60003A0000001 /* CameraVendorPtpProtocol.swift in Sources */,
 				A1B2C3D4E5F60004A0000001 /* CameraVendorPairingStore.swift in Sources */,
-				A1B2C3D4E5F60005A0000001 /* CameraVendorGalleryRequestScheduler.swift in Sources */,
+				A1B2C3D4E5F60005A0000001 /* CameraCommandLane.swift in Sources */,
 				A1B2C3D4E5F60006A0000001 /* CameraVendorTransferPolicy.swift in Sources */,
 				A1B2C3D4E5F60007A0000001 /* CameraVendorSecureHandshake.swift in Sources */,
 				A1B2C3D4E5F60008A0000001 /* CameraVendorCatalogPolicy.swift in Sources */,

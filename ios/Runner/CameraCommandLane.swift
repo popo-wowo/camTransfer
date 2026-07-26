@@ -1,15 +1,37 @@
 import Foundation
 
-enum CameraVendorGalleryRequestPriority: Int {
-  case mutation = -1
-  case downloadOriginal = 0
-  case previewImage = 1
+enum CameraCommandPriority: Int, Sendable {
+  case sessionMutation = -1
+  case download = 0
+  case hdPreview = 1
   case visibleThumbnail = 2
-  case previewNeighborThumbnail = 3
-  case backgroundMetadata = 4
+  case details = 3
+  case keepAlive = 4
 }
 
-final class CameraVendorGalleryRequestScheduler {
+final class CameraCommandLease: @unchecked Sendable {
+  private let lock = NSLock()
+  private var releaseHandler: (() -> Void)?
+
+  init(releaseHandler: @escaping () -> Void) {
+    self.releaseHandler = releaseHandler
+  }
+
+  func release() {
+    let handler: (() -> Void)?
+    lock.lock()
+    handler = releaseHandler
+    releaseHandler = nil
+    lock.unlock()
+    handler?()
+  }
+
+  deinit {
+    release()
+  }
+}
+
+final class CameraCommandLane {
   private final class WaiterToken {
     private let lock = NSLock()
     private var waiterID: Int?
@@ -34,13 +56,13 @@ final class CameraVendorGalleryRequestScheduler {
 
   private final class Waiter {
     let id: Int
-    let priority: CameraVendorGalleryRequestPriority
+    let priority: CameraCommandPriority
     let sequence: Int
     let continuation: CheckedContinuation<Void, Error>
 
     init(
       id: Int,
-      priority: CameraVendorGalleryRequestPriority,
+      priority: CameraCommandPriority,
       sequence: Int,
       continuation: CheckedContinuation<Void, Error>
     ) {
@@ -52,21 +74,21 @@ final class CameraVendorGalleryRequestScheduler {
   }
 
   private let lock = NSLock()
-  private var isCameraReadActive = false
+  private var isCommandActive = false
   private var waiters: [Waiter] = []
   private var nextSequence = 0
   private var nextWaiterID = 0
-  private var isPriorityDownloadBarrierActive = false
-  private var isExclusiveMutationBarrierActive = false
+  private var isExclusiveDownloadBarrierActive = false
+  private var isExclusiveSessionMutationBarrierActive = false
   private var idleWaiters: [CheckedContinuation<Void, Never>] = []
-  private let onWaiterQueued: ((CameraVendorGalleryRequestPriority) -> Void)?
+  private let onWaiterQueued: ((CameraCommandPriority) -> Void)?
 
-  init(onWaiterQueued: ((CameraVendorGalleryRequestPriority) -> Void)? = nil) {
+  init(onWaiterQueued: ((CameraCommandPriority) -> Void)? = nil) {
     self.onWaiterQueued = onWaiterQueued
   }
 
   func run<T>(
-    priority: CameraVendorGalleryRequestPriority,
+    priority: CameraCommandPriority,
     _ operation: () throws -> T
   ) async throws -> T {
     try await acquire(priority: priority)
@@ -84,37 +106,18 @@ final class CameraVendorGalleryRequestScheduler {
     }
   }
 
-  func runExclusiveMutation<T>(_ operation: () throws -> T) async throws -> T {
-    beginExclusiveMutationBarrier()
-    defer { endExclusiveMutationBarrier() }
-    try await acquire(priority: .mutation)
-    if Task.isCancelled {
-      releaseNext()
-      throw CancellationError()
-    }
-    do {
-      let value = try operation()
-      releaseNext()
-      return value
-    } catch {
-      releaseNext()
-      throw error
-    }
+  func runExclusiveSessionMutation<T>(_ operation: () throws -> T) async throws -> T {
+    beginExclusiveSessionMutationBarrier()
+    defer { endExclusiveSessionMutationBarrier() }
+    return try await run(priority: .sessionMutation, operation)
   }
 
-  func beginPriorityDownloadBarrier() {
-    let cancelledWaiters: [Waiter]
-    let idleContinuations: [CheckedContinuation<Void, Never>]
-    lock.lock()
-    isPriorityDownloadBarrierActive = true
-    cancelledWaiters = waiters.filter { $0.priority != .downloadOriginal }
-    waiters.removeAll { $0.priority != .downloadOriginal }
-    idleContinuations = takeIdleWaitersIfReadyLocked()
-    lock.unlock()
-    for waiter in cancelledWaiters {
-      waiter.continuation.resume(throwing: CancellationError())
+  func acquireExclusiveDownloadLease() async -> CameraCommandLease {
+    beginExclusiveDownloadBarrier()
+    await waitUntilIdle()
+    return CameraCommandLease { [weak self] in
+      self?.endExclusiveDownloadBarrier()
     }
-    idleContinuations.forEach { $0.resume() }
   }
 
   func waitUntilIdle() async {
@@ -133,14 +136,29 @@ final class CameraVendorGalleryRequestScheduler {
     }
   }
 
-  func endPriorityDownloadBarrier() {
+  private func beginExclusiveDownloadBarrier() {
+    let cancelledWaiters: [Waiter]
+    let idleContinuations: [CheckedContinuation<Void, Never>]
+    lock.lock()
+    isExclusiveDownloadBarrierActive = true
+    cancelledWaiters = waiters.filter { $0.priority != .download }
+    waiters.removeAll { $0.priority != .download }
+    idleContinuations = takeIdleWaitersIfReadyLocked()
+    lock.unlock()
+    for waiter in cancelledWaiters {
+      waiter.continuation.resume(throwing: CancellationError())
+    }
+    idleContinuations.forEach { $0.resume() }
+  }
+
+  private func endExclusiveDownloadBarrier() {
     let next: Waiter?
     lock.lock()
-    isPriorityDownloadBarrierActive = false
-    if !isCameraReadActive {
+    isExclusiveDownloadBarrierActive = false
+    if !isCommandActive {
       next = removeNextRunnableWaiterLocked()
       if next != nil {
-        isCameraReadActive = true
+        isCommandActive = true
       }
     } else {
       next = nil
@@ -149,20 +167,20 @@ final class CameraVendorGalleryRequestScheduler {
     next?.continuation.resume()
   }
 
-  private func beginExclusiveMutationBarrier() {
+  private func beginExclusiveSessionMutationBarrier() {
     lock.lock()
-    isExclusiveMutationBarrierActive = true
+    isExclusiveSessionMutationBarrierActive = true
     lock.unlock()
   }
 
-  private func endExclusiveMutationBarrier() {
+  private func endExclusiveSessionMutationBarrier() {
     let next: Waiter?
     lock.lock()
-    isExclusiveMutationBarrierActive = false
-    if !isCameraReadActive {
+    isExclusiveSessionMutationBarrierActive = false
+    if !isCommandActive {
       next = removeNextRunnableWaiterLocked()
       if next != nil {
-        isCameraReadActive = true
+        isCommandActive = true
       }
     } else {
       next = nil
@@ -171,7 +189,7 @@ final class CameraVendorGalleryRequestScheduler {
     next?.continuation.resume()
   }
 
-  private func acquire(priority: CameraVendorGalleryRequestPriority) async throws {
+  private func acquire(priority: CameraCommandPriority) async throws {
     if Task.isCancelled {
       throw CancellationError()
     }
@@ -180,16 +198,16 @@ final class CameraVendorGalleryRequestScheduler {
       try await withCheckedThrowingContinuation { continuation in
         var shouldAcquireImmediately = false
         var shouldResumeCancelled = false
-        var queuedPriority: CameraVendorGalleryRequestPriority?
+        var queuedPriority: CameraCommandPriority?
         lock.lock()
         if Task.isCancelled {
           shouldResumeCancelled = true
-        } else if isPriorityDownloadBarrierActive && priority != .downloadOriginal {
+        } else if isExclusiveDownloadBarrierActive && priority != .download {
           shouldResumeCancelled = true
-        } else if !isCameraReadActive
+        } else if !isCommandActive
           && canRunImmediatelyLocked(priority: priority)
-          && (waiters.isEmpty || isPriorityDownloadBarrierActive) {
-          isCameraReadActive = true
+          && (waiters.isEmpty || isExclusiveDownloadBarrierActive) {
+          isCommandActive = true
           shouldAcquireImmediately = true
         } else {
           let waiterID = nextWaiterID
@@ -235,7 +253,7 @@ final class CameraVendorGalleryRequestScheduler {
       next = runnable
       idleContinuations = []
     } else {
-      isCameraReadActive = false
+      isCommandActive = false
       next = nil
       idleContinuations = takeIdleWaitersIfReadyLocked()
     }
@@ -245,7 +263,7 @@ final class CameraVendorGalleryRequestScheduler {
   }
 
   private var isIdleLocked: Bool {
-    !isCameraReadActive && waiters.isEmpty
+    !isCommandActive && waiters.isEmpty
   }
 
   private func takeIdleWaitersIfReadyLocked() -> [CheckedContinuation<Void, Never>] {
@@ -255,15 +273,17 @@ final class CameraVendorGalleryRequestScheduler {
     return continuations
   }
 
-  private func canRunImmediatelyLocked(priority: CameraVendorGalleryRequestPriority) -> Bool {
-    if isExclusiveMutationBarrierActive {
-      return priority == .mutation
+  private func canRunImmediatelyLocked(priority: CameraCommandPriority) -> Bool {
+    if isExclusiveSessionMutationBarrierActive {
+      return priority == .sessionMutation
     }
-    return !isPriorityDownloadBarrierActive || priority == .downloadOriginal
+    return !isExclusiveDownloadBarrierActive || priority == .download
   }
 
   private func removeNextRunnableWaiterLocked() -> Waiter? {
-    let runnableIndices = waiters.indices.filter { canRunImmediatelyLocked(priority: waiters[$0].priority) }
+    let runnableIndices = waiters.indices.filter {
+      canRunImmediatelyLocked(priority: waiters[$0].priority)
+    }
     guard let index = runnableIndices.min(by: { left, right in
       let leftWaiter = waiters[left]
       let rightWaiter = waiters[right]
