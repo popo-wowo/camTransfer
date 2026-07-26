@@ -103,43 +103,56 @@ extension CameraVendorGalleryReadySummaryProviding {
 
 final class CameraVendorPtpSessionRuntime {
   private final class ExclusiveDownloadLeaseAcquisition {
-    private let lock = NSLock()
-    private var isCancelled = false
-    private var lease: CameraCommandLease?
-    private var task: Task<Void, Never>?
+    private final class State {
+      private let lock = NSLock()
+      private var isCancelled = false
+      private var lease: CameraCommandLease?
 
-    func start(commandLane: CameraCommandLane) {
-      task = Task { [weak self] in
-        let lease = await commandLane.acquireExclusiveDownloadLease()
-        self?.install(lease)
+      func cancel() {
+        let leaseToRelease: CameraCommandLease?
+        lock.lock()
+        isCancelled = true
+        leaseToRelease = lease
+        lease = nil
+        lock.unlock()
+        leaseToRelease?.release()
+      }
+
+      func install(_ lease: CameraCommandLease) {
+        let shouldRelease: Bool
+        lock.lock()
+        shouldRelease = isCancelled
+        if !shouldRelease {
+          self.lease = lease
+        }
+        lock.unlock()
+        if shouldRelease {
+          lease.release()
+        }
+      }
+    }
+
+    private let state: State
+    private let task: Task<Void, Never>
+
+    init(commandLane: CameraCommandLane) {
+      let state = State()
+      self.state = state
+      task = Task {
+        guard let lease = try? await commandLane.acquireExclusiveDownloadLease() else {
+          return
+        }
+        state.install(lease)
       }
     }
 
     func waitUntilReady() async {
-      await task?.value
+      await task.value
     }
 
     func cancel() {
-      let leaseToRelease: CameraCommandLease?
-      lock.lock()
-      isCancelled = true
-      leaseToRelease = lease
-      lease = nil
-      lock.unlock()
-      leaseToRelease?.release()
-    }
-
-    private func install(_ lease: CameraCommandLease) {
-      let shouldRelease: Bool
-      lock.lock()
-      shouldRelease = isCancelled
-      if !shouldRelease {
-        self.lease = lease
-      }
-      lock.unlock()
-      if shouldRelease {
-        lease.release()
-      }
+      task.cancel()
+      state.cancel()
     }
   }
 
@@ -183,10 +196,9 @@ final class CameraVendorPtpSessionRuntime {
       exclusiveDownloadLeaseLock.unlock()
       return
     }
-    let acquisition = ExclusiveDownloadLeaseAcquisition()
+    let acquisition = ExclusiveDownloadLeaseAcquisition(commandLane: commandLane)
     exclusiveDownloadLeaseAcquisition = acquisition
     exclusiveDownloadLeaseLock.unlock()
-    acquisition.start(commandLane: commandLane)
   }
 
   func awaitExclusiveDownloadWindowReady() async {

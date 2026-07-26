@@ -9504,9 +9504,9 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(cancelledResult, "cancelled")
   }
 
-  func testCameraCommandLaneRejectsNewNonDownloadRequestsDuringExclusiveDownload() async {
+  func testCameraCommandLaneRejectsNewNonDownloadRequestsDuringExclusiveDownload() async throws {
     let lane = CameraCommandLane()
-    let lease = await lane.acquireExclusiveDownloadLease()
+    let lease = try await lane.acquireExclusiveDownloadLease()
     var didRunThumbnail = false
 
     let thumbnail = Task { () -> String in
@@ -9529,9 +9529,9 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(didRunThumbnail)
   }
 
-  func testCameraCommandLaneAllowsDownloadRequestsDuringExclusiveDownload() async {
+  func testCameraCommandLaneAllowsDownloadRequestsDuringExclusiveDownload() async throws {
     let lane = CameraCommandLane()
-    let lease = await lane.acquireExclusiveDownloadLease()
+    let lease = try await lane.acquireExclusiveDownloadLease()
 
     let result = try? await lane.run(priority: .download) {
       "download"
@@ -9541,7 +9541,7 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(result, "download")
   }
 
-  func testCameraCommandLaneDownloadBarrierPreservesQueuedSessionMutation() async {
+  func testCameraCommandLaneDownloadBarrierPreservesQueuedSessionMutation() async throws {
     let mutationQueued = expectation(description: "session mutation queued")
     let lane = CameraCommandLane { priority in
       if priority == .sessionMutation {
@@ -9573,27 +9573,27 @@ final class RunnerTests: XCTestCase {
     await fulfillment(of: [mutationQueued], timeout: 1)
 
     let leaseTask = Task {
-      await lane.acquireExclusiveDownloadLease()
+      try await lane.acquireExclusiveDownloadLease()
     }
     try? await Task.sleep(nanoseconds: 30_000_000)
     releaseActive.signal()
     _ = try? await active.value
 
     let mutationResult = await mutation.value
-    let lease = await leaseTask.value
+    let lease = try await leaseTask.value
     lease.release()
 
     XCTAssertEqual(mutationResult, "mutation")
   }
 
-  func testCameraCommandLaneQueuesNewSessionMutationDuringDownloadBarrier() async {
+  func testCameraCommandLaneQueuesNewSessionMutationDuringDownloadBarrier() async throws {
     let mutationQueued = expectation(description: "session mutation queued")
     let lane = CameraCommandLane { priority in
       if priority == .sessionMutation {
         mutationQueued.fulfill()
       }
     }
-    let lease = await lane.acquireExclusiveDownloadLease()
+    let lease = try await lane.acquireExclusiveDownloadLease()
     let downloadStarted = expectation(description: "download started")
     let releaseDownload = DispatchSemaphore(value: 0)
 
@@ -9626,7 +9626,7 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(mutationResult, "mutation")
   }
 
-  func testCameraCommandLaneCancelsQueuedNonDownloadWorkBeforeAdmittingDownload() async {
+  func testCameraCommandLaneCancelsQueuedNonDownloadWorkBeforeAdmittingDownload() async throws {
     let lane = CameraCommandLane()
     let activeMetadataStarted = expectation(description: "active metadata started")
     let releaseActiveMetadata = DispatchSemaphore(value: 0)
@@ -9659,10 +9659,10 @@ final class RunnerTests: XCTestCase {
     try? await Task.sleep(nanoseconds: 30_000_000)
 
     let leaseTask = Task {
-      await lane.acquireExclusiveDownloadLease()
+      try await lane.acquireExclusiveDownloadLease()
     }
     let download = Task {
-      let lease = await leaseTask.value
+      let lease = try await leaseTask.value
       defer { lease.release() }
       try await lane.run(priority: .download) {
         orderQueue.sync {
@@ -9685,7 +9685,7 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(finalOrder, ["active-metadata-ended", "download-started"])
   }
 
-  func testCameraCommandLaneWaitsForActiveTransactionToDrainBeforeDownloadLeaseIsReady() async {
+  func testCameraCommandLaneWaitsForActiveTransactionToDrainBeforeDownloadLeaseIsReady() async throws {
     let lane = CameraCommandLane()
     let activeMetadataStarted = expectation(description: "active metadata started")
     let releaseActiveMetadata = DispatchSemaphore(value: 0)
@@ -9701,7 +9701,7 @@ final class RunnerTests: XCTestCase {
     await fulfillment(of: [activeMetadataStarted], timeout: 1)
 
     let admission = Task {
-      let lease = await lane.acquireExclusiveDownloadLease()
+      let lease = try await lane.acquireExclusiveDownloadLease()
       stateLock.withLock {
         didBecomeReady = true
       }
@@ -9713,9 +9713,118 @@ final class RunnerTests: XCTestCase {
 
     releaseActiveMetadata.signal()
     _ = try? await activeMetadata.value
-    let lease = await admission.value
+    let lease = try await admission.value
     XCTAssertTrue(stateLock.withLock { didBecomeReady })
     lease.release()
+  }
+
+  func testCameraCommandLaneDoesNotCompleteDownloadLeaseBeforeActiveCommandDrains() async {
+    let lane = CameraCommandLane()
+    let activeStarted = expectation(description: "active command started")
+    let releaseActive = DispatchSemaphore(value: 0)
+    let stateLock = NSLock()
+    var leaseReady = false
+
+    let active = Task {
+      try await lane.run(priority: .details) {
+        activeStarted.fulfill()
+        releaseActive.wait()
+      }
+    }
+    await fulfillment(of: [activeStarted], timeout: 1)
+
+    let admission = Task {
+      let lease = try await lane.acquireExclusiveDownloadLease()
+      stateLock.withLock {
+        leaseReady = true
+      }
+      return lease
+    }
+    let barrierProbe = Task { () -> String in
+      do {
+        return try await lane.run(priority: .hdPreview) { "ran" }
+      } catch is CancellationError {
+        return "cancelled"
+      } catch {
+        return "failed"
+      }
+    }
+
+    let barrierProbeResult = await barrierProbe.value
+    XCTAssertEqual(barrierProbeResult, "cancelled")
+    XCTAssertFalse(stateLock.withLock { leaseReady })
+
+    releaseActive.signal()
+    _ = try? await active.value
+    let lease = try? await admission.value
+
+    XCTAssertTrue(stateLock.withLock { leaseReady })
+    lease?.release()
+  }
+
+  func testCameraCommandLaneCancellingDownloadAdmissionWhileDrainingReleasesItsBarrier() async {
+    let thumbnailQueued = expectation(description: "thumbnail queued after cancelled admission")
+    let admissionCancelled = expectation(description: "download admission cancelled before drain")
+    let lane = CameraCommandLane { priority in
+      if priority == .visibleThumbnail {
+        thumbnailQueued.fulfill()
+      }
+    }
+    let activeStarted = expectation(description: "active command started")
+    let releaseActive = DispatchSemaphore(value: 0)
+
+    let active = Task {
+      try await lane.run(priority: .details) {
+        activeStarted.fulfill()
+        releaseActive.wait()
+      }
+    }
+    await fulfillment(of: [activeStarted], timeout: 1)
+
+    let admission = Task { () -> String in
+      do {
+        let lease = try await lane.acquireExclusiveDownloadLease()
+        lease.release()
+        return "ready"
+      } catch is CancellationError {
+        admissionCancelled.fulfill()
+        return "cancelled"
+      } catch {
+        return "failed"
+      }
+    }
+    let barrierProbe = Task { () -> String in
+      do {
+        return try await lane.run(priority: .hdPreview) { "ran" }
+      } catch is CancellationError {
+        return "cancelled"
+      } catch {
+        return "failed"
+      }
+    }
+    let barrierProbeResult = await barrierProbe.value
+    XCTAssertEqual(barrierProbeResult, "cancelled")
+
+    admission.cancel()
+    await fulfillment(of: [admissionCancelled], timeout: 1)
+    let thumbnail = Task { () -> String in
+      do {
+        return try await lane.run(priority: .visibleThumbnail) { "thumbnail" }
+      } catch is CancellationError {
+        return "cancelled"
+      } catch {
+        return "failed"
+      }
+    }
+
+    await fulfillment(of: [thumbnailQueued], timeout: 1)
+    releaseActive.signal()
+    _ = try? await active.value
+
+    let admissionResult = await admission.value
+    let thumbnailResult = await thumbnail.value
+    XCTAssertEqual(admissionResult, "cancelled")
+    XCTAssertEqual(thumbnailResult, "thumbnail")
   }
 
   func testCameraCommandLaneExclusiveSessionMutationWaitsForActiveReadAndBlocksDownloads() async {
@@ -9768,7 +9877,7 @@ final class RunnerTests: XCTestCase {
 
   func testCameraCommandLeaseReleaseIsIdempotent() async throws {
     let lane = CameraCommandLane()
-    let lease = await lane.acquireExclusiveDownloadLease()
+    let lease = try await lane.acquireExclusiveDownloadLease()
 
     lease.release()
     lease.release()
@@ -9779,13 +9888,53 @@ final class RunnerTests: XCTestCase {
 
   func testCameraCommandLeaseDeinitReleasesDownloadBarrier() async throws {
     let lane = CameraCommandLane()
-    var lease: CameraCommandLease? = await lane.acquireExclusiveDownloadLease()
+    var lease: CameraCommandLease? = try await lane.acquireExclusiveDownloadLease()
     XCTAssertNotNil(lease)
 
     lease = nil
 
     let result = try await lane.run(priority: .visibleThumbnail) { "thumbnail" }
     XCTAssertEqual(result, "thumbnail")
+  }
+
+  func testCameraCommandLeaseFirstReleaseKeepsOverlappingSecondBarrierActive() async throws {
+    let lane = CameraCommandLane()
+    let firstLease = try await lane.acquireExclusiveDownloadLease()
+    let secondLease = try await lane.acquireExclusiveDownloadLease()
+
+    firstLease.release()
+    let blockedResult: String
+    do {
+      blockedResult = try await lane.run(priority: .visibleThumbnail) { "ran" }
+    } catch is CancellationError {
+      blockedResult = "cancelled"
+    }
+
+    secondLease.release()
+    let admittedResult = try await lane.run(priority: .visibleThumbnail) { "thumbnail" }
+
+    XCTAssertEqual(blockedResult, "cancelled")
+    XCTAssertEqual(admittedResult, "thumbnail")
+  }
+
+  func testCameraCommandLeaseSecondReleaseKeepsOverlappingFirstBarrierActive() async throws {
+    let lane = CameraCommandLane()
+    let firstLease = try await lane.acquireExclusiveDownloadLease()
+    let secondLease = try await lane.acquireExclusiveDownloadLease()
+
+    secondLease.release()
+    let blockedResult: String
+    do {
+      blockedResult = try await lane.run(priority: .visibleThumbnail) { "ran" }
+    } catch is CancellationError {
+      blockedResult = "cancelled"
+    }
+
+    firstLease.release()
+    let admittedResult = try await lane.run(priority: .visibleThumbnail) { "thumbnail" }
+
+    XCTAssertEqual(blockedResult, "cancelled")
+    XCTAssertEqual(admittedResult, "thumbnail")
   }
 
   func testCameraVendorPlaceholderObjectInfoUsesUndefinedFormatLikeAndroid() {
@@ -10150,6 +10299,49 @@ final class RunnerTests: XCTestCase {
     XCTAssertTrue(source.contains("private let commandLane = CameraCommandLane()"))
     XCTAssertFalse(serviceBody.contains("private let requestScheduler = CameraVendorGalleryRequestScheduler()"))
     XCTAssertFalse(serviceBody.contains("private let priorityDownloadLock = NSLock()"))
+  }
+
+  func testPtpRuntimePublishesOnlyInitializedExclusiveDownloadLeaseAcquisition() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/CameraVendorRealtimeGalleryService.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let acquisitionStart = try XCTUnwrap(
+      source.range(of: "private final class ExclusiveDownloadLeaseAcquisition")?.lowerBound
+    )
+    let acquisitionEnd = try XCTUnwrap(
+      source.range(of: "private let session:", range: acquisitionStart..<source.endIndex)?.lowerBound
+    )
+    let acquisitionBody = String(source[acquisitionStart..<acquisitionEnd])
+
+    XCTAssertTrue(acquisitionBody.contains("private let task: Task<Void, Never>"))
+    XCTAssertTrue(acquisitionBody.contains("init(commandLane: CameraCommandLane)"))
+    XCTAssertTrue(acquisitionBody.contains("task = Task"))
+    XCTAssertFalse(acquisitionBody.contains("func start(commandLane:"))
+    let waitUntilReadyStart = try XCTUnwrap(
+      acquisitionBody.range(of: "func waitUntilReady() async")?.lowerBound
+    )
+    let cancellationBody = acquisitionBody[waitUntilReadyStart..<acquisitionBody.endIndex]
+    XCTAssertTrue(cancellationBody.contains("task.cancel()"))
+    XCTAssertTrue(cancellationBody.contains("state.cancel()"))
+
+    let beginStart = try XCTUnwrap(
+      source.range(of: "func beginExclusiveDownloadWindow()", range: acquisitionEnd..<source.endIndex)?.lowerBound
+    )
+    let awaitStart = try XCTUnwrap(
+      source.range(of: "func awaitExclusiveDownloadWindowReady()", range: beginStart..<source.endIndex)?.lowerBound
+    )
+    let beginBody = source[beginStart..<awaitStart]
+    let construction = try XCTUnwrap(
+      beginBody.range(of: "let acquisition = ExclusiveDownloadLeaseAcquisition(commandLane: commandLane)")
+    )
+    let publication = try XCTUnwrap(
+      beginBody.range(of: "exclusiveDownloadLeaseAcquisition = acquisition")
+    )
+
+    XCTAssertLessThan(construction.lowerBound, publication.lowerBound)
+    XCTAssertFalse(beginBody.contains("acquisition.start("))
   }
 
   func testBackgroundMetadataRefreshResumePolicyTracksPendingHandlesAcrossResolutionAndRecovery() {

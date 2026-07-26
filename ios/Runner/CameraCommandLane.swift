@@ -73,14 +73,26 @@ final class CameraCommandLane {
     }
   }
 
+  private final class IdleWaiter {
+    let id: Int
+    let continuation: CheckedContinuation<Void, Error>
+
+    init(id: Int, continuation: CheckedContinuation<Void, Error>) {
+      self.id = id
+      self.continuation = continuation
+    }
+  }
+
   private let lock = NSLock()
   private var isCommandActive = false
   private var waiters: [Waiter] = []
   private var nextSequence = 0
   private var nextWaiterID = 0
-  private var isExclusiveDownloadBarrierActive = false
+  private var exclusiveDownloadLeaseIDs = Set<Int>()
+  private var nextExclusiveDownloadLeaseID = 0
   private var isExclusiveSessionMutationBarrierActive = false
-  private var idleWaiters: [CheckedContinuation<Void, Never>] = []
+  private var idleWaiters: [IdleWaiter] = []
+  private var nextIdleWaiterID = 0
   private let onWaiterQueued: ((CameraCommandPriority) -> Void)?
 
   init(onWaiterQueued: ((CameraCommandPriority) -> Void)? = nil) {
@@ -112,54 +124,86 @@ final class CameraCommandLane {
     return try await run(priority: .sessionMutation, operation)
   }
 
-  func acquireExclusiveDownloadLease() async -> CameraCommandLease {
-    beginExclusiveDownloadBarrier()
-    await waitUntilIdle()
-    return CameraCommandLease { [weak self] in
-      self?.endExclusiveDownloadBarrier()
+  func acquireExclusiveDownloadLease() async throws -> CameraCommandLease {
+    try Task.checkCancellation()
+    let leaseID = beginExclusiveDownloadBarrier()
+    do {
+      try await waitUntilIdle()
+      try Task.checkCancellation()
+      return CameraCommandLease { [weak self] in
+        self?.endExclusiveDownloadBarrier(leaseID: leaseID)
+      }
+    } catch {
+      endExclusiveDownloadBarrier(leaseID: leaseID)
+      throw error
     }
   }
 
-  func waitUntilIdle() async {
-    await withCheckedContinuation { continuation in
-      var shouldResumeImmediately = false
-      lock.lock()
-      if isIdleLocked {
-        shouldResumeImmediately = true
-      } else {
-        idleWaiters.append(continuation)
+  func waitUntilIdle() async throws {
+    try Task.checkCancellation()
+    let token = WaiterToken()
+    try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { continuation in
+        var shouldResumeImmediately = false
+        var shouldResumeCancelled = false
+        lock.lock()
+        if Task.isCancelled {
+          shouldResumeCancelled = true
+        } else if isIdleLocked {
+          shouldResumeImmediately = true
+        } else {
+          let waiterID = nextIdleWaiterID
+          nextIdleWaiterID += 1
+          idleWaiters.append(IdleWaiter(id: waiterID, continuation: continuation))
+          if token.register(waiterID: waiterID) {
+            idleWaiters.removeAll { $0.id == waiterID }
+            shouldResumeCancelled = true
+          }
+        }
+        lock.unlock()
+        if shouldResumeImmediately {
+          continuation.resume()
+        } else if shouldResumeCancelled {
+          continuation.resume(throwing: CancellationError())
+        }
       }
-      lock.unlock()
-      if shouldResumeImmediately {
-        continuation.resume()
-      }
+    } onCancel: { [weak self] in
+      guard let waiterID = token.cancel() else { return }
+      self?.cancelIdleWaiter(id: waiterID)
     }
+    try Task.checkCancellation()
   }
 
-  private func beginExclusiveDownloadBarrier() {
+  private func beginExclusiveDownloadBarrier() -> Int {
     let cancelledWaiters: [Waiter]
-    let idleContinuations: [CheckedContinuation<Void, Never>]
+    let idleWaitersToResume: [IdleWaiter]
     lock.lock()
-    isExclusiveDownloadBarrierActive = true
+    let leaseID = nextExclusiveDownloadLeaseID
+    nextExclusiveDownloadLeaseID += 1
+    exclusiveDownloadLeaseIDs.insert(leaseID)
     cancelledWaiters = waiters.filter {
       !canRunDuringExclusiveDownloadBarrier(priority: $0.priority)
     }
     waiters.removeAll {
       !canRunDuringExclusiveDownloadBarrier(priority: $0.priority)
     }
-    idleContinuations = takeIdleWaitersIfReadyLocked()
+    idleWaitersToResume = takeIdleWaitersIfReadyLocked()
     lock.unlock()
     for waiter in cancelledWaiters {
       waiter.continuation.resume(throwing: CancellationError())
     }
-    idleContinuations.forEach { $0.resume() }
+    idleWaitersToResume.forEach { $0.continuation.resume() }
+    return leaseID
   }
 
-  private func endExclusiveDownloadBarrier() {
+  private func endExclusiveDownloadBarrier(leaseID: Int) {
     let next: Waiter?
     lock.lock()
-    isExclusiveDownloadBarrierActive = false
-    if !isCommandActive {
+    guard exclusiveDownloadLeaseIDs.remove(leaseID) != nil else {
+      lock.unlock()
+      return
+    }
+    if !isExclusiveDownloadBarrierActive && !isCommandActive {
       next = removeNextRunnableWaiterLocked()
       if next != nil {
         isCommandActive = true
@@ -252,30 +296,34 @@ final class CameraCommandLane {
 
   private func releaseNext() {
     let next: Waiter?
-    let idleContinuations: [CheckedContinuation<Void, Never>]
+    let idleWaitersToResume: [IdleWaiter]
     lock.lock()
     if let runnable = removeNextRunnableWaiterLocked() {
       next = runnable
-      idleContinuations = []
+      idleWaitersToResume = []
     } else {
       isCommandActive = false
       next = nil
-      idleContinuations = takeIdleWaitersIfReadyLocked()
+      idleWaitersToResume = takeIdleWaitersIfReadyLocked()
     }
     lock.unlock()
     next?.continuation.resume()
-    idleContinuations.forEach { $0.resume() }
+    idleWaitersToResume.forEach { $0.continuation.resume() }
   }
 
   private var isIdleLocked: Bool {
     !isCommandActive && waiters.isEmpty
   }
 
-  private func takeIdleWaitersIfReadyLocked() -> [CheckedContinuation<Void, Never>] {
+  private func takeIdleWaitersIfReadyLocked() -> [IdleWaiter] {
     guard isIdleLocked else { return [] }
-    let continuations = idleWaiters
+    let waiters = idleWaiters
     idleWaiters.removeAll(keepingCapacity: false)
-    return continuations
+    return waiters
+  }
+
+  private var isExclusiveDownloadBarrierActive: Bool {
+    !exclusiveDownloadLeaseIDs.isEmpty
   }
 
   private func canRunImmediatelyLocked(priority: CameraCommandPriority) -> Bool {
@@ -312,6 +360,18 @@ final class CameraCommandLane {
     lock.lock()
     if let index = waiters.firstIndex(where: { $0.id == id }) {
       continuation = waiters.remove(at: index).continuation
+    } else {
+      continuation = nil
+    }
+    lock.unlock()
+    continuation?.resume(throwing: CancellationError())
+  }
+
+  private func cancelIdleWaiter(id: Int) {
+    let continuation: CheckedContinuation<Void, Error>?
+    lock.lock()
+    if let index = idleWaiters.firstIndex(where: { $0.id == id }) {
+      continuation = idleWaiters.remove(at: index).continuation
     } else {
       continuation = nil
     }
