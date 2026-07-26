@@ -1,5 +1,7 @@
 # iOS Persistent Download Runtime Design
 
+> **Superseded:** This proposal misidentified the batch scheduling barrier as a connection lifecycle and proposed an unnecessary `CameraDownloadManager`. Use `docs/superpowers/specs/2026-07-27-ios-download-stop-and-reuse-design.md` instead.
+
 ## Goal
 
 Make downloading a reusable capability of one camera session instead of a per-batch connection/window. A completed or cancelled batch returns the download manager to idle; it does not destroy the PTP lane, disconnect the camera, or prevent navigation back to the gallery.

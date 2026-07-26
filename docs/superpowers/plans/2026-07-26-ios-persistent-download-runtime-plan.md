@@ -1,5 +1,7 @@
 # iOS Persistent Download Runtime Implementation Plan
 
+> **Superseded:** Do not execute this plan. It removes a required scheduling barrier and introduces unnecessary manager/owner lifecycle. Use `docs/superpowers/plans/2026-07-27-ios-download-stop-and-reuse-plan.md` instead.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace per-batch exclusive download windows with one reusable download manager and one permanent PTP command lane per camera session.
