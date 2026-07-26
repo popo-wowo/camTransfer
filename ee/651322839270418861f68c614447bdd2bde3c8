@@ -1,0 +1,30 @@
+ios/Runner/NativeConnectViewController.swift
+  6f08be97e0180404 922,1692-1693,1908,1917,1919-1929,1933-1940,1942-1948,1951,1957-1965,1967,2313
+ios/Runner/QuickDownloadCoordinator.swift
+  6f08be97e0180404 1-171
+ios/Runner.xcodeproj/project.pbxproj
+  6f08be97e0180404 37,137,242,605
+ios/Runner/NativeGalleryPolicies.swift
+  6f08be97e0180404 1445
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "ee651322839270418861f68c614447bdd2bde3c8",
+  "prompts": {
+    "6f08be97e0180404": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7eb69989-a986-4503-975b-d4f18edfa3a1",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 222,
+      "total_deletions": 111,
+      "accepted_lines": 220,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/fae58133f036094c7a9c5e55253c1d4405fad85a44311a97213471bd8bd5df7a"
+    }
+  }
+}
