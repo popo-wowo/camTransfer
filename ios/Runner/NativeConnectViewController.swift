@@ -3,6 +3,17 @@ import Photos
 import ImageIO
 import CoreLocation
 
+enum NativeHomeQuickDownloadEntryAction: Equatable {
+  case configure
+  case start
+}
+
+enum NativeHomeQuickDownloadEntryPolicy {
+  static func action(ruleIsEnabled: Bool) -> NativeHomeQuickDownloadEntryAction {
+    ruleIsEnabled ? .start : .configure
+  }
+}
+
 
 
 
@@ -180,7 +191,7 @@ enum NativeHomeRememberedGalleryResumePolicy {
 }
 
 enum NativeHomeCameraCardCopyPolicy {
-  static let pairedActionTitle = "进入相机相册"
+  static let pairedActionTitle = "进入相册"
   static let resumeActionTitle = "继续相册"
   static let disconnectActionTitle = "断开相机"
   static let unpairedActionTitle = "配对"
@@ -2268,6 +2279,13 @@ final class NativeConnectViewController: UIViewController {
         presence: presence,
         primaryActionTitle: NativeHomeCameraCardCopyPolicy.pairedActionTitle,
         showsDisconnectAction: isActiveSession && !isDisconnectingActiveRememberedCamera,
+        quickDownloadSummary: autoDownloadRule.isEnabled ? autoDownloadRule.summaryText : "首次需设置参数",
+        onQuickDownload: { [weak self] in
+          self?.quickDownloadTapped(record: record)
+        },
+        onQuickDownloadSettings: { [weak self] in
+          self?.autoDownloadSettingsTapped()
+        },
         onConnect: { [weak self] in
           guard let self else { return }
           if isActiveSession, let payload = self.cameraSessionRuntime.galleryPresentationPayload {
@@ -2290,90 +2308,34 @@ final class NativeConnectViewController: UIViewController {
         }
       )
       pairedCameraStack.addArrangedSubview(card)
-
-      // Auto-download button for this camera
-      let autoDownloadButton = UIButton(type: .system)
-      autoDownloadButton.translatesAutoresizingMaskIntoConstraints = false
-      var autoConfig = UIButton.Configuration.filled()
-      autoConfig.title = "⚡ 自动下载"
-      autoConfig.subtitle = autoDownloadRule.isEnabled ? autoDownloadRule.summaryText : "点击设置规则"
-      autoConfig.titleAlignment = .leading
-      autoConfig.baseBackgroundColor = NativeLuxuryTheme.ink.withAlphaComponent(0.06)
-      autoConfig.baseForegroundColor = NativeLuxuryTheme.ink
-      autoConfig.cornerStyle = .large
-      autoConfig.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16)
-      autoDownloadButton.configuration = autoConfig
-      let capturedRecord = record
-      autoDownloadButton.addAction(UIAction { [weak self] _ in
-        guard let self else { return }
-        if self.autoDownloadRule.isEnabled {
-          self.isAutoDownloadPending = true
-          self.connectRememberedCamera(capturedRecord)
-        } else {
-          self.autoDownloadSettingsTapped()
-        }
-      }, for: .touchUpInside)
-      pairedCameraStack.addArrangedSubview(autoDownloadButton)
     }
-
-    // Settings row for auto-download rule
-    let settingsRow = makeAutoDownloadRuleRow()
-    pairedCameraStack.addArrangedSubview(settingsRow)
 
     confirmPairingButton.isHidden = true
   }
 
-  private func makeAutoDownloadRuleRow() -> UIView {
-    let container = UIView()
-    container.translatesAutoresizingMaskIntoConstraints = false
-
-    let icon = UIImageView(image: UIImage(systemName: "arrow.down.circle.fill"))
-    icon.translatesAutoresizingMaskIntoConstraints = false
-    icon.tintColor = NativeLuxuryTheme.ink.withAlphaComponent(0.6)
-    icon.contentMode = .scaleAspectFit
-
-    let titleLabel = UILabel()
-    titleLabel.translatesAutoresizingMaskIntoConstraints = false
-    titleLabel.text = "自动下载"
-    titleLabel.font = .systemFont(ofSize: 14, weight: .medium)
-    titleLabel.textColor = NativeLuxuryTheme.ink
-
-    let detailLabel = UILabel()
-    detailLabel.translatesAutoresizingMaskIntoConstraints = false
-    detailLabel.text = autoDownloadRule.isEnabled ? autoDownloadRule.summaryText : "未启用（点击设置）"
-    detailLabel.font = .systemFont(ofSize: 12, weight: .regular)
-    detailLabel.textColor = NativeLuxuryTheme.ink.withAlphaComponent(0.5)
-
-    let chevron = UIImageView(image: UIImage(systemName: "chevron.right"))
-    chevron.translatesAutoresizingMaskIntoConstraints = false
-    chevron.tintColor = NativeLuxuryTheme.ink.withAlphaComponent(0.3)
-    chevron.contentMode = .scaleAspectFit
-
-    container.addSubview(icon)
-    container.addSubview(titleLabel)
-    container.addSubview(detailLabel)
-    container.addSubview(chevron)
-
-    NSLayoutConstraint.activate([
-      container.heightAnchor.constraint(equalToConstant: 44),
-      icon.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 4),
-      icon.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-      icon.widthAnchor.constraint(equalToConstant: 20),
-      icon.heightAnchor.constraint(equalToConstant: 20),
-      titleLabel.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 8),
-      titleLabel.centerYAnchor.constraint(equalTo: container.centerYAnchor, constant: -8),
-      detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-      detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 2),
-      chevron.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -4),
-      chevron.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-      chevron.widthAnchor.constraint(equalToConstant: 14),
-      chevron.heightAnchor.constraint(equalToConstant: 14),
-    ])
-
-    let tap = UITapGestureRecognizer(target: self, action: #selector(autoDownloadSettingsTapped))
-    container.addGestureRecognizer(tap)
-    container.isUserInteractionEnabled = true
-    return container
+  private func quickDownloadTapped(record: IOSCameraRememberedCameraRecord) {
+    switch NativeHomeQuickDownloadEntryPolicy.action(ruleIsEnabled: autoDownloadRule.isEnabled) {
+    case .configure:
+      let controller = NativeAutoDownloadSettingsViewController(
+        rule: autoDownloadRule,
+        saveButtonTitle: "开始下载",
+        forcesEnabledOnSave: true
+      ) { [weak self] updatedRule in
+        guard let self else { return }
+        self.autoDownloadRule = updatedRule
+        CameraAutoDownloadRuleStore.save(updatedRule)
+        self.updateRememberedCameraCard()
+        DispatchQueue.main.async { [weak self] in
+          guard let self else { return }
+          self.isAutoDownloadPending = true
+          self.connectRememberedCamera(record)
+        }
+      }
+      navigationController?.pushViewController(controller, animated: true)
+    case .start:
+      isAutoDownloadPending = true
+      connectRememberedCamera(record)
+    }
   }
 
   @objc private func autoDownloadSettingsTapped() {

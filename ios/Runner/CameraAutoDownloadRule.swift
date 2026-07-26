@@ -32,6 +32,10 @@ struct CameraAutoDownloadRule: Codable, Equatable {
     case .all: return ""
     case .today: return "今天"
     case .lastNDays(let n): return "最近\(n)天"
+    case .specificDate(let d):
+      let formatter = DateFormatter()
+      formatter.dateFormat = "M月d日"
+      return formatter.string(from: d)
     }
   }
 
@@ -74,17 +78,31 @@ enum CameraAutoDownloadDate: Codable, Equatable {
   case all
   case today
   case lastNDays(Int)
+  case specificDate(Date)
 
   var displayTitle: String {
     switch self {
     case .all: return "全部日期"
     case .today: return "今天"
     case .lastNDays(let n): return "最近 \(n) 天"
+    case .specificDate(let date):
+      let formatter = DateFormatter()
+      formatter.dateFormat = "M月d日"
+      return formatter.string(from: date)
     }
   }
 
   static var presets: [CameraAutoDownloadDate] {
     [.all, .today, .lastNDays(3), .lastNDays(7)]
+  }
+
+  static var segmentPresets: [CameraAutoDownloadDate] {
+    [.all, .today]
+  }
+
+  var isSpecificDate: Bool {
+    if case .specificDate = self { return true }
+    return false
   }
 }
 
@@ -246,6 +264,8 @@ enum CameraAutoDownloadRuleFilter {
         return false
       }
       return parsed >= cutoff
+    case .specificDate(let target):
+      return calendar.isDate(parsed, inSameDayAs: target)
     }
   }
 

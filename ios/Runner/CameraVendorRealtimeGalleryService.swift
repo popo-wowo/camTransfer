@@ -216,7 +216,8 @@ final class CameraVendorPtpSessionRuntime {
       try self.beginBackgroundMetadataRequest(handle: handle)
       defer { self.endBackgroundMetadataRequest(handle: handle) }
       _ = try self.session.cameraVendorLatestObjectInfo(
-        preferredHandle: CameraVendorBackgroundMetadataRefreshPolicy.readImageInfoKeepAliveHandle
+        preferredHandle: CameraVendorBackgroundMetadataRefreshPolicy.readImageInfoKeepAliveHandle,
+        readTimeout: CameraVendorBackgroundMetadataRefreshPolicy.readImageInfoTimeoutSeconds
       )
     }
     diagnosticHandler(

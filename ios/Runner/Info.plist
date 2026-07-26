@@ -41,6 +41,8 @@
 	<string>CamTransfer 需要在相机相册会话期间继续确认相机 Wi-Fi 状态，以便锁屏或切到后台时保持相机传输连接</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>CamTransfer 需要把下载的照片保存到你的相册</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>CamTransfer 需要读取系统相册，以显示和确认已下载的照片</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>UIBackgroundModes</key>

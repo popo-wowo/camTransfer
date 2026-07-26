@@ -208,10 +208,11 @@ final class CameraVendorSessionRuntimeBackgroundMaintainer: CameraSessionRuntime
     ptpKeepAliveTask = Task { @MainActor in
       while !Task.isCancelled {
         do {
-          try await galleryKeepAlive.performBackgroundKeepAlive()
           try await Task.sleep(
             nanoseconds: UInt64(CameraVendorBackgroundMetadataRefreshPolicy.readImageInfoKeepAliveIntervalSeconds * 1_000_000_000)
           )
+          try Task.checkCancellation()
+          try await galleryKeepAlive.performBackgroundKeepAlive()
         } catch {
           return
         }

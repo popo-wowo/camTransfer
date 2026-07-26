@@ -1,20 +1,45 @@
 import UIKit
 
+enum NativeAutoDownloadSettingsSavePolicy {
+  static func resolvedRule(
+    _ rule: CameraAutoDownloadRule,
+    forcesEnabled: Bool
+  ) -> CameraAutoDownloadRule {
+    var resolvedRule = rule
+    if forcesEnabled {
+      resolvedRule.isEnabled = true
+    }
+    return resolvedRule
+  }
+}
+
 final class NativeAutoDownloadSettingsViewController: UIViewController {
   private var rule: CameraAutoDownloadRule
+  private let saveButtonTitle: String
+  private let forcesEnabledOnSave: Bool
   private let onSave: (CameraAutoDownloadRule) -> Void
 
   private let scrollView = UIScrollView()
   private let contentStack = UIStackView()
   private let enableSwitch = UISwitch()
   private let disconnectSwitch = UISwitch()
-  private var formatButtons: [UIView] = []
-  private var dateButtons: [UIView] = []
-  private var statusButtons: [UIView] = []
-  private var modeButtons: [UIView] = []
 
-  init(rule: CameraAutoDownloadRule, onSave: @escaping (CameraAutoDownloadRule) -> Void) {
+  private var formatSegmentsRow1: UISegmentedControl!
+  private var formatSegmentsRow2: UISegmentedControl!
+  private var dateSegments: UISegmentedControl!
+  private var statusSegments: UISegmentedControl!
+  private var modeSegments: UISegmentedControl!
+  private var datePicker: UIDatePicker?
+
+  init(
+    rule: CameraAutoDownloadRule,
+    saveButtonTitle: String = "保存",
+    forcesEnabledOnSave: Bool = false,
+    onSave: @escaping (CameraAutoDownloadRule) -> Void
+  ) {
     self.rule = rule
+    self.saveButtonTitle = saveButtonTitle
+    self.forcesEnabledOnSave = forcesEnabledOnSave
     self.onSave = onSave
     super.init(nibName: nil, bundle: nil)
   }
@@ -24,21 +49,20 @@ final class NativeAutoDownloadSettingsViewController: UIViewController {
   override func viewDidLoad() {
     super.viewDidLoad()
     overrideUserInterfaceStyle = .light
-    title = "自动下载规则"
+    title = forcesEnabledOnSave ? "快速下载参数" : "自动下载规则"
     view.backgroundColor = NativeLuxuryTheme.background
     navigationItem.rightBarButtonItem = UIBarButtonItem(
-      title: "保存", style: .done, target: self, action: #selector(saveTapped)
+      title: saveButtonTitle, style: .done, target: self, action: #selector(saveTapped)
     )
     setupUI()
-    refreshUI()
   }
 
   private func setupUI() {
     scrollView.translatesAutoresizingMaskIntoConstraints = false
     contentStack.translatesAutoresizingMaskIntoConstraints = false
     contentStack.axis = .vertical
-    contentStack.spacing = 24
-    contentStack.layoutMargins = UIEdgeInsets(top: 24, left: 20, bottom: 40, right: 20)
+    contentStack.spacing = 20
+    contentStack.layoutMargins = UIEdgeInsets(top: 20, left: 20, bottom: 40, right: 20)
     contentStack.isLayoutMarginsRelativeArrangement = true
 
     view.addSubview(scrollView)
@@ -56,233 +80,182 @@ final class NativeAutoDownloadSettingsViewController: UIViewController {
       contentStack.widthAnchor.constraint(equalTo: scrollView.widthAnchor),
     ])
 
-    // Enable switch
-    let enableRow = makeRow(title: "启用自动下载", accessory: enableSwitch)
-    enableSwitch.isOn = rule.isEnabled
-    enableSwitch.addTarget(self, action: #selector(enableChanged), for: .valueChanged)
-    contentStack.addArrangedSubview(enableRow)
+    if !forcesEnabledOnSave {
+      contentStack.addArrangedSubview(makeSwitchRow(title: "启用自动下载", toggle: enableSwitch, isOn: rule.isEnabled, action: #selector(enableChanged)))
+    }
 
-    // Format section
-    let formatSection = makeSectionLabel("下载格式")
-    contentStack.addArrangedSubview(formatSection)
-    let formatStack = makeChipStack(
-      items: CameraAutoDownloadFormat.allCases.map { ($0.rawValue, $0.displayTitle) },
-      selectedID: rule.format.rawValue,
-      action: #selector(formatTapped(_:))
-    )
-    formatButtons = formatStack.arrangedSubviews
-    contentStack.addArrangedSubview(formatStack)
+    // Format: two rows of 3
+    let formatRow1Titles = ["全部格式", "JPG", "HEIF"]
+    formatSegmentsRow1 = UISegmentedControl(items: formatRow1Titles)
+    formatSegmentsRow1.addTarget(self, action: #selector(formatRow1Changed), for: .valueChanged)
 
-    // Date section
-    let dateSection = makeSectionLabel("日期范围")
-    contentStack.addArrangedSubview(dateSection)
-    let dateStack = makeChipStack(
-      items: CameraAutoDownloadDate.presets.map { (dateID($0), $0.displayTitle) },
-      selectedID: dateID(rule.date),
-      action: #selector(dateTapped(_:))
-    )
-    dateButtons = dateStack.arrangedSubviews
-    contentStack.addArrangedSubview(dateStack)
+    let formatRow2Titles = ["RAW", "JPG + HEIF", "JPG + RAW"]
+    formatSegmentsRow2 = UISegmentedControl(items: formatRow2Titles)
+    formatSegmentsRow2.addTarget(self, action: #selector(formatRow2Changed), for: .valueChanged)
 
-    // Status section
-    let statusSection = makeSectionLabel("下载范围")
-    contentStack.addArrangedSubview(statusSection)
-    let statusStack = makeChipStack(
-      items: CameraAutoDownloadStatus.allCases.map { ($0.rawValue, $0.displayTitle) },
-      selectedID: rule.downloadStatus.rawValue,
-      action: #selector(statusTapped(_:))
-    )
-    statusButtons = statusStack.arrangedSubviews
-    contentStack.addArrangedSubview(statusStack)
+    refreshFormatSelection()
+    let formatStack = UIStackView(arrangedSubviews: [formatSegmentsRow1, formatSegmentsRow2])
+    formatStack.axis = .vertical
+    formatStack.spacing = 8
+    contentStack.addArrangedSubview(makeSection(title: "下载格式", control: formatStack))
 
-    // Download mode section
-    let modeSection = makeSectionLabel("下载质量")
-    contentStack.addArrangedSubview(modeSection)
-    let modeStack = makeChipStack(
-      items: [
-        (CameraAutoDownloadMode.original.rawValue, "原图"),
-        (CameraAutoDownloadMode.compressed.rawValue, "压缩"),
-      ],
-      selectedID: rule.downloadMode.rawValue,
-      action: #selector(modeTapped(_:))
-    )
-    modeButtons = modeStack.arrangedSubviews
-    contentStack.addArrangedSubview(modeStack)
+    // Date: 全部日期 / 今天 / 选择日期
+    dateSegments = UISegmentedControl(items: ["全部日期", "今天", "选择日期"])
+    dateSegments.addTarget(self, action: #selector(dateChanged), for: .valueChanged)
+    refreshDateSelection()
 
-    // Disconnect after download switch
-    let disconnectRow = makeRow(title: "下载完自动断开", accessory: disconnectSwitch)
-    disconnectSwitch.isOn = rule.disconnectAfterDownload
-    disconnectSwitch.addTarget(self, action: #selector(disconnectChanged), for: .valueChanged)
-    contentStack.addArrangedSubview(disconnectRow)
+    let dateStack = UIStackView()
+    dateStack.axis = .vertical
+    dateStack.spacing = 8
+    dateStack.addArrangedSubview(dateSegments)
 
-    // Summary
-    let summaryLabel = UILabel()
-    summaryLabel.font = .systemFont(ofSize: 13, weight: .regular)
-    summaryLabel.textColor = NativeLuxuryTheme.ink.withAlphaComponent(0.6)
-    summaryLabel.numberOfLines = 0
-    summaryLabel.text = "连接相机后将自动按此规则筛选并开始下载，无需手动进入图库选择。"
-    contentStack.addArrangedSubview(summaryLabel)
+    let picker = UIDatePicker()
+    picker.datePickerMode = .date
+    picker.preferredDatePickerStyle = .compact
+    picker.addTarget(self, action: #selector(datePickerChanged), for: .valueChanged)
+    if case .specificDate(let d) = rule.date {
+      picker.date = d
+    }
+    picker.isHidden = !rule.date.isSpecificDate
+    datePicker = picker
+    dateStack.addArrangedSubview(picker)
+
+    contentStack.addArrangedSubview(makeSection(title: "日期范围", control: dateStack))
+
+    // Status
+    statusSegments = UISegmentedControl(items: ["全部", "未下载的"])
+    statusSegments.selectedSegmentIndex = rule.downloadStatus == .all ? 0 : 1
+    statusSegments.addTarget(self, action: #selector(statusChanged), for: .valueChanged)
+    contentStack.addArrangedSubview(makeSection(title: "下载范围", control: statusSegments))
+
+    // Mode
+    modeSegments = UISegmentedControl(items: ["原图", "压缩"])
+    modeSegments.selectedSegmentIndex = rule.downloadMode == .original ? 0 : 1
+    modeSegments.addTarget(self, action: #selector(modeChanged), for: .valueChanged)
+    contentStack.addArrangedSubview(makeSection(title: "下载质量", control: modeSegments))
+
+    // Disconnect switch
+    contentStack.addArrangedSubview(makeSwitchRow(title: "下载完自动断开", toggle: disconnectSwitch, isOn: rule.disconnectAfterDownload, action: #selector(disconnectChanged)))
+
+    // Footer
+    let footerLabel = UILabel()
+    footerLabel.font = .preferredFont(forTextStyle: .footnote)
+    footerLabel.textColor = .secondaryLabel
+    footerLabel.numberOfLines = 0
+    footerLabel.text = "连接相机后将自动按此规则筛选并开始下载，无需手动进入图库选择。"
+    contentStack.addArrangedSubview(footerLabel)
   }
 
-  private func refreshUI() {
-    let allFormatButtons = formatButtons.flatMap { row in
-      (row as? UIStackView)?.arrangedSubviews.compactMap { $0 as? UIButton } ?? [row as? UIButton].compactMap { $0 }
-    }
-    for button in allFormatButtons {
-      let selected = button.accessibilityIdentifier == rule.format.rawValue
-      styleChip(button, selected: selected)
-    }
-    let allDateButtons = dateButtons.flatMap { row in
-      (row as? UIStackView)?.arrangedSubviews.compactMap { $0 as? UIButton } ?? [row as? UIButton].compactMap { $0 }
-    }
-    for button in allDateButtons {
-      let selected = button.accessibilityIdentifier == dateID(rule.date)
-      styleChip(button, selected: selected)
-    }
-    let allStatusButtons = statusButtons.flatMap { row in
-      (row as? UIStackView)?.arrangedSubviews.compactMap { $0 as? UIButton } ?? [row as? UIButton].compactMap { $0 }
-    }
-    for button in allStatusButtons {
-      let selected = button.accessibilityIdentifier == rule.downloadStatus.rawValue
-      styleChip(button, selected: selected)
-    }
-    let allModeButtons = modeButtons.flatMap { row in
-      (row as? UIStackView)?.arrangedSubviews.compactMap { $0 as? UIButton } ?? [row as? UIButton].compactMap { $0 }
-    }
-    for button in allModeButtons {
-      let selected = button.accessibilityIdentifier == rule.downloadMode.rawValue
-      styleChip(button, selected: selected)
+  // MARK: - Format helpers
+
+  private static let formatRow1Cases: [CameraAutoDownloadFormat] = [.all, .jpg, .heif]
+  private static let formatRow2Cases: [CameraAutoDownloadFormat] = [.raw, .jpgAndHeif, .jpgAndRaw]
+
+  private func refreshFormatSelection() {
+    if let idx = Self.formatRow1Cases.firstIndex(of: rule.format) {
+      formatSegmentsRow1.selectedSegmentIndex = idx
+      formatSegmentsRow2.selectedSegmentIndex = UISegmentedControl.noSegment
+    } else if let idx = Self.formatRow2Cases.firstIndex(of: rule.format) {
+      formatSegmentsRow1.selectedSegmentIndex = UISegmentedControl.noSegment
+      formatSegmentsRow2.selectedSegmentIndex = idx
     }
   }
+
+  private func refreshDateSelection() {
+    switch rule.date {
+    case .all:
+      dateSegments.selectedSegmentIndex = 0
+    case .today:
+      dateSegments.selectedSegmentIndex = 1
+    default:
+      dateSegments.selectedSegmentIndex = 2
+    }
+  }
+
+  // MARK: - Actions
 
   @objc private func enableChanged() {
     rule.isEnabled = enableSwitch.isOn
-  }
-
-  @objc private func formatTapped(_ sender: UIButton) {
-    guard let id = sender.accessibilityIdentifier,
-          let format = CameraAutoDownloadFormat(rawValue: id) else { return }
-    rule.format = format
-    refreshUI()
-  }
-
-  @objc private func dateTapped(_ sender: UIButton) {
-    guard let id = sender.accessibilityIdentifier else { return }
-    rule.date = dateFromID(id)
-    refreshUI()
-  }
-
-  @objc private func statusTapped(_ sender: UIButton) {
-    guard let id = sender.accessibilityIdentifier,
-          let status = CameraAutoDownloadStatus(rawValue: id) else { return }
-    rule.downloadStatus = status
-    refreshUI()
-  }
-
-  @objc private func modeTapped(_ sender: UIButton) {
-    guard let id = sender.accessibilityIdentifier,
-          let mode = CameraAutoDownloadMode(rawValue: id) else { return }
-    rule.downloadMode = mode
-    refreshUI()
   }
 
   @objc private func disconnectChanged() {
     rule.disconnectAfterDownload = disconnectSwitch.isOn
   }
 
+  @objc private func formatRow1Changed() {
+    let idx = formatSegmentsRow1.selectedSegmentIndex
+    guard Self.formatRow1Cases.indices.contains(idx) else { return }
+    rule.format = Self.formatRow1Cases[idx]
+    formatSegmentsRow2.selectedSegmentIndex = UISegmentedControl.noSegment
+  }
+
+  @objc private func formatRow2Changed() {
+    let idx = formatSegmentsRow2.selectedSegmentIndex
+    guard Self.formatRow2Cases.indices.contains(idx) else { return }
+    rule.format = Self.formatRow2Cases[idx]
+    formatSegmentsRow1.selectedSegmentIndex = UISegmentedControl.noSegment
+  }
+
+  @objc private func dateChanged() {
+    switch dateSegments.selectedSegmentIndex {
+    case 0:
+      rule.date = .all
+      datePicker?.isHidden = true
+    case 1:
+      rule.date = .today
+      datePicker?.isHidden = true
+    case 2:
+      let pickerDate = datePicker?.date ?? Date()
+      rule.date = .specificDate(pickerDate)
+      datePicker?.isHidden = false
+    default:
+      break
+    }
+  }
+
+  @objc private func datePickerChanged() {
+    guard let picker = datePicker else { return }
+    rule.date = .specificDate(picker.date)
+  }
+
+  @objc private func statusChanged() {
+    rule.downloadStatus = statusSegments.selectedSegmentIndex == 0 ? .all : .notDownloaded
+  }
+
+  @objc private func modeChanged() {
+    rule.downloadMode = modeSegments.selectedSegmentIndex == 0 ? .original : .compressed
+  }
+
   @objc private func saveTapped() {
-    onSave(rule)
+    let resolvedRule = NativeAutoDownloadSettingsSavePolicy.resolvedRule(rule, forcesEnabled: forcesEnabledOnSave)
+    rule = resolvedRule
+    onSave(resolvedRule)
     navigationController?.popViewController(animated: true)
   }
 
   // MARK: - Helpers
 
-  private func makeRow(title: String, accessory: UIView) -> UIView {
+  private func makeSection(title: String, control: UIView) -> UIView {
     let label = UILabel()
     label.text = title
-    label.font = .systemFont(ofSize: 16, weight: .medium)
-    label.textColor = NativeLuxuryTheme.ink
-    let row = UIStackView(arrangedSubviews: [label, accessory])
+    label.font = .preferredFont(forTextStyle: .subheadline)
+    label.textColor = .secondaryLabel
+    let stack = UIStackView(arrangedSubviews: [label, control])
+    stack.axis = .vertical
+    stack.spacing = 8
+    return stack
+  }
+
+  private func makeSwitchRow(title: String, toggle: UISwitch, isOn: Bool, action: Selector) -> UIView {
+    toggle.isOn = isOn
+    toggle.addTarget(self, action: action, for: .valueChanged)
+    let label = UILabel()
+    label.text = title
+    label.font = .preferredFont(forTextStyle: .body)
+    let row = UIStackView(arrangedSubviews: [label, toggle])
     row.axis = .horizontal
     row.alignment = .center
     row.distribution = .equalSpacing
     return row
-  }
-
-  private func makeSectionLabel(_ text: String) -> UILabel {
-    let label = UILabel()
-    label.text = text
-    label.font = .systemFont(ofSize: 14, weight: .semibold)
-    label.textColor = NativeLuxuryTheme.ink.withAlphaComponent(0.7)
-    return label
-  }
-
-  private func makeChipStack(
-    items: [(id: String, title: String)],
-    selectedID: String,
-    action: Selector
-  ) -> UIStackView {
-    let wrapStack = UIStackView()
-    wrapStack.axis = .vertical
-    wrapStack.spacing = 8
-    wrapStack.alignment = .leading
-
-    var currentRow = UIStackView()
-    currentRow.axis = .horizontal
-    currentRow.spacing = 8
-
-    for (index, item) in items.enumerated() {
-      let button = UIButton(type: .system)
-      button.setTitle(item.title, for: .normal)
-      button.accessibilityIdentifier = item.id
-      button.titleLabel?.font = .systemFont(ofSize: 13, weight: .medium)
-      var config = UIButton.Configuration.filled()
-      config.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 14, bottom: 8, trailing: 14)
-      config.cornerStyle = .capsule
-      button.configuration = config
-      button.addTarget(self, action: action, for: .touchUpInside)
-      styleChip(button, selected: item.id == selectedID)
-      currentRow.addArrangedSubview(button)
-
-      if (index + 1) % 3 == 0 || index == items.count - 1 {
-        wrapStack.addArrangedSubview(currentRow)
-        if index < items.count - 1 {
-          currentRow = UIStackView()
-          currentRow.axis = .horizontal
-          currentRow.spacing = 8
-        }
-      }
-    }
-    return wrapStack
-  }
-
-  private func styleChip(_ button: UIButton, selected: Bool) {
-    guard var config = button.configuration else { return }
-    if selected {
-      config.baseBackgroundColor = NativeLuxuryTheme.ink
-      config.baseForegroundColor = .white
-    } else {
-      config.baseBackgroundColor = NativeLuxuryTheme.ink.withAlphaComponent(0.08)
-      config.baseForegroundColor = NativeLuxuryTheme.ink
-    }
-    button.configuration = config
-  }
-
-  private func dateID(_ date: CameraAutoDownloadDate) -> String {
-    switch date {
-    case .all: return "all"
-    case .today: return "today"
-    case .lastNDays(let n): return "last\(n)"
-    }
-  }
-
-  private func dateFromID(_ id: String) -> CameraAutoDownloadDate {
-    switch id {
-    case "all": return .all
-    case "today": return .today
-    case "last3": return .lastNDays(3)
-    case "last7": return .lastNDays(7)
-    default: return .all
-    }
   }
 }

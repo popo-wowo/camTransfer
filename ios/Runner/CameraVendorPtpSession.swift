@@ -929,9 +929,24 @@ final class CameraVendorPtpSession {
 
     report("[OBS] PTP_INITIAL_CAMERA_CATALOG_BEGIN")
 
-    // Write D604=2 (HEIF mask) which on this camera returns the complete directory
-    // including all formats (JPG + HEIF + RAW + Video = ~2425).
-    // The default empty SearchMode only returns ~1808 (missing HEIF handles).
+    // Android records the D604=31 baseline before probing the expanded HEIF/RAW
+    // directory. The difference identifies unresolved extended-still placeholders
+    // without waiting for thousands of ObjectInfo reads.
+    let baselinePayload = CameraVendorSearchModeAllPayload.objectFormatMaskPayload(
+      CameraVendorSearchModeAllPayload.allObjectFormatMask
+    )
+    _ = try sendCommandWithData(
+      operationCode: UInt16(CameraVendorPtpOperationCode.cameraVendorSetSearchModeAll),
+      data: baselinePayload
+    )
+    let baselineSnapshot = try requestCameraVendorSpecifiedObjectSnapshot(
+      stage: "initial-camera-catalog-baseline",
+      allowsEmptyRetry: false
+    )
+    report("[OBS] PTP_INITIAL_CATALOG_BASELINE handles=\(baselineSnapshot.handles.count)")
+
+    // D604=2 returns the expanded directory on this camera, including the
+    // HEIF/RAW handles hidden from the D604=31 baseline.
     let heifPayload = CameraVendorSearchModeAllPayload.objectFormatMaskPayload(
       CameraVendorSearchModeAllPayload.heifObjectFormatMask
     )
@@ -963,17 +978,22 @@ final class CameraVendorPtpSession {
         userInfo: [NSLocalizedDescriptionKey: "相机返回的初始目录计数、日期组或句柄不一致"]
       )
     }
+    let formatHints = CameraVendorCatalogPlaceholderPolicy.expandedStillFormatHints(
+      baselineHandles: baselineSnapshot.handles,
+      expandedStillHandles: snapshot.handles
+    )
     let catalog = CameraVendorCatalogSnapshot(
       dateGroups: snapshot.dateGroups,
       orderedHandles: snapshot.handles,
       items: CameraVendorCatalogPlaceholderPolicy.placeholderItems(
         from: snapshot.handles,
-        dateGroups: snapshot.dateGroups
+        dateGroups: snapshot.dateGroups,
+        formatHintsByHandle: formatHints
       )
     )
     report(
       "[OBS] PTP_INITIAL_CAMERA_CATALOG_END groups=\(catalog.dateGroups.count) " +
-      "handles=\(catalog.orderedHandles.count)"
+      "handles=\(catalog.orderedHandles.count) extendedStill=\(formatHints.count)"
     )
     return catalog
   }
@@ -1920,14 +1940,18 @@ final class CameraVendorPtpSession {
     )
   }
 
-  func cameraVendorLatestObjectInfo(preferredHandle: UInt32? = nil) throws -> CameraVendorCameraObjectInfo {
+  func cameraVendorLatestObjectInfo(
+    preferredHandle: UInt32? = nil,
+    readTimeout: TimeInterval = 15
+  ) throws -> CameraVendorCameraObjectInfo {
     try prepareCameraVendorVendorGalleryCommands()
     let handle = preferredHandle ?? cameraVendorCurrentObjectHandleForLatestProbe()
       ?? CameraVendorReferenceAppCurrentImageContextPolicy.currentImageHandle
     report("请求 CameraVendor 专有图库首图信息 (0x9054, handle 0x\(String(format: "%08X", handle)))")
     let data = try sendCommandForData(
       operationCode: UInt16(CameraVendorPtpOperationCode.cameraVendorGetLatestObjectInfo),
-      parameters: [handle]
+      parameters: [handle],
+      readTimeout: readTimeout
     )
     let info = CameraVendorPtpDataParser.cameraVendorVendorObjectInfo(handle: Int(handle), data: data)
     report("CameraVendor 专有图库首图: \(info.filename) \(info.formatLabel)")
@@ -2144,20 +2168,65 @@ final class CameraVendorPtpSession {
   }
 
   private func readPreviewObject(handle: UInt32, size previewReadSize: UInt32) throws -> Data {
-    report(
-      "[OBS] PTP_STANDARD_PARTIAL_OBJECT_REQUEST purpose=preview " +
-      "handle=0x\(String(format: "%08X", handle)) offset=0 size=\(previewReadSize)"
-    )
-    let data = try sendCommandForData(
-      operationCode: UInt16(CameraVendorPtpOperationCode.getPartialObject),
-      parameters: CameraVendorPartialObjectRequestPolicy.standardPartialObjectParameters(
-        handle: handle,
-        offset: 0,
-        size: previewReadSize
+    let maximumBytes = UInt64(min(
+      previewReadSize,
+      CameraVendorPreviewImageReadPolicy.maximumScreenPreviewBytes
+    ))
+    var result = Data()
+    var offset: UInt64 = 0
+    var selectedReadSize = CameraVendorPreviewImageReadPolicy.initialReadSize
+    var previousLastByte: UInt8?
+
+    while offset < maximumBytes {
+      let requestSize = CameraVendorPreviewImageReadPolicy.requestSize(
+        remaining: maximumBytes - offset,
+        selectedReadSize: selectedReadSize
       )
-    )
-    report("[OBS] PTP_STANDARD_PARTIAL_OBJECT_PREVIEW bytes=\(data.count) handle=0x\(String(format: "%08X", handle))")
-    return data
+      report(
+        "[OBS] PTP_STANDARD_PARTIAL_OBJECT_REQUEST purpose=preview " +
+        "handle=0x\(String(format: "%08X", handle)) offset=\(offset) size=\(requestSize)"
+      )
+      let chunk: Data
+      do {
+        chunk = try sendCommandForData(
+          operationCode: UInt16(CameraVendorPtpOperationCode.getPartialObject),
+          parameters: CameraVendorPartialObjectRequestPolicy.standardPartialObjectParameters(
+            handle: handle,
+            offset: offset,
+            size: requestSize
+          )
+        )
+      } catch {
+        if let fallback = CameraVendorPreviewImageReadPolicy.fallbackReadSize(after: selectedReadSize) {
+          report(
+            "[OBS] PTP_PREVIEW_PARTIAL_FALLBACK handle=0x\(String(format: "%08X", handle)) " +
+            "offset=\(offset) from=\(selectedReadSize) to=\(fallback) error=\(error.localizedDescription)"
+          )
+          selectedReadSize = fallback
+          continue
+        }
+        throw error
+      }
+
+      if chunk.isEmpty { break }
+      result.append(chunk)
+      offset += UInt64(chunk.count)
+      let isComplete = CameraVendorPreviewImageReadPolicy.shouldStopAfterChunk(
+        previousLastByte: previousLastByte,
+        chunk: chunk,
+        totalBytes: offset,
+        maximumBytes: maximumBytes
+      )
+      report(
+        "[OBS] PTP_STANDARD_PARTIAL_OBJECT_PREVIEW_CHUNK " +
+        "handle=0x\(String(format: "%08X", handle)) offset=\(offset)/\(maximumBytes) " +
+        "bytes=\(chunk.count) readSize=\(selectedReadSize) complete=\(isComplete)"
+      )
+      if isComplete || chunk.count < Int(requestSize) { break }
+      previousLastByte = chunk.last
+    }
+    report("[OBS] PTP_STANDARD_PARTIAL_OBJECT_PREVIEW bytes=\(result.count) handle=0x\(String(format: "%08X", handle))")
+    return result
   }
 
   func previewImage(handle: UInt32) throws -> Data {
@@ -2166,14 +2235,6 @@ final class CameraVendorPtpSession {
 
   func previewImageWithInfo(handle: UInt32) throws -> CameraVendorPreviewImageFetchResult {
     report("[OBS] PTP_PREVIEW_IMAGE_REQUEST handle=0x\(String(format: "%08X", handle))")
-    let initialInfo = try objectInfo(handle: handle)
-    guard initialInfo.formatLabel == "JPG" || initialInfo.formatLabel == "HEIF" else {
-      throw NSError(
-        domain: "CameraVendorPtpSession",
-        code: 21,
-        userInfo: [NSLocalizedDescriptionKey: "Compressed preview unavailable handle=\(handle) format=\(initialInfo.formatLabel)"]
-      )
-    }
     try setCameraVendorImageForceCompression(1, reason: "previewImage")
     defer {
       do {
@@ -2183,8 +2244,10 @@ final class CameraVendorPtpSession {
       }
     }
     let previewInfo = try objectInfo(handle: handle)
-    guard previewInfo.compressedSize > 0,
-          previewInfo.compressedSize <= 8 * 1024 * 1024 else {
+    guard CameraVendorPreviewImageReadPolicy.supports(
+      formatLabel: previewInfo.formatLabel,
+      compressedSize: previewInfo.compressedSize
+    ) else {
       throw NSError(
         domain: "CameraVendorPtpSession",
         code: 22,

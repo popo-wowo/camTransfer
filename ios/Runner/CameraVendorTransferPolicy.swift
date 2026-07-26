@@ -46,6 +46,38 @@ enum CameraVendorPartialObjectRequestPolicy {
   }
 }
 
+enum CameraVendorPreviewImageReadPolicy {
+  static let maximumScreenPreviewBytes: UInt32 = 12 * 1_048_576
+  static let initialReadSize = CameraVendorPartialObjectRequestPolicy.fileDownloadReadSize
+  static let fallbackReadSize = CameraVendorPartialObjectRequestPolicy.fileDownloadFallbackReadSize
+
+  static func requestSize(remaining: UInt64, selectedReadSize: UInt32) -> UInt32 {
+    UInt32(min(remaining, UInt64(selectedReadSize)))
+  }
+
+  static func fallbackReadSize(after currentReadSize: UInt32) -> UInt32? {
+    currentReadSize > fallbackReadSize ? fallbackReadSize : nil
+  }
+
+  static func supports(formatLabel: String, compressedSize: UInt32) -> Bool {
+    let normalizedFormat = formatLabel.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    let isPreviewableFormat = ["JPG", "JPEG", "HEIF", "HEIC", "HIF"].contains(normalizedFormat)
+    return isPreviewableFormat && compressedSize > 0 && compressedSize <= maximumScreenPreviewBytes
+  }
+
+  static func shouldStopAfterChunk(
+    previousLastByte: UInt8?,
+    chunk: Data,
+    totalBytes: UInt64,
+    maximumBytes: UInt64
+  ) -> Bool {
+    if totalBytes >= maximumBytes { return true }
+    guard !chunk.isEmpty else { return true }
+    if previousLastByte == 0xFF, chunk.first == 0xD9 { return true }
+    return CameraVendorJpegDataPolicy.hasEndMarker(chunk)
+  }
+}
+
 struct CameraVendorOriginalTransferCapabilityRecord: Codable, Equatable {
   let readSize: UInt32
   let updatedAt: Date

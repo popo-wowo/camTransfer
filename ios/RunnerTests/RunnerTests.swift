@@ -1133,6 +1133,62 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(Calendar.current.component(.day, from: selected), 24)
   }
 
+  func testNativeGalleryHDSessionAvailableDatesIncludeUnresolvedCatalogPlaceholders() throws {
+    let placeholder = CameraVendorGalleryItem(
+      handle: 10,
+      filename: "0x0000000A",
+      formatLabel: "",
+      captureDate: "20260711",
+      byteSizeText: ""
+    )
+
+    let dates = NativeGalleryHDPreviewSessionPolicy.availableDates(items: [placeholder])
+
+    XCTAssertEqual(dates.count, 1)
+    XCTAssertEqual(Calendar.current.component(.day, from: try XCTUnwrap(dates.first)), 11)
+  }
+
+  func testInitialCatalogMarksExpandedOnlyHandlesAsAndroidExtendedStillCandidates() {
+    let hints = CameraVendorCatalogPlaceholderPolicy.expandedStillFormatHints(
+      baselineHandles: [100, 101, 102],
+      expandedStillHandles: [100, 101, 102, 103, 104]
+    )
+
+    XCTAssertNil(hints[100])
+    XCTAssertEqual(hints[103], [.extendedStillCandidate])
+    XCTAssertEqual(hints[104], [.extendedStillCandidate])
+  }
+
+  func testNativeGalleryHDSessionPairsAndroidExtendedStillPlaceholders() throws {
+    let date = try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 7, day: 11)))
+    let rawPlaceholder = CameraVendorGalleryItem(
+      handle: 100,
+      filename: "0x00000064",
+      formatLabel: "",
+      captureDate: "20260711",
+      byteSizeText: "",
+      formatHints: [.extendedStillCandidate]
+    )
+    let previewPlaceholder = CameraVendorGalleryItem(
+      handle: 101,
+      filename: "0x00000065",
+      formatLabel: "",
+      captureDate: "20260711",
+      byteSizeText: "",
+      formatHints: [.extendedStillCandidate]
+    )
+
+    let snapshot = NativeGalleryHDPreviewSessionPolicy.snapshot(
+      items: [rawPlaceholder, previewPlaceholder],
+      activeDate: date
+    )
+
+    XCTAssertEqual(snapshot.items.map(\.displayItem.handle), [101])
+    XCTAssertEqual(snapshot.items.first?.displayItem.formatHints, [.heif])
+    XCTAssertEqual(snapshot.items.first?.rawSidecar?.handle, 100)
+    XCTAssertEqual(snapshot.items.first?.rawSidecar?.formatHints, [.raw])
+  }
+
   func testNativeGalleryHDSessionPairsSameStemRawSidecarWithoutAddingRawToTimeline() throws {
     let date = try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 7, day: 24)))
     let jpg = CameraVendorGalleryItem(
@@ -1172,6 +1228,24 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(Array(window.suffix(5)), [5, 6, 7, 8, 9])
   }
 
+  func testNativeGalleryHDPreviewAdvancesPriorityWindowWhileScrolling() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let methodStart = try XCTUnwrap(
+      source.range(of: "func scrollViewDidScroll(_ scrollView: UIScrollView)")?.lowerBound
+    )
+    let methodEnd = try XCTUnwrap(
+      source.range(of: "\n  }", range: methodStart..<source.endIndex)?.upperBound
+    )
+    let body = String(source[methodStart..<methodEnd])
+
+    XCTAssertTrue(body.contains("scrollView === hdCollectionView"))
+    XCTAssertTrue(body.contains("hdCoordinator.updateVisibleHandles(visibleHandles)"))
+  }
+
   func testNativeGalleryHDCoordinatorCountsOnlyActiveDateLoadedHandles() throws {
     let date = try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 7, day: 24)))
     let items = [1, 2].map {
@@ -1201,6 +1275,22 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(cancelled.failedHandles.contains(7))
   }
 
+  func testNativeGalleryHDChromeKeepsGalleryBackgroundAndAndroidDateChipOrder() {
+    XCTAssertTrue(NativeGalleryHDChromePolicy.usesGalleryBackground)
+    XCTAssertEqual(NativeGalleryHDChromePolicy.dateFormat, "yyyy-MM-dd")
+    XCTAssertTrue(NativeGalleryHDChromePolicy.showsLoadCountBeforeDate)
+  }
+
+  func testNativeGalleryHDPreviewFailureLogIncludesHandleAndError() {
+    XCTAssertEqual(
+      NativeGalleryHDPreviewFailureLogPolicy.message(
+        handle: 0x123,
+        errorDescription: "preview too large"
+      ),
+      "[OBS] HD_PREVIEW_IMAGE_FAILED handle=0x00000123 error=preview too large"
+    )
+  }
+
   func testCameraSessionRuntimeAcceptsMixedDisplayAndRawDownloadModes() {
     let requests = NativeGalleryHDDownloadRequestPolicy.requests(
       displayHandles: [20],
@@ -1227,6 +1317,50 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(NativeGalleryAndroidParityChromePolicy.toolRowHeight, 42)
     XCTAssertEqual(NativeGalleryAndroidParityChromePolicy.toolSurfaceCount, 3)
     XCTAssertFalse(NativeGalleryAndroidParityChromePolicy.usesSeparateModeRow)
+  }
+
+  func testNativeGalleryToolRowMatchesApprovedAndroidReferenceChrome() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+    XCTAssertTrue(source.contains("final class NativeGalleryModeControl: UIControl"))
+    XCTAssertTrue(source.contains("circle.grid.2x2.fill"))
+    XCTAssertTrue(source.contains("HD 高清"))
+    XCTAssertTrue(source.contains("selectedBackgroundColor = NativeLuxuryTheme.ink"))
+    XCTAssertTrue(source.contains("systemName: \"slider.horizontal.3\""))
+    XCTAssertTrue(source.contains("systemName: \"square.stack.3d.up\""))
+    XCTAssertTrue(source.contains("configuration.baseBackgroundColor = .clear"))
+    XCTAssertTrue(source.contains("galleryFilterButton.widthAnchor.constraint(equalToConstant: 74)"))
+    XCTAssertTrue(source.contains("browseModeControl.heightAnchor.constraint(equalToConstant: 38)"))
+    XCTAssertTrue(source.contains("galleryToolsButton.widthAnchor.constraint(equalToConstant: 74)"))
+    XCTAssertTrue(source.contains("UIImage.SymbolConfiguration(pointSize: 12, weight: .bold)"))
+    XCTAssertTrue(source.contains("UIFont.systemFont(ofSize: 13, weight: .bold)"))
+    XCTAssertTrue(source.contains("UIFont.systemFont(ofSize: 15, weight: .semibold)"))
+    XCTAssertTrue(source.contains("galleryHeaderCountLabel"))
+    XCTAssertTrue(source.contains("galleryHeaderTitleStack"))
+  }
+
+  func testNativeGallerySectionHeaderMatchesApprovedDateCountAndActionLayout() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+    XCTAssertTrue(source.contains("private let countLabel: UILabel"))
+    XCTAssertTrue(source.contains("private let sortButton: UIButton"))
+    XCTAssertTrue(source.contains("dateTitle: String"))
+    XCTAssertTrue(source.contains("countTitle: String"))
+    XCTAssertTrue(source.contains("sortTitle: String"))
+    XCTAssertTrue(source.contains("header.onSortTapped"))
+    XCTAssertTrue(source.contains("UIFont.systemFont(ofSize: 20, weight: .black)"))
+    XCTAssertTrue(source.contains("UIFont.systemFont(ofSize: 12, weight: .bold)"))
+    XCTAssertTrue(source.contains("countLabel.heightAnchor.constraint(equalToConstant: 28)"))
+    XCTAssertTrue(source.contains("selectionButton.heightAnchor.constraint(equalToConstant: 30)"))
+    XCTAssertTrue(source.contains("sortButton.heightAnchor.constraint(equalToConstant: 30)"))
   }
 
   func testNativeGalleryHDModeKeepsFilterSurfaceButDisablesExpansion() {
@@ -1260,7 +1394,7 @@ final class RunnerTests: XCTestCase {
   func testNativeGalleryThumbnailLayoutMatchesAndroidGridSpacing() {
     XCTAssertEqual(NativeGalleryGridLayoutPolicy.androidGridSpacing, 2)
     XCTAssertEqual(NativeGalleryAndroidParityGridPolicy.horizontalInset, 0)
-    XCTAssertEqual(NativeGalleryAndroidParityGridPolicy.sectionHeaderHeight, 44)
+    XCTAssertEqual(NativeGalleryAndroidParityGridPolicy.sectionHeaderHeight, 48)
   }
 
   func testNativeGalleryContentUpdatesDoNotReloadWholeCollection() throws {
@@ -3496,9 +3630,11 @@ final class RunnerTests: XCTestCase {
   func testCameraVendorPreviewImageValidationRejectsIncompleteJpegLikeAndroid() {
     let completeJpeg = Data([0xFF, 0xD8, 0x01, 0x02, 0xFF, 0xD9])
     let incompleteJpeg = Data([0xFF, 0xD8, 0x01, 0x02])
+    let largeDecodeableIncompleteJpeg = Data([0xFF, 0xD8]) + Data(repeating: 0x01, count: 64 * 1_024)
 
     XCTAssertTrue(CameraVendorPreviewImageValidationPolicy.isValidPreviewImageData(completeJpeg))
     XCTAssertFalse(CameraVendorPreviewImageValidationPolicy.isValidPreviewImageData(incompleteJpeg))
+    XCTAssertTrue(CameraVendorPreviewImageValidationPolicy.isValidPreviewImageData(largeDecodeableIncompleteJpeg))
     XCTAssertTrue(CameraVendorPreviewImageValidationPolicy.shouldRejectIncompletePartialPreview(incompleteJpeg))
   }
 
@@ -3506,6 +3642,37 @@ final class RunnerTests: XCTestCase {
     let unknownBrand = Data([0x00, 0x00, 0x00, 0x18]) + Data("ftypzzzz".utf8) + Data([0x00, 0x00])
 
     XCTAssertFalse(CameraVendorPreviewImageValidationPolicy.isValidPreviewImageData(unknownBrand))
+  }
+
+  func testCameraVendorPreviewImageReadPolicyMatchesAndroidChunkingAndLimit() {
+    XCTAssertEqual(CameraVendorPreviewImageReadPolicy.maximumScreenPreviewBytes, 12 * 1_048_576)
+    XCTAssertEqual(CameraVendorPreviewImageReadPolicy.initialReadSize, 4 * 1_048_576)
+    XCTAssertEqual(CameraVendorPreviewImageReadPolicy.fallbackReadSize, 1 * 1_048_576)
+    XCTAssertEqual(
+      CameraVendorPreviewImageReadPolicy.requestSize(
+        remaining: UInt64(10 * 1_048_576),
+        selectedReadSize: CameraVendorPreviewImageReadPolicy.initialReadSize
+      ),
+      4 * 1_048_576
+    )
+    XCTAssertEqual(
+      CameraVendorPreviewImageReadPolicy.requestSize(
+        remaining: UInt64(512 * 1_024),
+        selectedReadSize: CameraVendorPreviewImageReadPolicy.initialReadSize
+      ),
+      512 * 1_024
+    )
+    XCTAssertEqual(
+      CameraVendorPreviewImageReadPolicy.fallbackReadSize(
+        after: CameraVendorPreviewImageReadPolicy.initialReadSize
+      ),
+      CameraVendorPreviewImageReadPolicy.fallbackReadSize
+    )
+    XCTAssertNil(
+      CameraVendorPreviewImageReadPolicy.fallbackReadSize(
+        after: CameraVendorPreviewImageReadPolicy.fallbackReadSize
+      )
+    )
   }
 
   func testImageDataNormalizerStripsCameraVendorPrefixBeforeJpegHeader() {
@@ -5342,17 +5509,19 @@ final class RunnerTests: XCTestCase {
     let sourceURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
-      .appendingPathComponent("Runner/CameraVendorBluetoothService.swift")
+      .appendingPathComponent("Runner/CameraVendorRealtimeGalleryService.swift")
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
     let runtimeMethodStart = try XCTUnwrap(
-      source.range(of: "func performBackgroundKeepAlive() async throws {\n    try await requestScheduler.run(priority: .backgroundMetadata) {")?.lowerBound
+      source.range(of: "func performBackgroundKeepAlive() async throws")?.lowerBound
     )
     let runtimeNextMethodStart = try XCTUnwrap(
       source.range(of: "func downloadOriginal(for handle: Int, expectedSize: UInt32?) async throws -> Data {", range: runtimeMethodStart..<source.endIndex)?.lowerBound
     )
     let runtimeBody = String(source[runtimeMethodStart..<runtimeNextMethodStart])
+    XCTAssertTrue(runtimeBody.contains("requestScheduler.run(priority: .backgroundMetadata)"))
     XCTAssertTrue(runtimeBody.contains("cameraVendorLatestObjectInfo("))
     XCTAssertTrue(runtimeBody.contains("readImageInfoKeepAliveHandle"))
+    XCTAssertTrue(runtimeBody.contains("readTimeout: CameraVendorBackgroundMetadataRefreshPolicy.readImageInfoTimeoutSeconds"))
     XCTAssertFalse(runtimeBody.contains("nextKeepAliveHandle"))
     XCTAssertFalse(runtimeBody.contains("session.objectInfo("))
     XCTAssertFalse(runtimeBody.contains("objectInfoCache.keys"))
@@ -5362,6 +5531,25 @@ final class RunnerTests: XCTestCase {
       source.range(of: "func performBackgroundKeepAlive() async throws {\n    try await ptpRuntime.performBackgroundKeepAlive()\n  }", range: serviceStart..<source.endIndex)?.lowerBound
     )
     XCTAssertNotNil(serviceMethodStart)
+  }
+
+  func testBackgroundPtpKeepAliveWaitsOneIntervalBeforeFirstCameraRequest() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/CameraSessionBackgroundSupervisor.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let methodStart = try XCTUnwrap(
+      source.range(of: "private func startPtpKeepAliveLoopIfNeeded()")?.lowerBound
+    )
+    let methodEnd = try XCTUnwrap(
+      source.range(of: "\n  }\n}", range: methodStart..<source.endIndex)?.upperBound
+    )
+    let body = String(source[methodStart..<methodEnd])
+    let sleep = try XCTUnwrap(body.range(of: "try await Task.sleep(")?.lowerBound)
+    let request = try XCTUnwrap(body.range(of: "try await galleryKeepAlive.performBackgroundKeepAlive()")?.lowerBound)
+
+    XCTAssertLessThan(sleep, request)
   }
 
   func testBleBackgroundKeepAliveIsReadOnlyAndDoesNotWriteCameraState() throws {
@@ -6028,6 +6216,18 @@ final class RunnerTests: XCTestCase {
     XCTAssertNotNil(plist["NSLocalNetworkUsageDescription"] as? String)
     let appTransportSecurity = try XCTUnwrap(plist["NSAppTransportSecurity"] as? [String: Any])
     XCTAssertEqual(appTransportSecurity["NSAllowsLocalNetworking"] as? Bool, true)
+  }
+
+  func testRunnerInfoPlistIncludesPhotoLibraryReadWriteAndAddOnlyUsageDescriptions() throws {
+    let testsDirectory = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+    let plistURL = testsDirectory
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/Info.plist")
+    let plist = try XCTUnwrap(NSDictionary(contentsOf: plistURL))
+
+    XCTAssertNotNil(plist["NSPhotoLibraryUsageDescription"] as? String)
+    XCTAssertNotNil(plist["NSPhotoLibraryAddUsageDescription"] as? String)
   }
 
   func testRunnerInfoPlistDeclaresBackgroundModesForCameraKeepAlive() throws {
@@ -6791,7 +6991,7 @@ final class RunnerTests: XCTestCase {
       NativeHomeCameraCardCopyPolicy.pairedDetailText(for: .communicating),
       "已配对 · 通讯中"
     )
-    XCTAssertEqual(NativeHomeCameraCardCopyPolicy.pairedActionTitle, "进入相机相册")
+    XCTAssertEqual(NativeHomeCameraCardCopyPolicy.pairedActionTitle, "进入相册")
     XCTAssertEqual(NativeHomeCameraCardCopyPolicy.unpairedActionTitle, "配对")
     XCTAssertEqual(NativeHomeCameraCardCopyPolicy.resumeActionTitle, "继续相册")
     XCTAssertEqual(NativeHomeCameraCardCopyPolicy.disconnectActionTitle, "断开相机")
@@ -6844,6 +7044,114 @@ final class RunnerTests: XCTestCase {
     XCTAssertLessThanOrEqual(NativeHomePairedCameraCardLayoutPolicy.cardMinimumHeight, 170)
     XCTAssertFalse(NativeHomePairedCameraCardLayoutPolicy.showsDecorativeProfileHeader)
     XCTAssertFalse(NativeHomePairedCameraCardLayoutPolicy.showsStatusPanelFrame)
+  }
+
+  func testNativeHomeQuickDownloadRequiresParametersOnlyBeforeFirstSavedRule() {
+    XCTAssertEqual(NativeHomeQuickDownloadEntryPolicy.action(ruleIsEnabled: false), .configure)
+    XCTAssertEqual(NativeHomeQuickDownloadEntryPolicy.action(ruleIsEnabled: true), .start)
+  }
+
+  func testQuickDownloadSettingsConfirmationForcesRuleEnabled() {
+    var rule = CameraAutoDownloadRule()
+    rule.isEnabled = false
+
+    XCTAssertFalse(
+      NativeAutoDownloadSettingsSavePolicy.resolvedRule(
+        rule,
+        forcesEnabled: false
+      ).isEnabled
+    )
+    XCTAssertTrue(
+      NativeAutoDownloadSettingsSavePolicy.resolvedRule(
+        rule,
+        forcesEnabled: true
+      ).isEnabled
+    )
+    XCTAssertFalse(rule.isEnabled)
+  }
+
+  func testNativePairedCameraCardShowsQuickDownloadAndGalleryAsEqualPrimaryActions() throws {
+    let runnerDirectory = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner")
+    let cardSource = try String(
+      contentsOf: runnerDirectory.appendingPathComponent("NativeScanViewController.swift"),
+      encoding: .utf8
+    )
+    let homeSource = try String(
+      contentsOf: runnerDirectory.appendingPathComponent("NativeConnectViewController.swift"),
+      encoding: .utf8
+    )
+
+    XCTAssertFalse(cardSource.contains("quickDownloadControl"))
+    XCTAssertTrue(cardSource.contains("quickDownloadColumn"))
+    XCTAssertTrue(cardSource.contains("quickDownloadButton"))
+    XCTAssertTrue(cardSource.contains("quickDownloadSettingsButton"))
+    XCTAssertTrue(cardSource.contains("quickDownloadSummary"))
+    XCTAssertTrue(
+      cardSource.contains(
+        "let quickDownloadColumn = UIStackView(arrangedSubviews: [quickDownloadButton, quickDownloadSettingsButton])"
+      )
+    )
+    XCTAssertTrue(
+      cardSource.contains(
+        "let primaryActionStack = UIStackView(arrangedSubviews: [quickDownloadColumn, connectButton])"
+      )
+    )
+    XCTAssertTrue(cardSource.contains("primaryActionStack.axis = .horizontal"))
+    XCTAssertTrue(cardSource.contains("primaryActionStack.alignment = .top"))
+    XCTAssertTrue(cardSource.contains("primaryActionStack.distribution = .fillEqually"))
+    XCTAssertTrue(cardSource.contains("onQuickDownload"))
+    XCTAssertTrue(cardSource.contains("onQuickDownloadSettings"))
+    XCTAssertTrue(cardSource.contains("quickDownloadButton.heightAnchor.constraint(equalToConstant: 44)"))
+    XCTAssertTrue(cardSource.contains("connectButton.heightAnchor.constraint(equalToConstant: 44)"))
+    XCTAssertTrue(cardSource.contains("quickDownloadSettingsButton.configuration?.title = quickDownloadSummary"))
+    XCTAssertTrue(cardSource.contains("UIFont.systemFont(ofSize: 11.5, weight: .medium)"))
+    XCTAssertTrue(cardSource.contains("quickDownloadSettingsButton.heightAnchor.constraint(equalToConstant: 20)"))
+    XCTAssertFalse(homeSource.contains("let autoDownloadButton = UIButton(type: .system)"))
+    XCTAssertTrue(
+      homeSource.contains(
+        "quickDownloadSummary: autoDownloadRule.isEnabled ? autoDownloadRule.summaryText : \"首次需设置参数\""
+      )
+    )
+    XCTAssertTrue(homeSource.contains("onQuickDownloadSettings:"))
+    XCTAssertFalse(homeSource.contains("makeAutoDownloadRuleRow()"))
+  }
+
+  func testNativeHomeQuickDownloadFirstSaveStartsExistingPendingDownloadFlow() throws {
+    let runnerDirectory = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner")
+    let homeSource = try String(
+      contentsOf: runnerDirectory.appendingPathComponent("NativeConnectViewController.swift"),
+      encoding: .utf8
+    )
+    let settingsSource = try String(
+      contentsOf: runnerDirectory.appendingPathComponent("NativeAutoDownloadSettingsViewController.swift"),
+      encoding: .utf8
+    )
+
+    XCTAssertTrue(homeSource.contains("private func quickDownloadTapped(record:"))
+    XCTAssertTrue(homeSource.contains("NativeHomeQuickDownloadEntryPolicy.action(ruleIsEnabled: autoDownloadRule.isEnabled)"))
+    XCTAssertTrue(homeSource.contains("saveButtonTitle: \"开始下载\""))
+    XCTAssertTrue(homeSource.contains("forcesEnabledOnSave: true"))
+    XCTAssertTrue(homeSource.contains("self.isAutoDownloadPending = true"))
+    XCTAssertTrue(homeSource.contains("self.connectRememberedCamera(record)"))
+    XCTAssertTrue(settingsSource.contains("saveButtonTitle: String = \"保存\""))
+    XCTAssertTrue(settingsSource.contains("forcesEnabledOnSave: Bool = false"))
+    XCTAssertTrue(
+      settingsSource.contains(
+        "title = forcesEnabledOnSave ? \"快速下载参数\" : \"自动下载规则\""
+      )
+    )
+    XCTAssertTrue(settingsSource.contains("if !forcesEnabledOnSave {"))
+    XCTAssertTrue(
+      settingsSource.contains(
+        "NativeAutoDownloadSettingsSavePolicy.resolvedRule(rule, forcesEnabled: forcesEnabledOnSave)"
+      )
+    )
   }
 
   func testNativeWiredImportEntryPolicyRequiresDetectedDevice() {
@@ -13632,7 +13940,7 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(NativeGalleryTopChromePolicy.horizontalInset, 18)
     XCTAssertEqual(NativeGalleryTopChromePolicy.topInset, 0)
     XCTAssertEqual(NativeGalleryTopChromePolicy.bottomInset, 0)
-    XCTAssertEqual(NativeGalleryTopChromePolicy.actionRowHeight, 42)
+    XCTAssertEqual(NativeGalleryTopChromePolicy.actionRowHeight, 44)
     XCTAssertEqual(NativeGalleryTopChromePolicy.actionSpacing, 8)
     XCTAssertEqual(NativeGalleryTopChromePolicy.statusSpacing, 0)
   }
@@ -13640,10 +13948,22 @@ final class RunnerTests: XCTestCase {
   func testNativeGalleryAndroidParityLayoutKeepsGridTightUnderFilter() {
     XCTAssertEqual(NativeGalleryAndroidParityLayoutPolicy.filterToGridSpacing, 2)
     XCTAssertEqual(NativeGalleryAndroidParityLayoutPolicy.filterHeaderHeight, 42)
-    XCTAssertEqual(NativeGalleryAndroidParityLayoutPolicy.filterTopSpacing, 6)
+    XCTAssertEqual(NativeGalleryAndroidParityLayoutPolicy.filterTopSpacing, 8)
     XCTAssertFalse(NativeGalleryAndroidParityLayoutPolicy.shouldShowPinchHintBubble)
     XCTAssertEqual(NativeGalleryAndroidParityLayoutPolicy.bottomBarHeight, 52)
     XCTAssertEqual(NativeGalleryAndroidParityLayoutPolicy.bottomBarBottomInset, 10)
+  }
+
+  func testNativeGalleryCollapsedFilterReanchorsGridDirectlyBelowToolRow() throws {
+    let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    let sourceURL = testsDirectory
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+    XCTAssertTrue(source.contains("collectionTopToToolRowConstraint"))
+    XCTAssertTrue(source.contains("collectionTopToExpandedFilterConstraint"))
+    XCTAssertTrue(source.contains("updateFilterPanelLayout(animated:"))
   }
 
   func testThumbnailTimingLogPolicyMatchesAndroidDiagnosticShape() {

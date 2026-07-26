@@ -1,6 +1,103 @@
 import Foundation
 import UIKit
 
+final class NativeGalleryModeControl: UIControl {
+  private let thumbnailButton = UIButton(type: .system)
+  private let highDefinitionButton = UIButton(type: .system)
+  private let selectedBackgroundColor = NativeLuxuryTheme.ink
+
+  var selectedSegmentIndex: Int = 0 {
+    didSet {
+      let normalized = selectedSegmentIndex == 1 ? 1 : 0
+      if selectedSegmentIndex != normalized {
+        selectedSegmentIndex = normalized
+        return
+      }
+      updateAppearance()
+    }
+  }
+
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    translatesAutoresizingMaskIntoConstraints = false
+    backgroundColor = NativeLuxuryTheme.ink.withAlphaComponent(0.035)
+    layer.cornerRadius = 18
+    clipsToBounds = true
+
+    configureButton(
+      thumbnailButton,
+      title: "缩略",
+      image: UIImage(
+        systemName: "circle.grid.2x2.fill",
+        withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .bold)
+      )
+    )
+    configureButton(highDefinitionButton, title: "高清", image: nil)
+    thumbnailButton.addTarget(self, action: #selector(thumbnailTapped), for: .touchUpInside)
+    highDefinitionButton.addTarget(self, action: #selector(highDefinitionTapped), for: .touchUpInside)
+
+    let stack = UIStackView(arrangedSubviews: [thumbnailButton, highDefinitionButton])
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    stack.axis = .horizontal
+    stack.alignment = .fill
+    stack.distribution = .fillEqually
+    stack.spacing = 0
+    addSubview(stack)
+    NSLayoutConstraint.activate([
+      stack.topAnchor.constraint(equalTo: topAnchor),
+      stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+      stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+      stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+    ])
+    updateAppearance()
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) has not been implemented")
+  }
+
+  private func configureButton(_ button: UIButton, title: String, image: UIImage?) {
+    button.translatesAutoresizingMaskIntoConstraints = false
+    var configuration = UIButton.Configuration.filled()
+    configuration.title = title
+    configuration.image = image
+    configuration.imagePlacement = .leading
+    configuration.imagePadding = 4
+    configuration.cornerStyle = .capsule
+    configuration.contentInsets = NSDirectionalEdgeInsets(top: 2, leading: 10, bottom: 2, trailing: 10)
+    configuration.titleLineBreakMode = .byClipping
+    configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+      var outgoing = incoming
+      outgoing.font = UIFont.systemFont(ofSize: 14, weight: .black)
+      return outgoing
+    }
+    button.configuration = configuration
+  }
+
+  private func updateAppearance() {
+    applyAppearance(to: thumbnailButton, selected: selectedSegmentIndex == 0)
+    applyAppearance(to: highDefinitionButton, selected: selectedSegmentIndex == 1)
+  }
+
+  private func applyAppearance(to button: UIButton, selected: Bool) {
+    button.configuration?.baseBackgroundColor = selected ? selectedBackgroundColor : .clear
+    button.configuration?.baseForegroundColor = selected ? NativeLuxuryTheme.cardBackground : NativeLuxuryTheme.ink
+  }
+
+  @objc private func thumbnailTapped() {
+    guard selectedSegmentIndex != 0 else { return }
+    selectedSegmentIndex = 0
+    sendActions(for: .valueChanged)
+  }
+
+  @objc private func highDefinitionTapped() {
+    guard selectedSegmentIndex != 1 else { return }
+    selectedSegmentIndex = 1
+    sendActions(for: .valueChanged)
+  }
+}
+
 final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDelegate {
   private let summary: CameraVendorConnectionSummary
   private let rememberedPeripheralID: UUID?
@@ -39,6 +136,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
   private let hdPreviewCache = NativeGalleryHighDefinitionPreviewCache()
   private var hdPresentationState: NativeGalleryHDPreviewState?
   private var hdRenderedDisplayHandles: [Int] = []
+  private var hdActiveDate: Date?
   private var hdTransitionTask: Task<Void, Never>?
   private lazy var hdCoordinator = NativeGalleryHDPreviewCoordinator(
     cache: hdPreviewCache,
@@ -50,66 +148,89 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     },
     fetchPreview: { [weak self] handle in
       guard let self else { throw CancellationError() }
-      return try await self.runtime.requestPreviewImageWithInfo(for: handle)
+      do {
+        return try await self.runtime.requestPreviewImageWithInfo(for: handle)
+      } catch {
+        self.appendDiagnostic(
+          NativeGalleryHDPreviewFailureLogPolicy.message(
+            handle: handle,
+            errorDescription: error.localizedDescription
+          )
+        )
+        throw error
+      }
     },
     publish: { [weak self] state in
       self?.applyHDPreviewState(state)
     }
   )
 
-  private let browseModeSegment: UISegmentedControl = {
-    let control = UISegmentedControl(items: ["缩略", "高清"])
-    control.translatesAutoresizingMaskIntoConstraints = false
-    control.selectedSegmentIndex = 0
-    control.selectedSegmentTintColor = NativeLuxuryTheme.ink
-    control.setTitleTextAttributes([
-      .foregroundColor: NativeLuxuryTheme.cardBackground,
-      .font: UIFont.systemFont(ofSize: 12, weight: .bold)
-    ], for: .selected)
-    control.setTitleTextAttributes([
-      .foregroundColor: NativeLuxuryTheme.ink,
-      .font: UIFont.systemFont(ofSize: 12, weight: .semibold)
-    ], for: .normal)
-    return control
-  }()
+  private let browseModeControl = NativeGalleryModeControl()
 
   private let galleryFilterButton: UIButton = {
     let button = UIButton(type: .system)
     button.translatesAutoresizingMaskIntoConstraints = false
-    var configuration = UIButton.Configuration.filled()
+    var configuration = UIButton.Configuration.plain()
     configuration.title = "筛选"
-    configuration.image = UIImage(systemName: "line.3.horizontal.decrease")
-    configuration.imagePadding = 5
-    configuration.cornerStyle = .capsule
-    configuration.baseBackgroundColor = NativeLuxuryTheme.warmFill
+    configuration.image = UIImage(
+      systemName: "slider.horizontal.3",
+      withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .bold)
+    )
+    configuration.imagePlacement = .leading
+    configuration.imagePadding = 6
+    configuration.titleLineBreakMode = .byClipping
+    configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+      var outgoing = incoming
+      outgoing.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+      return outgoing
+    }
+    configuration.baseBackgroundColor = .clear
     configuration.baseForegroundColor = NativeLuxuryTheme.ink
-    configuration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)
+    configuration.contentInsets = .zero
     button.configuration = configuration
+    button.titleLabel?.numberOfLines = 1
+    button.titleLabel?.lineBreakMode = .byClipping
+    button.titleLabel?.adjustsFontSizeToFitWidth = true
+    button.titleLabel?.minimumScaleFactor = 0.9
     return button
   }()
 
   private let galleryToolsButton: UIButton = {
     let button = UIButton(type: .system)
     button.translatesAutoresizingMaskIntoConstraints = false
-    var configuration = UIButton.Configuration.filled()
+    var configuration = UIButton.Configuration.plain()
     configuration.title = "工具"
-    configuration.image = UIImage(systemName: "ellipsis.circle")
-    configuration.imagePadding = 5
-    configuration.cornerStyle = .capsule
-    configuration.baseBackgroundColor = NativeLuxuryTheme.warmFill
+    configuration.image = UIImage(
+      systemName: "square.stack.3d.up",
+      withConfiguration: UIImage.SymbolConfiguration(pointSize: 14, weight: .bold)
+    )
+    configuration.imagePlacement = .leading
+    configuration.imagePadding = 6
+    configuration.titleLineBreakMode = .byClipping
+    configuration.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+      var outgoing = incoming
+      outgoing.font = UIFont.systemFont(ofSize: 15, weight: .semibold)
+      return outgoing
+    }
+    configuration.baseBackgroundColor = .clear
     configuration.baseForegroundColor = NativeLuxuryTheme.ink
-    configuration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)
+    configuration.contentInsets = .zero
     button.configuration = configuration
+    button.titleLabel?.numberOfLines = 1
+    button.titleLabel?.lineBreakMode = .byClipping
+    button.titleLabel?.adjustsFontSizeToFitWidth = true
+    button.titleLabel?.minimumScaleFactor = 0.9
     button.showsMenuAsPrimaryAction = true
     return button
   }()
 
   private lazy var galleryToolRow: UIStackView = {
-    let stack = UIStackView(arrangedSubviews: [galleryFilterButton, browseModeSegment, galleryToolsButton])
+    let stack = UIStackView(arrangedSubviews: [galleryFilterButton, browseModeControl, galleryToolsButton])
     stack.translatesAutoresizingMaskIntoConstraints = false
     stack.axis = .horizontal
-    stack.alignment = .fill
-    stack.spacing = 8
+    stack.alignment = .center
+    stack.distribution = .equalSpacing
+    stack.spacing = 0
     return stack
   }()
 
@@ -120,7 +241,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     layout.sectionInset = .zero
     let cv = UICollectionView(frame: .zero, collectionViewLayout: layout)
     cv.translatesAutoresizingMaskIntoConstraints = false
-    cv.backgroundColor = .black
+    cv.backgroundColor = NativeLuxuryTheme.background
     cv.register(NativeGalleryHDPreviewCell.self, forCellWithReuseIdentifier: NativeGalleryHDPreviewCell.reuseIdentifier)
     cv.register(
       NativeGallerySectionHeaderView.self,
@@ -144,28 +265,78 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     return label
   }()
 
-  private let hdDateLabel: UILabel = {
-    let label = UILabel()
-    label.translatesAutoresizingMaskIntoConstraints = false
-    label.font = .systemFont(ofSize: 12, weight: .bold)
-    label.textColor = .white
-    label.textAlignment = .center
-    label.backgroundColor = UIColor.black.withAlphaComponent(0.48)
-    label.layer.cornerRadius = 12
-    label.clipsToBounds = true
-    label.isHidden = true
-    return label
+  private let hdDateButton: UIButton = {
+    let button = UIButton(type: .system)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    var configuration = UIButton.Configuration.filled()
+    configuration.title = "选择日期"
+    configuration.image = UIImage(systemName: "calendar")
+    configuration.imagePadding = 5
+    configuration.cornerStyle = .capsule
+    configuration.baseBackgroundColor = UIColor.black.withAlphaComponent(0.72)
+    configuration.baseForegroundColor = .white
+    configuration.contentInsets = NSDirectionalEdgeInsets(top: 5, leading: 10, bottom: 5, trailing: 10)
+    button.configuration = configuration
+    button.isHidden = true
+    button.accessibilityLabel = "选择高清预览日期"
+    return button
   }()
 
-  private let galleryBackButton = NativeGalleryHeaderIconButton(icon: .back, accessibilityLabel: "返回")
+  private lazy var hdTopChipRow: UIStackView = {
+    let arrangedSubviews: [UIView]
+    if NativeGalleryHDChromePolicy.showsLoadCountBeforeDate {
+      arrangedSubviews = [hdStatusLabel, hdDateButton]
+    } else {
+      arrangedSubviews = [hdDateButton, hdStatusLabel]
+    }
+    let stack = UIStackView(arrangedSubviews: arrangedSubviews)
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    stack.axis = .horizontal
+    stack.alignment = .center
+    stack.spacing = 8
+    stack.isHidden = true
+    return stack
+  }()
+
+  private let galleryBackButton: UIButton = {
+    let button = UIButton(type: .system)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    var config = UIButton.Configuration.plain()
+    config.image = UIImage(
+      systemName: "chevron.left",
+      withConfiguration: UIImage.SymbolConfiguration(pointSize: 17, weight: .semibold)
+    )
+    config.baseForegroundColor = NativeLuxuryTheme.ink
+    config.contentInsets = NSDirectionalEdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0)
+    button.configuration = config
+    button.accessibilityLabel = "返回"
+    return button
+  }()
   private let galleryHeaderTitleLabel: UILabel = {
     let label = UILabel()
     label.translatesAutoresizingMaskIntoConstraints = false
     label.text = NativeGalleryChromeCopy.title
-    label.font = .systemFont(ofSize: 13, weight: .black)
+    label.font = .systemFont(ofSize: 16, weight: .black)
     label.textColor = NativeLuxuryTheme.ink
     label.textAlignment = .center
     return label
+  }()
+  private let galleryHeaderCountLabel: UILabel = {
+    let label = UILabel()
+    label.translatesAutoresizingMaskIntoConstraints = false
+    label.font = .systemFont(ofSize: 13, weight: .bold)
+    label.textColor = NativeLuxuryTheme.secondaryInk
+    label.textAlignment = .left
+    label.isHidden = true
+    return label
+  }()
+  private lazy var galleryHeaderTitleStack: UIStackView = {
+    let stack = UIStackView(arrangedSubviews: [galleryHeaderTitleLabel, galleryHeaderCountLabel])
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    stack.axis = .horizontal
+    stack.alignment = .firstBaseline
+    stack.spacing = 8
+    return stack
   }()
 
   private let brandLabel = NativeLuxuryTheme.makeBrandLabel("DEVICE-A GALLERY", size: 10)
@@ -177,6 +348,14 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     view.color = NativeLuxuryTheme.accent
     view.hidesWhenStopped = true
     return view
+  }()
+  private lazy var galleryStatusRow: UIStackView = {
+    let row = UIStackView(arrangedSubviews: [loadingSpinner, copyLabel])
+    row.translatesAutoresizingMaskIntoConstraints = false
+    row.axis = .horizontal
+    row.alignment = .center
+    row.spacing = 8
+    return row
   }()
 
   private let statusLabel: UILabel = {
@@ -253,7 +432,10 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     stack.isHidden = true
     return stack
   }()
+  private var collapsedSections: Set<Int> = []
   private var isFilterPanelExpanded = false
+  private var collectionTopToToolRowConstraint: NSLayoutConstraint?
+  private var collectionTopToExpandedFilterConstraint: NSLayoutConstraint?
   private var currentColumnCount: Int = {
     let stored = UserDefaults.standard.integer(forKey: "camtransfer.galleryColumnCount")
     if (NativeGalleryGridLayoutPolicy.minColumnCount...NativeGalleryGridLayoutPolicy.maxColumnCount).contains(stored) {
@@ -521,12 +703,6 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     titleLabel.isHidden = true
     self.selectAllButtonItem = nil
 
-    let copyRow = UIStackView(arrangedSubviews: [loadingSpinner, copyLabel])
-    copyRow.translatesAutoresizingMaskIntoConstraints = false
-    copyRow.axis = .horizontal
-    copyRow.alignment = .center
-    copyRow.spacing = 8
-
     let headerBar = UIView()
     headerBar.translatesAutoresizingMaskIntoConstraints = false
     let headerStack = UIStackView(arrangedSubviews: [headerBar])
@@ -535,10 +711,10 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     headerStack.spacing = NativeGalleryTopChromePolicy.statusSpacing
     let headerFrame = NativeTopHeaderFrameView()
     headerBar.addSubview(galleryBackButton)
-    headerBar.addSubview(galleryHeaderTitleLabel)
+    headerBar.addSubview(galleryHeaderTitleStack)
     headerFrame.addSubview(headerStack)
     view.addSubview(headerFrame)
-    view.addSubview(copyRow)
+    view.addSubview(galleryStatusRow)
 
     view.addSubview(statusLabel)
     view.addSubview(diagnosticsView)
@@ -573,8 +749,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     view.addSubview(filterContentStack)
     view.addSubview(collectionView)
     view.addSubview(hdCollectionView)
-    view.addSubview(hdDateLabel)
-    view.addSubview(hdStatusLabel)
+    view.addSubview(hdTopChipRow)
     view.addSubview(bottomDownloadBar)
     view.addSubview(toastLabel)
     bottomDownloadBar.addSubview(bottomSelectAllButton)
@@ -584,6 +759,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
 
     galleryBackButton.addTarget(self, action: #selector(exitGalleryTapped), for: .touchUpInside)
     galleryFilterButton.addTarget(self, action: #selector(toggleFilterPanel), for: .touchUpInside)
+    hdDateButton.addTarget(self, action: #selector(selectHDDateTapped), for: .touchUpInside)
     configureGalleryToolsMenu()
     reservedReceiveProbeButton.addTarget(self, action: #selector(reservedReceiveProbeTapped), for: .touchUpInside)
     bottomSelectAllButton.addTarget(self, action: #selector(selectAllTapped), for: .touchUpInside)
@@ -600,11 +776,22 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     hdCollectionView.dataSource = self
     hdCollectionView.delegate = self
 
-    browseModeSegment.addTarget(self, action: #selector(browseModeChanged(_:)), for: .valueChanged)
+    browseModeControl.addTarget(self, action: #selector(browseModeChanged(_:)), for: .valueChanged)
 
     let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handleGalleryPinch(_:)))
     collectionView.addGestureRecognizer(pinch)
     collectionView.addGestureRecognizer(dragSelectionGesture)
+
+    let collectionTopToToolRowConstraint = collectionView.topAnchor.constraint(
+      equalTo: galleryToolRow.bottomAnchor,
+      constant: NativeGalleryAndroidParityLayoutPolicy.filterToGridSpacing
+    )
+    let collectionTopToExpandedFilterConstraint = collectionView.topAnchor.constraint(
+      equalTo: filterContentStack.bottomAnchor,
+      constant: NativeGalleryAndroidParityLayoutPolicy.filterToGridSpacing
+    )
+    self.collectionTopToToolRowConstraint = collectionTopToToolRowConstraint
+    self.collectionTopToExpandedFilterConstraint = collectionTopToExpandedFilterConstraint
 
     NSLayoutConstraint.activate([
       headerFrame.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: NativeGalleryTopChromePolicy.topInset),
@@ -619,16 +806,18 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       headerBar.heightAnchor.constraint(equalToConstant: NativeGalleryTopChromePolicy.actionRowHeight),
       galleryBackButton.leadingAnchor.constraint(equalTo: headerBar.leadingAnchor),
       galleryBackButton.centerYAnchor.constraint(equalTo: headerBar.centerYAnchor),
-      galleryHeaderTitleLabel.centerXAnchor.constraint(equalTo: headerBar.centerXAnchor),
-      galleryHeaderTitleLabel.centerYAnchor.constraint(equalTo: headerBar.centerYAnchor),
-      galleryHeaderTitleLabel.leadingAnchor.constraint(greaterThanOrEqualTo: galleryBackButton.trailingAnchor, constant: NativeGalleryTopChromePolicy.actionSpacing),
-      galleryHeaderTitleLabel.trailingAnchor.constraint(lessThanOrEqualTo: headerBar.trailingAnchor, constant: -44),
+      galleryBackButton.widthAnchor.constraint(equalToConstant: 34),
+      galleryBackButton.heightAnchor.constraint(equalToConstant: 34),
+      galleryHeaderTitleStack.centerXAnchor.constraint(equalTo: headerBar.centerXAnchor),
+      galleryHeaderTitleStack.centerYAnchor.constraint(equalTo: headerBar.centerYAnchor),
+      galleryHeaderTitleStack.leadingAnchor.constraint(greaterThanOrEqualTo: galleryBackButton.trailingAnchor, constant: NativeGalleryTopChromePolicy.actionSpacing),
+      galleryHeaderTitleStack.trailingAnchor.constraint(lessThanOrEqualTo: headerBar.trailingAnchor, constant: -8),
 
-      copyRow.topAnchor.constraint(equalTo: headerFrame.bottomAnchor, constant: 8),
-      copyRow.leadingAnchor.constraint(equalTo: headerFrame.leadingAnchor, constant: 2),
-      copyRow.trailingAnchor.constraint(lessThanOrEqualTo: headerFrame.trailingAnchor, constant: -2),
+      galleryStatusRow.topAnchor.constraint(equalTo: headerFrame.bottomAnchor, constant: 0),
+      galleryStatusRow.leadingAnchor.constraint(equalTo: headerFrame.leadingAnchor, constant: 2),
+      galleryStatusRow.trailingAnchor.constraint(lessThanOrEqualTo: headerFrame.trailingAnchor, constant: -2),
 
-      statusLabel.topAnchor.constraint(equalTo: copyRow.bottomAnchor, constant: 0),
+      statusLabel.topAnchor.constraint(equalTo: galleryStatusRow.bottomAnchor, constant: 0),
       statusLabel.leadingAnchor.constraint(equalTo: headerFrame.leadingAnchor),
       statusLabel.trailingAnchor.constraint(equalTo: headerFrame.trailingAnchor),
 
@@ -644,17 +833,17 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       galleryToolRow.leadingAnchor.constraint(equalTo: headerFrame.leadingAnchor),
       galleryToolRow.trailingAnchor.constraint(equalTo: headerFrame.trailingAnchor),
       galleryToolRow.heightAnchor.constraint(equalToConstant: NativeGalleryAndroidParityChromePolicy.toolRowHeight),
-      galleryFilterButton.widthAnchor.constraint(equalToConstant: 76),
-      galleryToolsButton.widthAnchor.constraint(equalToConstant: 76),
+      galleryFilterButton.widthAnchor.constraint(equalToConstant: 74),
+      galleryFilterButton.heightAnchor.constraint(equalToConstant: 38),
+      browseModeControl.heightAnchor.constraint(equalToConstant: 38),
+      galleryToolsButton.widthAnchor.constraint(equalToConstant: 74),
+      galleryToolsButton.heightAnchor.constraint(equalToConstant: 38),
 
       filterContentStack.topAnchor.constraint(equalTo: galleryToolRow.bottomAnchor, constant: 8),
       filterContentStack.leadingAnchor.constraint(equalTo: headerFrame.leadingAnchor),
       filterContentStack.trailingAnchor.constraint(equalTo: headerFrame.trailingAnchor),
 
-      collectionView.topAnchor.constraint(
-        equalTo: filterContentStack.bottomAnchor,
-        constant: NativeGalleryAndroidParityLayoutPolicy.filterToGridSpacing
-      ),
+      collectionTopToToolRowConstraint,
       collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
       collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
       collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
@@ -664,15 +853,11 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       hdCollectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
       hdCollectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
-      hdDateLabel.topAnchor.constraint(equalTo: hdCollectionView.topAnchor, constant: 12),
-      hdDateLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
-      hdDateLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 88),
-      hdDateLabel.heightAnchor.constraint(equalToConstant: 24),
-
-      hdStatusLabel.topAnchor.constraint(equalTo: hdDateLabel.bottomAnchor, constant: 6),
-      hdStatusLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+      hdTopChipRow.topAnchor.constraint(equalTo: hdCollectionView.topAnchor, constant: 12),
+      hdTopChipRow.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+      hdDateButton.heightAnchor.constraint(equalToConstant: 30),
       hdStatusLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 56),
-      hdStatusLabel.heightAnchor.constraint(equalToConstant: 24),
+      hdStatusLabel.heightAnchor.constraint(equalToConstant: 30),
 
       bottomDownloadBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 18),
       bottomDownloadBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -18),
@@ -1095,16 +1280,6 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       UIAction(title: "下载中心", image: UIImage(systemName: "arrow.down.circle")) { [weak self] _ in
         self?.showDownloadListForCurrentTasks()
       },
-      UIAction(title: "下载目录", image: UIImage(systemName: "photo.on.rectangle")) { [weak self] _ in
-        self?.showDownloadListForCurrentTasks()
-      },
-      UIAction(
-        title: "清理下载记录",
-        image: UIImage(systemName: "trash"),
-        attributes: .destructive
-      ) { [weak self] _ in
-        self?.clearAllDownloadCacheTapped()
-      },
     ])
   }
 
@@ -1126,16 +1301,30 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       return
     }
     isFilterPanelExpanded.toggle()
+    updateFilterPanelLayout(animated: true)
+  }
+
+  private func updateFilterPanelLayout(animated: Bool) {
     filterContentStack.isHidden = !isFilterPanelExpanded
     filterChevronLabel.text = isFilterPanelExpanded ? "⌃" : "⌄"
-    UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseInOut]) {
-      self.view.layoutIfNeeded()
+    if isFilterPanelExpanded {
+      collectionTopToToolRowConstraint?.isActive = false
+      collectionTopToExpandedFilterConstraint?.isActive = true
+    } else {
+      collectionTopToExpandedFilterConstraint?.isActive = false
+      collectionTopToToolRowConstraint?.isActive = true
+    }
+    let updates = { self.view.layoutIfNeeded() }
+    if animated {
+      UIView.animate(withDuration: 0.18, delay: 0, options: [.curveEaseInOut], animations: updates)
+    } else {
+      updates()
     }
   }
 
   // MARK: - HD Preview Mode
 
-  @objc private func browseModeChanged(_ sender: UISegmentedControl) {
+  @objc private func browseModeChanged(_ sender: NativeGalleryModeControl) {
     let mode: NativeGalleryBrowseMode = sender.selectedSegmentIndex == 1 ? .highDefinition : .thumbnail
     switchBrowseMode(mode)
   }
@@ -1143,7 +1332,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
   private func switchBrowseMode(_ mode: NativeGalleryBrowseMode) {
     guard mode != browseMode else { return }
     guard NativeGalleryDownloadModePresentationPolicy.canInteractWithGallery(isDownloading: runtime.isDownloading) else {
-      browseModeSegment.selectedSegmentIndex = browseMode == .thumbnail ? 0 : 1
+      browseModeControl.selectedSegmentIndex = browseMode == .thumbnail ? 0 : 1
       showToast("正在下载，无法切换浏览模式")
       return
     }
@@ -1154,8 +1343,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     case .thumbnail:
       hdCollectionView.isHidden = true
       collectionView.isHidden = false
-      hdStatusLabel.isHidden = true
-      hdDateLabel.isHidden = true
+      hdTopChipRow.isHidden = true
       enqueueHDTransition { [weak self] in
         await self?.hdCoordinator.stop(resumeCatalogChildWork: true)
       }
@@ -1163,14 +1351,13 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       scheduleVisibleThumbnailRefresh(after: 0.05)
     case .highDefinition:
       isFilterPanelExpanded = false
-      filterContentStack.isHidden = true
-      filterChevronLabel.text = "⌄"
+      updateFilterPanelLayout(animated: false)
       visibleThumbnailRefreshTask?.cancel()
       visibleThumbnailRefreshTask = nil
 
       collectionView.isHidden = true
       hdCollectionView.isHidden = false
-      view.backgroundColor = .black
+      view.backgroundColor = NativeLuxuryTheme.background
       startHDPreviewLoading()
     }
     refreshBottomDownloadBar()
@@ -1198,6 +1385,12 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
   }
 
   private func preferredHDActiveDate() -> Date {
+    if let hdActiveDate {
+      return NativeGalleryHDPreviewSessionPolicy.preferredActiveDate(
+        items: catalogPresentation.items,
+        currentDate: hdActiveDate
+      )
+    }
     switch filterState.date {
     case .specificDay(let date):
       return date
@@ -1263,17 +1456,46 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
 
   private func updateHDStatusLabel(_ state: NativeGalleryHDPreviewState?) {
     guard let state, state.totalCount > 0 else {
-      hdStatusLabel.isHidden = true
-      hdDateLabel.isHidden = true
+      hdTopChipRow.isHidden = true
       return
     }
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "zh_CN")
-    formatter.dateFormat = "yyyy年M月d日"
-    hdDateLabel.text = "  \(formatter.string(from: state.snapshot.activeDate))  "
-    hdDateLabel.isHidden = false
+    formatter.dateFormat = NativeGalleryHDChromePolicy.dateFormat
+    hdDateButton.configuration?.title = formatter.string(from: state.snapshot.activeDate)
+    hdDateButton.isHidden = false
     hdStatusLabel.text = "  \(state.loadedCount)/\(state.totalCount)  "
     hdStatusLabel.isHidden = false
+    hdTopChipRow.isHidden = false
+  }
+
+  @objc private func selectHDDateTapped() {
+    guard browseMode == .highDefinition,
+          NativeGalleryDownloadModePresentationPolicy.canInteractWithGallery(isDownloading: runtime.isDownloading) else {
+      return
+    }
+    let dates = NativeGalleryHDPreviewSessionPolicy.availableDates(items: catalogPresentation.items)
+    guard !dates.isEmpty else {
+      showToast("没有可选择的拍摄日期")
+      return
+    }
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "zh_CN")
+    formatter.dateFormat = NativeGalleryHDChromePolicy.dateFormat
+    let alert = UIAlertController(title: "选择高清预览日期", message: nil, preferredStyle: .actionSheet)
+    dates.forEach { [weak self] date in
+      alert.addAction(UIAlertAction(title: formatter.string(from: date), style: .default) { _ in
+        guard let self else { return }
+        self.hdActiveDate = date
+        self.startHDPreviewLoading()
+      })
+    }
+    alert.addAction(UIAlertAction(title: "取消", style: .cancel))
+    if let popover = alert.popoverPresentationController {
+      popover.sourceView = hdDateButton
+      popover.sourceRect = hdDateButton.bounds
+    }
+    present(alert, animated: true)
   }
 
   private func hdLoadState(for item: CameraVendorGalleryItem) -> NativeGalleryHDPreviewCell.LoadState {
@@ -1869,6 +2091,8 @@ extension NativeGalleryViewController {
   private func refreshStatusText() {
     updateNavigationLock()
     if catalogPresentation.isLoading {
+      galleryHeaderCountLabel.isHidden = true
+      galleryStatusRow.isHidden = false
       if (copyLabel.text ?? "").isEmpty || copyLabel.text == "准备加载图库" {
         copyLabel.text = "正在加载图库…"
       }
@@ -1882,6 +2106,8 @@ extension NativeGalleryViewController {
     loadingSpinner.stopAnimating()
 
     if let errorMessage = catalogPresentation.errorMessage {
+      galleryHeaderCountLabel.isHidden = true
+      galleryStatusRow.isHidden = false
       copyLabel.text = "加载失败：\(errorMessage)"
       copyLabel.textColor = NativeLuxuryTheme.secondaryInk
       refreshFilterSummary()
@@ -1890,18 +2116,10 @@ extension NativeGalleryViewController {
     }
 
     let total = catalogPresentation.items.count
-    let visible = catalogPresentation.items.count
-    let selected = selectedHandles.count
-    let filterApplied = filterState.date != .all || !filterState.isAllFormats
-    let countText: String
-    if total == 0 {
-      countText = "暂无照片"
-    } else if filterApplied {
-      countText = "\(visible) / \(total) 张"
-    } else {
-      countText = "\(total) 张照片"
-    }
-    copyLabel.text = "\(countText) · 已选 \(selected)"
+    galleryHeaderCountLabel.text = total > 0 ? "\(total) 张" : nil
+    galleryHeaderCountLabel.isHidden = total == 0
+    galleryStatusRow.isHidden = true
+    copyLabel.text = ""
     copyLabel.textColor = NativeLuxuryTheme.secondaryInk
     refreshFilterSummary()
     refreshBottomDownloadBar()
@@ -1996,6 +2214,7 @@ extension NativeGalleryViewController {
 
   private func refreshGallerySections() {
     gallerySections = NativeGallerySectionPolicy.sections(from: catalogPresentation.items)
+    collapsedSections.removeAll()
   }
 
   private func loadVisibleThumbnails() {
@@ -2159,6 +2378,18 @@ extension NativeGalleryViewController {
     )
   }
 
+  private func toggleSectionCollapse(at sectionIndex: Int) {
+    guard gallerySections.indices.contains(sectionIndex) else { return }
+    if collapsedSections.contains(sectionIndex) {
+      collapsedSections.remove(sectionIndex)
+    } else {
+      collapsedSections.insert(sectionIndex)
+    }
+    UIView.performWithoutAnimation {
+      collectionView.reloadSections(IndexSet(integer: sectionIndex))
+    }
+  }
+
   private func indexPath(for item: CameraVendorGalleryItem) -> IndexPath? {
     indexPath(forHandle: item.handle)
   }
@@ -2213,9 +2444,18 @@ extension NativeGalleryViewController {
     let section = gallerySections[indexPath.section]
     let selectableHandles = Set(runtime.downloadableHandles(from: section.items.map(\.handle)))
     let allSelected = !selectableHandles.isEmpty && selectableHandles.isSubset(of: selectedHandles)
-    header.configure(title: section.title, selectionTitle: allSelected ? "取消" : "全选")
+    let isCollapsed = collapsedSections.contains(indexPath.section)
+    header.configure(
+      dateTitle: NativeGallerySectionPolicy.dateTitle(for: section.day),
+      countTitle: "\(section.items.count) 张",
+      selectionTitle: allSelected ? "取消" : "全选",
+      sortTitle: isCollapsed ? "▲" : "▼"
+    )
     header.onSelectionTapped = { [weak self] in
       self?.toggleSelection(forSectionAt: indexPath.section)
+    }
+    header.onSortTapped = { [weak self] in
+      self?.toggleSectionCollapse(at: indexPath.section)
     }
   }
 
@@ -2801,10 +3041,18 @@ final class NativeDownloadListViewController: UIViewController {
 
   @objc private func clearRecordsTapped() {
     guard clearRecordsButton.isEnabled else { return }
-    itemsProvider().forEach(onClearDownloadCache)
-    collectionView.reloadData()
-    refreshSummary()
-    refreshEmptyState()
+    clearRecordsButton.isEnabled = false
+    clearRecordsButton.configuration?.showsActivityIndicator = true
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+      guard let self else { return }
+      self.runtime.send(.clearAllSavedDownloadHistory)
+      NotificationCenter.default.post(name: .nativeDownloadStateDidChange, object: nil)
+      self.collectionView.reloadData()
+      self.refreshSummary()
+      self.refreshEmptyState()
+      self.clearRecordsButton.configuration?.showsActivityIndicator = false
+      self.clearRecordsButton.isEnabled = true
+    }
   }
 
   @objc private func downloadStateDidChange() {
@@ -3045,6 +3293,7 @@ extension NativeGalleryViewController: UICollectionViewDataSource {
       return hdPresentationState?.snapshot.items.count ?? 0
     }
     guard gallerySections.indices.contains(section) else { return 0 }
+    if collapsedSections.contains(section) { return 0 }
     return gallerySections[section].items.count
   }
 
@@ -3212,6 +3461,13 @@ extension NativeGalleryViewController: UICollectionViewDelegateFlowLayout {
     }
   }
 
+  func scrollViewDidScroll(_ scrollView: UIScrollView) {
+    guard scrollView === hdCollectionView, browseMode == .highDefinition else { return }
+    let visibleHandles = hdVisibleHandles()
+    guard !visibleHandles.isEmpty else { return }
+    hdCoordinator.updateVisibleHandles(visibleHandles)
+  }
+
   func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
     if scrollView === hdCollectionView {
       hdScrollDidSettle()
@@ -3230,13 +3486,23 @@ final class NativeGallerySectionHeaderView: UICollectionReusableView {
   static let reuseIdentifier = "NativeGallerySectionHeaderView"
 
   var onSelectionTapped: (() -> Void)?
+  var onSortTapped: (() -> Void)?
 
   private let titleLabel: UILabel = {
     let label = UILabel()
     label.translatesAutoresizingMaskIntoConstraints = false
-    label.font = .systemFont(ofSize: 15, weight: .black)
+    label.font = UIFont.systemFont(ofSize: 15, weight: .black)
     label.textColor = NativeLuxuryTheme.ink
     label.numberOfLines = 1
+    return label
+  }()
+
+  private let countLabel: UILabel = {
+    let label = UILabel()
+    label.translatesAutoresizingMaskIntoConstraints = false
+    label.font = UIFont.systemFont(ofSize: 13, weight: .medium)
+    label.textColor = NativeLuxuryTheme.secondaryInk
+    label.textAlignment = .left
     return label
   }()
 
@@ -3252,20 +3518,46 @@ final class NativeGallerySectionHeaderView: UICollectionReusableView {
     return button
   }()
 
+  private let sortButton: UIButton = {
+    let button = UIButton(type: .system)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    var config = UIButton.Configuration.plain()
+    config.image = UIImage(
+      systemName: "chevron.down",
+      withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+    )
+    config.baseForegroundColor = NativeLuxuryTheme.secondaryInk
+    config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 6, bottom: 4, trailing: 6)
+    button.configuration = config
+    return button
+  }()
+
   override init(frame: CGRect) {
     super.init(frame: frame)
     backgroundColor = NativeLuxuryTheme.background
     addSubview(titleLabel)
+    addSubview(countLabel)
     addSubview(selectionButton)
+    addSubview(sortButton)
     selectionButton.addTarget(self, action: #selector(selectionTapped), for: .touchUpInside)
+    sortButton.addTarget(self, action: #selector(sortTapped), for: .touchUpInside)
     NSLayoutConstraint.activate([
       titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
       titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-      titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: selectionButton.leadingAnchor, constant: -8),
+      titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: countLabel.leadingAnchor, constant: -6),
 
-      selectionButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+      countLabel.leadingAnchor.constraint(equalTo: titleLabel.trailingAnchor, constant: 6),
+      countLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+      selectionButton.trailingAnchor.constraint(equalTo: sortButton.leadingAnchor, constant: -6),
       selectionButton.centerYAnchor.constraint(equalTo: centerYAnchor),
       selectionButton.heightAnchor.constraint(equalToConstant: 28),
+
+      sortButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+      sortButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+      sortButton.widthAnchor.constraint(equalToConstant: 28),
+      sortButton.heightAnchor.constraint(equalToConstant: 28),
+      countLabel.trailingAnchor.constraint(lessThanOrEqualTo: selectionButton.leadingAnchor, constant: -8),
     ])
   }
 
@@ -3277,17 +3569,29 @@ final class NativeGallerySectionHeaderView: UICollectionReusableView {
   override func prepareForReuse() {
     super.prepareForReuse()
     onSelectionTapped = nil
+    onSortTapped = nil
   }
 
-  func configure(title: String, selectionTitle: String) {
-    titleLabel.text = title
+  func configure(dateTitle: String, countTitle: String, selectionTitle: String, sortTitle: String) {
+    titleLabel.text = dateTitle
+    countLabel.text = countTitle
     selectionButton.configuration?.attributedTitle = AttributedString(selectionTitle, attributes: AttributeContainer([
       .font: UIFont.systemFont(ofSize: 12, weight: .bold)
     ]))
+    let isCollapsed = sortTitle == "▲"
+    let chevronName = isCollapsed ? "chevron.right" : "chevron.down"
+    sortButton.configuration?.image = UIImage(
+      systemName: chevronName,
+      withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .medium)
+    )
   }
 
   @objc private func selectionTapped() {
     onSelectionTapped?()
+  }
+
+  @objc private func sortTapped() {
+    onSortTapped?()
   }
 }
 
@@ -3585,9 +3889,9 @@ final class NativeGalleryGridCell: UICollectionViewCell {
 
   private func canSelectForDownload(_ state: CameraVendorDownloadState) -> Bool {
     switch state {
-    case .idle, .failed:
+    case .idle, .failed, .saved:
       return true
-    case .queued, .downloading, .saved:
+    case .queued, .downloading:
       return false
     }
   }

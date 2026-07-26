@@ -923,10 +923,15 @@ final class NativePairedCameraCard: UIView {
   private let presence: NativeHomeRememberedCameraPresence
   private let primaryActionTitle: String
   private let showsDisconnectAction: Bool
+  private let quickDownloadSummary: String
+  private let onQuickDownload: () -> Void
+  private let onQuickDownloadSettings: () -> Void
   private let onConnect: () -> Void
   private let onDisconnect: () -> Void
   private let onForget: () -> Void
   private let contentView = UIView()
+  private let quickDownloadButton = UIButton(type: .system)
+  private let quickDownloadSettingsButton = UIButton(type: .system)
   private let connectButton = UIButton(type: .system)
   private let disconnectButton = UIButton(type: .system)
   private let deleteButton = UIButton(type: .system)
@@ -937,6 +942,9 @@ final class NativePairedCameraCard: UIView {
     presence: NativeHomeRememberedCameraPresence,
     primaryActionTitle: String,
     showsDisconnectAction: Bool,
+    quickDownloadSummary: String,
+    onQuickDownload: @escaping () -> Void,
+    onQuickDownloadSettings: @escaping () -> Void,
     onConnect: @escaping () -> Void,
     onDisconnect: @escaping () -> Void,
     onForget: @escaping () -> Void
@@ -945,6 +953,9 @@ final class NativePairedCameraCard: UIView {
     self.presence = presence
     self.primaryActionTitle = primaryActionTitle
     self.showsDisconnectAction = showsDisconnectAction
+    self.quickDownloadSummary = quickDownloadSummary
+    self.onQuickDownload = onQuickDownload
+    self.onQuickDownloadSettings = onQuickDownloadSettings
     self.onConnect = onConnect
     self.onDisconnect = onDisconnect
     self.onForget = onForget
@@ -1023,16 +1034,48 @@ final class NativePairedCameraCard: UIView {
     detailLabel.adjustsFontSizeToFitWidth = true
     detailLabel.minimumScaleFactor = 0.82
 
+    quickDownloadButton.translatesAutoresizingMaskIntoConstraints = false
+    quickDownloadButton.configuration = primaryActionConfiguration(
+      title: "快速下载",
+      symbolName: "bolt.fill"
+    )
+    quickDownloadButton.accessibilityLabel = "快速下载"
+    quickDownloadButton.accessibilityHint = quickDownloadSummary
+    quickDownloadButton.addTarget(self, action: #selector(quickDownloadTapped), for: .touchUpInside)
+
+    quickDownloadSettingsButton.translatesAutoresizingMaskIntoConstraints = false
+    quickDownloadSettingsButton.configuration = .plain()
+    quickDownloadSettingsButton.configuration?.title = quickDownloadSummary
+    quickDownloadSettingsButton.configuration?.attributedTitle = AttributedString(
+      quickDownloadSummary,
+      attributes: AttributeContainer([.font: UIFont.systemFont(ofSize: 12, weight: .semibold)])
+    )
+    quickDownloadSettingsButton.configuration?.image = UIImage(
+      systemName: "slider.horizontal.3",
+      withConfiguration: UIImage.SymbolConfiguration(pointSize: 10, weight: .semibold)
+    )
+    quickDownloadSettingsButton.configuration?.imagePlacement = .leading
+    quickDownloadSettingsButton.configuration?.imagePadding = 4
+    quickDownloadSettingsButton.configuration?.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0)
+    quickDownloadSettingsButton.configuration?.baseForegroundColor = NativeLuxuryTheme.accent
+    quickDownloadSettingsButton.configuration?.titleAlignment = .leading
+    quickDownloadSettingsButton.contentHorizontalAlignment = .leading
+    quickDownloadSettingsButton.titleLabel?.font = .systemFont(ofSize: 12, weight: .semibold)
+    quickDownloadSettingsButton.titleLabel?.lineBreakMode = .byTruncatingTail
+    quickDownloadSettingsButton.titleLabel?.numberOfLines = 1
+    quickDownloadSettingsButton.accessibilityLabel = "设置快速下载参数"
+    quickDownloadSettingsButton.addTarget(
+      self,
+      action: #selector(quickDownloadSettingsTapped),
+      for: .touchUpInside
+    )
+
     connectButton.translatesAutoresizingMaskIntoConstraints = false
-    connectButton.configuration = .filled()
-    connectButton.configuration?.cornerStyle = .capsule
-    connectButton.configuration?.baseBackgroundColor = NativeLuxuryTheme.ink
-    connectButton.configuration?.baseForegroundColor = NativeLuxuryTheme.cardBackground
-    connectButton.configuration?.image = UIImage(systemName: "bolt.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .bold))
-    connectButton.configuration?.imagePadding = 5
-    connectButton.configuration?.attributedTitle = AttributedString(primaryActionTitle, attributes: AttributeContainer([
-      .font: UIFont.systemFont(ofSize: 13, weight: .bold)
-    ]))
+    connectButton.configuration = primaryActionConfiguration(
+      title: primaryActionTitle,
+      symbolName: "photo.on.rectangle"
+    )
+    connectButton.accessibilityLabel = primaryActionTitle
     connectButton.addTarget(self, action: #selector(connectTapped), for: .touchUpInside)
 
     disconnectButton.translatesAutoresizingMaskIntoConstraints = false
@@ -1084,11 +1127,24 @@ final class NativePairedCameraCard: UIView {
     deleteButton.alpha = 0
     deleteButton.isHidden = true
 
-    let actionStack = UIStackView(arrangedSubviews: [connectButton, disconnectButton])
+    let quickDownloadColumn = UIStackView(arrangedSubviews: [quickDownloadButton, quickDownloadSettingsButton])
+    quickDownloadColumn.translatesAutoresizingMaskIntoConstraints = false
+    quickDownloadColumn.axis = .vertical
+    quickDownloadColumn.alignment = .fill
+    quickDownloadColumn.spacing = 10
+
+    let primaryActionStack = UIStackView(arrangedSubviews: [quickDownloadColumn, connectButton])
+    primaryActionStack.translatesAutoresizingMaskIntoConstraints = false
+    primaryActionStack.axis = .horizontal
+    primaryActionStack.alignment = .top
+    primaryActionStack.distribution = .fillEqually
+    primaryActionStack.spacing = 10
+
+    let actionStack = UIStackView(arrangedSubviews: [primaryActionStack, disconnectButton])
     actionStack.translatesAutoresizingMaskIntoConstraints = false
     actionStack.axis = .vertical
     actionStack.alignment = .fill
-    actionStack.distribution = .fillEqually
+    actionStack.distribution = .fill
     actionStack.spacing = 10
 
     addSubview(deleteButton)
@@ -1161,7 +1217,7 @@ final class NativePairedCameraCard: UIView {
 
       nameLabel.leadingAnchor.constraint(equalTo: badge.trailingAnchor, constant: 14),
       nameLabel.topAnchor.constraint(equalTo: seriesLabel.bottomAnchor, constant: 6),
-      nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: actionStack.leadingAnchor, constant: -14),
+      nameLabel.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -18),
 
       detailLabel.leadingAnchor.constraint(equalTo: nameLabel.leadingAnchor),
       detailLabel.topAnchor.constraint(equalTo: nameLabel.bottomAnchor, constant: 5),
@@ -1184,12 +1240,41 @@ final class NativePairedCameraCard: UIView {
       statusDetail.trailingAnchor.constraint(equalTo: statusLabel.trailingAnchor),
       statusDetail.bottomAnchor.constraint(equalTo: statusPanel.bottomAnchor, constant: -12),
 
-      actionStack.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+      actionStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 17),
+      actionStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -17),
       actionStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16),
-      actionStack.widthAnchor.constraint(greaterThanOrEqualToConstant: NativeHomePairedCameraCardLayoutPolicy.primaryGalleryActionMinimumWidth),
-      connectButton.heightAnchor.constraint(equalToConstant: 36),
+      quickDownloadButton.heightAnchor.constraint(equalToConstant: 44),
+      quickDownloadSettingsButton.heightAnchor.constraint(equalToConstant: 20),
+      connectButton.heightAnchor.constraint(equalToConstant: 44),
       disconnectButton.heightAnchor.constraint(equalToConstant: 36),
     ])
+  }
+
+  private func primaryActionConfiguration(
+    title: String,
+    symbolName: String
+  ) -> UIButton.Configuration {
+    var configuration = UIButton.Configuration.filled()
+    configuration.cornerStyle = .capsule
+    configuration.baseBackgroundColor = NativeLuxuryTheme.ink
+    configuration.baseForegroundColor = NativeLuxuryTheme.cardBackground
+    configuration.image = UIImage(
+      systemName: symbolName,
+      withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .bold)
+    )
+    configuration.imagePadding = 5
+    configuration.attributedTitle = AttributedString(title, attributes: AttributeContainer([
+      .font: UIFont.systemFont(ofSize: 13, weight: .bold)
+    ]))
+    return configuration
+  }
+
+  @objc private func quickDownloadTapped() {
+    onQuickDownload()
+  }
+
+  @objc private func quickDownloadSettingsTapped() {
+    onQuickDownloadSettings()
   }
 
   @objc private func connectTapped() {

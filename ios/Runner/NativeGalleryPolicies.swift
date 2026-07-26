@@ -323,7 +323,7 @@ enum NativeGalleryGridLayoutPolicy {
 
 enum NativeGalleryAndroidParityGridPolicy {
   static let horizontalInset: CGFloat = 0
-  static let sectionHeaderHeight: CGFloat = 44
+  static let sectionHeaderHeight: CGFloat = 40
 }
 
 enum NativeGalleryChromeCopy {
@@ -418,7 +418,7 @@ enum NativeGalleryTopChromePolicy {
   static let horizontalInset: CGFloat = 18
   static let topInset: CGFloat = 0
   static let bottomInset: CGFloat = 0
-  static let actionRowHeight: CGFloat = 42
+  static let actionRowHeight: CGFloat = 36
   static let actionSpacing: CGFloat = 8
   static let statusSpacing: CGFloat = 0
   static let cornerRadius: CGFloat = 24
@@ -427,7 +427,7 @@ enum NativeGalleryTopChromePolicy {
 enum NativeGalleryAndroidParityLayoutPolicy {
   static let filterToGridSpacing: CGFloat = 2
   static let filterHeaderHeight: CGFloat = 42
-  static let filterTopSpacing: CGFloat = 6
+  static let filterTopSpacing: CGFloat = 0
   static let shouldShowPinchHintBubble = false
   static let bottomBarHeight: CGFloat = 52
   static let bottomBarBottomInset: CGFloat = 10
@@ -781,6 +781,15 @@ struct NativeGalleryDaySection: Equatable {
 }
 
 enum NativeGallerySectionPolicy {
+  static func dateTitle(
+    for day: Date?,
+    now: Date = Date(),
+    calendar: Calendar = Calendar(identifier: .gregorian)
+  ) -> String {
+    guard let day else { return "未知日期" }
+    return dayLabel(day, now: now, calendar: calendar)
+  }
+
   static func shouldShowDateSections(_ items: [CameraVendorGalleryItem]) -> Bool {
     items.contains { NativeGalleryFilterPolicy.parsedCaptureDate($0.captureDate) != nil }
   }
@@ -1434,9 +1443,9 @@ enum NativeGalleryLoadingPhrase {
 enum NativeGalleryDownloadSelectionPolicy {
   static func canSelect(downloadState: CameraVendorDownloadState) -> Bool {
     switch downloadState {
-    case .idle, .failed:
+    case .idle, .failed, .saved:
       return true
-    case .queued, .downloading, .saved:
+    case .queued, .downloading:
       return false
     }
   }

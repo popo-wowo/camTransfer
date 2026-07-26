@@ -5,6 +5,18 @@ enum NativeGalleryBrowseMode {
   case highDefinition
 }
 
+enum NativeGalleryHDChromePolicy {
+  static let usesGalleryBackground = true
+  static let dateFormat = "yyyy-MM-dd"
+  static let showsLoadCountBeforeDate = true
+}
+
+enum NativeGalleryHDPreviewFailureLogPolicy {
+  static func message(handle: Int, errorDescription: String) -> String {
+    "[OBS] HD_PREVIEW_IMAGE_FAILED handle=0x\(String(format: "%08X", handle)) error=\(errorDescription)"
+  }
+}
+
 struct NativeGalleryHDPreviewItem: Equatable {
   let displayItem: CameraVendorGalleryItem
   let rawSidecar: CameraVendorGalleryItem?
@@ -136,6 +148,7 @@ final class NativeGalleryHDPreviewCoordinator {
   }
 
   func updateVisibleHandles(_ handles: [Int]) {
+    guard handles != visibleHandles else { return }
     visibleHandles = handles
     startLoadingIfNeeded()
   }
@@ -263,7 +276,7 @@ enum NativeGalleryHDPreviewSessionPolicy {
     calendar: Calendar = .current
   ) -> [Date] {
     let dates = items.compactMap { item -> Date? in
-      guard isDisplayCandidate(item),
+      guard !isVideoCandidate(item),
             let captureDate = NativeGalleryFilterPolicy.parsedCaptureDate(item.captureDate) else {
         return nil
       }
@@ -295,10 +308,19 @@ enum NativeGalleryHDPreviewSessionPolicy {
       }
       return calendar.isDate(captureDate, inSameDayAs: activeDate)
     }
-    let rawCandidates = dayItems.filter(isRawCandidate)
+    let ambiguousItems = ambiguousExtendedStillItems(dayItems)
+    var ambiguousHandles = Set<Int>()
+    for item in ambiguousItems {
+      ambiguousHandles.insert(item.displayItem.handle)
+      if let rawSidecar = item.rawSidecar {
+        ambiguousHandles.insert(rawSidecar.handle)
+      }
+    }
+    let resolvedDayItems = dayItems.filter { !ambiguousHandles.contains($0.handle) }
+    let rawCandidates = resolvedDayItems.filter(isRawCandidate)
     var usedRawHandles = Set<Int>()
 
-    let previewItems = dayItems.filter(isDisplayCandidate).map { displayItem in
+    let resolvedPreviewItems = resolvedDayItems.filter(isDisplayCandidate).map { displayItem in
       let sidecar = rawSidecar(
         for: displayItem,
         candidates: rawCandidates,
@@ -312,7 +334,11 @@ enum NativeGalleryHDPreviewSessionPolicy {
 
     return NativeGalleryHDPreviewSnapshot(
       activeDate: calendar.startOfDay(for: activeDate),
-      items: previewItems
+      items: (ambiguousItems + resolvedPreviewItems).sorted { lhs, rhs in
+        let lDate = NativeGalleryFilterPolicy.parsedCaptureDate(lhs.displayItem.captureDate) ?? .distantPast
+        let rDate = NativeGalleryFilterPolicy.parsedCaptureDate(rhs.displayItem.captureDate) ?? .distantPast
+        return lDate > rDate
+      }
     )
   }
 
@@ -374,7 +400,7 @@ enum NativeGalleryHDPreviewSessionPolicy {
     if ["JPG", "JPEG", "HEIF", "HEIC", "HIF"].contains(label) {
       return true
     }
-    if !item.formatHints.isDisjoint(with: [.jpg, .heif]) {
+    if !item.formatHints.isDisjoint(with: [.jpg, .heif, .extendedStillCandidate]) {
       return true
     }
     let filename = item.filename.uppercased()
@@ -388,6 +414,75 @@ enum NativeGalleryHDPreviewSessionPolicy {
     }
     let filename = item.filename.uppercased()
     return filename.hasSuffix(".RAW") || filename.hasSuffix(".RAF")
+  }
+
+  private static func isVideoCandidate(_ item: CameraVendorGalleryItem) -> Bool {
+    let label = normalized(item.formatLabel)
+    if ["VIDEO", "MOV", "MP4"].contains(label) || item.formatHints.contains(.video) {
+      return true
+    }
+    let filename = item.filename.uppercased()
+    return filename.hasSuffix(".MOV") || filename.hasSuffix(".MP4")
+  }
+
+  private static func ambiguousExtendedStillItems(
+    _ items: [CameraVendorGalleryItem]
+  ) -> [NativeGalleryHDPreviewItem] {
+    let ambiguous = items
+      .filter(isAmbiguousExtendedStillPlaceholder)
+      .sorted { $0.handle > $1.handle }
+    guard !ambiguous.isEmpty else { return [] }
+    let byHandle = Dictionary(uniqueKeysWithValues: ambiguous.map { ($0.handle, $0) })
+    var usedHandles = Set<Int>()
+    var result: [NativeGalleryHDPreviewItem] = []
+    for item in ambiguous {
+      guard usedHandles.insert(item.handle).inserted else { continue }
+      let rawSidecar = byHandle[item.handle - 1].map(asAmbiguousRawCandidate)
+      if let rawSidecar {
+        usedHandles.insert(rawSidecar.handle)
+      }
+      result.append(NativeGalleryHDPreviewItem(
+        displayItem: asAmbiguousPreviewCandidate(item),
+        rawSidecar: rawSidecar
+      ))
+    }
+    return result
+  }
+
+  private static func isAmbiguousExtendedStillPlaceholder(
+    _ item: CameraVendorGalleryItem
+  ) -> Bool {
+    normalized(item.formatLabel).isEmpty &&
+      item.formatHints.contains(.extendedStillCandidate)
+  }
+
+  private static func asAmbiguousPreviewCandidate(
+    _ item: CameraVendorGalleryItem
+  ) -> CameraVendorGalleryItem {
+    replacingFormatHints(of: item, with: [.heif])
+  }
+
+  private static func asAmbiguousRawCandidate(
+    _ item: CameraVendorGalleryItem
+  ) -> CameraVendorGalleryItem {
+    replacingFormatHints(of: item, with: [.raw])
+  }
+
+  private static func replacingFormatHints(
+    of item: CameraVendorGalleryItem,
+    with hints: Set<CameraVendorGalleryFormatHint>
+  ) -> CameraVendorGalleryItem {
+    CameraVendorGalleryItem(
+      handle: item.handle,
+      filename: item.filename,
+      formatLabel: item.formatLabel,
+      captureDate: item.captureDate,
+      byteSizeText: item.byteSizeText,
+      compressedSize: item.compressedSize,
+      orientation: item.orientation,
+      formatHints: hints,
+      thumbnailData: item.thumbnailData
+    )
   }
 
   private static func normalized(_ value: String) -> String {

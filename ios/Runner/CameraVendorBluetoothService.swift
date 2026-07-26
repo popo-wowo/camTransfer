@@ -375,6 +375,7 @@ enum CameraVendorJpegDataPolicy {
 }
 
 enum CameraVendorPreviewImageValidationPolicy {
+  private static let minimumDecodeableIncompleteJpegBytes = 64 * 1_024
   private static let heifBrands: Set<Data> = [
     Data("heic".utf8),
     Data("heix".utf8),
@@ -388,7 +389,8 @@ enum CameraVendorPreviewImageValidationPolicy {
   ]
 
   static func isValidPreviewImageData(_ data: Data) -> Bool {
-    isLikelyImageData(data) && !shouldRejectIncompletePartialPreview(data)
+    guard isLikelyImageData(data) else { return false }
+    return !shouldRejectIncompletePartialPreview(data) || data.count >= minimumDecodeableIncompleteJpegBytes
   }
 
   static func shouldRejectIncompletePartialPreview(_ data: Data) -> Bool {
@@ -1292,6 +1294,7 @@ enum CameraVendorGalleryFormatHint: String, Equatable, Hashable {
   case heif
   case raw
   case video
+  case extendedStillCandidate
 }
 
 enum CameraVendorGalleryFormatResolutionPolicy {
@@ -1342,7 +1345,8 @@ struct CameraVendorGalleryItem: Equatable {
 enum CameraVendorCatalogPlaceholderPolicy {
   static func placeholderItems(
     from handles: [UInt32],
-    dateGroups: [CameraVendorSpecifiedObjectDateGroup] = []
+    dateGroups: [CameraVendorSpecifiedObjectDateGroup] = [],
+    formatHintsByHandle: [Int: Set<CameraVendorGalleryFormatHint>] = [:]
   ) -> [CameraVendorGalleryItem] {
     let orderedHandles = orderedUniqueHandles(from: handles)
     let datesByHandle = captureDatesByHandle(
@@ -1355,9 +1359,21 @@ enum CameraVendorCatalogPlaceholderPolicy {
         filename: String(format: "0x%08X", handle),
         formatLabel: "",
         captureDate: datesByHandle[handle] ?? "",
-        byteSizeText: ""
+        byteSizeText: "",
+        formatHints: formatHintsByHandle[Int(handle), default: []]
       )
     }
+  }
+
+  static func expandedStillFormatHints(
+    baselineHandles: [UInt32],
+    expandedStillHandles: [UInt32]
+  ) -> [Int: Set<CameraVendorGalleryFormatHint>] {
+    let baseline = Set(baselineHandles)
+    return Dictionary(uniqueKeysWithValues: expandedStillHandles.compactMap { handle in
+      guard !baseline.contains(handle) else { return nil }
+      return (Int(handle), Set([CameraVendorGalleryFormatHint.extendedStillCandidate]))
+    })
   }
 
   private static func orderedUniqueHandles(from handles: [UInt32]) -> [UInt32] {
