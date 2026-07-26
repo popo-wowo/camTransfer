@@ -1061,8 +1061,8 @@ final class NativePairedCameraCard: UIView {
     quickDownloadSettingsButton.configuration?.titleAlignment = .leading
     quickDownloadSettingsButton.contentHorizontalAlignment = .leading
     quickDownloadSettingsButton.titleLabel?.font = .systemFont(ofSize: 12, weight: .semibold)
-    quickDownloadSettingsButton.titleLabel?.lineBreakMode = .byTruncatingTail
-    quickDownloadSettingsButton.titleLabel?.numberOfLines = 1
+    quickDownloadSettingsButton.titleLabel?.lineBreakMode = .byWordWrapping
+    quickDownloadSettingsButton.titleLabel?.numberOfLines = 0
     quickDownloadSettingsButton.accessibilityLabel = "设置快速下载参数"
     quickDownloadSettingsButton.addTarget(
       self,
@@ -1244,7 +1244,7 @@ final class NativePairedCameraCard: UIView {
       actionStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -17),
       actionStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -16),
       quickDownloadButton.heightAnchor.constraint(equalToConstant: 44),
-      quickDownloadSettingsButton.heightAnchor.constraint(equalToConstant: 20),
+      quickDownloadSettingsButton.heightAnchor.constraint(greaterThanOrEqualToConstant: 20),
       connectButton.heightAnchor.constraint(equalToConstant: 44),
       disconnectButton.heightAnchor.constraint(equalToConstant: 36),
     ])

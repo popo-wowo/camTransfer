@@ -138,32 +138,36 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
   private var hdRenderedDisplayHandles: [Int] = []
   private var hdActiveDate: Date?
   private var hdTransitionTask: Task<Void, Never>?
-  private lazy var hdCoordinator = NativeGalleryHDPreviewCoordinator(
-    cache: hdPreviewCache,
-    suspendChildWork: { [weak self] in
-      await self?.runtime.suspendGalleryChildWorkForHighDefinitionPreview()
-    },
-    resumeChildWork: { [weak self] in
-      await self?.runtime.resumeGalleryChildWorkAfterHighDefinitionPreview()
-    },
-    fetchPreview: { [weak self] handle in
-      guard let self else { throw CancellationError() }
-      do {
-        return try await self.runtime.requestPreviewImageWithInfo(for: handle)
-      } catch {
-        self.appendDiagnostic(
-          NativeGalleryHDPreviewFailureLogPolicy.message(
-            handle: handle,
-            errorDescription: error.localizedDescription
+  private var hdCoordinatorInitialized = false
+  private lazy var hdCoordinator: NativeGalleryHDPreviewCoordinator = {
+    hdCoordinatorInitialized = true
+    return NativeGalleryHDPreviewCoordinator(
+      cache: hdPreviewCache,
+      suspendChildWork: { [weak self] in
+        await self?.runtime.suspendGalleryChildWorkForHighDefinitionPreview()
+      },
+      resumeChildWork: { [weak self] in
+        await self?.runtime.resumeGalleryChildWorkAfterHighDefinitionPreview()
+      },
+      fetchPreview: { [weak self] handle in
+        guard let self else { throw CancellationError() }
+        do {
+          return try await self.runtime.requestPreviewImageWithInfo(for: handle)
+        } catch {
+          self.appendDiagnostic(
+            NativeGalleryHDPreviewFailureLogPolicy.message(
+              handle: handle,
+              errorDescription: error.localizedDescription
+            )
           )
-        )
-        throw error
+          throw error
+        }
+      },
+      publish: { [weak self] state in
+        self?.applyHDPreviewState(state)
       }
-    },
-    publish: { [weak self] state in
-      self?.applyHDPreviewState(state)
-    }
-  )
+    )
+  }()
 
   private let browseModeControl = NativeGalleryModeControl()
 
@@ -652,12 +656,12 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     let visibleThumbnailRefreshTask = visibleThumbnailRefreshTask
     let thumbnailRehydrateTasks = thumbnailRehydrateTasks
     let hdTransitionTask = hdTransitionTask
-    let hdCoordinator = hdCoordinator
+    let hdCoordinator: NativeGalleryHDPreviewCoordinator? = hdCoordinatorInitialized ? self.hdCoordinator : nil
     let hdPreviewCache = hdPreviewCache
     Task { @MainActor in
       visibleThumbnailRefreshTask?.cancel()
       await hdTransitionTask?.value
-      await hdCoordinator.stop(resumeCatalogChildWork: false)
+      await hdCoordinator?.stop(resumeCatalogChildWork: false)
       hdPreviewCache.reset()
       thumbnailRehydrateTasks.values.forEach { $0.cancel() }
       if let observerID {
@@ -1185,7 +1189,11 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       return
     }
     dragSelectionLastEndHandle = item.handle
-    let selectableHandles = Set(runtime.downloadableHandles(from: catalogPresentation.items.map(\.handle)))
+    let selectableHandles = Set(
+      catalogPresentation.items.map(\.handle).filter {
+        NativeGalleryDownloadSelectionPolicy.canSelect(downloadState: runtime.downloadState(for: $0))
+      }
+    )
     let updated = NativeGalleryDragSelectionPolicy.updatedRangeSelection(
       selectedHandles: selectedHandles,
       orderedHandles: catalogPresentation.items.map(\.handle),
@@ -1346,9 +1354,11 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       hdTopChipRow.isHidden = true
       enqueueHDTransition { [weak self] in
         await self?.hdCoordinator.stop(resumeCatalogChildWork: true)
+        await MainActor.run { [weak self] in
+          self?.scheduleVisibleThumbnailRefresh(after: 0.05)
+        }
       }
       view.backgroundColor = NativeLuxuryTheme.background
-      scheduleVisibleThumbnailRefresh(after: 0.05)
     case .highDefinition:
       isFilterPanelExpanded = false
       updateFilterPanelLayout(animated: false)
@@ -1935,15 +1945,22 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
         }
       }
     }
-    let downloadableHandles = Set(runtime.downloadableHandles(
-      from: candidateRequests.map { Int($0.handle) }
-    ))
+    let downloadableHandles = Set(
+      candidateRequests.map { Int($0.handle) }.filter {
+        switch runtime.downloadState(for: $0) {
+        case .idle, .failed, .saved:
+          return true
+        case .queued, .downloading:
+          return false
+        }
+      }
+    )
     let requestsToDownload = candidateRequests.filter {
       downloadableHandles.contains(Int($0.handle))
     }
     let handlesToDownload = requestsToDownload.map { Int($0.handle) }
     guard !handlesToDownload.isEmpty else {
-      showToast("已下载过，无需重复下载")
+      showToast("选中的照片正在下载中")
       return
     }
     let itemsToDownload = catalogPresentation.items.filter { handlesToDownload.contains($0.handle) }

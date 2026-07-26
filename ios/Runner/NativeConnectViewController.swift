@@ -1935,44 +1935,18 @@ final class NativeConnectViewController: UIViewController {
 
     let items = catalog.items
     let savedHandles = cameraSessionRuntime.savedDownloadHandles()
-
-    // For HEIF format rule, we need the HEIF handle set (from subtractBaseline).
-    // Use the catalog's full handle set minus the baseline (ALL directory = non-HEIF).
-    // The initial catalog was loaded via D604=2 which returns ALL+HEIF (~2427).
-    // We need to identify which handles are HEIF-only.
-    // For now, if format requires HEIF, fetch the baseline and subtract.
-    let needsHeifHandles = [.heif, .jpgAndHeif].contains(autoDownloadRule.format)
-
-    if needsHeifHandles {
-      // Async fetch the baseline to compute HEIF handles
-      Task { @MainActor [weak self] in
-        guard let self else { return }
-        do {
-          let baselineSnapshot = try await self.cameraSessionRuntime.fetchBaselineCatalog()
-          let baselineSet = Set(baselineSnapshot.orderedHandles.map { Int($0) })
-          let heifHandles = Set(items.map(\.handle)).subtracting(baselineSet)
-          CameraVendorFileLogger.log("[AUTO_DOWNLOAD] heifHandles=\(heifHandles.count) baseline=\(baselineSet.count)")
-          self.executeAutoDownload(items: items, savedHandles: savedHandles, heifHandles: heifHandles)
-        } catch {
-          CameraVendorFileLogger.log("[AUTO_DOWNLOAD] baseline fetch failed: \(error.localizedDescription)")
-          self.finishAutoDownloadWithoutNavigation(status: "自动下载失败：无法获取格式信息")
-        }
-      }
-    } else {
-      executeAutoDownload(items: items, savedHandles: savedHandles, heifHandles: [])
-    }
+    executeAutoDownload(items: items, savedHandles: savedHandles)
   }
 
   private func executeAutoDownload(
     items: [CameraVendorGalleryItem],
-    savedHandles: Set<Int>,
-    heifHandles: Set<Int>
+    savedHandles: Set<Int>
   ) {
+    // Use local filtering — formatLabel and filename are populated from ObjectInfo
     let matchedHandles = CameraAutoDownloadRuleFilter.matchingHandles(
       items: items,
       rule: autoDownloadRule,
-      savedHandles: savedHandles,
-      heifHandles: heifHandles
+      savedHandles: savedHandles
     )
 
     CameraVendorFileLogger.log(
@@ -2063,11 +2037,17 @@ final class NativeConnectViewController: UIViewController {
 
   /// Wait for catalog to become ready, then execute auto-download.
   /// Registers a presentation observer and fires startAutoDownload() once
-  /// the catalog state transitions to .ready with items.
+  /// the catalog transitions to .ready with items.
   private func waitForCatalogThenAutoDownload() {
     cancelAutoDownloadCatalogObserver()
+    var hasSkippedInitialCallback = false
     autoDownloadCatalogObserverID = cameraSessionRuntime.observe { [weak self] presentation in
       guard let self else { return }
+      // Skip the immediate callback from observe() to avoid re-entry
+      guard hasSkippedInitialCallback else {
+        hasSkippedInitialCallback = true
+        return
+      }
       switch presentation.catalog.state {
       case .ready:
         guard !presentation.catalog.items.isEmpty else { return }
