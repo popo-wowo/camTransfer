@@ -919,6 +919,7 @@ final class NativeConnectViewController: UIViewController {
   private let wiredImportProbeService = WiredCameraImportService()
   private var autoDownloadRule = CameraAutoDownloadRuleStore.load()
   private var isAutoDownloadPending = false
+  private var autoDownloadCatalogObserverID: UUID?
   private var cameras: [IOSCameraDiscoveredCamera] = []
   private var wiredImportDevices: [WiredCameraImportDevice] = []
   private weak var scanController: NativeScanViewController?
@@ -1002,6 +1003,7 @@ final class NativeConnectViewController: UIViewController {
 
   deinit {
     NotificationCenter.default.removeObserver(self)
+    cancelAutoDownloadCatalogObserver()
     galleryEntryTask?.cancel()
     wiredImportProbeService.stop()
   }
@@ -1688,6 +1690,7 @@ final class NativeConnectViewController: UIViewController {
       "[HOME_CONNECT_FLOW_COMMAND] reason=\(reason) workerActive=\(cameraSessionRuntime.isConnectionWorkerActive) " +
       "rememberedEntry=\(isEnteringGalleryFromRememberedCamera)"
     )
+    cancelAutoDownloadCatalogObserver()
     pairingProbeTask?.cancel()
     pairingProbeTask = nil
     cameraSessionRuntime.cancelPairingProbe(reason: reason)
@@ -1913,7 +1916,8 @@ final class NativeConnectViewController: UIViewController {
 
   private func startAutoDownload() {
     guard cameraSessionRuntime.galleryPresentationPayload != nil else {
-      finishRememberedGalleryEntryIfPossible()
+      CameraVendorFileLogger.log("[AUTO_DOWNLOAD] no gallery payload, aborting auto-download")
+      finishAutoDownloadWithoutNavigation(status: "自动下载失败：连接异常")
       return
     }
     let catalog = cameraSessionRuntime.presentation.catalog
@@ -1922,10 +1926,10 @@ final class NativeConnectViewController: UIViewController {
       "catalogState=\(catalog.state) items=\(catalog.items.count)"
     )
 
-    // If catalog isn't ready yet (still loading), fall back to gallery and wait
+    // If catalog isn't ready yet, wait for it to become ready
     guard case .ready = catalog.state, !catalog.items.isEmpty else {
-      CameraVendorFileLogger.log("[AUTO_DOWNLOAD] catalog not ready, falling back to gallery")
-      finishRememberedGalleryEntryIfPossible()
+      CameraVendorFileLogger.log("[AUTO_DOWNLOAD] catalog not ready, waiting for catalog...")
+      waitForCatalogThenAutoDownload()
       return
     }
 
@@ -1951,7 +1955,7 @@ final class NativeConnectViewController: UIViewController {
           self.executeAutoDownload(items: items, savedHandles: savedHandles, heifHandles: heifHandles)
         } catch {
           CameraVendorFileLogger.log("[AUTO_DOWNLOAD] baseline fetch failed: \(error.localizedDescription)")
-          self.finishRememberedGalleryEntryIfPossible()
+          self.finishAutoDownloadWithoutNavigation(status: "自动下载失败：无法获取格式信息")
         }
       }
     } else {
@@ -1977,12 +1981,15 @@ final class NativeConnectViewController: UIViewController {
     )
 
     guard !matchedHandles.isEmpty else {
-      latestServiceStatus = "没有匹配的新照片"
-      statusBadgeLabel.text = latestServiceStatus
-      spinner.stopAnimating()
-      isEnteringGalleryFromRememberedCamera = false
-      hideConnectingOverlay()
-      finishRememberedGalleryEntryIfPossible()
+      CameraVendorFileLogger.log("[AUTO_DOWNLOAD] no matching photos for rule")
+      finishAutoDownloadWithoutNavigation(status: "没有匹配的新照片")
+      let alert = UIAlertController(
+        title: "没有匹配的新照片",
+        message: "当前规则「\(autoDownloadRule.summaryText)」没有匹配到需要下载的照片。",
+        preferredStyle: .alert
+      )
+      alert.addAction(UIAlertAction(title: "好", style: .default))
+      present(alert, animated: true)
       return
     }
 
@@ -2039,6 +2046,46 @@ final class NativeConnectViewController: UIViewController {
     hideConnectingOverlay()
     dismissPairingUIAfterSuccess(event: .didCompleteHandshake) {
       pushDownloadCenter()
+    }
+  }
+
+  /// Auto-download determined there is nothing to download (or failed to start).
+  /// Stay on the connect page — do NOT push gallery or download center.
+  private func finishAutoDownloadWithoutNavigation(status: String) {
+    cancelAutoDownloadCatalogObserver()
+    latestServiceStatus = status
+    statusBadgeLabel.text = status
+    spinner.stopAnimating()
+    isEnteringGalleryFromRememberedCamera = false
+    hideConnectingOverlay()
+    updateRememberedCameraCard()
+  }
+
+  /// Wait for catalog to become ready, then execute auto-download.
+  /// Registers a presentation observer and fires startAutoDownload() once
+  /// the catalog state transitions to .ready with items.
+  private func waitForCatalogThenAutoDownload() {
+    cancelAutoDownloadCatalogObserver()
+    autoDownloadCatalogObserverID = cameraSessionRuntime.observe { [weak self] presentation in
+      guard let self else { return }
+      switch presentation.catalog.state {
+      case .ready:
+        guard !presentation.catalog.items.isEmpty else { return }
+        self.cancelAutoDownloadCatalogObserver()
+        self.startAutoDownload()
+      case .failed, .transportLost, .unsupported:
+        CameraVendorFileLogger.log("[AUTO_DOWNLOAD] catalog failed while waiting, aborting")
+        self.finishAutoDownloadWithoutNavigation(status: "自动下载失败：相册加载失败")
+      case .loading, .unavailable:
+        break
+      }
+    }
+  }
+
+  private func cancelAutoDownloadCatalogObserver() {
+    if let id = autoDownloadCatalogObserverID {
+      cameraSessionRuntime.removeObserver(id)
+      autoDownloadCatalogObserverID = nil
     }
   }
 
@@ -2327,12 +2374,23 @@ final class NativeConnectViewController: UIViewController {
         self.updateRememberedCameraCard()
         DispatchQueue.main.async { [weak self] in
           guard let self else { return }
-          self.isAutoDownloadPending = true
-          self.connectRememberedCamera(record)
+          self.beginQuickDownload(record: record)
         }
       }
       navigationController?.pushViewController(controller, animated: true)
     case .start:
+      beginQuickDownload(record: record)
+    }
+  }
+
+  /// If session is already active for this camera, execute auto-download
+  /// immediately without reconnecting. Otherwise start a new connection.
+  private func beginQuickDownload(record: IOSCameraRememberedCameraRecord) {
+    let isActiveSession = cameraSessionRuntime.activeCameraIdentity?.peripheralID == record.peripheralID
+    if isActiveSession, cameraSessionRuntime.galleryPresentationPayload != nil {
+      // Session still alive — run auto-download directly
+      startAutoDownload()
+    } else {
       isAutoDownloadPending = true
       connectRememberedCamera(record)
     }
