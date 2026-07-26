@@ -1838,9 +1838,6 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       isTransferActiveProvider: { [weak self] in
         self?.runtime.canCancelDownload == true
       },
-      onTerminateDownload: { [weak self] in
-        self?.requestTerminateDownloadForDownloadCenterExit(reason: "download-center-back")
-      },
       onClearDownloadCache: { [weak self] item in
         self?.clearDownloadCache(for: item)
       }
@@ -1912,13 +1909,6 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       thumbnailImageCache.removeObject(forKey: NSNumber(value: handle))
       CameraVendorFileLogger.log("[ORIENTATION_THUMBNAIL] invalidated handle=\(handle) reason=late-object-info")
     }
-  }
-
-  private func requestTerminateDownloadForDownloadCenterExit(reason: String) {
-    guard runtime.canCancelDownload else { return }
-    runtime.send(.cancelDownloadByUser)
-    appendDiagnostic("[下载] 用户终止下载；相机连接保持可用 reason=\(reason)")
-    showToast("已终止当前下载")
   }
 
   private func openDownloadCenter(for handles: [Int]) {
@@ -2017,9 +2007,6 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       isTransferActiveProvider: { [weak self] in
         self?.runtime.canCancelDownload == true
       },
-      onTerminateDownload: { [weak self] in
-        self?.requestTerminateDownloadForDownloadCenterExit(reason: "download-center-back")
-      },
       onClearDownloadCache: { [weak self] item in
         self?.clearDownloadCache(for: item)
       }
@@ -2045,9 +2032,6 @@ extension NativeGalleryViewController {
       },
       isTransferActiveProvider: { [weak self] in
         self?.runtime.canCancelDownload == true
-      },
-      onTerminateDownload: { [weak self] in
-        self?.requestTerminateDownloadForDownloadCenterExit(reason: "download-center-back")
       },
       onClearDownloadCache: { [weak self] item in
         self?.clearDownloadCache(for: item)
@@ -2757,10 +2741,11 @@ final class NativeDownloadListViewController: UIViewController {
   private let stateProvider: (Int) -> CameraVendorDownloadState
   private let progressProvider: (Int) -> String?
   private let isTransferActiveProvider: () -> Bool
-  private let onTerminateDownload: () -> Void
   private let onClearDownloadCache: (CameraVendorGalleryItem) -> Void
   var onMovedFromParent: (() -> Void)?
   private var previousNavigationBarHidden: Bool?
+  private var previousInteractivePopGestureEnabled: Bool?
+  private var isStoppingForExit = false
 
   /// Called externally when a download thumbnail is generated from the temp file.
   func setDownloadThumbnail(handle: Int, image: UIImage) {
@@ -2874,7 +2859,6 @@ final class NativeDownloadListViewController: UIViewController {
     stateProvider: @escaping (Int) -> CameraVendorDownloadState,
     progressProvider: @escaping (Int) -> String?,
     isTransferActiveProvider: @escaping () -> Bool,
-    onTerminateDownload: @escaping () -> Void,
     onClearDownloadCache: @escaping (CameraVendorGalleryItem) -> Void
   ) {
     self.runtime = runtime
@@ -2882,7 +2866,6 @@ final class NativeDownloadListViewController: UIViewController {
     self.stateProvider = stateProvider
     self.progressProvider = progressProvider
     self.isTransferActiveProvider = isTransferActiveProvider
-    self.onTerminateDownload = onTerminateDownload
     self.onClearDownloadCache = onClearDownloadCache
     super.init(nibName: nil, bundle: nil)
   }
@@ -2998,6 +2981,7 @@ final class NativeDownloadListViewController: UIViewController {
     super.viewWillAppear(animated)
     NativeLuxuryTheme.applyNavigationAppearance(to: navigationController)
     applyTopChromeNavigationState(animated: animated)
+    protectDownloadExitNavigation()
     collectionView.reloadData()
     refreshSummary()
     refreshEmptyState()
@@ -3005,6 +2989,7 @@ final class NativeDownloadListViewController: UIViewController {
 
   override func viewWillDisappear(_ animated: Bool) {
     super.viewWillDisappear(animated)
+    restoreDownloadExitNavigation()
     if isMovingFromParent || isBeingDismissed || navigationController?.isBeingDismissed == true {
       restoreTopChromeNavigationState(animated: animated)
       onMovedFromParent?()
@@ -3014,6 +2999,21 @@ final class NativeDownloadListViewController: UIViewController {
 
   override var preferredStatusBarStyle: UIStatusBarStyle {
     .darkContent
+  }
+
+  private func protectDownloadExitNavigation() {
+    guard let gesture = navigationController?.interactivePopGestureRecognizer else { return }
+    if previousInteractivePopGestureEnabled == nil {
+      previousInteractivePopGestureEnabled = gesture.isEnabled
+    }
+    gesture.isEnabled = false
+  }
+
+  private func restoreDownloadExitNavigation() {
+    guard let gesture = navigationController?.interactivePopGestureRecognizer,
+          let wasEnabled = previousInteractivePopGestureEnabled else { return }
+    gesture.isEnabled = wasEnabled
+    previousInteractivePopGestureEnabled = nil
   }
 
   private func applyTopChromeNavigationState(animated: Bool) {
@@ -3038,6 +3038,7 @@ final class NativeDownloadListViewController: UIViewController {
   }
 
   @objc private func backTapped() {
+    guard !isStoppingForExit else { return }
     guard isTransferActiveProvider() else {
       navigationController?.popViewController(animated: true)
       return
@@ -3049,15 +3050,21 @@ final class NativeDownloadListViewController: UIViewController {
     )
     alert.addAction(UIAlertAction(title: NativeDownloadCenterChrome.terminateAlertCancelTitle, style: .cancel))
     alert.addAction(UIAlertAction(title: NativeDownloadCenterChrome.terminateAlertConfirmTitle, style: .destructive) { [weak self] _ in
-      self?.hasObservedActiveTransfer = false
-      self?.onTerminateDownload()
-      self?.navigationController?.popViewController(animated: true)
+      guard let self, !self.isStoppingForExit else { return }
+      self.isStoppingForExit = true
+      self.refreshSummary()
+      let runtime = self.runtime
+      Task { @MainActor [weak self] in
+        await runtime.stopDownloadAndWait()
+        guard let self else { return }
+        self.navigationController?.popViewController(animated: true)
+      }
     })
     present(alert, animated: true)
   }
 
   @objc private func clearRecordsTapped() {
-    guard clearRecordsButton.isEnabled else { return }
+    guard !isStoppingForExit, clearRecordsButton.isEnabled else { return }
     clearRecordsButton.isEnabled = false
     clearRecordsButton.configuration?.showsActivityIndicator = true
     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
@@ -3110,6 +3117,16 @@ final class NativeDownloadListViewController: UIViewController {
   }
 
   private func refreshSummary() {
+    if isStoppingForExit {
+      summaryLabel.text = "正在停止下载…"
+      headerSpinner.startAnimating()
+      clearRecordsButton.isHidden = true
+      clearRecordsButton.isEnabled = false
+      clearRecordsButton.alpha = 0.48
+      backButton.isEnabled = false
+      backButton.alpha = 0.48
+      return
+    }
     let items = itemsProvider()
     let total = items.count
     var saved = 0

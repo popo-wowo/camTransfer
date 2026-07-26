@@ -1148,7 +1148,6 @@ final class NativeConnectViewController: UIViewController {
       stateProvider: { handle in states[handle] ?? .idle },
       progressProvider: { handle in handle == 2 ? "1/3" : nil },
       isTransferActiveProvider: { false },
-      onTerminateDownload: {},
       onClearDownloadCache: { _ in }
     )
     navigationController?.pushViewController(controller, animated: false)
@@ -1982,9 +1981,6 @@ final class NativeConnectViewController: UIViewController {
         isTransferActiveProvider: { [weak runtime = self.cameraSessionRuntime] in
           runtime?.canCancelDownload == true
         },
-        onTerminateDownload: { [weak self] in
-          self?.cameraSessionRuntime.send(.cancelDownloadByUser)
-        },
         onClearDownloadCache: { [weak self] item in
           self?.cameraSessionRuntime.send(.clearSavedDownloadHistory(handle: UInt32(item.handle)))
         }
@@ -2038,9 +2034,6 @@ final class NativeConnectViewController: UIViewController {
         },
         isTransferActiveProvider: { [weak runtime = self.cameraSessionRuntime] in
           runtime?.canCancelDownload == true
-        },
-        onTerminateDownload: { [weak runtime = self.cameraSessionRuntime] in
-          runtime?.send(.cancelDownloadByUser)
         },
         onClearDownloadCache: { [weak runtime = self.cameraSessionRuntime] item in
           runtime?.send(.clearSavedDownloadHistory(handle: UInt32(item.handle)))

@@ -168,6 +168,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   private var hasRequestedRecoveredConnection = false
   private var presentationObservers: [UUID: (CameraSessionPresentation) -> Void] = [:]
   private var incrementalCatalogObservers: [UUID: (CameraGalleryPresentation, Set<Int>) -> Void] = [:]
+  private var downloadStopWaiters: [CheckedContinuation<Void, Never>] = []
   var onConnectionSnapshotChanged: ((IOSCameraHomeSnapshot) -> Void)?
   var onConnectionLogAppended: ((String) -> Void)?
   var onPresentationDestinationReady: ((CameraSessionRuntimePresentationDestination) -> Void)?
@@ -925,6 +926,18 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     isDownloading || presentation.phase == .recovering || presentation.phase == .interrupted
   }
 
+  func stopDownloadAndWait() async {
+    send(.cancelDownloadByUser)
+    guard presentation.phase == .cancelling else { return }
+    await withCheckedContinuation { continuation in
+      guard presentation.phase == .cancelling else {
+        continuation.resume()
+        return
+      }
+      downloadStopWaiters.append(continuation)
+    }
+  }
+
   var recoveryIdentity: CameraSessionIdentity? {
     presentation.phase == .recovering ? identity : nil
   }
@@ -1044,6 +1057,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     }
     releaseDownloadLease(id: cleanup.leaseID)
     guard ownsCurrentSession else { return }
+    defer { publishPresentation() }
     guard presentation.phase != .cancelling else {
       endActivity(reason: "user-cancelled-download")
       recoveryStore?.clear()
@@ -1434,6 +1448,10 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     for observer in presentationObservers.values {
       observer(presentation)
     }
+    guard presentation.phase != .cancelling, !downloadStopWaiters.isEmpty else { return }
+    let waiters = downloadStopWaiters
+    downloadStopWaiters.removeAll(keepingCapacity: false)
+    waiters.forEach { $0.resume() }
   }
 
   // MARK: - HEIF Count Sweep Experiment (Diagnostic Only)

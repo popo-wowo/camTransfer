@@ -4131,6 +4131,69 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(startDownloadBody.contains("summary.activeTransferDownloadMode"))
   }
 
+  func testNativeDownloadListBackWaitsForRuntimeStopBeforePopping() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner")
+      .appendingPathComponent("NativeGalleryViewController.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let controllerStart = try XCTUnwrap(
+      source.range(of: "final class NativeDownloadListViewController")?.lowerBound
+    )
+    let controllerBody = String(source[controllerStart...])
+    let backStart = try XCTUnwrap(
+      controllerBody.range(of: "@objc private func backTapped()")?.lowerBound
+    )
+    let backEnd = try XCTUnwrap(
+      controllerBody.range(
+        of: "\n  @objc private func clearRecordsTapped()",
+        range: backStart..<controllerBody.endIndex
+      )?.lowerBound
+    )
+    let backBody = String(controllerBody[backStart..<backEnd])
+    let confirmStart = try XCTUnwrap(
+      backBody.range(of: "NativeDownloadCenterChrome.terminateAlertConfirmTitle")?.lowerBound
+    )
+    let confirmBody = String(backBody[confirmStart...])
+    let awaitStop = try XCTUnwrap(
+      confirmBody.range(of: "await runtime.stopDownloadAndWait()")?.lowerBound
+    )
+    let pop = try XCTUnwrap(
+      confirmBody.range(of: "navigationController?.popViewController")?.lowerBound
+    )
+
+    XCTAssertLessThan(awaitStop, pop)
+    XCTAssertTrue(backBody.contains("isStoppingForExit"))
+    XCTAssertFalse(confirmBody.contains("onTerminateDownload()"))
+  }
+
+  @MainActor
+  func testNativeDownloadListDisablesInteractivePopGestureWhileVisible() throws {
+    let runtime = CameraSessionRuntime(transport: CameraSessionRuntimeSpy())
+    let controller = NativeDownloadListViewController(
+      runtime: runtime,
+      itemsProvider: { [] },
+      stateProvider: { _ in .idle },
+      progressProvider: { _ in nil },
+      isTransferActiveProvider: { false },
+      onClearDownloadCache: { _ in }
+    )
+    let navigationController = UINavigationController(rootViewController: UIViewController())
+    navigationController.pushViewController(controller, animated: false)
+    controller.loadViewIfNeeded()
+    let popGesture = try XCTUnwrap(navigationController.interactivePopGestureRecognizer)
+    popGesture.isEnabled = true
+
+    controller.beginAppearanceTransition(true, animated: false)
+    controller.endAppearanceTransition()
+    XCTAssertFalse(popGesture.isEnabled)
+
+    controller.beginAppearanceTransition(false, animated: false)
+    controller.endAppearanceTransition()
+    XCTAssertTrue(popGesture.isEnabled)
+  }
+
   func testGalleryReloadPolicyDoesNotRetryFromGalleryPageAfterFailure() {
     XCTAssertFalse(
       CameraVendorGalleryReloadPolicy.shouldRetryWhenAppBecomesActive(
@@ -14721,9 +14784,9 @@ final class RunnerTests: XCTestCase {
     let sourceURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
-      .appendingPathComponent("Runner/NativeConnectViewController.swift")
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
-    let start = try XCTUnwrap(source.range(of: "private final class NativeDownloadListViewController")?.lowerBound)
+    let start = try XCTUnwrap(source.range(of: "final class NativeDownloadListViewController")?.lowerBound)
     let end = try XCTUnwrap(source.range(of: "extension NativeDownloadListViewController", range: start..<source.endIndex)?.lowerBound)
     let body = String(source[start..<end])
 
@@ -14731,17 +14794,18 @@ final class RunnerTests: XCTestCase {
     XCTAssertNil(body.range(of: "onPauseDownload"))
     XCTAssertNil(body.range(of: "@objc private func pauseDownloadTapped()"))
     XCTAssertNotNil(body.range(of: "NativeDownloadCenterChrome.terminateAlertTitle"))
-    XCTAssertNotNil(body.range(of: "self?.onTerminateDownload()"))
+    XCTAssertNotNil(body.range(of: "await runtime.stopDownloadAndWait()"))
     XCTAssertNotNil(body.range(of: "backButton.isEnabled = true"))
+    XCTAssertNotNil(body.range(of: "backButton.isEnabled = false"))
   }
 
   func testNativeDownloadCenterTerminationReturnsToGalleryWithoutDisconnectingCamera() throws {
     let sourceURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
-      .appendingPathComponent("Runner/NativeConnectViewController.swift")
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
-    let start = try XCTUnwrap(source.range(of: "private final class NativeDownloadListViewController")?.lowerBound)
+    let start = try XCTUnwrap(source.range(of: "final class NativeDownloadListViewController")?.lowerBound)
     let confirmation = try XCTUnwrap(source.range(
       of: "alert.addAction(UIAlertAction(title: NativeDownloadCenterChrome.terminateAlertConfirmTitle",
       range: start..<source.endIndex
@@ -14751,9 +14815,10 @@ final class RunnerTests: XCTestCase {
       range: confirmation..<source.endIndex
     )?.lowerBound)
     let confirmationBody = String(source[confirmation..<confirmationEnd])
+    let stop = try XCTUnwrap(confirmationBody.range(of: "await runtime.stopDownloadAndWait()"))
+    let pop = try XCTUnwrap(confirmationBody.range(of: "navigationController?.popViewController(animated: true)"))
 
-    XCTAssertTrue(confirmationBody.contains("self?.onTerminateDownload()"))
-    XCTAssertTrue(confirmationBody.contains("self?.navigationController?.popViewController(animated: true)"))
+    XCTAssertLessThan(stop.lowerBound, pop.lowerBound)
     XCTAssertFalse(confirmationBody.contains("disconnectCamera"))
   }
 
@@ -14761,9 +14826,9 @@ final class RunnerTests: XCTestCase {
     let sourceURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
-      .appendingPathComponent("Runner/NativeConnectViewController.swift")
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
-    let start = try XCTUnwrap(source.range(of: "private final class NativeDownloadListViewController")?.lowerBound)
+    let start = try XCTUnwrap(source.range(of: "final class NativeDownloadListViewController")?.lowerBound)
     let confirmation = try XCTUnwrap(source.range(
       of: "alert.addAction(UIAlertAction(title: NativeDownloadCenterChrome.terminateAlertConfirmTitle",
       range: start..<source.endIndex
@@ -14773,9 +14838,11 @@ final class RunnerTests: XCTestCase {
       range: confirmation..<source.endIndex
     )?.lowerBound)
     let confirmationBody = String(source[confirmation..<confirmationEnd])
-    let reset = try XCTUnwrap(confirmationBody.range(of: "self?.hasObservedActiveTransfer = false"))
-    let terminate = try XCTUnwrap(confirmationBody.range(of: "self?.onTerminateDownload()"))
-    XCTAssertLessThan(reset.lowerBound, terminate.lowerBound)
+    XCTAssertTrue(confirmationBody.contains("!self.isStoppingForExit"))
+    XCTAssertEqual(
+      confirmationBody.components(separatedBy: "navigationController?.popViewController").count - 1,
+      1
+    )
 
     let handlerStart = try XCTUnwrap(source.range(
       of: "@objc private func downloadStateDidChange()",
@@ -14787,24 +14854,30 @@ final class RunnerTests: XCTestCase {
     )?.lowerBound)
     let handler = String(source[handlerStart..<handlerEnd])
     XCTAssertTrue(handler.contains("navigationController?.topViewController === self"))
+    XCTAssertFalse(handler.contains("popViewController"))
   }
 
   func testNativeDownloadCenterReturnsToGalleryWhenAnActiveRunCompletes() throws {
     let sourceURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
-      .appendingPathComponent("Runner/NativeConnectViewController.swift")
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
-    let start = try XCTUnwrap(source.range(of: "private final class NativeDownloadListViewController")?.lowerBound)
-    let end = try XCTUnwrap(source.range(of: "private final class NativePhotoPreviewViewController", range: start..<source.endIndex)?.lowerBound)
+    let start = try XCTUnwrap(source.range(of: "final class NativeDownloadListViewController")?.lowerBound)
+    let end = try XCTUnwrap(source.range(of: "extension NativeDownloadListViewController", range: start..<source.endIndex)?.lowerBound)
     let body = String(source[start..<end])
     let handlerStart = try XCTUnwrap(body.range(of: "@objc private func downloadStateDidChange()")?.lowerBound)
     let handlerEnd = try XCTUnwrap(body.range(of: "  private func refreshEmptyState()", range: handlerStart..<body.endIndex)?.lowerBound)
     let handler = String(body[handlerStart..<handlerEnd])
+    let backStart = try XCTUnwrap(body.range(of: "@objc private func backTapped()")?.lowerBound)
+    let backEnd = try XCTUnwrap(body.range(of: "  @objc private func clearRecordsTapped()", range: backStart..<body.endIndex)?.lowerBound)
+    let backBody = String(body[backStart..<backEnd])
 
     XCTAssertTrue(body.contains("private var hasObservedActiveTransfer = false"))
     XCTAssertTrue(handler.contains("hasObservedActiveTransfer"))
-    XCTAssertTrue(handler.contains("navigationController?.popViewController(animated: true)"))
+    XCTAssertFalse(handler.contains("popViewController"))
+    XCTAssertTrue(backBody.contains("guard isTransferActiveProvider() else"))
+    XCTAssertTrue(backBody.contains("navigationController?.popViewController(animated: true)"))
   }
 
   func testIOSGalleryFilterSupportsInclusiveDateRangeAndAllFormats() {
@@ -15318,6 +15391,54 @@ final class RunnerTests: XCTestCase {
   }
 
   @MainActor
+  func testCameraSessionRuntimeStopDownloadAndWaitJoinsCancelledTransfer() async throws {
+    let transport = CameraSessionRuntimeSpy()
+    let runtime = CameraSessionRuntime(transport: transport)
+    runtime.send(.enterGallery(CameraSessionIdentity(cameraName: "X-T5")))
+    await waitForRuntimeGalleryReady(runtime)
+    runtime.send(.startDownload(handles: [101], mode: .original))
+    await waitForStartedHandleCount(1, transport: transport)
+
+    var didReturn = false
+    let stopTask = Task { @MainActor in
+      await runtime.stopDownloadAndWait()
+      didReturn = true
+    }
+    for _ in 0..<100 where runtime.presentation.phase != .cancelling {
+      await Task.yield()
+    }
+    for _ in 0..<20 {
+      await Task.yield()
+    }
+
+    XCTAssertEqual(runtime.presentation.phase, .cancelling)
+    XCTAssertFalse(didReturn)
+    XCTAssertEqual(transport.cancelActiveTransferCount, 1)
+    XCTAssertEqual(transport.terminateCount, 0)
+
+    runtime.send(.transferCancelled(handle: 101))
+    await stopTask.value
+
+    XCTAssertTrue(didReturn)
+    XCTAssertEqual(runtime.presentation.phase, .galleryReady)
+    XCTAssertEqual(transport.terminateCount, 0)
+  }
+
+  @MainActor
+  func testCameraSessionRuntimeStopDownloadAndWaitReturnsImmediatelyWhenIdle() async throws {
+    let transport = CameraSessionRuntimeSpy()
+    let runtime = CameraSessionRuntime(transport: transport)
+    runtime.send(.enterGallery(CameraSessionIdentity(cameraName: "X-T5")))
+    await waitForRuntimeGalleryReady(runtime)
+
+    await runtime.stopDownloadAndWait()
+
+    XCTAssertEqual(runtime.presentation.phase, .galleryReady)
+    XCTAssertEqual(transport.cancelActiveTransferCount, 0)
+    XCTAssertEqual(transport.terminateCount, 0)
+  }
+
+  @MainActor
   func testCameraSessionRuntimeDrainsCancelledTransferBeforeAcceptingAnotherQueue() async throws {
     let transport = CameraSessionRuntimeSpy()
     let runtime = CameraSessionRuntime(transport: transport)
@@ -15629,6 +15750,44 @@ final class RunnerTests: XCTestCase {
 
     XCTAssertEqual(transport.endDownloadLeaseCount, 1)
     XCTAssertEqual(runtime.presentation.phase, .interrupted)
+  }
+
+  @MainActor
+  func testCameraSessionRuntimeStopDownloadAndWaitCompletesAfterTransportFailureCleanup() async throws {
+    let childCancelled = expectation(description: "catalog child cancellation observed")
+    let transport = CameraSessionRuntimeSpy()
+    transport.catalogItems = [3].map { galleryItem(handle: $0, formatLabel: "JPG") }
+    transport.suspendsThumbnailRequestsUntilReleased = true
+    transport.onThumbnailRequestCancelled = { childCancelled.fulfill() }
+    let runtime = CameraSessionRuntime(
+      transport: transport,
+      recoveryStore: CameraSessionRuntimeRecoveryStoreSpy()
+    )
+
+    runtime.send(.enterGallery(CameraSessionIdentity(cameraName: "X-T5")))
+    await waitForRuntimeGalleryReady(runtime)
+    runtime.requestVisibleGalleryThumbnails(handles: [3])
+    await transport.waitForThumbnailRequestCount(1)
+    runtime.send(.startDownload(handles: [101], mode: .original))
+    runtime.send(.transportFailed(NSError(domain: "PTPTransport", code: 54)))
+    await fulfillment(of: [childCancelled], timeout: 1)
+
+    var didReturn = false
+    let stopTask = Task { @MainActor in
+      await runtime.stopDownloadAndWait()
+      didReturn = true
+    }
+    for _ in 0..<100 where runtime.presentation.phase != .cancelling { await Task.yield() }
+    XCTAssertEqual(runtime.presentation.phase, .cancelling)
+
+    transport.releaseThumbnailRequests()
+    for _ in 0..<100 where runtime.presentation.phase != .interrupted { await Task.yield() }
+    XCTAssertEqual(runtime.presentation.phase, .interrupted)
+    for _ in 0..<100 where !didReturn { await Task.yield() }
+    XCTAssertTrue(didReturn)
+
+    runtime.send(.applicationBecameActive)
+    await stopTask.value
   }
 
   @MainActor
