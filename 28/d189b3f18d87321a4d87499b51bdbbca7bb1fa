@@ -1,0 +1,38 @@
+ios/Runner/NativeConnectViewController.swift
+  6f08be97e0180404 922,1006,1693,1919-1920,1929,1931-1932,1958,1984-1992,2052-2091,2377,2382-2393
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "28d189b3f18d87321a4d87499b51bdbbca7bb1fa",
+  "prompts": {
+    "6f08be97e0180404": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7eb69989-a986-4503-975b-d4f18edfa3a1",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 141,
+      "total_deletions": 121,
+      "accepted_lines": 113,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/0d1d4ed7de578c15b7a67540ac115b858ef9435011d365f26eb523e6dcfef6be"
+    },
+    "e80866ca47a834f7": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f97e3-b1bc-7ce1-abcf-5e0c7f53dd67",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 0,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/9171db425cc34b44801ca65094b7a81d00be70e973f994be36afd14aa53bf296"
+    }
+  }
+}
