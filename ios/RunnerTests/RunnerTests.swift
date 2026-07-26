@@ -9396,6 +9396,336 @@ final class RunnerTests: XCTestCase {
     )
   }
 
+  private func makePtpRuntimeForExclusiveWindowTests(
+    commandLane: CameraCommandLane = CameraCommandLane()
+  ) -> CameraVendorPtpSessionRuntime {
+    CameraVendorPtpSessionRuntime(
+      session: CameraVendorPtpSession(),
+      commandLane: commandLane,
+      diagnosticHandler: { _ in },
+      communicationGeneration: { 0 }
+    )
+  }
+
+  private func assertPtpRuntimeOverlappingWindows(
+    releaseFirstWindowFirst: Bool
+  ) async throws {
+    let runtime = makePtpRuntimeForExclusiveWindowTests()
+    let firstStarted = expectation(description: "first PTP runtime window started")
+    let secondStarted = expectation(description: "second PTP runtime window started")
+    let releaseFirst = DispatchSemaphore(value: 0)
+    let releaseSecond = DispatchSemaphore(value: 0)
+    let firstOperation: () async throws -> String = {
+      firstStarted.fulfill()
+      releaseFirst.wait()
+      try Task.checkCancellation()
+      return "first"
+    }
+    let secondOperation: () async throws -> String = {
+      secondStarted.fulfill()
+      releaseSecond.wait()
+      try Task.checkCancellation()
+      return "second"
+    }
+
+    let first = Task { () -> String in
+      do {
+        return try await runtime.withExclusiveDownloadWindow(firstOperation)
+      } catch is CancellationError {
+        return "cancelled"
+      } catch {
+        return "failed"
+      }
+    }
+    let second = Task { () -> String in
+      do {
+        return try await runtime.withExclusiveDownloadWindow(secondOperation)
+      } catch is CancellationError {
+        return "cancelled"
+      } catch {
+        return "failed"
+      }
+    }
+
+    await fulfillment(of: [firstStarted, secondStarted], timeout: 1)
+    if releaseFirstWindowFirst {
+      releaseFirst.signal()
+      let firstResult = await first.value
+      XCTAssertEqual(firstResult, "first")
+    } else {
+      releaseSecond.signal()
+      let secondResult = await second.value
+      XCTAssertEqual(secondResult, "second")
+    }
+
+    let probeResult: String
+    do {
+      _ = try await runtime.fetchPreviewImage(for: 1)
+      probeResult = "ran"
+    } catch is CancellationError {
+      probeResult = "cancelled"
+    } catch {
+      probeResult = "other-error"
+    }
+    XCTAssertEqual(probeResult, "cancelled")
+
+    if releaseFirstWindowFirst {
+      releaseSecond.signal()
+      let secondResult = await second.value
+      XCTAssertEqual(secondResult, "second")
+    } else {
+      releaseFirst.signal()
+      let firstResult = await first.value
+      XCTAssertEqual(firstResult, "first")
+    }
+  }
+
+  private func assertRealtimeServiceOverlappingWindows(
+    releaseFirstWindowFirst: Bool
+  ) async throws {
+    let service = CameraVendorRealtimeGalleryService()
+    let logLock = NSLock()
+    var logs: [String] = []
+    service.diagnosticHandler = { message in
+      logLock.withLock {
+        logs.append(message)
+      }
+    }
+    let firstStarted = expectation(description: "first service window started")
+    let secondStarted = expectation(description: "second service window started")
+    let releaseFirst = DispatchSemaphore(value: 0)
+    let releaseSecond = DispatchSemaphore(value: 0)
+    let firstOperation: () async throws -> String = {
+      firstStarted.fulfill()
+      releaseFirst.wait()
+      try Task.checkCancellation()
+      return "first"
+    }
+    let secondOperation: () async throws -> String = {
+      secondStarted.fulfill()
+      releaseSecond.wait()
+      try Task.checkCancellation()
+      return "second"
+    }
+
+    let first = Task { () -> String in
+      do {
+        return try await service.withExclusiveDownloadWindow(firstOperation)
+      } catch is CancellationError {
+        return "cancelled"
+      } catch {
+        return "failed"
+      }
+    }
+    let second = Task { () -> String in
+      do {
+        return try await service.withExclusiveDownloadWindow(secondOperation)
+      } catch is CancellationError {
+        return "cancelled"
+      } catch {
+        return "failed"
+      }
+    }
+
+    await fulfillment(of: [firstStarted, secondStarted], timeout: 1)
+    XCTAssertEqual(
+      logLock.withLock {
+        logs.filter { $0.contains("PTP_EXCLUSIVE_DOWNLOAD_ADMISSION_READY") }.count
+      },
+      1
+    )
+
+    if releaseFirstWindowFirst {
+      releaseFirst.signal()
+      let firstResult = await first.value
+      XCTAssertEqual(firstResult, "first")
+    } else {
+      releaseSecond.signal()
+      let secondResult = await second.value
+      XCTAssertEqual(secondResult, "second")
+    }
+
+    let probeResult: String
+    do {
+      _ = try await service.fetchPreviewImage(for: 1)
+      probeResult = "ran"
+    } catch is CancellationError {
+      probeResult = "cancelled"
+    } catch {
+      probeResult = "other-error"
+    }
+    XCTAssertEqual(probeResult, "cancelled")
+
+    if releaseFirstWindowFirst {
+      releaseSecond.signal()
+      let secondResult = await second.value
+      XCTAssertEqual(secondResult, "second")
+    } else {
+      releaseFirst.signal()
+      let firstResult = await first.value
+      XCTAssertEqual(firstResult, "first")
+    }
+    XCTAssertEqual(
+      logLock.withLock {
+        logs.filter { $0.contains("PRIORITY_DOWNLOAD_FINISH") }.count
+      },
+      1
+    )
+  }
+
+  func testPtpRuntimeEndWhileDrainingCancelsWithWindowBeforeOperation() async throws {
+    let lane = CameraCommandLane()
+    let runtime = makePtpRuntimeForExclusiveWindowTests(commandLane: lane)
+    let activeStarted = expectation(description: "active command started")
+    let releaseActive = DispatchSemaphore(value: 0)
+    let operationLock = NSLock()
+    var operationCount = 0
+    let operation: () async throws -> String = {
+      operationLock.withLock {
+        operationCount += 1
+      }
+      return "operation"
+    }
+
+    let active = Task {
+      try await lane.run(priority: .details) {
+        activeStarted.fulfill()
+        releaseActive.wait()
+      }
+    }
+    await fulfillment(of: [activeStarted], timeout: 1)
+
+    let window = Task { () -> String in
+      do {
+        return try await runtime.withExclusiveDownloadWindow(operation)
+      } catch is CancellationError {
+        return "cancelled"
+      } catch {
+        return "failed"
+      }
+    }
+    let barrierProbe = Task { () -> String in
+      do {
+        return try await lane.run(priority: .hdPreview) { "ran" }
+      } catch is CancellationError {
+        return "cancelled"
+      } catch {
+        return "failed"
+      }
+    }
+    let barrierProbeResult = await barrierProbe.value
+    XCTAssertEqual(barrierProbeResult, "cancelled")
+
+    runtime.endExclusiveDownloadWindow()
+    let windowResult = await window.value
+    XCTAssertEqual(windowResult, "cancelled")
+    XCTAssertEqual(operationLock.withLock { operationCount }, 0)
+
+    releaseActive.signal()
+    _ = try? await active.value
+  }
+
+  func testPtpRuntimeCancellationAfterOperationStartsKeepsBarrierUntilOperationFinishes() async throws {
+    let lane = CameraCommandLane()
+    let runtime = makePtpRuntimeForExclusiveWindowTests(commandLane: lane)
+    let operationStarted = expectation(description: "exclusive operation started")
+    let releaseOperation = DispatchSemaphore(value: 0)
+
+    let window = Task { () -> String in
+      do {
+        return try await runtime.withExclusiveDownloadWindow {
+          operationStarted.fulfill()
+          releaseOperation.wait()
+          return "operation"
+        }
+      } catch is CancellationError {
+        return "cancelled"
+      } catch {
+        return "failed"
+      }
+    }
+
+    await fulfillment(of: [operationStarted], timeout: 1)
+    window.cancel()
+
+    let probeWhileOperationIsRunning: String
+    do {
+      _ = try await lane.run(priority: .hdPreview) { "ran" }
+      probeWhileOperationIsRunning = "ran"
+    } catch is CancellationError {
+      probeWhileOperationIsRunning = "cancelled"
+    } catch {
+      probeWhileOperationIsRunning = "failed"
+    }
+    XCTAssertEqual(probeWhileOperationIsRunning, "cancelled")
+
+    releaseOperation.signal()
+    let windowResult = await window.value
+    XCTAssertEqual(windowResult, "operation")
+
+    let probeAfterOperationFinishes = try await lane.run(priority: .hdPreview) { "ran" }
+    XCTAssertEqual(probeAfterOperationFinishes, "ran")
+  }
+
+  func testPtpRuntimeOverlappingWindowsKeepBarrierWhenFirstFinishesFirst() async throws {
+    try await assertPtpRuntimeOverlappingWindows(releaseFirstWindowFirst: true)
+  }
+
+  func testPtpRuntimeOverlappingWindowsKeepBarrierWhenSecondFinishesFirst() async throws {
+    try await assertPtpRuntimeOverlappingWindows(releaseFirstWindowFirst: false)
+  }
+
+  func testRealtimeGalleryServiceOverlappingWindowsKeepBatchWhenFirstFinishesFirst() async throws {
+    try await assertRealtimeServiceOverlappingWindows(releaseFirstWindowFirst: true)
+  }
+
+  func testRealtimeGalleryServiceOverlappingWindowsKeepBatchWhenSecondFinishesFirst() async throws {
+    try await assertRealtimeServiceOverlappingWindows(releaseFirstWindowFirst: false)
+  }
+
+  func testRealtimeGalleryServiceTerminateForceReleasesAllOwners() async throws {
+    let service = CameraVendorRealtimeGalleryService()
+    let logLock = NSLock()
+    var logs: [String] = []
+    service.diagnosticHandler = { message in
+      logLock.withLock {
+        logs.append(message)
+      }
+    }
+
+    service.beginExclusiveDownloadWindow()
+    service.beginExclusiveDownloadWindow()
+    try await service.awaitExclusiveDownloadWindowReady()
+    try await service.awaitExclusiveDownloadWindowReady()
+    XCTAssertEqual(
+      logLock.withLock {
+        logs.filter { $0.contains("PTP_EXCLUSIVE_DOWNLOAD_ADMISSION_READY") }.count
+      },
+      1
+    )
+
+    service.terminateCameraCommunication(reason: "test-force-release")
+    service.endExclusiveDownloadWindow()
+    service.endExclusiveDownloadWindow()
+
+    let probeResult: String
+    do {
+      _ = try await service.fetchPreviewImage(for: 1)
+      probeResult = "ran"
+    } catch is CancellationError {
+      probeResult = "cancelled"
+    } catch {
+      probeResult = "other-error"
+    }
+    XCTAssertNotEqual(probeResult, "cancelled")
+    XCTAssertEqual(
+      logLock.withLock {
+        logs.filter { $0.contains("PRIORITY_DOWNLOAD_FINISH") }.count
+      },
+      1
+    )
+  }
+
   func testCameraCommandLaneUsesOnePriorityOrderForAllPtpConsumers() {
     XCTAssertEqual(CameraCommandPriority.sessionMutation.rawValue, -1)
     XCTAssertEqual(CameraCommandPriority.download.rawValue, 0)
@@ -10296,7 +10626,8 @@ final class RunnerTests: XCTestCase {
 
     XCTAssertTrue(serviceBody.contains("private lazy var ptpRuntime = CameraVendorPtpSessionRuntime("))
     XCTAssertTrue(serviceBody.contains("session: session"))
-    XCTAssertTrue(source.contains("private let commandLane = CameraCommandLane()"))
+    XCTAssertTrue(source.contains("private let commandLane: CameraCommandLane"))
+    XCTAssertTrue(source.contains("commandLane: CameraCommandLane = CameraCommandLane()"))
     XCTAssertFalse(serviceBody.contains("private let requestScheduler = CameraVendorGalleryRequestScheduler()"))
     XCTAssertFalse(serviceBody.contains("private let priorityDownloadLock = NSLock()"))
   }
@@ -10315,12 +10646,12 @@ final class RunnerTests: XCTestCase {
     )
     let acquisitionBody = String(source[acquisitionStart..<acquisitionEnd])
 
-    XCTAssertTrue(acquisitionBody.contains("private let task: Task<Void, Never>"))
+    XCTAssertTrue(acquisitionBody.contains("private let task: Task<Void, Error>"))
     XCTAssertTrue(acquisitionBody.contains("init(commandLane: CameraCommandLane)"))
     XCTAssertTrue(acquisitionBody.contains("task = Task"))
     XCTAssertFalse(acquisitionBody.contains("func start(commandLane:"))
     let waitUntilReadyStart = try XCTUnwrap(
-      acquisitionBody.range(of: "func waitUntilReady() async")?.lowerBound
+      acquisitionBody.range(of: "func waitUntilReady() async throws")?.lowerBound
     )
     let cancellationBody = acquisitionBody[waitUntilReadyStart..<acquisitionBody.endIndex]
     XCTAssertTrue(cancellationBody.contains("task.cancel()"))
@@ -10342,6 +10673,9 @@ final class RunnerTests: XCTestCase {
 
     XCTAssertLessThan(construction.lowerBound, publication.lowerBound)
     XCTAssertFalse(beginBody.contains("acquisition.start("))
+    XCTAssertTrue(source.contains("func awaitExclusiveDownloadWindowReady() async throws"))
+    XCTAssertTrue(source.contains("async throws -> T"))
+    XCTAssertFalse(source.contains("async rethrows -> T"))
   }
 
   func testBackgroundMetadataRefreshResumePolicyTracksPendingHandlesAcrossResolutionAndRecovery() {

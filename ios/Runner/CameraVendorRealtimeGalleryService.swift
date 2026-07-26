@@ -16,9 +16,57 @@ protocol CameraVendorBleBackgroundKeepAlive: AnyObject {
 
 protocol CameraVendorExclusiveDownloadWindowControlling: AnyObject {
   func beginExclusiveDownloadWindow()
-  func awaitExclusiveDownloadWindowReady() async
+  func awaitExclusiveDownloadWindowReady() async throws
   func endExclusiveDownloadWindow()
-  func withExclusiveDownloadWindow<T>(_ operation: () async throws -> T) async rethrows -> T
+  func withExclusiveDownloadWindow<T>(_ operation: () async throws -> T) async throws -> T
+}
+
+private final class CameraVendorExclusiveDownloadWindowRelease: @unchecked Sendable {
+  private enum State {
+    case waiting
+    case admitted
+    case released
+  }
+
+  private let lock = NSLock()
+  private var state = State.waiting
+  private var releaseHandler: (() -> Void)?
+
+  init(releaseHandler: @escaping () -> Void) {
+    self.releaseHandler = releaseHandler
+  }
+
+  func markAdmitted() -> Bool {
+    lock.withLock {
+      guard case .waiting = state else { return false }
+      state = .admitted
+      return true
+    }
+  }
+
+  func cancelWhileWaiting() {
+    let handler: (() -> Void)? = lock.withLock {
+      guard case .waiting = state else { return nil }
+      state = .released
+      let handler = releaseHandler
+      releaseHandler = nil
+      return handler
+    }
+    handler?()
+  }
+
+  func release() {
+    let handler: (() -> Void)? = lock.withLock {
+      guard case .released = state else {
+        state = .released
+        let handler = releaseHandler
+        releaseHandler = nil
+        return handler
+      }
+      return nil
+    }
+    handler?()
+  }
 }
 
 protocol CameraVendorActiveDownloadInterrupting: AnyObject {
@@ -118,36 +166,44 @@ final class CameraVendorPtpSessionRuntime {
         leaseToRelease?.release()
       }
 
-      func install(_ lease: CameraCommandLease) {
-        let shouldRelease: Bool
+      func install(_ lease: CameraCommandLease) throws {
+        let wasCancelled: Bool
         lock.lock()
-        shouldRelease = isCancelled
-        if !shouldRelease {
+        wasCancelled = isCancelled
+        if !wasCancelled {
           self.lease = lease
         }
         lock.unlock()
-        if shouldRelease {
+        if wasCancelled {
           lease.release()
+          throw CancellationError()
         }
+      }
+
+      func checkReady() throws {
+        let isReady = lock.withLock {
+          !isCancelled && lease != nil
+        }
+        guard isReady else { throw CancellationError() }
       }
     }
 
     private let state: State
-    private let task: Task<Void, Never>
+    private let task: Task<Void, Error>
 
     init(commandLane: CameraCommandLane) {
       let state = State()
       self.state = state
       task = Task {
-        guard let lease = try? await commandLane.acquireExclusiveDownloadLease() else {
-          return
-        }
-        state.install(lease)
+        let lease = try await commandLane.acquireExclusiveDownloadLease()
+        try state.install(lease)
       }
     }
 
-    func waitUntilReady() async {
-      await task.value
+    func waitUntilReady() async throws {
+      try await task.value
+      try state.checkReady()
+      try Task.checkCancellation()
     }
 
     func cancel() {
@@ -157,12 +213,13 @@ final class CameraVendorPtpSessionRuntime {
   }
 
   private let session: CameraVendorPtpSession
-  private let commandLane = CameraCommandLane()
+  private let commandLane: CameraCommandLane
   private let stateLock = NSLock()
   private let exclusiveDownloadLeaseLock = NSLock()
   private let diagnosticHandler: (String) -> Void
   private let communicationGeneration: () -> UInt64
   private var exclusiveDownloadLeaseAcquisition: ExclusiveDownloadLeaseAcquisition?
+  private var exclusiveDownloadWindowOwnerCount = 0
   private var isExclusiveDownloadWindowActive = false
   private var activeThumbnailRequestCount = 0
   private var activeBackgroundMetadataRequestCount = 0
@@ -172,48 +229,91 @@ final class CameraVendorPtpSessionRuntime {
 
   init(
     session: CameraVendorPtpSession,
+    commandLane: CameraCommandLane = CameraCommandLane(),
     diagnosticHandler: @escaping (String) -> Void,
     communicationGeneration: @escaping () -> UInt64
   ) {
     self.session = session
+    self.commandLane = commandLane
     self.diagnosticHandler = diagnosticHandler
     self.communicationGeneration = communicationGeneration
   }
 
-  func withExclusiveDownloadWindow<T>(_ operation: () async throws -> T) async rethrows -> T {
+  func withExclusiveDownloadWindow<T>(_ operation: () async throws -> T) async throws -> T {
     beginExclusiveDownloadWindow()
-    defer {
-      endExclusiveDownloadWindow()
+    let release = CameraVendorExclusiveDownloadWindowRelease { [weak self] in
+      self?.endExclusiveDownloadWindow()
     }
-    await awaitExclusiveDownloadWindowReady()
-    return try await operation()
+    return try await withTaskCancellationHandler {
+      defer { release.release() }
+      try await awaitExclusiveDownloadWindowReady()
+      try Task.checkCancellation()
+      guard release.markAdmitted() else { throw CancellationError() }
+      return try await operation()
+    } onCancel: {
+      release.cancelWhileWaiting()
+    }
   }
 
   func beginExclusiveDownloadWindow() {
-    activateExclusiveDownloadWindow()
+    let shouldActivate: Bool
     exclusiveDownloadLeaseLock.lock()
-    guard exclusiveDownloadLeaseAcquisition == nil else {
-      exclusiveDownloadLeaseLock.unlock()
-      return
+    exclusiveDownloadWindowOwnerCount += 1
+    shouldActivate = exclusiveDownloadWindowOwnerCount == 1
+    if shouldActivate {
+      activateExclusiveDownloadWindow()
+      let acquisition = ExclusiveDownloadLeaseAcquisition(commandLane: commandLane)
+      exclusiveDownloadLeaseAcquisition = acquisition
     }
-    let acquisition = ExclusiveDownloadLeaseAcquisition(commandLane: commandLane)
-    exclusiveDownloadLeaseAcquisition = acquisition
     exclusiveDownloadLeaseLock.unlock()
   }
 
-  func awaitExclusiveDownloadWindowReady() async {
-    exclusiveDownloadLeaseLock.lock()
-    let acquisition = exclusiveDownloadLeaseAcquisition
-    exclusiveDownloadLeaseLock.unlock()
-    await acquisition?.waitUntilReady()
+  func awaitExclusiveDownloadWindowReady() async throws {
+    let acquisition = exclusiveDownloadLeaseLock.withLock {
+      exclusiveDownloadWindowOwnerCount > 0
+        ? exclusiveDownloadLeaseAcquisition
+        : nil
+    }
+    guard let acquisition else { throw CancellationError() }
+    try await acquisition.waitUntilReady()
+    try Task.checkCancellation()
   }
 
   func endExclusiveDownloadWindow() {
-    deactivateExclusiveDownloadWindow()
+    let acquisition: ExclusiveDownloadLeaseAcquisition?
+    let shouldDeactivate: Bool
     exclusiveDownloadLeaseLock.lock()
-    let acquisition = exclusiveDownloadLeaseAcquisition
-    exclusiveDownloadLeaseAcquisition = nil
+    if exclusiveDownloadWindowOwnerCount > 0 {
+      exclusiveDownloadWindowOwnerCount -= 1
+    }
+    shouldDeactivate = exclusiveDownloadWindowOwnerCount == 0
+      && exclusiveDownloadLeaseAcquisition != nil
+    if shouldDeactivate {
+      acquisition = exclusiveDownloadLeaseAcquisition
+      exclusiveDownloadLeaseAcquisition = nil
+      deactivateExclusiveDownloadWindow()
+    } else {
+      acquisition = nil
+    }
     exclusiveDownloadLeaseLock.unlock()
+    guard shouldDeactivate else { return }
+    acquisition?.cancel()
+  }
+
+  func forceEndExclusiveDownloadWindow() {
+    let acquisition: ExclusiveDownloadLeaseAcquisition?
+    let shouldDeactivate: Bool
+    exclusiveDownloadLeaseLock.lock()
+    shouldDeactivate = exclusiveDownloadWindowOwnerCount > 0
+      || exclusiveDownloadLeaseAcquisition != nil
+    exclusiveDownloadWindowOwnerCount = 0
+    acquisition = exclusiveDownloadLeaseAcquisition
+    exclusiveDownloadLeaseAcquisition = nil
+    if shouldDeactivate {
+      deactivateExclusiveDownloadWindow()
+    }
+    exclusiveDownloadLeaseLock.unlock()
+    guard shouldDeactivate else { return }
     acquisition?.cancel()
   }
 
@@ -507,7 +607,8 @@ final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVend
   private let fetchLock = NSLock()
   private var isFetching = false
   private var communicationTerminationGeneration: UInt64 = 0
-  private var hasExclusiveDownloadLease = false
+  private let exclusiveDownloadWindowLock = NSLock()
+  private var exclusiveDownloadWindowOwnerCount = 0
   private var hasStartedPriorityDownloadBatch = false
 
   func configure(connectionSummary: CameraVendorConnectionSummary) {
@@ -538,7 +639,7 @@ final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVend
 
   func terminateCameraCommunication(reason: String) {
     report("[OBS] GALLERY_COMMUNICATION_TERMINATE_REQUESTED reason=\(reason)")
-    endExclusiveDownloadWindow()
+    forceEndExclusiveDownloadWindows()
     objectInfoCache.resetForPhysicalSession()
     fetchLock.lock()
     communicationTerminationGeneration += 1
@@ -564,30 +665,52 @@ final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVend
     }
   }
 
-  func withExclusiveDownloadWindow<T>(_ operation: () async throws -> T) async rethrows -> T {
+  func withExclusiveDownloadWindow<T>(_ operation: () async throws -> T) async throws -> T {
     beginExclusiveDownloadWindow()
-    defer {
-      endExclusiveDownloadWindow()
+    let release = CameraVendorExclusiveDownloadWindowRelease { [weak self] in
+      self?.endExclusiveDownloadWindow()
     }
-    await awaitExclusiveDownloadWindowReady()
-    return try await operation()
+    return try await withTaskCancellationHandler {
+      defer { release.release() }
+      try await awaitExclusiveDownloadWindowReady()
+      try Task.checkCancellation()
+      guard release.markAdmitted() else { throw CancellationError() }
+      return try await operation()
+    } onCancel: {
+      release.cancelWhileWaiting()
+    }
   }
 
   func beginExclusiveDownloadWindow() {
-    guard !hasExclusiveDownloadLease else { return }
-    hasExclusiveDownloadLease = true
-    hasStartedPriorityDownloadBatch = false
-    report("[OBS] PTP_EXCLUSIVE_DOWNLOAD_WINDOW_BEGIN")
-    ptpRuntime.beginExclusiveDownloadWindow()
+    let shouldReportBegin: Bool
+    exclusiveDownloadWindowLock.lock()
+    exclusiveDownloadWindowOwnerCount += 1
+    shouldReportBegin = exclusiveDownloadWindowOwnerCount == 1
+    if shouldReportBegin {
+      hasStartedPriorityDownloadBatch = false
+      ptpRuntime.beginExclusiveDownloadWindow()
+    }
+    exclusiveDownloadWindowLock.unlock()
+    if shouldReportBegin {
+      report("[OBS] PTP_EXCLUSIVE_DOWNLOAD_WINDOW_BEGIN")
+    }
   }
 
-  func awaitExclusiveDownloadWindowReady() async {
-    await ptpRuntime.awaitExclusiveDownloadWindowReady()
-    guard hasExclusiveDownloadLease, !Task.isCancelled else { return }
-    session.beginPriorityDownloadBatch(
-      generation: currentCommunicationGeneration()
-    )
-    hasStartedPriorityDownloadBatch = true
+  func awaitExclusiveDownloadWindowReady() async throws {
+    try await ptpRuntime.awaitExclusiveDownloadWindowReady()
+    try Task.checkCancellation()
+    let shouldReportReady = try exclusiveDownloadWindowLock.withLock {
+      guard exclusiveDownloadWindowOwnerCount > 0 else {
+        throw CancellationError()
+      }
+      guard !hasStartedPriorityDownloadBatch else { return false }
+      session.beginPriorityDownloadBatch(
+        generation: currentCommunicationGeneration()
+      )
+      hasStartedPriorityDownloadBatch = true
+      return true
+    }
+    guard shouldReportReady else { return }
     let counts = ptpRuntime.galleryRequestCounts()
     report(
       "[OBS] PTP_EXCLUSIVE_DOWNLOAD_ADMISSION_READY " +
@@ -597,14 +720,43 @@ final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVend
   }
 
   func endExclusiveDownloadWindow() {
-    guard hasExclusiveDownloadLease else { return }
+    let shouldReportFinish: Bool
+    exclusiveDownloadWindowLock.lock()
+    guard exclusiveDownloadWindowOwnerCount > 0 else {
+      exclusiveDownloadWindowLock.unlock()
+      return
+    }
+    exclusiveDownloadWindowOwnerCount -= 1
+    shouldReportFinish = exclusiveDownloadWindowOwnerCount == 0
+    if shouldReportFinish {
+      if hasStartedPriorityDownloadBatch {
+        session.finishPriorityDownloadBatch()
+      }
+      hasStartedPriorityDownloadBatch = false
+      ptpRuntime.endExclusiveDownloadWindow()
+    }
+    exclusiveDownloadWindowLock.unlock()
+    if shouldReportFinish {
+      report("[OBS] PRIORITY_DOWNLOAD_FINISH")
+    }
+  }
+
+  private func forceEndExclusiveDownloadWindows() {
+    let shouldReportFinish: Bool
+    exclusiveDownloadWindowLock.lock()
+    shouldReportFinish = exclusiveDownloadWindowOwnerCount > 0
+    exclusiveDownloadWindowOwnerCount = 0
     if hasStartedPriorityDownloadBatch {
       session.finishPriorityDownloadBatch()
     }
-    ptpRuntime.endExclusiveDownloadWindow()
     hasStartedPriorityDownloadBatch = false
-    hasExclusiveDownloadLease = false
-    report("[OBS] PRIORITY_DOWNLOAD_FINISH")
+    if shouldReportFinish {
+      ptpRuntime.forceEndExclusiveDownloadWindow()
+    }
+    exclusiveDownloadWindowLock.unlock()
+    if shouldReportFinish {
+      report("[OBS] PRIORITY_DOWNLOAD_FINISH")
+    }
   }
 
   func interruptActiveDownload(reason: String) {
