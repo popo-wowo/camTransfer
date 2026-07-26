@@ -141,8 +141,12 @@ final class CameraCommandLane {
     let idleContinuations: [CheckedContinuation<Void, Never>]
     lock.lock()
     isExclusiveDownloadBarrierActive = true
-    cancelledWaiters = waiters.filter { $0.priority != .download }
-    waiters.removeAll { $0.priority != .download }
+    cancelledWaiters = waiters.filter {
+      !canRunDuringExclusiveDownloadBarrier(priority: $0.priority)
+    }
+    waiters.removeAll {
+      !canRunDuringExclusiveDownloadBarrier(priority: $0.priority)
+    }
     idleContinuations = takeIdleWaitersIfReadyLocked()
     lock.unlock()
     for waiter in cancelledWaiters {
@@ -202,7 +206,8 @@ final class CameraCommandLane {
         lock.lock()
         if Task.isCancelled {
           shouldResumeCancelled = true
-        } else if isExclusiveDownloadBarrierActive && priority != .download {
+        } else if isExclusiveDownloadBarrierActive
+          && !canRunDuringExclusiveDownloadBarrier(priority: priority) {
           shouldResumeCancelled = true
         } else if !isCommandActive
           && canRunImmediatelyLocked(priority: priority)
@@ -277,7 +282,12 @@ final class CameraCommandLane {
     if isExclusiveSessionMutationBarrierActive {
       return priority == .sessionMutation
     }
-    return !isExclusiveDownloadBarrierActive || priority == .download
+    return !isExclusiveDownloadBarrierActive
+      || canRunDuringExclusiveDownloadBarrier(priority: priority)
+  }
+
+  private func canRunDuringExclusiveDownloadBarrier(priority: CameraCommandPriority) -> Bool {
+    priority == .sessionMutation || priority == .download
   }
 
   private func removeNextRunnableWaiterLocked() -> Waiter? {

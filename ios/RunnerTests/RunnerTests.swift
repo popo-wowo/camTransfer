@@ -9541,6 +9541,91 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(result, "download")
   }
 
+  func testCameraCommandLaneDownloadBarrierPreservesQueuedSessionMutation() async {
+    let mutationQueued = expectation(description: "session mutation queued")
+    let lane = CameraCommandLane { priority in
+      if priority == .sessionMutation {
+        mutationQueued.fulfill()
+      }
+    }
+    let activeStarted = expectation(description: "active details started")
+    let releaseActive = DispatchSemaphore(value: 0)
+
+    let active = Task {
+      try await lane.run(priority: .details) {
+        activeStarted.fulfill()
+        releaseActive.wait()
+      }
+    }
+    await fulfillment(of: [activeStarted], timeout: 1)
+
+    let mutation = Task { () -> String in
+      do {
+        return try await lane.run(priority: .sessionMutation) {
+          "mutation"
+        }
+      } catch is CancellationError {
+        return "cancelled"
+      } catch {
+        return "failed"
+      }
+    }
+    await fulfillment(of: [mutationQueued], timeout: 1)
+
+    let leaseTask = Task {
+      await lane.acquireExclusiveDownloadLease()
+    }
+    try? await Task.sleep(nanoseconds: 30_000_000)
+    releaseActive.signal()
+    _ = try? await active.value
+
+    let mutationResult = await mutation.value
+    let lease = await leaseTask.value
+    lease.release()
+
+    XCTAssertEqual(mutationResult, "mutation")
+  }
+
+  func testCameraCommandLaneQueuesNewSessionMutationDuringDownloadBarrier() async {
+    let mutationQueued = expectation(description: "session mutation queued")
+    let lane = CameraCommandLane { priority in
+      if priority == .sessionMutation {
+        mutationQueued.fulfill()
+      }
+    }
+    let lease = await lane.acquireExclusiveDownloadLease()
+    let downloadStarted = expectation(description: "download started")
+    let releaseDownload = DispatchSemaphore(value: 0)
+
+    let download = Task {
+      try await lane.run(priority: .download) {
+        downloadStarted.fulfill()
+        releaseDownload.wait()
+      }
+    }
+    await fulfillment(of: [downloadStarted], timeout: 1)
+
+    let mutation = Task { () -> String in
+      do {
+        return try await lane.run(priority: .sessionMutation) {
+          "mutation"
+        }
+      } catch is CancellationError {
+        return "cancelled"
+      } catch {
+        return "failed"
+      }
+    }
+    await fulfillment(of: [mutationQueued], timeout: 1)
+
+    releaseDownload.signal()
+    _ = try? await download.value
+    let mutationResult = await mutation.value
+    lease.release()
+
+    XCTAssertEqual(mutationResult, "mutation")
+  }
+
   func testCameraCommandLaneCancelsQueuedNonDownloadWorkBeforeAdmittingDownload() async {
     let lane = CameraCommandLane()
     let activeMetadataStarted = expectation(description: "active metadata started")
