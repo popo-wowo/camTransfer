@@ -1,0 +1,28 @@
+ios/Runner/NativeGalleryViewController.swift
+  6f08be97e0180404 141-161,163-167,169-170,659,664,1192-1196,1357-1359,1948-1957,1963
+ios/Runner/NativeScanViewController.swift
+  6f08be97e0180404 1064-1065,1247
+ios/Runner/NativeConnectViewController.swift
+  6f08be97e0180404 1938,1943,1945,1949,2040,2043,2046-2050
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "3a1d6173c3cac7983c82765ec23d37672e83abfb",
+  "prompts": {
+    "6f08be97e0180404": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7eb69989-a986-4503-975b-d4f18edfa3a1",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 140,
+      "total_deletions": 143,
+      "accepted_lines": 66,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/5cd6303df873361d5ec6ea0c064ea00a0c1d291ebb9c831accc17c8560168abc"
+    }
+  }
+}
