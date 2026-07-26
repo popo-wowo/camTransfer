@@ -1442,12 +1442,7 @@ enum NativeGalleryLoadingPhrase {
 
 enum NativeGalleryDownloadSelectionPolicy {
   static func canSelect(downloadState: CameraVendorDownloadState) -> Bool {
-    switch downloadState {
-    case .idle, .failed, .saved:
-      return true
-    case .queued, .downloading:
-      return false
-    }
+    DownloadEligibility.canSelect(state: downloadState)
   }
 }
 
