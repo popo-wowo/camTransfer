@@ -15,7 +15,13 @@ protocol CameraVendorBleBackgroundKeepAlive: AnyObject {
 }
 
 struct CameraVendorExclusiveDownloadWindowOwnerID: Hashable, Sendable {
-  fileprivate let rawValue = UUID()
+  fileprivate let rawValue: UUID
+  fileprivate let generationID: UUID
+
+  fileprivate init(generationID: UUID = UUID()) {
+    rawValue = UUID()
+    self.generationID = generationID
+  }
 }
 
 protocol CameraVendorExclusiveDownloadWindowControlling: AnyObject {
@@ -157,6 +163,19 @@ extension CameraVendorGalleryReadySummaryProviding {
 }
 
 final class CameraVendorPtpSessionRuntime {
+  private final class ExclusiveDownloadWindowGeneration {
+    var ownerIDs: Set<CameraVendorExclusiveDownloadWindowOwnerID>
+    let acquisition: ExclusiveDownloadLeaseAcquisition
+
+    init(
+      ownerID: CameraVendorExclusiveDownloadWindowOwnerID,
+      acquisition: ExclusiveDownloadLeaseAcquisition
+    ) {
+      ownerIDs = [ownerID]
+      self.acquisition = acquisition
+    }
+  }
+
   private final class ExclusiveDownloadLeaseAcquisition {
     private final class State {
       private let lock = NSLock()
@@ -225,8 +244,9 @@ final class CameraVendorPtpSessionRuntime {
   private let exclusiveDownloadLeaseLock = NSLock()
   private let diagnosticHandler: (String) -> Void
   private let communicationGeneration: () -> UInt64
-  private var exclusiveDownloadLeaseAcquisition: ExclusiveDownloadLeaseAcquisition?
-  private var exclusiveDownloadWindowOwnerIDs = Set<CameraVendorExclusiveDownloadWindowOwnerID>()
+  private var exclusiveDownloadWindowGenerations: [
+    UUID: ExclusiveDownloadWindowGeneration
+  ] = [:]
   private var isExclusiveDownloadWindowActive = false
   private var activeThumbnailRequestCount = 0
   private var activeBackgroundMetadataRequestCount = 0
@@ -270,14 +290,20 @@ final class CameraVendorPtpSessionRuntime {
   }
 
   func beginExclusiveDownloadWindow(ownerID: CameraVendorExclusiveDownloadWindowOwnerID) {
-    let shouldActivate: Bool
     exclusiveDownloadLeaseLock.lock()
-    exclusiveDownloadWindowOwnerIDs.insert(ownerID)
-    shouldActivate = exclusiveDownloadWindowOwnerIDs.count == 1
-    if shouldActivate {
-      activateExclusiveDownloadWindow()
+    if let generation = exclusiveDownloadWindowGenerations[ownerID.generationID] {
+      generation.ownerIDs.insert(ownerID)
+    } else {
+      let shouldActivate = exclusiveDownloadWindowGenerations.isEmpty
       let acquisition = ExclusiveDownloadLeaseAcquisition(commandLane: commandLane)
-      exclusiveDownloadLeaseAcquisition = acquisition
+      exclusiveDownloadWindowGenerations[ownerID.generationID] =
+        ExclusiveDownloadWindowGeneration(
+          ownerID: ownerID,
+          acquisition: acquisition
+        )
+      if shouldActivate {
+        activateExclusiveDownloadWindow()
+      }
     }
     exclusiveDownloadLeaseLock.unlock()
   }
@@ -285,10 +311,12 @@ final class CameraVendorPtpSessionRuntime {
   func awaitExclusiveDownloadWindowReady(
     ownerID: CameraVendorExclusiveDownloadWindowOwnerID
   ) async throws {
-    let acquisition = exclusiveDownloadLeaseLock.withLock {
-      exclusiveDownloadWindowOwnerIDs.contains(ownerID)
-        ? exclusiveDownloadLeaseAcquisition
-        : nil
+    let acquisition: ExclusiveDownloadLeaseAcquisition? = exclusiveDownloadLeaseLock.withLock {
+      guard let generation = exclusiveDownloadWindowGenerations[ownerID.generationID],
+        generation.ownerIDs.contains(ownerID) else {
+        return nil
+      }
+      return generation.acquisition
     }
     guard let acquisition else { throw CancellationError() }
     try await acquisition.waitUntilReady()
@@ -301,7 +329,8 @@ final class CameraVendorPtpSessionRuntime {
   ) async throws -> T {
     try await commandLane.run(priority: .download) {
       guard self.exclusiveDownloadLeaseLock.withLock({
-        self.exclusiveDownloadWindowOwnerIDs.contains(ownerID)
+        self.exclusiveDownloadWindowGenerations[ownerID.generationID]?
+          .ownerIDs.contains(ownerID) == true
       }) else {
         throw CancellationError()
       }
@@ -316,39 +345,37 @@ final class CameraVendorPtpSessionRuntime {
     let acquisition: ExclusiveDownloadLeaseAcquisition?
     let shouldDeactivate: Bool
     exclusiveDownloadLeaseLock.lock()
-    guard exclusiveDownloadWindowOwnerIDs.remove(ownerID) != nil else {
+    guard let generation = exclusiveDownloadWindowGenerations[ownerID.generationID],
+      generation.ownerIDs.remove(ownerID) != nil else {
       exclusiveDownloadLeaseLock.unlock()
       return
     }
-    shouldDeactivate = exclusiveDownloadWindowOwnerIDs.isEmpty
-      && exclusiveDownloadLeaseAcquisition != nil
-    if shouldDeactivate {
-      acquisition = exclusiveDownloadLeaseAcquisition
-      exclusiveDownloadLeaseAcquisition = nil
-      deactivateExclusiveDownloadWindow()
+    if generation.ownerIDs.isEmpty {
+      exclusiveDownloadWindowGenerations.removeValue(forKey: ownerID.generationID)
+      acquisition = generation.acquisition
     } else {
       acquisition = nil
     }
+    shouldDeactivate = acquisition != nil && exclusiveDownloadWindowGenerations.isEmpty
+    if shouldDeactivate {
+      deactivateExclusiveDownloadWindow()
+    }
     exclusiveDownloadLeaseLock.unlock()
-    guard shouldDeactivate else { return }
     acquisition?.cancel(afterSerialized: finalizer)
   }
 
   func forceEndExclusiveDownloadWindow(afterSerialized finalizer: (() -> Void)? = nil) {
-    let acquisition: ExclusiveDownloadLeaseAcquisition?
-    let shouldDeactivate: Bool
+    let acquisitions: [ExclusiveDownloadLeaseAcquisition]
     exclusiveDownloadLeaseLock.lock()
-    shouldDeactivate = !exclusiveDownloadWindowOwnerIDs.isEmpty
-      || exclusiveDownloadLeaseAcquisition != nil
-    exclusiveDownloadWindowOwnerIDs.removeAll(keepingCapacity: false)
-    acquisition = exclusiveDownloadLeaseAcquisition
-    exclusiveDownloadLeaseAcquisition = nil
-    if shouldDeactivate {
+    acquisitions = exclusiveDownloadWindowGenerations.values.map(\.acquisition)
+    exclusiveDownloadWindowGenerations.removeAll(keepingCapacity: false)
+    if !acquisitions.isEmpty {
       deactivateExclusiveDownloadWindow()
     }
     exclusiveDownloadLeaseLock.unlock()
-    guard shouldDeactivate else { return }
-    acquisition?.cancel(afterSerialized: finalizer)
+    for (index, acquisition) in acquisitions.enumerated() {
+      acquisition.cancel(afterSerialized: index == 0 ? finalizer : nil)
+    }
   }
 
   func beginVisibleThumbnailBatch(handles: [Int]) {
@@ -644,7 +671,11 @@ final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVend
   private let exclusiveDownloadWindowLock = NSLock()
   private var exclusiveDownloadWindowOwnerIDs = Set<CameraVendorExclusiveDownloadWindowOwnerID>()
   private var exclusiveDownloadWindowGeneration: UInt64 = 0
+  private var exclusiveDownloadWindowGenerationID: UUID?
   private var hasStartedPriorityDownloadBatch = false
+#if DEBUG
+  var exclusiveDownloadWindowEndStateDidCommitForTesting: (() -> Void)?
+#endif
 
   func configure(connectionSummary: CameraVendorConnectionSummary) {
     terminateCameraCommunication(reason: "configure-gallery-connection")
@@ -718,16 +749,20 @@ final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVend
 
   @discardableResult
   func beginExclusiveDownloadWindow() -> CameraVendorExclusiveDownloadWindowOwnerID {
-    let ownerID = CameraVendorExclusiveDownloadWindowOwnerID()
+    let ownerID: CameraVendorExclusiveDownloadWindowOwnerID
     let shouldReportBegin: Bool
     let generation: UInt64
     exclusiveDownloadWindowLock.lock()
-    exclusiveDownloadWindowOwnerIDs.insert(ownerID)
-    shouldReportBegin = exclusiveDownloadWindowOwnerIDs.count == 1
+    shouldReportBegin = exclusiveDownloadWindowOwnerIDs.isEmpty
     if shouldReportBegin {
       exclusiveDownloadWindowGeneration += 1
+      exclusiveDownloadWindowGenerationID = UUID()
       hasStartedPriorityDownloadBatch = false
     }
+    ownerID = CameraVendorExclusiveDownloadWindowOwnerID(
+      generationID: exclusiveDownloadWindowGenerationID!
+    )
+    exclusiveDownloadWindowOwnerIDs.insert(ownerID)
     generation = exclusiveDownloadWindowGeneration
     exclusiveDownloadWindowLock.unlock()
     ptpRuntime.beginExclusiveDownloadWindow(ownerID: ownerID)
@@ -799,9 +834,15 @@ final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVend
     let isLastOwner = exclusiveDownloadWindowOwnerIDs.isEmpty
     shouldFinishBatch = isLastOwner && hasStartedPriorityDownloadBatch
     if isLastOwner {
+      exclusiveDownloadWindowGenerationID = nil
       hasStartedPriorityDownloadBatch = false
     }
     exclusiveDownloadWindowLock.unlock()
+#if DEBUG
+    if isLastOwner {
+      exclusiveDownloadWindowEndStateDidCommitForTesting?()
+    }
+#endif
     let finalizer: (() -> Void)? = shouldFinishBatch ? { [weak self] in
       guard let self else { return }
       self.session.finishPriorityDownloadBatchOnCommandLane()
@@ -824,6 +865,7 @@ final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVend
     shouldFinishBatch = hasStartedPriorityDownloadBatch
     exclusiveDownloadWindowOwnerIDs.removeAll(keepingCapacity: false)
     exclusiveDownloadWindowGeneration += 1
+    exclusiveDownloadWindowGenerationID = nil
     hasStartedPriorityDownloadBatch = false
     exclusiveDownloadWindowLock.unlock()
     guard hadOwners else { return }

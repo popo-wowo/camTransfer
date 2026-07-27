@@ -211,7 +211,7 @@ final class CameraCommandLane {
     if let finalizer {
       serializedFinalizers.append(finalizer)
     }
-    if !isExclusiveDownloadBarrierActive && !isCommandActive {
+    if !isCommandActive {
       finalizerToRun = takeNextSerializedFinalizerLocked()
       if finalizerToRun != nil {
         isCommandActive = true

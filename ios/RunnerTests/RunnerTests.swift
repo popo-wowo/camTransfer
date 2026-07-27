@@ -9876,6 +9876,40 @@ final class RunnerTests: XCTestCase {
     service.endExclusiveDownloadWindow(ownerID: replacementOwner)
   }
 
+  func testRealtimeGalleryServiceLastOwnerFinishPrecedesInterleavedReplacementBatchBegin() async throws {
+    let service = CameraVendorRealtimeGalleryService()
+    let eventLock = NSLock()
+    var events: [String] = []
+    service.diagnosticHandler = { message in
+      eventLock.withLock {
+        if message.contains("PTP_PRIORITY_DOWNLOAD_BATCH_BEGIN_COMMAND_LANE") {
+          events.append("begin")
+        } else if message.contains("PRIORITY_DOWNLOAD_FINISH") {
+          events.append("finish")
+        }
+      }
+    }
+
+    let oldOwner = service.beginExclusiveDownloadWindow()
+    try await service.awaitExclusiveDownloadWindowReady(ownerID: oldOwner)
+
+    var replacementOwner: CameraVendorExclusiveDownloadWindowOwnerID?
+    service.exclusiveDownloadWindowEndStateDidCommitForTesting = {
+      service.exclusiveDownloadWindowEndStateDidCommitForTesting = nil
+      replacementOwner = service.beginExclusiveDownloadWindow()
+    }
+    service.endExclusiveDownloadWindow(ownerID: oldOwner)
+
+    let unwrappedReplacementOwner = try XCTUnwrap(replacementOwner)
+    try await service.awaitExclusiveDownloadWindowReady(ownerID: unwrappedReplacementOwner)
+
+    XCTAssertEqual(
+      eventLock.withLock { events },
+      ["begin", "finish", "begin"]
+    )
+    service.endExclusiveDownloadWindow(ownerID: unwrappedReplacementOwner)
+  }
+
   func testRealtimeGalleryServiceDiagnosticCallbackCanEndWindowWithoutDeadlock() async throws {
     let service = CameraVendorRealtimeGalleryService()
     let ownerID = service.beginExclusiveDownloadWindow()
@@ -10885,7 +10919,7 @@ final class RunnerTests: XCTestCase {
       beginBody.range(of: "let acquisition = ExclusiveDownloadLeaseAcquisition(commandLane: commandLane)")
     )
     let publication = try XCTUnwrap(
-      beginBody.range(of: "exclusiveDownloadLeaseAcquisition = acquisition")
+      beginBody.range(of: "exclusiveDownloadWindowGenerations[ownerID.generationID] =")
     )
 
     XCTAssertLessThan(construction.lowerBound, publication.lowerBound)
