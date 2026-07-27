@@ -6,6 +6,10 @@ struct CameraAutoDownloadRule: Codable, Equatable {
   var downloadMode: CameraAutoDownloadMode = .original
   var disconnectAfterDownload: Bool = true
 
+  var completionPolicy: CameraDownloadCompletionPolicy {
+    disconnectAfterDownload ? .disconnectToHome : .returnToGallery
+  }
+
   var summaryText: String {
     guard isEnabled else { return "未启用" }
     return [formatText, dateText, downloadScopeText, modeText]

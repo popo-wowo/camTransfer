@@ -1003,6 +1003,23 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   }
 
   @discardableResult
+  func routeQuickDownloadNoMatch(
+    completionPolicy: CameraDownloadCompletionPolicy
+  ) -> Bool {
+    guard identity != nil,
+          presentation.phase == .galleryReady,
+          activeDownloadSubmission == nil else {
+      return false
+    }
+    applyDownloadCompletionRouting(
+      completionPolicy,
+      reason: "quick-download-no-match"
+    )
+    publishPresentation()
+    return true
+  }
+
+  @discardableResult
   func observe(_ observer: @escaping (CameraSessionPresentation) -> Void) -> UUID {
     let id = UUID()
     presentationObservers[id] = observer
@@ -1490,6 +1507,13 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     let completionPolicy = activeDownloadSubmission?.completionPolicy ?? .returnToGallery
     activeDownloadSubmission = nil
     queuedDownloads = []
+    applyDownloadCompletionRouting(completionPolicy, reason: reason)
+  }
+
+  private func applyDownloadCompletionRouting(
+    _ completionPolicy: CameraDownloadCompletionPolicy,
+    reason: String
+  ) {
     switch completionPolicy {
     case .returnToGallery:
       presentation = CameraSessionPresentation(

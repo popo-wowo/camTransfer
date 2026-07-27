@@ -930,7 +930,7 @@ final class NativeConnectViewController: UIViewController {
   private let wiredImportProbeService = WiredCameraImportService()
   private var autoDownloadRule = CameraAutoDownloadRuleStore.load()
   private var isAutoDownloadPending = false
-  private var quickDownloadCoordinator: QuickDownloadCoordinator?
+  private var quickDownloadTask: Task<Void, Never>?
   private var cameras: [IOSCameraDiscoveredCamera] = []
   private var wiredImportDevices: [WiredCameraImportDevice] = []
   private weak var scanController: NativeScanViewController?
@@ -1014,6 +1014,7 @@ final class NativeConnectViewController: UIViewController {
 
   deinit {
     NotificationCenter.default.removeObserver(self)
+    quickDownloadTask?.cancel()
     galleryEntryTask?.cancel()
     wiredImportProbeService.stop()
   }
@@ -1699,8 +1700,8 @@ final class NativeConnectViewController: UIViewController {
       "[HOME_CONNECT_FLOW_COMMAND] reason=\(reason) workerActive=\(cameraSessionRuntime.isConnectionWorkerActive) " +
       "rememberedEntry=\(isEnteringGalleryFromRememberedCamera)"
     )
-    quickDownloadCoordinator?.cancel()
-    quickDownloadCoordinator = nil
+    quickDownloadTask?.cancel()
+    quickDownloadTask = nil
     pairingProbeTask?.cancel()
     pairingProbeTask = nil
     cameraSessionRuntime.cancelPairingProbe(reason: reason)
@@ -1938,19 +1939,17 @@ final class NativeConnectViewController: UIViewController {
     }
   }
 
-  // MARK: - Quick Download (Coordinator)
+  // MARK: - Quick Download
 
   private func executeQuickDownload() {
-    quickDownloadCoordinator?.cancel()
-    let coordinator = QuickDownloadCoordinator(
-      runtime: cameraSessionRuntime,
-      rule: autoDownloadRule
-    )
-    quickDownloadCoordinator = coordinator
-    coordinator.execute { [weak self] result in
-      guard let self else { return }
-      self.quickDownloadCoordinator = nil
-      self.handleQuickDownloadResult(result)
+    quickDownloadTask?.cancel()
+    let runtime = cameraSessionRuntime
+    let rule = autoDownloadRule
+    quickDownloadTask = Task { [weak self] in
+      let result = await QuickDownloadUseCase(runtime: runtime).execute(rule: rule)
+      guard !Task.isCancelled else { return }
+      self?.quickDownloadTask = nil
+      self?.handleQuickDownloadResult(result)
     }
   }
 

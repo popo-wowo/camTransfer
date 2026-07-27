@@ -7538,21 +7538,66 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(state.catalogIntent.sort, .oldest)
   }
 
-  func testQuickDownloadCoordinatorUsesTransientSharedQueryWithoutObservingGallery() throws {
-    let source = try String(
-      contentsOf: URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .appendingPathComponent("Runner/QuickDownloadCoordinator.swift")
+  func testQuickDownloadUseCaseDoesNotObserveGalleryPresentation() throws {
+    let source = try quickDownloadUseCaseSource()
+
+    XCTAssertTrue(source.contains("runtime.activeCameraIdentity"))
+    XCTAssertFalse(source.contains("runtime.observe"))
+    XCTAssertFalse(source.contains("runtime.presentation"))
+    XCTAssertFalse(source.contains("galleryPresentationPayload"))
+  }
+
+  func testQuickDownloadUseCaseDoesNotMutateGalleryCatalog() throws {
+    let source = try quickDownloadUseCaseSource()
+
+    XCTAssertFalse(source.contains("submitGalleryFilter"))
+    XCTAssertFalse(source.contains("CameraGallerySession"))
+    XCTAssertFalse(source.contains("CameraGalleryFilterStateStore"))
+    XCTAssertFalse(source.contains("CameraAutoDownloadRuleStore"))
+  }
+
+  func testQuickDownloadUseCaseUsesSharedFilterEngine() throws {
+    let runner = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner")
+    let source = try quickDownloadUseCaseSource()
+    let queryEngine = try String(
+      contentsOf: runner.appendingPathComponent("CameraCore/Gallery/CameraCatalogQueryEngine.swift")
     )
 
     XCTAssertTrue(source.contains("runtime.resolveCatalog("))
     XCTAssertTrue(source.contains("rule: rule.filter"))
     XCTAssertTrue(source.contains("owner: .quickDownload"))
-    XCTAssertFalse(source.contains("runtime.observe"))
-    XCTAssertFalse(source.contains("runtime.submitGalleryIntent"))
-    XCTAssertFalse(source.contains("formatLabel"))
-    XCTAssertFalse(source.contains("filename"))
+    XCTAssertTrue(queryEngine.contains("CameraFilterEngine.project("))
+    XCTAssertFalse(source.contains("CameraFilterEngine.project("))
+  }
+
+  func testQuickDownloadUseCaseSubmitsRuntimeBatchWithConfiguredCompletionPolicy() throws {
+    let runner = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner")
+    let source = try quickDownloadUseCaseSource()
+    let ruleSource = try String(
+      contentsOf: runner.appendingPathComponent("CameraAutoDownloadRule.swift")
+    )
+
+    XCTAssertTrue(source.contains("CameraDownloadSubmission("))
+    XCTAssertTrue(source.contains("runtime.submitDownload("))
+    XCTAssertTrue(source.contains("origin: .quickDownload"))
+    XCTAssertTrue(source.contains("completionPolicy: rule.completionPolicy"))
+    XCTAssertTrue(ruleSource.contains("var completionPolicy: CameraDownloadCompletionPolicy"))
+    XCTAssertTrue(ruleSource.contains("disconnectAfterDownload ? .disconnectToHome : .returnToGallery"))
+  }
+
+  private func quickDownloadUseCaseSource() throws -> String {
+    try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Runner/QuickDownloadUseCase.swift")
+    )
   }
 
   func testCatalogRuntimeIsTheOnlyConsumerApplyingFilterProjection() throws {
@@ -7566,9 +7611,7 @@ final class RunnerTests: XCTestCase {
     let galleryPolicy = try String(
       contentsOf: runner.appendingPathComponent("NativeGalleryPolicies.swift")
     )
-    let quick = try String(
-      contentsOf: runner.appendingPathComponent("QuickDownloadCoordinator.swift")
-    )
+    let quick = try quickDownloadUseCaseSource()
 
     let queryEngine = try String(
       contentsOf: runner.appendingPathComponent("CameraCore/Gallery/CameraCatalogQueryEngine.swift")
@@ -15938,7 +15981,7 @@ final class RunnerTests: XCTestCase {
       .appendingPathComponent("Runner")
     let runtimeSource = try String(contentsOf: runner.appendingPathComponent("CameraSessionRuntime.swift"))
     let gallerySource = try String(contentsOf: runner.appendingPathComponent("NativeGalleryViewController.swift"))
-    let quickSource = try String(contentsOf: runner.appendingPathComponent("QuickDownloadCoordinator.swift"))
+    let quickSource = try String(contentsOf: runner.appendingPathComponent("QuickDownloadUseCase.swift"))
 
     XCTAssertTrue(runtimeSource.contains("func submitDownload(_ submission: CameraDownloadSubmission)"))
     XCTAssertTrue(gallerySource.contains("runtime.submitDownload("))
@@ -15948,6 +15991,31 @@ final class RunnerTests: XCTestCase {
     XCTAssertTrue(runtimeSource.contains("origin: .recovery"))
     XCTAssertFalse(gallerySource.contains(".startDownloadRequests("))
     XCTAssertFalse(quickSource.contains(".startDownload("))
+  }
+
+  @MainActor
+  func testQuickDownloadUseCaseRoutesNoMatchWithoutStartingDownload() async throws {
+    let transport = CameraSessionRuntimeSpy()
+    let runtime = CameraSessionRuntime(transport: transport)
+    runtime.send(.enterGallery(CameraSessionIdentity(cameraName: "X-T5")))
+    await waitForRuntimeGalleryReady(runtime)
+    var routedHome = false
+    runtime.onPresentationDestinationReady = { destination in
+      if case .home = destination { routedHome = true }
+    }
+    let rule = CameraAutoDownloadRule(
+      isEnabled: true,
+      filter: .quickDownloadDefault,
+      downloadMode: .original,
+      disconnectAfterDownload: true
+    )
+
+    let result = await QuickDownloadUseCase(runtime: runtime).execute(rule: rule)
+
+    XCTAssertEqual(result, .noMatch(ruleSummary: rule.summaryText))
+    XCTAssertEqual(transport.startedHandles, [])
+    XCTAssertEqual(runtime.presentation.phase, .idle)
+    XCTAssertTrue(routedHome)
   }
 
   @MainActor
