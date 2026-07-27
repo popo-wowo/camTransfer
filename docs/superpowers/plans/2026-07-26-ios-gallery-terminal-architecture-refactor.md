@@ -32,7 +32,6 @@ Create:
 - `ios/Runner/CameraCore/Gallery/CameraGalleryThumbnailPipeline.swift`
 - `ios/Runner/CameraCore/Gallery/CameraCatalogAccessLease.swift`
 - `ios/Runner/CameraCore/Gallery/CameraGalleryFilterPolicies.swift`
-- `ios/Runner/CameraDownloadManager.swift`
 
 Modify:
 
@@ -269,13 +268,13 @@ enum GalleryProjectionPolicy {
 - [ ] Run quick-download, gallery-filter, and shared-policy tests; expect zero failures.
 - [ ] Commit with `refactor(ios): unify gallery and quick download policies`.
 
-### Task 7: Extract the single DownloadManager
+### Task 7: Keep Runtime as the single download owner and unify submission policy
 
-**Files:** Create `CameraDownloadManager.swift`; modify Runtime, transfer executor, download list, Xcode project, and tests.
+**Files:** Modify Runtime, quick download, gallery download entry, transfer executor, download list, and tests. Do not create `CameraDownloadManager.swift`.
 
-- [ ] Write failing tests proving queued/downloading handles cannot be duplicated, saved handles can be explicitly redownloaded, and disconnect behavior belongs to batch completion policy.
-- [ ] Run the tests and confirm the manager types are missing.
-- [ ] Add batch contracts:
+- [ ] Write failing tests proving manual, quick, and recovered downloads all submit to the same Runtime queue; queued/downloading handles cannot be duplicated; saved handles can be explicitly redownloaded; and normal completion/cancellation returns the same healthy session to `galleryReady`.
+- [ ] Run the tests and confirm the remaining entry points and eligibility checks are not yet unified.
+- [ ] Add only the value contracts needed by Runtime-owned sequential batches:
 
 ```swift
 enum CameraDownloadCompletionPolicy: Equatable, Sendable {
@@ -291,10 +290,11 @@ struct CameraDownloadBatch: Equatable, Sendable {
 }
 ```
 
-- [ ] Move queue, current handle, item states, progress, completed/failed counts, recovery snapshot, presentation, and final eligibility enforcement from Runtime into the manager.
-- [ ] Acquire the exclusive download barrier before the first transfer; join Catalog/thumbnail/HD work; release only at terminal or recoverable interruption.
+- [ ] Keep queue, current handle, item states, progress, completed/failed counts, recovery snapshot, presentation, and lease ownership in `CameraSessionRuntime`; expose one Runtime batch-submission API used by all entry points.
+- [ ] Keep one non-overlapping batch and one sequential current transfer. Do not add a second owner, owner refcount, batch generation protocol, or overlapping-batch support.
+- [ ] Acquire the existing exclusive download barrier before the first transfer; join Catalog/thumbnail/HD work; release only when that Runtime-owned batch is terminal or recoverably interrupted. Reuse the same camera/PTP session after normal completion or user cancellation.
 - [ ] Run admission, original-download, recovery, background, and completion-policy tests; expect zero targeted failures.
-- [ ] Commit with `refactor(ios): extract single download manager`.
+- [ ] Commit with `refactor(ios): unify runtime download submission`.
 
 ### Task 8: Close CameraCore vendor boundaries and slim controllers
 
