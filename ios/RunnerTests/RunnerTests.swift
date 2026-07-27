@@ -7298,6 +7298,22 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(quick.contains("CameraFilterEngine.project("))
   }
 
+  func testLegacyIOSGalleryFilterPolicyIsRemovedFromProduction() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Runner/CameraCore/Gallery/CameraGalleryModule.swift")
+    )
+
+    XCTAssertFalse(source.contains("IOSCameraGalleryDateFilter"))
+    XCTAssertFalse(source.contains("IOSCameraGalleryFormatFilter"))
+    XCTAssertFalse(source.contains("IOSCameraGallerySortMode"))
+    XCTAssertFalse(source.contains("IOSCameraGalleryFilterState"))
+    XCTAssertFalse(source.contains("IOSCameraGalleryPolicy"))
+    XCTAssertFalse(source.contains("matchesFormat(_ formatLabel"))
+  }
+
   func testQuickSettingsUsesSharedFourFormatMultiSelectionWithoutPresetsOrVideo() throws {
     let source = try String(
       contentsOf: URL(fileURLWithPath: #filePath)
@@ -15018,14 +15034,6 @@ final class RunnerTests: XCTestCase {
 
   }
 
-  func testIOSGalleryFilterDefaultsMatchAndroidAllNewestPolicy() {
-    let state = IOSCameraGalleryFilterState()
-
-    XCTAssertEqual(state.date, .all)
-    XCTAssertEqual(state.format, .all)
-    XCTAssertEqual(state.sort, .newest)
-  }
-
   func testNativeGalleryChromeCopyMatchesAndroidHeaderAndCollapsedFilter() {
     XCTAssertEqual(NativeGalleryChromeCopy.title, "CAMERA GALLERY")
     XCTAssertEqual(NativeGalleryChromeCopy.filterTitle, "筛选")
@@ -15273,48 +15281,6 @@ final class RunnerTests: XCTestCase {
     XCTAssertTrue(backBody.contains("navigationController?.popViewController(animated: true)"))
   }
 
-  func testIOSGalleryFilterSupportsInclusiveDateRangeAndAllFormats() {
-    let calendar = Calendar(identifier: .gregorian)
-    let start = Date(timeIntervalSince1970: 1_800_000_000)
-    let middle = calendar.date(byAdding: .day, value: 2, to: start)!
-    let end = calendar.date(byAdding: .day, value: 4, to: start)!
-    let before = calendar.date(byAdding: .day, value: -1, to: start)!
-    let items = [
-      iosGalleryItem(handle: 1, formatLabel: "JPG", captureDate: before),
-      iosGalleryItem(handle: 2, formatLabel: "RAW", captureDate: middle),
-      iosGalleryItem(handle: 3, formatLabel: "HEIF", captureDate: end),
-    ]
-
-    let filtered = IOSCameraGalleryPolicy.filteredItems(
-      items,
-      state: IOSCameraGalleryFilterState(date: .range(end, start), format: .all, sort: .newest),
-      downloadedHandles: [],
-      now: start,
-      calendar: calendar
-    )
-
-    XCTAssertEqual(filtered.map(\.handle), [3, 2])
-  }
-
-  func testIOSGalleryFilterSortsNotDownloadedFirst() {
-    let now = Date(timeIntervalSince1970: 1_800_000_000)
-    let older = now.addingTimeInterval(-60)
-    let items = [
-      iosGalleryItem(handle: 1, formatLabel: "JPG", captureDate: now),
-      iosGalleryItem(handle: 2, formatLabel: "JPG", captureDate: older),
-      iosGalleryItem(handle: 3, formatLabel: "JPG", captureDate: now.addingTimeInterval(-120)),
-    ]
-
-    let filtered = IOSCameraGalleryPolicy.filteredItems(
-      items,
-      state: IOSCameraGalleryFilterState(date: .all, format: .jpg, sort: .notDownloaded),
-      downloadedHandles: [1],
-      now: now
-    )
-
-    XCTAssertEqual(filtered.map(\.handle), [2, 3, 1])
-  }
-
   func testIOSDownloadHistoryPersistsObjectInfoAndThumbnailBytes() throws {
     let record = IOSCameraDownloadHistoryRecord(
       cameraID: "12345678_X-T5",
@@ -15510,18 +15476,6 @@ final class RunnerTests: XCTestCase {
       formatLabel: formatLabel,
       captureDate: "2026:05:17 10:00:00",
       byteSizeText: "1.0 MB"
-    )
-  }
-
-  private func iosGalleryItem(handle: Int, formatLabel: String, captureDate: Date) -> IOSCameraGalleryItem {
-    IOSCameraGalleryItem(
-      handle: handle,
-      filename: "DSCF\(String(format: "%04d", handle)).\(formatLabel.lowercased())",
-      formatLabel: formatLabel,
-      captureDate: captureDate,
-      byteSize: 1_024,
-      orientation: nil,
-      thumbnailBytes: nil
     )
   }
 
