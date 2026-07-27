@@ -205,8 +205,10 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
     }
   }
 
-  func loadObjectInfo(handle: Int) async throws -> CameraVendorCameraObjectInfo {
-    try await transport.fetchObjectInfo(for: handle)
+  func loadObjectInfo(handle: Int) async throws -> CameraGalleryObjectInfoResult {
+    CameraGalleryRepositoryAdapter.objectInfoResult(
+      from: try await transport.fetchObjectInfo(for: handle)
+    )
   }
 
   func loadInitialCatalog() async throws -> CameraGalleryCatalogSnapshot {
@@ -228,32 +230,15 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
     }
   }
 
-  func loadThumbnail(handle: Int) async throws -> CameraVendorGalleryThumbnail {
-    try await transport.fetchThumbnailWithInfo(for: handle)
+  func loadThumbnail(handle: Int) async throws -> CameraGalleryThumbnailResult {
+    CameraGalleryRepositoryAdapter.thumbnailResult(
+      from: try await transport.fetchThumbnailWithInfo(for: handle)
+    )
   }
 
   func loadDetails(handle: Int) async throws -> CameraGalleryDetailsSourceResult {
     let info = try await transport.fetchObjectInfo(for: handle)
-    let item = CameraVendorGalleryItem(
-      handle: info.handle,
-      filename: info.filename,
-      formatLabel: info.galleryFormatLabel,
-      captureDate: info.captureDate,
-      byteSizeText: info.compressedSize > 0
-        ? ByteCountFormatter.string(fromByteCount: Int64(info.compressedSize), countStyle: .file)
-        : "",
-      compressedSize: info.compressedSize == 0 ? nil : info.compressedSize,
-      orientation: info.orientation
-    )
-    let details = CameraGalleryRepositoryAdapter.detailsResult(from: info)
-    return CameraGalleryDetailsSourceResult(
-      handle: details.handle,
-      orientation: details.orientation,
-      refinedFormat: details.refinedFormat,
-      notes: details.notes,
-      resolvedItem: item,
-      objectInfo: info
-    )
+    return CameraGalleryRepositoryAdapter.detailsResult(from: info)
   }
 
   func beginVisibleThumbnailBatch(handles: [Int]) {

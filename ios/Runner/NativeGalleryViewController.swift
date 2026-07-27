@@ -107,7 +107,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
   private var gallerySections: [NativeGalleryDaySection] = []
   private var filterState = NativeGalleryFilterState()
   private var currentPreferCompressedDownloads: Bool
-  private var visibleThumbnailRefreshTask: Task<Void, Never>?
+  private var visibleThumbnailRefreshWorkItem: DispatchWorkItem?
   private var thumbnailRehydrateTasks: [Int: Task<Void, Never>] = [:]
   private let thumbnailImageCache = NSCache<NSNumber, UIImage>()
   private var runtimePresentationObserverID: UUID?
@@ -632,11 +632,10 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     let observerID = runtimePresentationObserverID
     let previewObserverID = galleryPreviewObserverID
     let runtime = runtime
-    let visibleThumbnailRefreshTask = visibleThumbnailRefreshTask
+    visibleThumbnailRefreshWorkItem?.cancel()
     let thumbnailRehydrateTasks = thumbnailRehydrateTasks
     let hdTransitionTask = hdTransitionTask
     Task { @MainActor in
-      visibleThumbnailRefreshTask?.cancel()
       await hdTransitionTask?.value
       thumbnailRehydrateTasks.values.forEach { $0.cancel() }
       if let observerID {
@@ -1344,8 +1343,8 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     case .highDefinition:
       isFilterPanelExpanded = false
       updateFilterPanelLayout(animated: false)
-      visibleThumbnailRefreshTask?.cancel()
-      visibleThumbnailRefreshTask = nil
+      visibleThumbnailRefreshWorkItem?.cancel()
+      visibleThumbnailRefreshWorkItem = nil
 
       collectionView.isHidden = true
       hdCollectionView.isHidden = false
@@ -2295,8 +2294,8 @@ extension NativeGalleryViewController {
 
   private func prioritizeGalleryInteraction() {
     guard NativeGallerySelectionRefreshPolicy.shouldPauseThumbnailLoadingDuringSelectionGesture else { return }
-    visibleThumbnailRefreshTask?.cancel()
-    visibleThumbnailRefreshTask = nil
+    visibleThumbnailRefreshWorkItem?.cancel()
+    visibleThumbnailRefreshWorkItem = nil
   }
 
   private func pauseVisibleThumbnailLoadingForBackground() {
@@ -2306,8 +2305,8 @@ extension NativeGalleryViewController {
     ) else {
       return
     }
-    visibleThumbnailRefreshTask?.cancel()
-    visibleThumbnailRefreshTask = nil
+    visibleThumbnailRefreshWorkItem?.cancel()
+    visibleThumbnailRefreshWorkItem = nil
     appendDiagnostic("[后台] 已暂停缩略图请求，保留相机连接")
   }
 
@@ -2320,14 +2319,14 @@ extension NativeGalleryViewController {
     ) else {
       return
     }
-    guard visibleThumbnailRefreshTask == nil else { return }
-    visibleThumbnailRefreshTask = Task { @MainActor in
-      let nanoseconds = UInt64(delay * 1_000_000_000)
-      try? await Task.sleep(nanoseconds: nanoseconds)
-      guard !Task.isCancelled else { return }
-      visibleThumbnailRefreshTask = nil
-      loadVisibleThumbnails()
+    guard visibleThumbnailRefreshWorkItem == nil else { return }
+    let workItem = DispatchWorkItem { [weak self] in
+      guard let self else { return }
+      self.visibleThumbnailRefreshWorkItem = nil
+      self.loadVisibleThumbnails()
     }
+    visibleThumbnailRefreshWorkItem = workItem
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
   }
 
   private func toggleSelection(for item: CameraVendorGalleryItem) {
@@ -2750,7 +2749,6 @@ final class NativeDownloadListViewController: UIViewController {
   private let progressProvider: (Int) -> String?
   private let isTransferActiveProvider: () -> Bool
   private let onClearDownloadCache: (CameraVendorGalleryItem) -> Void
-  var onMovedFromParent: (() -> Void)?
   private var previousNavigationBarHidden: Bool?
   private var previousInteractivePopGestureEnabled: Bool?
   private var isStoppingForExit = false
@@ -2956,6 +2954,9 @@ final class NativeDownloadListViewController: UIViewController {
     runtimePresentationObserverID = runtime.observe { [weak self] _ in
       self?.downloadStateDidChange()
     }
+    runtime.onDownloadThumbnailGenerated = { [weak self] handle, image in
+      self?.setDownloadThumbnail(handle: Int(handle), image: image)
+    }
     runtime.observeIncrementalCatalogUpdates { [weak self] _, handles in
       guard let self else { return }
       // Thumbnail arrived — rehydrate and refresh visible cells
@@ -2977,10 +2978,15 @@ final class NativeDownloadListViewController: UIViewController {
   deinit {
     NotificationCenter.default.removeObserver(self)
     cancelThumbnailRehydrateTasks()
+    let runtime = runtime
     if let runtimePresentationObserverID {
-      let runtime = runtime
       Task { @MainActor in
+        runtime.onDownloadThumbnailGenerated = nil
         runtime.removeObserver(runtimePresentationObserverID)
+      }
+    } else {
+      Task { @MainActor in
+        runtime.onDownloadThumbnailGenerated = nil
       }
     }
   }
@@ -3000,8 +3006,6 @@ final class NativeDownloadListViewController: UIViewController {
     restoreDownloadExitNavigation()
     if isMovingFromParent || isBeingDismissed || navigationController?.isBeingDismissed == true {
       restoreTopChromeNavigationState(animated: animated)
-      onMovedFromParent?()
-      onMovedFromParent = nil
     }
   }
 

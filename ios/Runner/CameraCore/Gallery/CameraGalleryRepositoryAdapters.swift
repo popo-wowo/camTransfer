@@ -4,10 +4,10 @@ enum CameraGalleryRepositoryAdapter {
   static func item(
     existingItem: CameraVendorGalleryItem,
     thumbnailData: Data,
-    resolvedItem: CameraVendorGalleryItem?
+    resolvedMetadata: CameraGalleryResolvedItemMetadata?
   ) -> CameraVendorGalleryItem {
-    var item = resolvedItem.map {
-      mergedItem(existingItem: existingItem, resolvedItem: $0)
+    var item = resolvedMetadata.map {
+      mergedItem(existingItem: existingItem, resolvedMetadata: $0)
     } ?? existingItem
     item.thumbnailData = thumbnailData
     return item
@@ -15,26 +15,28 @@ enum CameraGalleryRepositoryAdapter {
 
   static func mergedItem(
     existingItem: CameraVendorGalleryItem,
-    resolvedItem: CameraVendorGalleryItem
+    resolvedMetadata: CameraGalleryResolvedItemMetadata
   ) -> CameraVendorGalleryItem {
     let existingFilename = existingItem.filename.trimmingCharacters(in: .whitespacesAndNewlines)
-    let resolvedFilename = resolvedItem.filename.trimmingCharacters(in: .whitespacesAndNewlines)
+    let resolvedFilename = resolvedMetadata.filename.trimmingCharacters(in: .whitespacesAndNewlines)
     let filename = isPlaceholderFilename(existingFilename) && !resolvedFilename.isEmpty
-      ? resolvedItem.filename
+      ? resolvedMetadata.filename
       : existingItem.filename
     let formatLabel = confirmedFormatLabel(existingItem.formatLabel) != nil
       ? existingItem.formatLabel
-      : resolvedItem.formatLabel
+      : resolvedMetadata.formatLabel
     return CameraVendorGalleryItem(
       handle: existingItem.handle,
       filename: filename,
       formatLabel: formatLabel,
-      captureDate: resolvedItem.captureDate.isEmpty ? existingItem.captureDate : resolvedItem.captureDate,
-      byteSizeText: existingItem.byteSizeText.isEmpty ? resolvedItem.byteSizeText : existingItem.byteSizeText,
-      compressedSize: existingItem.compressedSize ?? resolvedItem.compressedSize,
-      orientation: resolvedItem.orientation ?? existingItem.orientation,
+      captureDate: resolvedMetadata.captureDate.isEmpty ? existingItem.captureDate : resolvedMetadata.captureDate,
+      byteSizeText: existingItem.byteSizeText.isEmpty ? resolvedMetadata.byteSizeText : existingItem.byteSizeText,
+      compressedSize: existingItem.compressedSize ?? resolvedMetadata.compressedSize,
+      orientation: resolvedMetadata.orientation ?? existingItem.orientation,
       formatHints: confirmedFormatLabel(formatLabel) == nil
-        ? (resolvedItem.formatHints.isEmpty ? existingItem.formatHints : resolvedItem.formatHints)
+        ? (resolvedMetadata.formatHints.isEmpty
+            ? existingItem.formatHints
+            : Set(resolvedMetadata.formatHints.compactMap(CameraVendorGalleryFormatHint.init(rawValue:))))
         : [],
       thumbnailData: existingItem.thumbnailData
     )
@@ -64,13 +66,16 @@ enum CameraGalleryRepositoryAdapter {
   }
 
   static func detailsResult(from info: CameraVendorCameraObjectInfo) -> CameraGalleryDetailsSourceResult {
-    CameraGalleryDetailsSourceResult(
+    let objectInfo = objectInfoResult(from: info)
+    return CameraGalleryDetailsSourceResult(
       handle: info.handle,
       orientation: info.orientation.map(CameraGalleryConfirmedValue.confirmed) ?? .unknown,
       refinedFormat: info.hasResolvedFormat
         ? format(from: info.formatLabel, filename: info.filename)
         : .unknown,
-      notes: []
+      notes: [],
+      resolvedMetadata: objectInfo.metadata,
+      objectInfo: objectInfo
     )
   }
 
@@ -79,7 +84,49 @@ enum CameraGalleryRepositoryAdapter {
       handle: item.handle,
       orientation: item.orientation.map(CameraGalleryConfirmedValue.confirmed) ?? .unknown,
       refinedFormat: format(from: item.formatLabel, filename: item.filename),
-      notes: []
+      notes: [],
+      resolvedMetadata: resolvedMetadata(from: item)
+    )
+  }
+
+  static func refinedFormat(
+    from metadata: CameraGalleryResolvedItemMetadata,
+    hasResolvedFormat: Bool
+  ) -> CameraGalleryConfirmedValue<CameraGalleryFormat> {
+    guard hasResolvedFormat else { return .unknown }
+    return format(from: metadata.formatLabel, filename: metadata.filename)
+  }
+
+  static func objectInfoResult(from info: CameraVendorCameraObjectInfo) -> CameraGalleryObjectInfoResult {
+    CameraGalleryObjectInfoResult(
+      metadata: CameraGalleryResolvedItemMetadata(
+        handle: info.handle,
+        filename: info.filename,
+        formatLabel: info.galleryFormatLabel,
+        captureDate: info.captureDate,
+        byteSizeText: info.compressedSize > 0
+          ? ByteCountFormatter.string(fromByteCount: Int64(info.compressedSize), countStyle: .file)
+          : "",
+        compressedSize: info.compressedSize == 0 ? nil : info.compressedSize,
+        orientation: info.orientation,
+        formatHints: []
+      ),
+      formatCode: info.formatCode,
+      hasResolvedFormat: info.hasResolvedFormat
+    )
+  }
+
+  static func thumbnailResult(from thumbnail: CameraVendorGalleryThumbnail) -> CameraGalleryThumbnailResult {
+    CameraGalleryThumbnailResult(
+      data: thumbnail.data,
+      resolvedMetadata: thumbnail.item.map(resolvedMetadata(from:))
+    )
+  }
+
+  static func previewResult(from preview: CameraVendorGalleryPreview) -> CameraGalleryPreviewResult {
+    CameraGalleryPreviewResult(
+      data: preview.data,
+      objectOrientation: preview.item?.orientation
     )
   }
 
@@ -89,6 +136,19 @@ enum CameraGalleryRepositoryAdapter {
       orientation: result.orientation,
       refinedFormat: result.refinedFormat,
       notes: result.notes
+    )
+  }
+
+  static func resolvedMetadata(from item: CameraVendorGalleryItem) -> CameraGalleryResolvedItemMetadata {
+    CameraGalleryResolvedItemMetadata(
+      handle: item.handle,
+      filename: item.filename,
+      formatLabel: item.formatLabel,
+      captureDate: item.captureDate,
+      byteSizeText: item.byteSizeText,
+      compressedSize: item.compressedSize,
+      orientation: item.orientation,
+      formatHints: item.formatHints.map(\.rawValue).sorted()
     )
   }
 

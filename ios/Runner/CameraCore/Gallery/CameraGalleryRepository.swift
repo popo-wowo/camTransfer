@@ -23,7 +23,7 @@ struct CameraGalleryRepository {
   }
 
   mutating func applyThumbnail(
-    _ thumbnail: CameraVendorGalleryThumbnail,
+    _ thumbnail: CameraGalleryThumbnailResult,
     identity: CameraGalleryChildIdentity
   ) -> Bool {
     guard contains(identity),
@@ -33,7 +33,7 @@ struct CameraGalleryRepository {
     items[itemIndex] = CameraGalleryRepositoryAdapter.item(
       existingItem: items[itemIndex],
       thumbnailData: thumbnail.data,
-      resolvedItem: thumbnail.item
+      resolvedMetadata: thumbnail.resolvedMetadata
     )
     applyThumbnailUpdate(
       handle: identity.handle,
@@ -43,8 +43,8 @@ struct CameraGalleryRepository {
         imageData: thumbnail.data
       )
     )
-    if let resolvedItem = thumbnail.item {
-      replaceSummaryForExistingHandle(resolvedItem)
+    if let resolvedMetadata = thumbnail.resolvedMetadata {
+      replaceSummaryForExistingHandle(resolvedMetadata)
     }
     return true
   }
@@ -55,19 +55,19 @@ struct CameraGalleryRepository {
   ) -> Bool {
     guard contains(identity) else { return false }
     applyDetailsResult(result)
-    if let resolvedItem = result.resolvedItem {
-      replaceSummaryForExistingHandle(resolvedItem)
+    if let resolvedMetadata = result.resolvedMetadata {
+      replaceSummaryForExistingHandle(resolvedMetadata)
     }
     return true
   }
 
-  private mutating func replaceSummaryForExistingHandle(_ resolvedItem: CameraVendorGalleryItem) {
-    guard let itemIndex = items.firstIndex(where: { $0.handle == resolvedItem.handle }) else { return }
+  private mutating func replaceSummaryForExistingHandle(_ resolvedMetadata: CameraGalleryResolvedItemMetadata) {
+    guard let itemIndex = items.firstIndex(where: { $0.handle == resolvedMetadata.handle }) else { return }
     items[itemIndex] = CameraGalleryRepositoryAdapter.mergedItem(
       existingItem: items[itemIndex],
-      resolvedItem: resolvedItem
+      resolvedMetadata: resolvedMetadata
     )
-    guard let entryIndex = entries.firstIndex(where: { $0.summary.handle == resolvedItem.handle }) else { return }
+    guard let entryIndex = entries.firstIndex(where: { $0.summary.handle == resolvedMetadata.handle }) else { return }
     entries[entryIndex].summary = CameraGalleryRepositoryAdapter.summary(from: items[itemIndex])
   }
 

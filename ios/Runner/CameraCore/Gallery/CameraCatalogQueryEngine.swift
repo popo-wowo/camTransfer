@@ -2,7 +2,7 @@ import Foundation
 
 struct CameraCatalogResolution: Equatable, @unchecked Sendable {
   let snapshot: CameraGalleryCatalogSnapshot
-  let authoritativeObjectInfos: [Int: CameraVendorCameraObjectInfo]
+  let authoritativeObjectInfos: [Int: CameraGalleryObjectInfoResult]
 }
 
 enum CameraCatalogResolutionFailure: Error, Equatable, Sendable {
@@ -131,7 +131,7 @@ actor CameraCatalogQueryEngine {
     )
     let dateCandidates = project(snapshot.items, rule: dateOnlyRule, downloadedHandles: [])
     var classifiedItems: [CameraVendorGalleryItem] = []
-    var authoritativeObjectInfos: [Int: CameraVendorCameraObjectInfo] = [:]
+    var authoritativeObjectInfos: [Int: CameraGalleryObjectInfoResult] = [:]
     for item in dateCandidates {
       try checkActive()
       let info = try await source.loadObjectInfo(handle: item.handle)

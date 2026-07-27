@@ -1535,7 +1535,7 @@ final class RunnerTests: XCTestCase {
             firstFetchContinuation = continuation
           }
         }
-        return CameraVendorGalleryPreview(data: Data([7]), item: nil)
+        return CameraGalleryPreviewResult(data: Data([7]), objectOrientation: nil)
       },
       publish: { publication in
         if case .preview(let identity, _) = publication {
@@ -1578,7 +1578,7 @@ final class RunnerTests: XCTestCase {
       cache: cache,
       suspendThumbnailPipeline: {},
       resumeThumbnailPipeline: {},
-      fetchPreview: { _ in CameraVendorGalleryPreview(data: Data([8]), item: nil) },
+      fetchPreview: { _ in CameraGalleryPreviewResult(data: Data([8]), objectOrientation: nil) },
       publish: { _ in }
     )
 
@@ -1605,7 +1605,7 @@ final class RunnerTests: XCTestCase {
       cache: cache,
       suspendThumbnailPipeline: {},
       resumeThumbnailPipeline: {},
-      fetchPreview: { _ in CameraVendorGalleryPreview(data: Data([10]), item: nil) },
+      fetchPreview: { _ in CameraGalleryPreviewResult(data: Data([10]), objectOrientation: nil) },
       publish: { _ in }
     )
 
@@ -9378,7 +9378,7 @@ final class RunnerTests: XCTestCase {
     )
 
     let didApply = repository.applyThumbnail(
-      CameraVendorGalleryThumbnail(data: Data([0xFF, 0xD8, 0xFF]), item: nil),
+      CameraGalleryThumbnailResult(data: Data([0xFF, 0xD8, 0xFF]), resolvedMetadata: nil),
       identity: identity
     )
 
@@ -9416,7 +9416,7 @@ final class RunnerTests: XCTestCase {
       handle: 7
     )
 
-    let thumbnail = CameraVendorGalleryThumbnail(data: Data([1, 2, 3]), item: nil)
+    let thumbnail = CameraGalleryThumbnailResult(data: Data([1, 2, 3]), resolvedMetadata: nil)
     XCTAssertTrue(repository.applyThumbnail(thumbnail, identity: identity))
     XCTAssertEqual(repository.items[0].thumbnailData, Data([1, 2, 3]))
 
@@ -9425,14 +9425,15 @@ final class RunnerTests: XCTestCase {
       orientation: .confirmed(4),
       refinedFormat: .confirmed(.heif),
       notes: ["resolved"],
-      resolvedItem: CameraVendorGalleryItem(
+      resolvedMetadata: CameraGalleryResolvedItemMetadata(
         handle: 7,
         filename: "DSCF0007.HEIC",
         formatLabel: "HEIF",
         captureDate: "20250615T150640",
         byteSizeText: "8 MB",
         compressedSize: 8_000_000,
-        orientation: 4
+        orientation: 4,
+        formatHints: []
       )
     )
     XCTAssertTrue(repository.applyDetails(details, identity: identity))
@@ -12687,7 +12688,7 @@ final class RunnerTests: XCTestCase {
       snapshotID: snapshot.snapshotID,
       handle: 99
     )
-    let thumbnail = CameraVendorGalleryThumbnail(data: Data([1, 2, 3]), item: nil)
+    let thumbnail = CameraGalleryThumbnailResult(data: Data([1, 2, 3]), resolvedMetadata: nil)
 
     XCTAssertFalse(repository.applyThumbnail(thumbnail, identity: staleIdentity))
     XCTAssertFalse(repository.applyThumbnail(thumbnail, identity: unknownIdentity))
@@ -12813,7 +12814,7 @@ final class RunnerTests: XCTestCase {
     let sourceURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
-      .appendingPathComponent("Runner/NativeConnectViewController.swift")
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
     XCTAssertTrue(source.contains("submitGalleryIntent"))
@@ -12882,6 +12883,102 @@ final class RunnerTests: XCTestCase {
     }
     XCTAssertFalse(transportSource.contains("func fetchCompleteGallery("))
     XCTAssertFalse(transportSource.contains("func fetchCameraFormatCatalogHandles("))
+  }
+
+  func testCameraCoreGallerySourcesExposeNoCameraVendorResultTypes() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/CameraCore/Gallery/CameraGallerySources.swift")
+    let source = try String(contentsOf: sourceURL)
+
+    for forbidden in [
+      "CameraVendorCameraObjectInfo",
+      "CameraVendorGalleryThumbnail",
+      "CameraVendorGalleryPreview",
+    ] {
+      XCTAssertFalse(source.contains(forbidden), "CameraCore gallery source exposes vendor result: \(forbidden)")
+    }
+  }
+
+  func testCameraCoreGalleryRuntimeExposesNoCameraVendorResultTypes() throws {
+    let galleryDirectory = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/CameraCore/Gallery")
+    let runtimeFiles = [
+      "CameraGalleryCatalogRuntime.swift",
+      "CameraGalleryThumbnailPipeline.swift",
+      "CameraGalleryHDPreviewPipeline.swift",
+      "CameraGallerySession.swift",
+    ]
+
+    for filename in runtimeFiles {
+      let source = try String(contentsOf: galleryDirectory.appendingPathComponent(filename))
+      for forbidden in [
+        "CameraVendorCameraObjectInfo",
+        "CameraVendorGalleryThumbnail",
+        "CameraVendorGalleryPreview",
+      ] {
+        XCTAssertFalse(source.contains(forbidden), "\(filename) exposes vendor result: \(forbidden)")
+      }
+    }
+  }
+
+  func testGalleryControllerOwnsNoCatalogLifecycleTaskOrCameraRequestTask() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
+    let source = try String(contentsOf: sourceURL)
+    let galleryStart = try XCTUnwrap(source.range(of: "final class NativeGalleryViewController")?.lowerBound)
+    let galleryEnd = try XCTUnwrap(
+      source.range(of: "final class NativeDownloadListViewController", range: galleryStart..<source.endIndex)?.lowerBound
+    )
+    let gallerySource = String(source[galleryStart..<galleryEnd])
+
+    for forbidden in [
+      "catalogLifecycleTask",
+      "visibleThumbnailRefreshTask",
+      "requestPreviewImageWithInfo",
+      "requestThumbnailWithInfo",
+      "loadObjectInfo(handle:",
+    ] {
+      XCTAssertFalse(gallerySource.contains(forbidden), "Gallery controller owns camera work: \(forbidden)")
+    }
+  }
+
+  func testHomeControllerOwnsNoCatalogObserverOrDownloadDisconnectPolicy() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/NativeConnectViewController.swift")
+    let source = try String(contentsOf: sourceURL)
+
+    for forbidden in [
+      "observeIncrementalCatalogUpdates",
+      "onDownloadThumbnailGenerated",
+      "onMovedFromParent",
+      "disconnectAfterDownload",
+    ] {
+      XCTAssertFalse(source.contains(forbidden), "Home controller owns gallery/download policy: \(forbidden)")
+    }
+  }
+
+  func testDownloadControllerOwnsNoTransportTerminationCallback() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
+    let source = try String(contentsOf: sourceURL)
+    let downloadStart = try XCTUnwrap(
+      source.range(of: "final class NativeDownloadListViewController")?.lowerBound
+    )
+    let downloadSource = String(source[downloadStart...])
+
+    XCTAssertFalse(downloadSource.contains("onMovedFromParent"))
+    XCTAssertFalse(downloadSource.contains("terminateCameraCommunication"))
+    XCTAssertFalse(downloadSource.contains("exitGalleryAndDisconnect"))
   }
 
   func testCatalogRuntimeShutdownWaitsForActiveTransactionCleanupInsteadOfCancellingIt() throws {
@@ -19248,8 +19345,10 @@ private final class CameraGalleryCatalogRuntimeSourceSpy: CameraGalleryCatalogRu
     ))
   }
 
-  func loadObjectInfo(handle: Int) async throws -> CameraVendorCameraObjectInfo {
-    CameraVendorCameraObjectInfo.placeholder(handle: UInt32(handle), captureDate: "20260714")
+  func loadObjectInfo(handle: Int) async throws -> CameraGalleryObjectInfoResult {
+    CameraGalleryRepositoryAdapter.objectInfoResult(
+      from: CameraVendorCameraObjectInfo.placeholder(handle: UInt32(handle), captureDate: "20260714")
+    )
   }
 
   func loadInitialCatalog() async throws -> CameraGalleryCatalogSnapshot {
@@ -19274,7 +19373,7 @@ private final class CameraGalleryCatalogRuntimeSourceSpy: CameraGalleryCatalogRu
     }
   }
 
-  func loadThumbnail(handle: Int) async throws -> CameraVendorGalleryThumbnail {
+  func loadThumbnail(handle: Int) async throws -> CameraGalleryThumbnailResult {
     requestedThumbnailHandles.append(handle)
     resumeThumbnailCountWaitersIfNeeded()
     if suspendsThumbnailResultsUntilReleased {
@@ -19292,9 +19391,9 @@ private final class CameraGalleryCatalogRuntimeSourceSpy: CameraGalleryCatalogRu
       }
       throw CancellationError()
     }
-    return CameraVendorGalleryThumbnail(
+    return CameraGalleryThumbnailResult(
       data: Data([UInt8(truncatingIfNeeded: handle)]),
-      item: nil
+      resolvedMetadata: nil
     )
   }
 
@@ -19318,14 +19417,15 @@ private final class CameraGalleryCatalogRuntimeSourceSpy: CameraGalleryCatalogRu
         orientation: .confirmed(1),
         refinedFormat: .confirmed(.jpg),
         notes: [],
-        resolvedItem: CameraVendorGalleryItem(
+        resolvedMetadata: CameraGalleryResolvedItemMetadata(
           handle: handle,
           filename: "DSCF\(handle).JPG",
           formatLabel: "JPG",
           captureDate: "20250615T150640",
           byteSizeText: "1 KB",
           compressedSize: 1_024,
-          orientation: 1
+          orientation: 1,
+          formatHints: []
         )
       )
     }
@@ -19501,12 +19601,12 @@ private final class CameraCatalogQuerySourceSpy: CameraCatalogQuerySource {
     return snapshot
   }
 
-  func loadObjectInfo(handle: Int) async throws -> CameraVendorCameraObjectInfo {
+  func loadObjectInfo(handle: Int) async throws -> CameraGalleryObjectInfoResult {
     objectInfoRequests.append(handle)
     guard let info = objectInfos[handle] else {
       throw NSError(domain: "CameraCatalogQuerySourceSpy", code: 2)
     }
-    return info
+    return CameraGalleryRepositoryAdapter.objectInfoResult(from: info)
   }
 }
 

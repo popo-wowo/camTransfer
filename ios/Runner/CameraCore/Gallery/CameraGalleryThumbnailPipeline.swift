@@ -2,7 +2,7 @@ import Foundation
 
 actor CameraGalleryThumbnailPipeline {
   enum Publication {
-    case thumbnail(CameraGalleryMediaIdentity, CameraVendorGalleryThumbnail)
+    case thumbnail(CameraGalleryMediaIdentity, CameraGalleryThumbnailResult)
     case details(CameraGalleryCatalogIdentity, CameraGalleryDetailsSourceResult)
   }
 
@@ -24,7 +24,7 @@ actor CameraGalleryThumbnailPipeline {
   private var activeVisibleRequest: ActiveVisibleRequest?
   private var nextVisibleRequestID: UInt64 = 0
   private var thumbnailDataCache: [CameraGalleryMediaCacheKey: Data] = [:]
-  private var reusableObjectInfos: [CameraGalleryMediaCacheKey: CameraVendorCameraObjectInfo] = [:]
+  private var reusableObjectInfos: [CameraGalleryMediaCacheKey: CameraGalleryObjectInfoResult] = [:]
   private var thumbnailRetryCounts: [CameraGalleryMediaCacheKey: Int] = [:]
   private var suspensionCount = 0
   private var isInvalidated = false
@@ -40,7 +40,7 @@ actor CameraGalleryThumbnailPipeline {
   func install(
     catalogIdentity: CameraGalleryCatalogIdentity,
     membership: [Int],
-    reusableObjectInfos: [Int: CameraVendorCameraObjectInfo]
+    reusableObjectInfos: [Int: CameraGalleryObjectInfoResult]
   ) async {
     let previousSessionEpoch = self.catalogIdentity?.sessionEpoch
     self.catalogIdentity = catalogIdentity
@@ -76,7 +76,7 @@ actor CameraGalleryThumbnailPipeline {
       if let data = thumbnailDataCache[cacheKey] {
         await publish(.thumbnail(
           identity,
-          CameraVendorGalleryThumbnail(data: data, item: nil)
+          CameraGalleryThumbnailResult(data: data, resolvedMetadata: nil)
         ))
       } else {
         uncachedHandles.append(handle)
@@ -202,7 +202,7 @@ actor CameraGalleryThumbnailPipeline {
   }
 
   private func acceptThumbnail(
-    _ thumbnail: CameraVendorGalleryThumbnail,
+    _ thumbnail: CameraGalleryThumbnailResult,
     identity: CameraGalleryMediaIdentity
   ) async {
     guard catalogIdentity?.sessionEpoch == identity.catalog.sessionEpoch,
@@ -282,31 +282,22 @@ actor CameraGalleryThumbnailPipeline {
     )
   }
 
-  private func isReusableEnrichment(_ info: CameraVendorCameraObjectInfo) -> Bool {
+  private func isReusableEnrichment(_ info: CameraGalleryObjectInfoResult) -> Bool {
     info.hasResolvedFormat && info.captureDate.count >= 8
   }
 
   private static func detailsResult(
-    from info: CameraVendorCameraObjectInfo
+    from info: CameraGalleryObjectInfoResult
   ) -> CameraGalleryDetailsSourceResult {
-    let item = CameraVendorGalleryItem(
-      handle: info.handle,
-      filename: info.filename,
-      formatLabel: info.galleryFormatLabel,
-      captureDate: info.captureDate,
-      byteSizeText: info.compressedSize > 0
-        ? ByteCountFormatter.string(fromByteCount: Int64(info.compressedSize), countStyle: .file)
-        : "",
-      compressedSize: info.compressedSize == 0 ? nil : info.compressedSize,
-      orientation: info.orientation
-    )
-    let details = CameraGalleryRepositoryAdapter.detailsResult(from: info)
     return CameraGalleryDetailsSourceResult(
-      handle: details.handle,
-      orientation: details.orientation,
-      refinedFormat: details.refinedFormat,
-      notes: details.notes,
-      resolvedItem: item,
+      handle: info.handle,
+      orientation: info.metadata.orientation.map(CameraGalleryConfirmedValue.confirmed) ?? .unknown,
+      refinedFormat: CameraGalleryRepositoryAdapter.refinedFormat(
+        from: info.metadata,
+        hasResolvedFormat: info.hasResolvedFormat
+      ),
+      notes: [],
+      resolvedMetadata: info.metadata,
       objectInfo: info
     )
   }

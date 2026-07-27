@@ -1933,7 +1933,6 @@ final class NativeConnectViewController: UIViewController {
     case .recoveryDownloadCenter(let payload):
       finishRecoveredDownloadEntryIfPossible(payload: payload)
     case .home:
-      cameraSessionRuntime.onDownloadThumbnailGenerated = nil
       navigationController?.popToViewController(self, animated: true)
       updateRememberedCameraCard()
     }
@@ -2009,15 +2008,6 @@ final class NativeConnectViewController: UIViewController {
           self?.cameraSessionRuntime.send(.clearSavedDownloadHistory(handle: UInt32(item.handle)))
         }
       )
-      controller.onMovedFromParent = { [weak self] in
-        guard let self else { return }
-        self.cameraSessionRuntime.onDownloadThumbnailGenerated = nil
-        self.updateRememberedCameraCard()
-      }
-      self.cameraSessionRuntime.onDownloadThumbnailGenerated = { [weak controller] handle, image in
-        guard let controller else { return }
-        controller.setDownloadThumbnail(handle: Int(handle), image: image)
-      }
       self.navigationController?.pushViewController(controller, animated: true)
     }
 

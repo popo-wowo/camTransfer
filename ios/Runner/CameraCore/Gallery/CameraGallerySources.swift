@@ -1,26 +1,56 @@
 import Foundation
 
+struct CameraGalleryResolvedItemMetadata: Equatable, Sendable {
+  let handle: Int
+  let filename: String
+  let formatLabel: String
+  let captureDate: String
+  let byteSizeText: String
+  let compressedSize: UInt32?
+  let orientation: Int?
+  let formatHints: [String]
+}
+
+struct CameraGalleryObjectInfoResult: Equatable, Sendable {
+  let metadata: CameraGalleryResolvedItemMetadata
+  let formatCode: UInt16
+  let hasResolvedFormat: Bool
+
+  var handle: Int { metadata.handle }
+  var captureDate: String { metadata.captureDate }
+}
+
+struct CameraGalleryThumbnailResult: Equatable, Sendable {
+  let data: Data
+  let resolvedMetadata: CameraGalleryResolvedItemMetadata?
+}
+
+struct CameraGalleryPreviewResult: Equatable, Sendable {
+  let data: Data
+  let objectOrientation: Int?
+}
+
 struct CameraGalleryDetailsSourceResult: Equatable {
   let handle: Int
   let orientation: CameraGalleryConfirmedValue<Int>
   let refinedFormat: CameraGalleryConfirmedValue<CameraGalleryFormat>
   let notes: [String]
-  let resolvedItem: CameraVendorGalleryItem?
-  let objectInfo: CameraVendorCameraObjectInfo?
+  let resolvedMetadata: CameraGalleryResolvedItemMetadata?
+  let objectInfo: CameraGalleryObjectInfoResult?
 
   init(
     handle: Int,
     orientation: CameraGalleryConfirmedValue<Int>,
     refinedFormat: CameraGalleryConfirmedValue<CameraGalleryFormat>,
     notes: [String],
-    resolvedItem: CameraVendorGalleryItem? = nil,
-    objectInfo: CameraVendorCameraObjectInfo? = nil
+    resolvedMetadata: CameraGalleryResolvedItemMetadata? = nil,
+    objectInfo: CameraGalleryObjectInfoResult? = nil
   ) {
     self.handle = handle
     self.orientation = orientation
     self.refinedFormat = refinedFormat
     self.notes = notes
-    self.resolvedItem = resolvedItem
+    self.resolvedMetadata = resolvedMetadata
     self.objectInfo = objectInfo
   }
 }
@@ -43,12 +73,12 @@ struct CameraGalleryCatalogTransactionFailure: Error, Equatable, Sendable {
 protocol CameraCatalogQuerySource: AnyObject {
   func loadExpandedCatalog() async throws -> CameraGalleryCatalogSnapshot
   func loadExactCatalog(for format: CameraMediaFormat) async throws -> CameraGalleryCatalogSnapshot
-  func loadObjectInfo(handle: Int) async throws -> CameraVendorCameraObjectInfo
+  func loadObjectInfo(handle: Int) async throws -> CameraGalleryObjectInfoResult
 }
 
 @MainActor
 protocol CameraGalleryThumbnailPipelineSource: AnyObject {
-  func loadThumbnail(handle: Int) async throws -> CameraVendorGalleryThumbnail
+  func loadThumbnail(handle: Int) async throws -> CameraGalleryThumbnailResult
   func loadDetails(handle: Int) async throws -> CameraGalleryDetailsSourceResult
   func beginVisibleThumbnailBatch(handles: [Int])
   func finishVisibleThumbnailBatch(handles: [Int]) async

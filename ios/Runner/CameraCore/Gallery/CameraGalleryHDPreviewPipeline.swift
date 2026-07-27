@@ -9,7 +9,7 @@ final class CameraGalleryHDPreviewPipeline {
 
   typealias SuspendThumbnailPipeline = () async -> Void
   typealias ResumeThumbnailPipeline = () async -> Void
-  typealias FetchPreview = (CameraGalleryMediaIdentity) async throws -> CameraVendorGalleryPreview
+  typealias FetchPreview = (CameraGalleryMediaIdentity) async throws -> CameraGalleryPreviewResult
   typealias Publisher = (Publication) -> Void
 
   private let cache: NativeGalleryHighDefinitionPreviewCache
@@ -162,7 +162,7 @@ final class CameraGalleryHDPreviewPipeline {
         let preview = try await fetchPreview(identity)
         try Task.checkCancellation()
         guard isCurrent(identity) else { return }
-        cache.store(preview.data, for: identity, objectOrientation: preview.item?.orientation)
+        cache.store(preview.data, for: identity, objectOrientation: preview.objectOrientation)
         loadState = NativeGalleryHDPreviewLoadReducer.reduce(
           state: loadState,
           event: .succeeded(handle: handle)

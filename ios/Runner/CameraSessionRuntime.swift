@@ -329,7 +329,9 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
       downloadedHandles: { [weak self] in self?.savedDownloadHandles() ?? [] },
       fetchPreview: { [weak self] mediaIdentity in
         guard let self else { throw CancellationError() }
-        return try await self.transport.fetchPreviewImageWithInfo(for: mediaIdentity.handle)
+        return CameraGalleryRepositoryAdapter.previewResult(
+          from: try await self.transport.fetchPreviewImageWithInfo(for: mediaIdentity.handle)
+        )
       }
     )
     let sessionID = session.sessionEpoch
