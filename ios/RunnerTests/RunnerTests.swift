@@ -1243,7 +1243,7 @@ final class RunnerTests: XCTestCase {
     let body = String(source[methodStart..<methodEnd])
 
     XCTAssertTrue(body.contains("scrollView === hdCollectionView"))
-    XCTAssertTrue(body.contains("hdCoordinator.updateVisibleHandles(visibleHandles)"))
+    XCTAssertTrue(body.contains("hdPreviewPipeline.updateVisibleHandles(visibleHandles)"))
   }
 
   func testNativeGalleryHDCoordinatorCountsOnlyActiveDateLoadedHandles() throws {
@@ -1426,16 +1426,20 @@ final class RunnerTests: XCTestCase {
       maxMemoryImages: 2,
       directory: directory
     )
+    let catalog = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let identities = [1, 2, 3].map {
+      CameraGalleryMediaIdentity(catalog: catalog, handle: $0, variant: .hdPreview)
+    }
 
-    cache.store(Data([1]), for: 1)
-    cache.store(Data([2]), for: 2)
-    cache.store(Data([3]), for: 3)
+    cache.store(Data([1]), for: identities[0])
+    cache.store(Data([2]), for: identities[1])
+    cache.store(Data([3]), for: identities[2])
 
-    XCTAssertEqual(cache.loadedHandles, [1, 2, 3])
-    XCTAssertNil(cache.memoryData(for: 1))
-    XCTAssertEqual(cache.restoreLoadedData(for: 1), Data([1]))
-    XCTAssertEqual(cache.memoryData(for: 1), Data([1]))
-    XCTAssertEqual(cache.loadedHandles, [1, 2, 3])
+    XCTAssertEqual(cache.loadedHandles(for: catalog), [1, 2, 3])
+    XCTAssertNil(cache.memoryData(for: identities[0]))
+    XCTAssertEqual(cache.restoreLoadedData(for: identities[0]), Data([1]))
+    XCTAssertEqual(cache.memoryData(for: identities[0]), Data([1]))
+    XCTAssertEqual(cache.loadedHandles(for: catalog), [1, 2, 3])
   }
 
   func testNativeGalleryHighDefinitionPreviewCacheKeepsObjectOrientationAfterMemoryEviction() throws {
@@ -1446,13 +1450,174 @@ final class RunnerTests: XCTestCase {
       maxMemoryImages: 1,
       directory: directory
     )
+    let catalog = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let firstIdentity = CameraGalleryMediaIdentity(catalog: catalog, handle: 1, variant: .hdPreview)
+    let secondIdentity = CameraGalleryMediaIdentity(catalog: catalog, handle: 2, variant: .hdPreview)
 
-    cache.store(Data([1]), for: 1, objectOrientation: 2)
-    cache.store(Data([2]), for: 2, objectOrientation: 4)
+    cache.store(Data([1]), for: firstIdentity, objectOrientation: 2)
+    cache.store(Data([2]), for: secondIdentity, objectOrientation: 4)
 
-    let restored = try XCTUnwrap(cache.restoreLoadedPreview(for: 1))
+    let restored = try XCTUnwrap(cache.restoreLoadedPreview(for: firstIdentity))
     XCTAssertEqual(restored.data, Data([1]))
     XCTAssertEqual(restored.objectOrientation, 2)
+  }
+
+  func testHDPreviewCacheUsesSessionEpochHandleAndVariantIdentity() throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("hd-preview-identity-cache-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let cache = NativeGalleryHighDefinitionPreviewCache(directory: directory)
+    let firstCatalog = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let nextSessionCatalog = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let firstIdentity = CameraGalleryMediaIdentity(
+      catalog: firstCatalog,
+      handle: 7,
+      variant: .hdPreview
+    )
+    let nextSessionIdentity = CameraGalleryMediaIdentity(
+      catalog: nextSessionCatalog,
+      handle: 7,
+      variant: .hdPreview
+    )
+
+    cache.store(Data([7]), for: firstIdentity)
+
+    XCTAssertEqual(cache.restoreLoadedData(for: firstIdentity), Data([7]))
+    XCTAssertNil(cache.restoreLoadedData(for: nextSessionIdentity))
+    XCTAssertNotEqual(
+      CameraGalleryMediaCacheKey(mediaIdentity: firstIdentity),
+      CameraGalleryMediaCacheKey(mediaIdentity: nextSessionIdentity)
+    )
+  }
+
+  func testThumbnailAndHDPreviewCachesNeverShareEntries() throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("hd-preview-variant-cache-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let cache = NativeGalleryHighDefinitionPreviewCache(directory: directory)
+    let catalog = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let hdIdentity = CameraGalleryMediaIdentity(catalog: catalog, handle: 9, variant: .hdPreview)
+    let thumbnailIdentity = CameraGalleryMediaIdentity(catalog: catalog, handle: 9, variant: .thumbnail)
+
+    cache.store(Data([9]), for: hdIdentity)
+
+    XCTAssertEqual(cache.restoreLoadedData(for: hdIdentity), Data([9]))
+    XCTAssertNil(cache.restoreLoadedData(for: thumbnailIdentity))
+    XCTAssertNotEqual(
+      CameraGalleryMediaCacheKey(mediaIdentity: hdIdentity),
+      CameraGalleryMediaCacheKey(mediaIdentity: thumbnailIdentity)
+    )
+  }
+
+  @MainActor
+  func testHDPreviewPipelineRejectsAnOldCatalogPublication() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("hd-preview-old-publication-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let cache = NativeGalleryHighDefinitionPreviewCache(directory: directory)
+    let oldCatalog = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let currentCatalog = CameraGalleryCatalogIdentity.fixture(
+      sessionEpoch: oldCatalog.sessionEpoch,
+      generation: 2
+    )
+    let snapshot = NativeGalleryHDPreviewSnapshot.fixture(handles: [7])
+    var firstFetchContinuation: CheckedContinuation<Void, Never>?
+    var fetchCount = 0
+    var previewPublications: [CameraGalleryMediaIdentity] = []
+    let pipeline = CameraGalleryHDPreviewPipeline(
+      cache: cache,
+      suspendThumbnailPipeline: {},
+      resumeThumbnailPipeline: {},
+      fetchPreview: { identity in
+        fetchCount += 1
+        if fetchCount == 1 {
+          await withCheckedContinuation { continuation in
+            firstFetchContinuation = continuation
+          }
+        }
+        return CameraVendorGalleryPreview(data: Data([7]), item: nil)
+      },
+      publish: { publication in
+        if case .preview(let identity, _) = publication {
+          previewPublications.append(identity)
+        }
+      }
+    )
+
+    await pipeline.activate(
+      catalogIdentity: oldCatalog,
+      snapshot: snapshot,
+      visibleHandles: [7]
+    )
+    for _ in 0..<100 where firstFetchContinuation == nil { await Task.yield() }
+    let installCurrent = Task { @MainActor in
+      await pipeline.activate(
+        catalogIdentity: currentCatalog,
+        snapshot: snapshot,
+        visibleHandles: [7]
+      )
+    }
+    for _ in 0..<20 { await Task.yield() }
+    firstFetchContinuation?.resume()
+    await installCurrent.value
+    await pipeline.waitUntilIdle()
+
+    XCTAssertFalse(previewPublications.contains { $0.catalog == oldCatalog })
+    XCTAssertEqual(previewPublications.map(\.catalog), [currentCatalog])
+  }
+
+  @MainActor
+  func testHDPreviewPipelineKeepsCacheWhenReturningToThumbnailMode() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("hd-preview-mode-cache-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let cache = NativeGalleryHighDefinitionPreviewCache(directory: directory)
+    let catalog = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let identity = CameraGalleryMediaIdentity(catalog: catalog, handle: 8, variant: .hdPreview)
+    let pipeline = CameraGalleryHDPreviewPipeline(
+      cache: cache,
+      suspendThumbnailPipeline: {},
+      resumeThumbnailPipeline: {},
+      fetchPreview: { _ in CameraVendorGalleryPreview(data: Data([8]), item: nil) },
+      publish: { _ in }
+    )
+
+    await pipeline.activate(
+      catalogIdentity: catalog,
+      snapshot: .fixture(handles: [8]),
+      visibleHandles: [8]
+    )
+    await pipeline.waitUntilIdle()
+    await pipeline.deactivate(resumeThumbnailPipeline: true)
+
+    XCTAssertEqual(cache.restoreLoadedData(for: identity), Data([8]))
+  }
+
+  @MainActor
+  func testHDPreviewPipelineClearsCacheAfterCameraDisconnect() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("hd-preview-disconnect-cache-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let cache = NativeGalleryHighDefinitionPreviewCache(directory: directory)
+    let catalog = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let identity = CameraGalleryMediaIdentity(catalog: catalog, handle: 10, variant: .hdPreview)
+    let pipeline = CameraGalleryHDPreviewPipeline(
+      cache: cache,
+      suspendThumbnailPipeline: {},
+      resumeThumbnailPipeline: {},
+      fetchPreview: { _ in CameraVendorGalleryPreview(data: Data([10]), item: nil) },
+      publish: { _ in }
+    )
+
+    await pipeline.activate(
+      catalogIdentity: catalog,
+      snapshot: .fixture(handles: [10]),
+      visibleHandles: [10]
+    )
+    await pipeline.waitUntilIdle()
+    await pipeline.invalidateSession()
+
+    XCTAssertNil(cache.restoreLoadedData(for: identity))
   }
 
   func testNativePhotoPreviewImageSourcePolicySkipsCameraFetchWhenPreviewCacheIsLoaded() {
@@ -19030,6 +19195,27 @@ private extension CameraGalleryCatalogIdentity {
       sessionEpoch: sessionEpoch,
       generation: CameraGalleryGenerationID(rawValue: generation),
       snapshotID: CameraGallerySnapshotID()
+    )
+  }
+}
+
+private extension NativeGalleryHDPreviewSnapshot {
+  static func fixture(handles: [Int]) -> NativeGalleryHDPreviewSnapshot {
+    let date = Date(timeIntervalSince1970: 1_721_779_200)
+    return NativeGalleryHDPreviewSnapshot(
+      activeDate: date,
+      items: handles.map { handle in
+        NativeGalleryHDPreviewItem(
+          displayItem: CameraVendorGalleryItem(
+            handle: handle,
+            filename: "DSCF\(handle).JPG",
+            formatLabel: "JPG",
+            captureDate: "20260724T120000",
+            byteSizeText: ""
+          ),
+          rawSidecar: nil
+        )
+      }
     )
   }
 }

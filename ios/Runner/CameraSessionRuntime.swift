@@ -164,6 +164,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   private var catalogQueryEngine: CameraCatalogQueryEngine?
   private var catalogLifecycleTask: Task<Void, Never>?
   private var catalogSessionID: UUID?
+  private(set) var galleryCatalogIdentity: CameraGalleryCatalogIdentity?
   private var nextCatalogIntentSubmissionRawValue: UInt64 = 0
   private var pendingGalleryActivation: PendingGalleryActivation?
   private var hasRequestedRecoveredConnection = false
@@ -281,6 +282,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     let source = CameraSessionGalleryCatalogRuntimeSource(transport: transport)
     let queryEngine = CameraCatalogQueryEngine(source: source, sessionEpoch: sessionID)
     catalogSessionID = sessionID
+    galleryCatalogIdentity = nil
     catalogRuntime = nil
     catalogQueryEngine = queryEngine
     catalogLifecycleTask = Task { @MainActor [weak self] in
@@ -329,6 +331,17 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   }
 
   private func installCatalogPresentation(_ catalog: CameraGalleryPresentation) {
+    if case .ready(let generation, let snapshotID) = catalog.state,
+       let sessionEpoch = catalogSessionID {
+      galleryCatalogIdentity = CameraGalleryCatalogIdentity(
+        cameraID: identity?.historyKey ?? sessionEpoch.uuidString,
+        sessionEpoch: sessionEpoch,
+        generation: generation,
+        snapshotID: snapshotID
+      )
+    } else {
+      galleryCatalogIdentity = nil
+    }
     let wasRecovering = presentation.phase == .recovering
     let phase: CameraSessionPhase
     if presentation.phase == .galleryLoading, case .ready = catalog.state {
@@ -1400,6 +1413,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     let previousQueryEngine = catalogQueryEngine
     let previousLifecycleTask = catalogLifecycleTask
     catalogSessionID = nil
+    galleryCatalogIdentity = nil
     catalogRuntime = nil
     catalogQueryEngine = nil
     catalogLifecycleTask = Task { @MainActor [weak self] in

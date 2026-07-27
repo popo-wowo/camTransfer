@@ -74,10 +74,10 @@ struct NativeGalleryCachedPreview {
 final class NativeGalleryHighDefinitionPreviewCache {
   private let maxMemoryImages: Int
   private let directory: URL
-  private var memory: [Int: Data] = [:]
-  private var memoryOrder: [Int] = []
-  private var loaded: Set<Int> = []
-  private var objectOrientations: [Int: Int] = [:]
+  private var memory: [CameraGalleryMediaCacheKey: Data] = [:]
+  private var memoryOrder: [CameraGalleryMediaCacheKey] = []
+  private var loaded: Set<CameraGalleryMediaCacheKey> = []
+  private var objectOrientations: [CameraGalleryMediaCacheKey: Int] = [:]
 
   init(
     maxMemoryImages: Int = 30,
@@ -88,40 +88,50 @@ final class NativeGalleryHighDefinitionPreviewCache {
     self.directory = directory
   }
 
-  var loadedHandles: Set<Int> {
-    loaded
+  func loadedHandles(for catalogIdentity: CameraGalleryCatalogIdentity) -> Set<Int> {
+    Set(loaded.compactMap { key in
+      guard key.sessionEpoch == catalogIdentity.sessionEpoch,
+            key.variant == .hdPreview else { return nil }
+      return key.handle
+    })
   }
 
-  func memoryData(for handle: Int) -> Data? {
-    guard let data = memory[handle] else { return nil }
-    touch(handle)
+  func memoryData(for identity: CameraGalleryMediaIdentity) -> Data? {
+    guard let key = cacheKey(for: identity), let data = memory[key] else { return nil }
+    touch(key)
     return data
   }
 
-  func store(_ data: Data, for handle: Int, objectOrientation: Int? = nil) {
-    loaded.insert(handle)
-    objectOrientations[handle] = objectOrientation
-    cacheInMemory(data, for: handle)
-    writeToDisk(data, for: handle)
+  func store(
+    _ data: Data,
+    for identity: CameraGalleryMediaIdentity,
+    objectOrientation: Int? = nil
+  ) {
+    guard let key = cacheKey(for: identity) else { return }
+    loaded.insert(key)
+    objectOrientations[key] = objectOrientation
+    cacheInMemory(data, for: key)
+    writeToDisk(data, for: key)
   }
 
-  func restoreLoadedData(for handle: Int) -> Data? {
-    guard loaded.contains(handle) else { return nil }
-    if let data = memoryData(for: handle) {
+  func restoreLoadedData(for identity: CameraGalleryMediaIdentity) -> Data? {
+    guard let key = cacheKey(for: identity), loaded.contains(key) else { return nil }
+    if let data = memoryData(for: identity) {
       return data
     }
-    guard let data = try? Data(contentsOf: fileURL(for: handle)) else {
+    guard let data = try? Data(contentsOf: fileURL(for: key)) else {
       return nil
     }
-    cacheInMemory(data, for: handle)
+    cacheInMemory(data, for: key)
     return data
   }
 
-  func restoreLoadedPreview(for handle: Int) -> NativeGalleryCachedPreview? {
-    guard let data = restoreLoadedData(for: handle) else { return nil }
+  func restoreLoadedPreview(for identity: CameraGalleryMediaIdentity) -> NativeGalleryCachedPreview? {
+    guard let key = cacheKey(for: identity),
+          let data = restoreLoadedData(for: identity) else { return nil }
     return NativeGalleryCachedPreview(
       data: data,
-      objectOrientation: objectOrientations[handle]
+      objectOrientation: objectOrientations[key]
     )
   }
 
@@ -133,27 +143,37 @@ final class NativeGalleryHighDefinitionPreviewCache {
     try? FileManager.default.removeItem(at: directory)
   }
 
-  private func cacheInMemory(_ data: Data, for handle: Int) {
-    memory[handle] = data
-    touch(handle)
+  private func cacheInMemory(_ data: Data, for key: CameraGalleryMediaCacheKey) {
+    memory[key] = data
+    touch(key)
     while memoryOrder.count > maxMemoryImages {
       let evicted = memoryOrder.removeFirst()
       memory.removeValue(forKey: evicted)
     }
   }
 
-  private func touch(_ handle: Int) {
-    memoryOrder.removeAll { $0 == handle }
-    memoryOrder.append(handle)
+  private func touch(_ key: CameraGalleryMediaCacheKey) {
+    memoryOrder.removeAll { $0 == key }
+    memoryOrder.append(key)
   }
 
-  private func writeToDisk(_ data: Data, for handle: Int) {
+  private func writeToDisk(_ data: Data, for key: CameraGalleryMediaCacheKey) {
     try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    try? data.write(to: fileURL(for: handle), options: .atomic)
+    try? data.write(to: fileURL(for: key), options: .atomic)
   }
 
-  private func fileURL(for handle: Int) -> URL {
-    directory.appendingPathComponent("\(handle).bin", isDirectory: false)
+  private func fileURL(for key: CameraGalleryMediaCacheKey) -> URL {
+    directory.appendingPathComponent(
+      "\(key.sessionEpoch.uuidString)-\(key.handle)-hd.bin",
+      isDirectory: false
+    )
+  }
+
+  private func cacheKey(
+    for identity: CameraGalleryMediaIdentity
+  ) -> CameraGalleryMediaCacheKey? {
+    guard identity.variant == .hdPreview else { return nil }
+    return CameraGalleryMediaCacheKey(mediaIdentity: identity)
   }
 }
 @MainActor
@@ -170,7 +190,8 @@ final class NativePhotoPreviewViewController: UIViewController, UIPageViewContro
   private let onDownload: (CameraVendorGalleryItem) -> Void
   private let isTransferLocked: () -> Bool
   private let onTransferLockedDismissAttempt: () -> Void
-  private let previewImageCache = NativeGalleryHighDefinitionPreviewCache()
+  private let previewImageCache: NativeGalleryHighDefinitionPreviewCache
+  private let previewCatalogIdentity: CameraGalleryCatalogIdentity?
   private var currentIndex: Int
   private var pageController: UIPageViewController!
   private var controlsHidden = false
@@ -262,6 +283,8 @@ final class NativePhotoPreviewViewController: UIViewController, UIPageViewContro
     items: [CameraVendorGalleryItem],
     initialIndex: Int,
     runtime: CameraSessionRuntime,
+    previewImageCache: NativeGalleryHighDefinitionPreviewCache,
+    previewCatalogIdentity: CameraGalleryCatalogIdentity?,
     shouldLoadPreviewThumbnail: @escaping () -> Bool,
     cachedThumbnailImageProvider: @escaping (Int) -> UIImage?,
     displayStateProvider: @escaping (Int) -> CameraGalleryEntryViewState?,
@@ -275,6 +298,8 @@ final class NativePhotoPreviewViewController: UIViewController, UIPageViewContro
     self.items = items
     self.currentIndex = min(max(initialIndex, 0), max(items.count - 1, 0))
     self.runtime = runtime
+    self.previewImageCache = previewImageCache
+    self.previewCatalogIdentity = previewCatalogIdentity
     self.shouldLoadPreviewThumbnail = shouldLoadPreviewThumbnail
     self.cachedThumbnailImageProvider = cachedThumbnailImageProvider
     self.displayStateProvider = displayStateProvider
@@ -449,11 +474,24 @@ final class NativePhotoPreviewViewController: UIViewController, UIPageViewContro
         self?.applyDismissDragProgress(0)
       },
       previewImageDataProvider: { [weak self] handle in
-        self?.previewImageCache.restoreLoadedPreview(for: handle)
+        guard let self,
+              let identity = self.previewMediaIdentity(for: handle) else { return nil }
+        return self.previewImageCache.restoreLoadedPreview(for: identity)
       },
       onPreviewImageDataLoaded: { [weak self] handle, data, orientation in
-        self?.previewImageCache.store(data, for: handle, objectOrientation: orientation)
+        guard let self,
+              let identity = self.previewMediaIdentity(for: handle) else { return }
+        self.previewImageCache.store(data, for: identity, objectOrientation: orientation)
       }
+    )
+  }
+
+  private func previewMediaIdentity(for handle: Int) -> CameraGalleryMediaIdentity? {
+    guard let previewCatalogIdentity else { return nil }
+    return CameraGalleryMediaIdentity(
+      catalog: previewCatalogIdentity,
+      handle: handle,
+      variant: .hdPreview
     )
   }
 
