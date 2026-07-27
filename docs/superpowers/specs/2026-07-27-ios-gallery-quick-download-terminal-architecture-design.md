@@ -263,7 +263,7 @@ struct CameraGalleryCatalogIdentity: Hashable, Sendable {
 结束路由：
 
 ```text
-下载完成、取消或失败
+下载完成、取消、失败或无匹配结果
 ├── 自动断开开启
 │   -> 安全结束下载 -> 断开相机 -> 清空会话缓存 -> 回首页
 │

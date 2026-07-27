@@ -1,5 +1,7 @@
 # iOS Gallery Terminal Architecture Refactor Implementation Plan
 
+> **Status: Superseded.** Do not execute this plan. It is replaced by `2026-07-27-ios-gallery-quick-download-terminal-architecture-plan.md`, which implements the user-approved terminal architecture and removes the obsolete `CameraDownloadManager` direction.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Refactor CamTransfer iOS gallery, quick download, preview, and download orchestration into one camera session owner, one catalog owner, independent thumbnail/HD pipelines, and one physical PTP command lane.
