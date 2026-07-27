@@ -9,7 +9,7 @@ struct FujifilmCameraAdapter: CameraAdapter {
     legalDisclaimer: "FUJIFILM is a trademark of FUJIFILM Corporation. This app is not affiliated with or endorsed by FUJIFILM Corporation."
   )
 
-  func makeGallerySession() -> CameraGallerySession {
+  func makeGallerySession() -> CameraGalleryTransportSession {
     CameraVendorRealtimeGalleryService()
   }
 }

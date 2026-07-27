@@ -3,7 +3,7 @@ import Foundation
 struct IOSCameraGalleryDestination {
   let rememberedPeripheralID: UUID
   let summary: CameraVendorConnectionSummary
-  let galleryService: CameraGallerySession
+  let galleryService: CameraGalleryTransportSession
   let bluetoothKeepAliveService: CameraVendorBleBackgroundKeepAlive
 }
 
@@ -77,7 +77,7 @@ final class CameraVendorRuntimeGallerySessionActivator: CameraSessionRuntimeGall
 @MainActor
 final class CameraVendorConnectFlowBridge: NSObject, IOSCameraConnectFlowRuntimeEnvironment {
   private let service: CameraVendorBluetoothService
-  private let galleryService: CameraGallerySession
+  private let galleryService: CameraGalleryTransportSession
   private let galleryRuntimeService: CameraVendorRealtimeGalleryService
   private lazy var gallerySessionLoader = CameraVendorGalleryMainlineSessionLoader(
     galleryService: galleryRuntimeService
@@ -94,7 +94,7 @@ final class CameraVendorConnectFlowBridge: NSObject, IOSCameraConnectFlowRuntime
 
   init(
     service: CameraVendorBluetoothService = CameraVendorBluetoothService(),
-    galleryService: CameraGallerySession = NativeCameraAdapterRegistry.defaultAdapter.makeGallerySession()
+    galleryService: CameraGalleryTransportSession = NativeCameraAdapterRegistry.defaultAdapter.makeGallerySession()
   ) {
     guard let galleryRuntimeService = galleryService as? CameraVendorRealtimeGalleryService else {
       fatalError("CameraVendorConnectFlowBridge requires CameraVendorRealtimeGalleryService")

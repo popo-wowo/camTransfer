@@ -160,12 +160,10 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   private var activeTransportBinding: CameraSessionRuntimeBinding?
   private(set) var galleryPresentationPayload: CameraSessionRuntimeGalleryPresentationPayload?
   private var galleryItemCount = 0
-  private var catalogRuntime: CameraGalleryCatalogRuntime?
-  private var catalogQueryEngine: CameraCatalogQueryEngine?
+  private var gallerySession: CameraGallerySession?
   private var catalogLifecycleTask: Task<Void, Never>?
   private var catalogSessionID: UUID?
   private(set) var galleryCatalogIdentity: CameraGalleryCatalogIdentity?
-  private var nextCatalogIntentSubmissionRawValue: UInt64 = 0
   private var pendingGalleryActivation: PendingGalleryActivation?
   private var hasRequestedRecoveredConnection = false
   private var presentationObservers: [UUID: (CameraSessionPresentation) -> Void] = [:]
@@ -218,18 +216,9 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     rule: CameraMediaFilterRule,
     sort: CameraGallerySortIntent
   ) {
-    guard canSubmitCatalogCommand, let catalogRuntime else { return }
-    nextCatalogIntentSubmissionRawValue &+= 1
-    let submissionID = CameraGalleryIntentSubmissionID(
-      rawValue: nextCatalogIntentSubmissionRawValue
-    )
-    let downloadedHandles = savedDownloadHandles()
+    guard canSubmitCatalogCommand, let gallerySession else { return }
     Task {
-      await catalogRuntime.submit(
-        CameraGalleryFilterIntent(rule: rule, sort: sort),
-        submissionID: submissionID,
-        downloadedHandles: downloadedHandles
-      )
+      await gallerySession.submitFilter(CameraGalleryFilterIntent(rule: rule, sort: sort))
     }
   }
 
@@ -238,95 +227,123 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     owner: CameraCatalogAccessOwner
   ) async throws -> CameraCatalogResolution {
     try validateCatalogCommand()
-    guard let engine = catalogQueryEngine,
-          let sessionEpoch = catalogSessionID else {
-      throw CancellationError()
-    }
-    let resolution = try await engine.resolve(
-      rule: rule,
-      owner: owner,
-      downloadedHandles: savedDownloadHandles()
-    )
-    try Task.checkCancellation()
-    guard catalogQueryEngine === engine,
-          catalogSessionID == sessionEpoch else {
-      throw CancellationError()
-    }
-    return resolution
+    guard let gallerySession else { throw CancellationError() }
+    return try await gallerySession.resolveCatalog(rule: rule, owner: owner)
   }
 
   func requestVisibleGalleryThumbnails(handles: [Int]) {
-    guard canSubmitCatalogCommand, let catalogRuntime else { return }
+    guard canSubmitCatalogCommand, let gallerySession else { return }
     Task {
-      await catalogRuntime.requestVisibleThumbnails(handles: handles)
+      await gallerySession.requestVisibleThumbnails(handles: handles)
     }
   }
 
   func cancelActiveThumbnailWork() async {
-    await catalogRuntime?.cancelActiveThumbnailWork()
+    await gallerySession?.cancelActiveThumbnailWork()
   }
 
   func suspendGalleryChildWorkForHighDefinitionPreview() async {
-    await catalogRuntime?.suspendChildWorkForHighDefinitionPreview()
+    await gallerySession?.suspendThumbnailWorkForHDPreview()
   }
 
   func resumeGalleryChildWorkAfterHighDefinitionPreview() async {
-    await catalogRuntime?.resumeChildWorkAfterHighDefinitionPreview()
+    await gallerySession?.resumeThumbnailWorkAfterHDPreview()
+  }
+
+  var galleryPreviewCache: NativeGalleryHighDefinitionPreviewCache? {
+    gallerySession?.previewCache
+  }
+
+  func switchGalleryPreviewMode(
+    _ mode: NativeGalleryBrowseMode,
+    snapshot: NativeGalleryHDPreviewSnapshot? = nil,
+    visibleHandles: [Int] = []
+  ) async {
+    await gallerySession?.switchPreviewMode(
+      mode,
+      snapshot: snapshot,
+      visibleHandles: visibleHandles
+    )
+  }
+
+  func updateGalleryHDPreviewVisibleHandles(_ handles: [Int]) {
+    gallerySession?.updateHDPreviewVisibleHandles(handles)
+  }
+
+  func retryGalleryHDPreview(handle: Int) {
+    gallerySession?.retryHDPreview(handle: handle)
+  }
+
+  func pauseGalleryHDPreviewForDownload() async {
+    await gallerySession?.pauseHDPreviewForDownload()
+  }
+
+  func resumeGalleryHDPreviewAfterDownload() {
+    gallerySession?.resumeHDPreviewAfterDownload()
+  }
+
+  func cachedGalleryHDPreview(for handle: Int) -> NativeGalleryCachedPreview? {
+    gallerySession?.cachedPreview(for: handle)
+  }
+
+  func galleryHDPreviewLoadedHandles(
+    for catalogIdentity: CameraGalleryCatalogIdentity
+  ) -> Set<Int> {
+    gallerySession?.previewCache.loadedHandles(for: catalogIdentity) ?? []
+  }
+
+  @discardableResult
+  func observeGalleryPreview(
+    _ observer: @escaping (CameraGalleryHDPreviewPipeline.Publication) -> Void
+  ) -> UUID? {
+    gallerySession?.observePreview(observer)
   }
 
   private func configureCatalogRuntime() {
-    let sessionID = UUID()
-    let previousRuntime = catalogRuntime
-    let previousQueryEngine = catalogQueryEngine
+    let previousSession = gallerySession
     let previousLifecycleTask = catalogLifecycleTask
     let source = CameraSessionGalleryCatalogRuntimeSource(transport: transport)
-    let queryEngine = CameraCatalogQueryEngine(source: source, sessionEpoch: sessionID)
+    guard let identity else { return }
+    let session = CameraGallerySession(
+      identity: identity,
+      source: source,
+      downloadedHandles: { [weak self] in self?.savedDownloadHandles() ?? [] },
+      fetchPreview: { [weak self] mediaIdentity in
+        guard let self else { throw CancellationError() }
+        return try await self.transport.fetchPreviewImageWithInfo(for: mediaIdentity.handle)
+      }
+    )
+    let sessionID = session.sessionEpoch
     catalogSessionID = sessionID
     galleryCatalogIdentity = nil
-    catalogRuntime = nil
-    catalogQueryEngine = queryEngine
+    gallerySession = nil
     catalogLifecycleTask = Task { @MainActor [weak self] in
-      await previousQueryEngine?.invalidate()
       await previousLifecycleTask?.value
-      await previousRuntime?.cancelAllChildren()
+      await previousSession?.invalidate()
       guard let self,
-            self.catalogSessionID == sessionID,
-            self.catalogQueryEngine === queryEngine else { return }
-
-      let catalogRuntime = CameraGalleryCatalogRuntime(
-        source: source,
-        queryEngine: queryEngine,
-        queryOwner: .gallery(sessionID),
-        cameraID: self.identity?.historyKey ?? sessionID.uuidString,
-        publishPresentation: { [weak self] catalog in
-          guard self?.catalogSessionID == sessionID else { return }
-          self?.installCatalogPresentation(catalog)
-        },
-        publishIncrementalUpdate: { [weak self] catalog, handles in
-          guard self?.catalogSessionID == sessionID else { return }
-          self?.publishIncrementalCatalogUpdate(catalog, handles)
-        },
-        reportTransportEvidence: { [weak self] failure in
-          guard failure.provesTransportLost,
-                self?.catalogSessionID == sessionID else { return }
-          self?.send(
-            .transportFailed(
-              NSError(
-                domain: "CameraGalleryCatalogRuntime",
-                code: NSURLErrorNetworkConnectionLost,
-                userInfo: [NSLocalizedDescriptionKey: failure.message]
-              )
-            )
-          )
-        }
-      )
-      self.catalogRuntime = catalogRuntime
-      await catalogRuntime.updateDownloadedHandles(self.savedDownloadHandles())
-      guard self.catalogSessionID == sessionID else {
-        await catalogRuntime.cancelAllChildren()
+            self.catalogSessionID == sessionID else {
+        await session.invalidate()
         return
       }
-      await catalogRuntime.start(initial: .all)
+      self.gallerySession = session
+      session.onTransportFailure = { [weak self] failure in
+        guard failure.provesTransportLost,
+              self?.catalogSessionID == sessionID else { return }
+        self?.send(.transportFailed(NSError(
+          domain: "CameraGalleryCatalogRuntime",
+          code: NSURLErrorNetworkConnectionLost,
+          userInfo: [NSLocalizedDescriptionKey: failure.message]
+        )))
+      }
+      session.observePresentation { [weak self] catalog in
+        guard self?.catalogSessionID == sessionID else { return }
+        self?.installCatalogPresentation(catalog)
+      }
+      session.observeIncrementalUpdates { [weak self] catalog, handles in
+        guard self?.catalogSessionID == sessionID else { return }
+        self?.publishIncrementalCatalogUpdate(catalog, handles)
+      }
+      await session.enter()
     }
   }
 
@@ -750,11 +767,11 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
           transportMessage: error.localizedDescription
         )
       } else if presentation.phase == .galleryLoading || presentation.phase == .galleryReady {
-        let catalogRuntime = catalogRuntime
+        let gallerySession = gallerySession
         let catalogSessionID = catalogSessionID
         let transportBinding = activeTransportBinding
         Task { @MainActor [weak self] in
-          await catalogRuntime?.markTransportLost(error.localizedDescription)
+          await gallerySession?.markTransportLost(error.localizedDescription)
           guard let self,
                 self.catalogSessionID == catalogSessionID,
                 self.activeTransportBinding == transportBinding else { return }
@@ -940,6 +957,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   func removeObserver(_ id: UUID) {
     presentationObservers.removeValue(forKey: id)
     incrementalCatalogObservers.removeValue(forKey: id)
+    gallerySession?.removeObserver(id)
   }
 
   @discardableResult
@@ -1073,7 +1091,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     transportMessage: String
   ) {
     guard beginRecoverableInterruption(reason: reason) else { return }
-    let catalogRuntime = catalogRuntime
+    let gallerySession = gallerySession
     let catalogSessionID = catalogSessionID
     let transportBinding = activeTransportBinding
     guard let leaseID = downloadLeaseID else {
@@ -1088,7 +1106,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     )
     pendingTransportFailureCleanup = cleanup
     Task { @MainActor [weak self] in
-      await catalogRuntime?.markTransportLost(transportMessage)
+      await gallerySession?.markTransportLost(transportMessage)
       self?.finishTransportFailureCleanup(cleanup)
     }
   }
@@ -1401,29 +1419,46 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   }
 
   private func syncCatalogDownloadedHandles(including additionalHandles: Set<Int> = []) {
-    guard let catalogRuntime else { return }
+    guard let gallerySession else { return }
     let handles = savedDownloadHandles().union(additionalHandles)
     Task {
-      await catalogRuntime.updateDownloadedHandles(handles)
+      await gallerySession.updateDownloadedHandles(handles)
     }
   }
 
   private func terminateCatalogSession(reason: String) {
-    let previousRuntime = catalogRuntime
-    let previousQueryEngine = catalogQueryEngine
+    let previousSession = gallerySession
     let previousLifecycleTask = catalogLifecycleTask
     catalogSessionID = nil
     galleryCatalogIdentity = nil
-    catalogRuntime = nil
-    catalogQueryEngine = nil
+    gallerySession = nil
     catalogLifecycleTask = Task { @MainActor [weak self] in
-      await previousQueryEngine?.invalidate()
       await previousLifecycleTask?.value
-      await previousRuntime?.cancelAllChildren()
+      await previousSession?.invalidate()
       guard let self else { return }
       self.transport.terminateCameraCommunication(reason: reason)
       self.activeTransportBinding = nil
     }
+  }
+
+  func exitGalleryAndDisconnect(reason: String) async {
+    let gallerySession = self.gallerySession
+    self.gallerySession = nil
+    catalogSessionID = nil
+    galleryCatalogIdentity = nil
+    if let gallerySession {
+      await gallerySession.invalidate()
+    }
+    transport.terminateCameraCommunication(reason: reason)
+    activeTransportBinding = nil
+    identity = nil
+    galleryPresentationPayload = nil
+    queuedDownloads = []
+    itemStates = [:]
+    itemProgress = [:]
+    galleryItemsByHandle = [:]
+    presentation = .idle
+    publishPresentation()
   }
 
   private func completePendingGalleryActivationIfNeeded() {
@@ -1535,11 +1570,11 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
           )
         }
         // Reload the initial catalog to restore normal gallery state
-        await self.catalogRuntime?.start(initial: .all)
+        await self.gallerySession?.reload()
       } catch {
         self.onConnectionLogAppended?("[OBS] COUNT_SWEEP_ERROR \(error.localizedDescription)")
         // Attempt to restore gallery state even after failure
-        await self.catalogRuntime?.start(initial: .all)
+        await self.gallerySession?.reload()
       }
     }
   }

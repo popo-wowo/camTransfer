@@ -1917,8 +1917,8 @@ final class RunnerTests: XCTestCase {
     )
   }
 
-  func testCameraGallerySessionProtocolMatchesCurrentGalleryServiceContract() {
-    let session: CameraGallerySession = CameraVendorRealtimeGalleryService()
+  func testCameraGalleryTransportSessionProtocolMatchesCurrentGalleryServiceContract() {
+    let session: CameraGalleryTransportSession = CameraVendorRealtimeGalleryService()
 
     XCTAssertTrue(session is CameraVendorRealtimeGalleryService)
   }
@@ -15730,6 +15730,136 @@ final class RunnerTests: XCTestCase {
       sampleCount += 1
     }
     return redTotal / max(sampleCount, 1)
+  }
+
+  func testGalleryFilterStorePersistsIndependentlyPerCamera() throws {
+    let suiteName = "RunnerTests.CameraGalleryFilterStateStore.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defaults.removePersistentDomain(forName: suiteName)
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let store = CameraGalleryFilterStateStore(defaults: defaults)
+    let firstCamera = CameraSessionIdentity(cameraName: "X-T5", historyKey: "serial-a")
+    let secondCamera = CameraSessionIdentity(cameraName: "X-T5", historyKey: "serial-b")
+    let firstState = CameraGalleryFilterIntent(
+      rule: CameraMediaFilterRule(
+        formats: .selected([.raw]),
+        date: .today,
+        downloadScope: .notDownloaded
+      ),
+      sort: .oldest
+    )
+
+    store.save(firstState, for: firstCamera)
+
+    XCTAssertEqual(store.load(for: firstCamera), firstState)
+    XCTAssertEqual(store.load(for: secondCamera), .all)
+  }
+
+  @MainActor
+  func testGallerySessionRestoresAllDefaultsForANewCamera() async throws {
+    let suiteName = "RunnerTests.CameraGallerySession.Defaults.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defaults.removePersistentDomain(forName: suiteName)
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    let session = CameraGallerySession(
+      identity: CameraSessionIdentity(cameraName: "new-camera", historyKey: "new-serial"),
+      source: source,
+      filterStore: CameraGalleryFilterStateStore(defaults: defaults),
+      downloadedHandles: { [] },
+      fetchPreview: { _ in throw CancellationError() }
+    )
+
+    await session.enter()
+
+    XCTAssertEqual(session.filterIntent, .all)
+    XCTAssertEqual(session.presentation.intent, .all)
+    await session.invalidate()
+  }
+
+  func testGallerySessionOwnsGalleryCatalogWithoutReadingQuickDownloadState() throws {
+    let runner = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner")
+    let sessionSource = try String(
+      contentsOf: runner.appendingPathComponent("CameraCore/Gallery/CameraGallerySession.swift")
+    )
+    let controllerSource = try String(
+      contentsOf: runner.appendingPathComponent("NativeGalleryViewController.swift")
+    )
+
+    XCTAssertTrue(sessionSource.contains("private let catalogRuntime: CameraGalleryCatalogRuntime"))
+    XCTAssertTrue(sessionSource.contains("private let thumbnailPipeline: CameraGalleryThumbnailPipeline"))
+    XCTAssertTrue(sessionSource.contains("private let hdPreviewPipeline: CameraGalleryHDPreviewPipeline"))
+    XCTAssertFalse(sessionSource.contains("QuickDownload"))
+    XCTAssertFalse(controllerSource.contains("CameraGalleryCatalogRuntime("))
+    XCTAssertFalse(controllerSource.contains("CameraGalleryHDPreviewPipeline("))
+  }
+
+  @MainActor
+  func testGallerySessionSwitchesFilterWithLatestGenerationOnly() async throws {
+    let suiteName = "RunnerTests.CameraGallerySession.Generation.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defaults.removePersistentDomain(forName: suiteName)
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    let session = CameraGallerySession(
+      identity: CameraSessionIdentity(cameraName: "X-T5", historyKey: "serial"),
+      source: source,
+      filterStore: CameraGalleryFilterStateStore(defaults: defaults),
+      downloadedHandles: { [] },
+      fetchPreview: { _ in throw CancellationError() }
+    )
+    await session.enter()
+    source.suspendsCatalogRequests = true
+    var readyFormats: [CameraGalleryFormatIntent] = []
+    let observerID = session.observePresentation { presentation in
+      if case .ready = presentation.state, presentation.intent.format != .all {
+        readyFormats.append(presentation.intent.format)
+      }
+    }
+
+    let jpg = CameraGalleryFilterIntent(date: .all, format: .jpg, sort: .newest, downloadStatus: .all)
+    let raw = CameraGalleryFilterIntent(date: .all, format: .raw, sort: .newest, downloadStatus: .all)
+    await session.submitFilter(jpg)
+    await source.waitForCatalogRequestCount(1)
+    await session.submitFilter(raw)
+    source.resolveCatalogRequest(at: 0, snapshot: .fixture(handles: [1]))
+    await source.waitForCatalogRequestCount(2)
+    source.resolveCatalogRequest(at: 1, snapshot: .fixture(handles: [9, 8]))
+    for _ in 0..<1_000 where session.presentation.items.map(\.handle) != [9, 8] {
+      await Task.yield()
+    }
+
+    XCTAssertEqual(readyFormats, [.raw])
+    XCTAssertEqual(session.presentation.items.map(\.handle), [9, 8])
+    session.removeObserver(observerID)
+    await session.invalidate()
+  }
+
+  func testGalleryExitInvalidatesCatalogAndBothPreviewPipelines() throws {
+    let runner = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner")
+    let sessionSource = try String(
+      contentsOf: runner.appendingPathComponent("CameraCore/Gallery/CameraGallerySession.swift")
+    )
+    let runtimeSource = try String(
+      contentsOf: runner.appendingPathComponent("CameraSessionRuntime.swift")
+    )
+    let invalidateStart = try XCTUnwrap(sessionSource.range(of: "func invalidate() async")?.lowerBound)
+    let invalidateBody = String(sessionSource[invalidateStart...])
+
+    XCTAssertTrue(invalidateBody.contains("await catalogRuntime.cancelAllChildren()"))
+    XCTAssertTrue(invalidateBody.contains("await thumbnailPipeline.invalidateSession()"))
+    XCTAssertTrue(invalidateBody.contains("await hdPreviewPipeline.invalidateSession()"))
+    let exitStart = try XCTUnwrap(runtimeSource.range(of: "func exitGalleryAndDisconnect(reason: String) async")?.lowerBound)
+    let exitBody = String(runtimeSource[exitStart...])
+    let invalidateCall = try XCTUnwrap(exitBody.range(of: "await gallerySession.invalidate()"))
+    let terminateCall = try XCTUnwrap(exitBody.range(of: "transport.terminateCameraCommunication(reason: reason)"))
+    XCTAssertLessThan(invalidateCall.lowerBound, terminateCall.lowerBound)
   }
 
   private func fixedDate() -> Date {

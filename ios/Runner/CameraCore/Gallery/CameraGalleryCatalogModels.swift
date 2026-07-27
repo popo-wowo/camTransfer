@@ -65,7 +65,7 @@ enum CameraGalleryFormatIntent: Equatable, Sendable {
   case raw
 }
 
-enum CameraGallerySortIntent: Equatable, Sendable {
+enum CameraGallerySortIntent: String, Equatable, Codable, Sendable {
   case newest
   case oldest
   case notDownloaded
@@ -76,7 +76,7 @@ enum CameraGalleryDownloadStatusIntent: Equatable, Sendable {
   case notDownloaded
 }
 
-struct CameraGalleryFilterIntent: Equatable, Sendable {
+struct CameraGalleryFilterIntent: Equatable, Codable, Sendable {
   let rule: CameraMediaFilterRule
   let sort: CameraGallerySortIntent
 

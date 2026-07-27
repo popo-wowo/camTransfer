@@ -22,6 +22,8 @@
 		A1B2C3D4E5F6071829300019 /* CameraCatalogQueryEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6071829300018 /* CameraCatalogQueryEngine.swift */; };
 		A1B2C3D4E5F607182930001B /* CameraGalleryThumbnailPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F607182930001A /* CameraGalleryThumbnailPipeline.swift */; };
 		A1B2C3D4E5F607182930001D /* CameraGalleryHDPreviewPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F607182930001C /* CameraGalleryHDPreviewPipeline.swift */; };
+		A1B2C3D4E5F607182930001F /* CameraGalleryFilterStateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F607182930001E /* CameraGalleryFilterStateStore.swift */; };
+		A1B2C3D4E5F6071829300021 /* CameraGallerySession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6071829300020 /* CameraGallerySession.swift */; };
 		07A9B017317FB734C0D18489 /* CameraConnectionFlowGuards.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07A9B017317FB734C0D18488 /* CameraConnectionFlowGuards.swift */; };
 		11F0A1B2C3D4E5F60718293B /* CameraRememberedConnectionFlowDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11F0A1B2C3D4E5F60718293A /* CameraRememberedConnectionFlowDriver.swift */; };
 		11F0A1B2C3D4E5F60718293D /* CameraTransferFlowDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11F0A1B2C3D4E5F60718293C /* CameraTransferFlowDriver.swift */; };
@@ -177,6 +179,8 @@
 		A1B2C3D4E5F6071829300018 /* CameraCatalogQueryEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraCatalogQueryEngine.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F607182930001A /* CameraGalleryThumbnailPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryThumbnailPipeline.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F607182930001C /* CameraGalleryHDPreviewPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryHDPreviewPipeline.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F607182930001E /* CameraGalleryFilterStateStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryFilterStateStore.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F6071829300020 /* CameraGallerySession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGallerySession.swift; sourceTree = "<group>"; };
 		B1785535FDE4AE556AC351EB /* CameraConnectionSteps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraConnectionSteps.swift; sourceTree = "<group>"; };
 		01563AF1C08713172483FE8C /* CameraGalleryResumeStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryResumeStore.swift; sourceTree = "<group>"; };
 		B2E448C1951CDAF54DC87758 /* Runner.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Runner.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -349,7 +353,9 @@
 				A1B2C3D4E5F6071829300012 /* CameraFilterEngine.swift */,
 				A1B2C3D4E5F6071829300000 /* CameraGalleryCatalogModels.swift */,
 				A1B2C3D4E5F6071829300008 /* CameraGalleryCatalogRuntime.swift */,
+				A1B2C3D4E5F607182930001E /* CameraGalleryFilterStateStore.swift */,
 				A1B2C3D4E5F6071829300014 /* CameraGalleryMediaIdentity.swift */,
+				A1B2C3D4E5F6071829300020 /* CameraGallerySession.swift */,
 				A1B2C3D4E5F607182930001C /* CameraGalleryHDPreviewPipeline.swift */,
 				A1B2C3D4E5F607182930001A /* CameraGalleryThumbnailPipeline.swift */,
 				A1B2C3D4E5F6071829300006 /* CameraGalleryRepositoryAdapters.swift */,
@@ -585,6 +591,8 @@
 				24D142A045D34E67A8D3A001 /* CameraGalleryEntryCoordinator.swift in Sources */,
 				A1B2C3D4E5F6071829300001 /* CameraGalleryCatalogModels.swift in Sources */,
 				A1B2C3D4E5F6071829300009 /* CameraGalleryCatalogRuntime.swift in Sources */,
+				A1B2C3D4E5F607182930001F /* CameraGalleryFilterStateStore.swift in Sources */,
+				A1B2C3D4E5F6071829300021 /* CameraGallerySession.swift in Sources */,
 				082DDC9F626D556DD44A5273 /* CameraGalleryConnectionCoordinator.swift in Sources */,
 				01563AF1C08713172483FE8B /* CameraGalleryResumeStore.swift in Sources */,
 				4729DBB685779356DA98DAC7 /* CameraGalleryModule.swift in Sources */,

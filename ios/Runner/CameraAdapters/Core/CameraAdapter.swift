@@ -6,7 +6,7 @@ struct CameraAdapterDescriptor: Equatable {
   let legalDisclaimer: String?
 }
 
-protocol CameraGallerySession: CameraVendorGalleryService,
+protocol CameraGalleryTransportSession: CameraVendorGalleryService,
   CameraVendorGalleryConnectionTerminating,
   CameraVendorGalleryDiagnosticReporting,
   CameraVendorGalleryConfigurable,
@@ -15,5 +15,5 @@ protocol CameraGallerySession: CameraVendorGalleryService,
 
 protocol CameraAdapter {
   var descriptor: CameraAdapterDescriptor { get }
-  func makeGallerySession() -> CameraGallerySession
+  func makeGallerySession() -> CameraGalleryTransportSession
 }

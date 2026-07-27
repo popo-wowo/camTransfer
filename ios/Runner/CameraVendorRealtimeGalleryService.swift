@@ -646,7 +646,7 @@ final class CameraVendorPtpSessionRuntime {
   }
 }
 
-final class CameraVendorRealtimeGalleryService: CameraGallerySession, CameraVendorGalleryBackgroundKeepAlive, CameraVendorGalleryObjectInfoSource, CameraVendorExclusiveDownloadWindowControlling, CameraVendorActiveDownloadInterrupting, CameraVendorActiveDownloadCancellationRequesting, CameraVendorVisibleThumbnailLaneCoordinating {
+final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, CameraVendorGalleryBackgroundKeepAlive, CameraVendorGalleryObjectInfoSource, CameraVendorExclusiveDownloadWindowControlling, CameraVendorActiveDownloadInterrupting, CameraVendorActiveDownloadCancellationRequesting, CameraVendorVisibleThumbnailLaneCoordinating {
   private let session = CameraVendorPtpSession()
   private lazy var ptpRuntime = CameraVendorPtpSessionRuntime(
     session: session,

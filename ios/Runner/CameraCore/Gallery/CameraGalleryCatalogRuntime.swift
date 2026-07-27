@@ -4,6 +4,9 @@ actor CameraGalleryCatalogRuntime {
   typealias PresentationPublisher = @MainActor (CameraGalleryPresentation) -> Void
   typealias IncrementalUpdatePublisher = @MainActor (CameraGalleryPresentation, Set<Int>) -> Void
   typealias TransportEvidenceReporter = @MainActor (CameraGalleryCatalogFailure) -> Void
+  typealias ThumbnailPipelineFactory = (
+    _ publisher: @escaping CameraGalleryThumbnailPipeline.Publisher
+  ) -> CameraGalleryThumbnailPipeline
 
   private struct PendingTransaction {
     enum SourceOperation {
@@ -41,6 +44,7 @@ actor CameraGalleryCatalogRuntime {
     queryEngine: CameraCatalogQueryEngine? = nil,
     queryOwner: CameraCatalogAccessOwner = .gallery(UUID()),
     cameraID: String = "gallery",
+    makeThumbnailPipeline: ThumbnailPipelineFactory? = nil,
     publishPresentation: @escaping PresentationPublisher,
     publishIncrementalUpdate: @escaping IncrementalUpdatePublisher = { _, _ in },
     reportTransportEvidence: @escaping TransportEvidenceReporter
@@ -51,10 +55,14 @@ actor CameraGalleryCatalogRuntime {
     self.publishPresentation = publishPresentation
     self.publishIncrementalUpdate = publishIncrementalUpdate
     self.reportTransportEvidence = reportTransportEvidence
-    thumbnailPipeline = CameraGalleryThumbnailPipeline(source: source) { [weak self] publication in
+    let publisher: CameraGalleryThumbnailPipeline.Publisher = { [weak self] publication in
       guard let self else { return }
       await self.applyPipelinePublication(publication)
     }
+    thumbnailPipeline = makeThumbnailPipeline?(publisher) ?? CameraGalleryThumbnailPipeline(
+      source: source,
+      publish: publisher
+    )
   }
 
   func start(initial intent: CameraGalleryFilterIntent = .all) async {
@@ -151,6 +159,13 @@ actor CameraGalleryCatalogRuntime {
 
   func presentation() -> CameraGalleryPresentation {
     currentPresentation
+  }
+
+  func waitUntilIdle() async {
+    while let task = activeTransactionTask {
+      await task.value
+    }
+    await thumbnailPipeline.waitUntilIdle()
   }
 
   private func submit(
