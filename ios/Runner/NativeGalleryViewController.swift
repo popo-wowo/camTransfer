@@ -1962,7 +1962,12 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     )
     let startDownload = { [weak self] in
       guard let self else { return }
-      self.runtime.send(.startDownloadRequests(requestsToDownload))
+      self.runtime.submitDownload(CameraDownloadSubmission(
+        id: UUID(),
+        requests: requestsToDownload,
+        origin: .gallery,
+        completionPolicy: .returnToGallery
+      ))
       self.finishOpeningDownloadCenter(
         handlesToDownload: handlesToDownload,
         itemsToDownload: itemsToDownload,

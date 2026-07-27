@@ -90,9 +90,17 @@ final class QuickDownloadCoordinator {
       return
     }
 
-    runtime.send(
-      .startDownload(handles: matchedHandles, mode: rule.downloadMode.transferMode)
-    )
+    guard runtime.submitDownload(CameraDownloadSubmission(
+      id: UUID(),
+      requests: matchedHandles.map {
+        CameraSessionQueuedDownload(handle: $0, mode: rule.downloadMode.transferMode)
+      },
+      origin: .quickDownload,
+      completionPolicy: rule.disconnectAfterDownload ? .disconnectToHome : .returnToGallery
+    )) else {
+      finish(.failed(reason: "自动下载失败：已有下载任务正在执行"))
+      return
+    }
     finish(.started(matchedCount: matchedHandles.count, handles: matchedHandles))
   }
 

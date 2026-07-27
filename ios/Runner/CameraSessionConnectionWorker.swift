@@ -46,6 +46,7 @@ struct CameraSessionRuntimeGalleryPresentationPayload {
 enum CameraSessionRuntimePresentationDestination {
   case gallery(CameraSessionRuntimeGalleryPresentationPayload)
   case recoveryDownloadCenter(CameraSessionRuntimeGalleryPresentationPayload)
+  case home
 }
 
 enum CameraSessionRuntimeGalleryActivationError: LocalizedError {

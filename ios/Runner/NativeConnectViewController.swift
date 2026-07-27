@@ -1913,6 +1913,16 @@ final class NativeConnectViewController: UIViewController {
   ) {
     switch destination {
     case .gallery(_):
+      if let navigationController,
+         navigationController.topViewController is NativeDownloadListViewController {
+        if let galleryController = navigationController.viewControllers.last(where: {
+          $0 is NativeGalleryViewController
+        }) {
+          navigationController.popToViewController(galleryController, animated: true)
+          return
+        }
+        navigationController.popToViewController(self, animated: false)
+      }
       if isAutoDownloadPending {
         isAutoDownloadPending = false
         executeQuickDownload()
@@ -1921,6 +1931,10 @@ final class NativeConnectViewController: UIViewController {
       }
     case .recoveryDownloadCenter(let payload):
       finishRecoveredDownloadEntryIfPossible(payload: payload)
+    case .home:
+      cameraSessionRuntime.onDownloadThumbnailGenerated = nil
+      navigationController?.popToViewController(self, animated: true)
+      updateRememberedCameraCard()
     }
   }
 
@@ -1999,9 +2013,6 @@ final class NativeConnectViewController: UIViewController {
       controller.onMovedFromParent = { [weak self] in
         guard let self else { return }
         self.cameraSessionRuntime.onDownloadThumbnailGenerated = nil
-        if self.autoDownloadRule.disconnectAfterDownload {
-          self.cameraSessionRuntime.send(.disconnectCamera(reason: "auto-download-complete-disconnect"))
-        }
         self.updateRememberedCameraCard()
       }
       self.cameraSessionRuntime.onDownloadThumbnailGenerated = { [weak controller] handle, image in

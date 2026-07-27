@@ -15931,6 +15931,155 @@ final class RunnerTests: XCTestCase {
     )
   }
 
+  func testRuntimeUsesOneSubmissionAPIForManualQuickAndRecoveryDownloads() throws {
+    let runner = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner")
+    let runtimeSource = try String(contentsOf: runner.appendingPathComponent("CameraSessionRuntime.swift"))
+    let gallerySource = try String(contentsOf: runner.appendingPathComponent("NativeGalleryViewController.swift"))
+    let quickSource = try String(contentsOf: runner.appendingPathComponent("QuickDownloadCoordinator.swift"))
+
+    XCTAssertTrue(runtimeSource.contains("func submitDownload(_ submission: CameraDownloadSubmission)"))
+    XCTAssertTrue(gallerySource.contains("runtime.submitDownload("))
+    XCTAssertTrue(gallerySource.contains("origin: .gallery"))
+    XCTAssertTrue(quickSource.contains("runtime.submitDownload("))
+    XCTAssertTrue(quickSource.contains("origin: .quickDownload"))
+    XCTAssertTrue(runtimeSource.contains("origin: .recovery"))
+    XCTAssertFalse(gallerySource.contains(".startDownloadRequests("))
+    XCTAssertFalse(quickSource.contains(".startDownload("))
+  }
+
+  @MainActor
+  func testRuntimeRejectsOverlappingDownloadBatch() async throws {
+    let transport = CameraSessionRuntimeSpy()
+    let runtime = CameraSessionRuntime(transport: transport)
+    runtime.send(.enterGallery(CameraSessionIdentity(cameraName: "X-T5")))
+    await waitForRuntimeGalleryReady(runtime)
+
+    XCTAssertTrue(runtime.submitDownload(CameraDownloadSubmission(
+      id: UUID(),
+      requests: [
+        CameraSessionQueuedDownload(handle: 101, mode: .original),
+        CameraSessionQueuedDownload(handle: 101, mode: .compressed),
+        CameraSessionQueuedDownload(handle: 102, mode: .original),
+      ],
+      origin: .gallery,
+      completionPolicy: .returnToGallery
+    )))
+    XCTAssertFalse(runtime.submitDownload(CameraDownloadSubmission(
+      id: UUID(),
+      requests: [CameraSessionQueuedDownload(handle: 201, mode: .original)],
+      origin: .quickDownload,
+      completionPolicy: .disconnectToHome
+    )))
+
+    XCTAssertEqual(runtime.presentation.queuedHandles, [101, 102])
+    XCTAssertEqual(transport.startedHandles, [101])
+  }
+
+  @MainActor
+  func testRuntimeAllowsExplicitRedownloadOfSavedHandles() async throws {
+    let transport = CameraSessionRuntimeSpy()
+    let runtime = CameraSessionRuntime(
+      transport: transport,
+      savedHandleStore: CameraSessionRuntimeSavedHandleStoreSpy(savedHandles: [101])
+    )
+    runtime.send(.enterGallery(CameraSessionIdentity(cameraName: "X-T5")))
+    await waitForRuntimeGalleryReady(runtime)
+
+    XCTAssertEqual(runtime.downloadState(for: 101), .saved)
+    XCTAssertTrue(runtime.submitDownload(CameraDownloadSubmission(
+      id: UUID(),
+      requests: [CameraSessionQueuedDownload(handle: 101, mode: .original)],
+      origin: .gallery,
+      completionPolicy: .returnToGallery
+    )))
+
+    XCTAssertEqual(transport.startedHandles, [101])
+    XCTAssertEqual(runtime.downloadState(for: 101), .downloading)
+  }
+
+  @MainActor
+  func testManualDownloadTerminalReturnsGalleryReadyWithoutDisconnect() async throws {
+    let transport = CameraSessionRuntimeSpy()
+    let runtime = CameraSessionRuntime(transport: transport)
+    runtime.send(.enterGallery(CameraSessionIdentity(cameraName: "X-T5")))
+    await waitForRuntimeGalleryReady(runtime)
+    runtime.submitDownload(CameraDownloadSubmission(
+      id: UUID(),
+      requests: [CameraSessionQueuedDownload(handle: 101, mode: .original)],
+      origin: .gallery,
+      completionPolicy: .returnToGallery
+    ))
+
+    runtime.send(.transferFinished(handle: 101))
+
+    XCTAssertEqual(runtime.presentation.phase, .galleryReady)
+    XCTAssertEqual(transport.terminateCount, 0)
+  }
+
+  @MainActor
+  func testQuickDownloadTerminalRoutesByDisconnectCompletionPolicy() async throws {
+    let keepTransport = CameraSessionRuntimeSpy()
+    let keepRuntime = CameraSessionRuntime(transport: keepTransport)
+    keepRuntime.send(.enterGallery(CameraSessionIdentity(cameraName: "X-T5")))
+    await waitForRuntimeGalleryReady(keepRuntime)
+    keepRuntime.submitDownload(CameraDownloadSubmission(
+      id: UUID(),
+      requests: [CameraSessionQueuedDownload(handle: 101, mode: .original)],
+      origin: .quickDownload,
+      completionPolicy: .returnToGallery
+    ))
+    keepRuntime.send(.transferFinished(handle: 101))
+
+    XCTAssertEqual(keepRuntime.presentation.phase, .galleryReady)
+    XCTAssertEqual(keepTransport.terminateCount, 0)
+
+    let disconnectTransport = CameraSessionRuntimeSpy()
+    let disconnectRuntime = CameraSessionRuntime(transport: disconnectTransport)
+    disconnectRuntime.send(.enterGallery(CameraSessionIdentity(cameraName: "X-T5")))
+    await waitForRuntimeGalleryReady(disconnectRuntime)
+    var routedHome = false
+    disconnectRuntime.onPresentationDestinationReady = { destination in
+      if case .home = destination { routedHome = true }
+    }
+    disconnectRuntime.submitDownload(CameraDownloadSubmission(
+      id: UUID(),
+      requests: [CameraSessionQueuedDownload(handle: 201, mode: .original)],
+      origin: .quickDownload,
+      completionPolicy: .disconnectToHome
+    ))
+    disconnectRuntime.send(.transferFinished(handle: 201))
+
+    XCTAssertEqual(disconnectRuntime.presentation.phase, .idle)
+    XCTAssertTrue(routedHome)
+  }
+
+  @MainActor
+  func testQuickDownloadCancellationRoutesByDisconnectCompletionPolicy() async throws {
+    let transport = CameraSessionRuntimeSpy()
+    let runtime = CameraSessionRuntime(transport: transport)
+    runtime.send(.enterGallery(CameraSessionIdentity(cameraName: "X-T5")))
+    await waitForRuntimeGalleryReady(runtime)
+    var routedHome = false
+    runtime.onPresentationDestinationReady = { destination in
+      if case .home = destination { routedHome = true }
+    }
+    runtime.submitDownload(CameraDownloadSubmission(
+      id: UUID(),
+      requests: [CameraSessionQueuedDownload(handle: 101, mode: .original)],
+      origin: .quickDownload,
+      completionPolicy: .disconnectToHome
+    ))
+
+    runtime.send(.cancelDownloadByUser)
+    runtime.send(.transferCancelled(handle: 101))
+
+    XCTAssertEqual(runtime.presentation.phase, .idle)
+    XCTAssertTrue(routedHome)
+  }
+
   @MainActor
   func testCameraSessionRuntimeGalleryDetachmentDoesNotCancelHealthyDownload() async throws {
     let transport = CameraSessionRuntimeSpy()
