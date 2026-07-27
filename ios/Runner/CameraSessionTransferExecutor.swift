@@ -186,7 +186,7 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
 
   func loadCatalog(for intent: CameraGalleryFilterIntent) async throws -> CameraGalleryCatalogSnapshot {
     // "All" uses the same expanded initial catalog logic (which includes HEIF handles)
-    if intent.format == .all && intent.date == .all {
+    if intent.format == .all {
       return try await loadInitialCatalog()
     }
     let query = try cameraCatalogQuery(for: intent)

@@ -12751,6 +12751,38 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(transport.initialCatalogRequestCount, 1)
   }
 
+  @MainActor
+  func testRuntimeCatalogSourceAllFormatsTodayUsesExpandedInitialCatalog() async throws {
+    let transport = CameraSessionRuntimeSpy()
+    let source = CameraSessionGalleryCatalogRuntimeSource(transport: transport)
+
+    _ = try await source.loadCatalog(for: CameraGalleryFilterIntent(
+      date: .today,
+      format: .all,
+      sort: .newest,
+      downloadStatus: .all
+    ))
+
+    XCTAssertEqual(transport.initialCatalogRequestCount, 1)
+    XCTAssertEqual(transport.requestedCatalogLabels.count, 0)
+  }
+
+  @MainActor
+  func testRuntimeCatalogSourceAllFormatsSpecificDayUsesExpandedInitialCatalog() async throws {
+    let transport = CameraSessionRuntimeSpy()
+    let source = CameraSessionGalleryCatalogRuntimeSource(transport: transport)
+
+    _ = try await source.loadCatalog(for: CameraGalleryFilterIntent(
+      date: .specificDay(Date(timeIntervalSince1970: 1_800_000_000)),
+      format: .all,
+      sort: .newest,
+      downloadStatus: .all
+    ))
+
+    XCTAssertEqual(transport.initialCatalogRequestCount, 1)
+    XCTAssertEqual(transport.requestedCatalogLabels.count, 0)
+  }
+
   func testOriginalDownloadBatchModePreparesOnceAndResetsAtBatchEnd() {
     var state = CameraVendorOriginalDownloadBatchModeState()
 
