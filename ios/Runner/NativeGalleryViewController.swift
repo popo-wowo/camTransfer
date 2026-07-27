@@ -1275,9 +1275,10 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       "[OBS] GALLERY_CATALOG_INTENT_SUBMITTED " +
       "date=\(dateChips.selectedID ?? "all") formats=\(formatChips.selectedIDs.sorted())"
     )
+    let sortIntent = filterState.sortIntent
     runtime.submitGalleryFilter(
       rule: filterState.rule,
-      sort: filterState.sortIntent
+      sort: sortIntent
     )
   }
 

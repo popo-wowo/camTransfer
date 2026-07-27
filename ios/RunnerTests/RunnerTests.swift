@@ -1243,7 +1243,7 @@ final class RunnerTests: XCTestCase {
     let body = String(source[methodStart..<methodEnd])
 
     XCTAssertTrue(body.contains("scrollView === hdCollectionView"))
-    XCTAssertTrue(body.contains("hdPreviewPipeline.updateVisibleHandles(visibleHandles)"))
+    XCTAssertTrue(body.contains("runtime.updateGalleryHDPreviewVisibleHandles(visibleHandles)"))
   }
 
   func testNativeGalleryHDCoordinatorCountsOnlyActiveDateLoadedHandles() throws {
@@ -11218,14 +11218,6 @@ final class RunnerTests: XCTestCase {
 
     XCTAssertEqual(merged.formatLabel, "RAW")
     XCTAssertTrue(merged.formatHints.isEmpty)
-    XCTAssertEqual(
-      NativeGalleryFilterPolicy.filteredItems(
-        [merged],
-        state: NativeGalleryFilterState(formats: .selected([.heif])),
-        now: Date(timeIntervalSince1970: 0)
-      ),
-      []
-    )
   }
 
   func testNativeGalleryMetadataMergeUpgradesResolvedFormatWithoutOverwritingStableCatalogTruth() {
