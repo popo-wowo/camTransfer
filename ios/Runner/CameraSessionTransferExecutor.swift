@@ -282,17 +282,6 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
         label: "format-heif",
         membershipPolicy: .subtractBaseline
       )
-    case .video:
-      return CameraVendorCatalogQuery(
-        conditions: [
-          .uint16(
-            propertyCode: CameraVendorSearchModeAllPayload.objectFormatPropertyCode,
-            value: CameraVendorSearchModeAllPayload.movObjectFormatMask | CameraVendorSearchModeAllPayload.mp4ObjectFormatMask
-          ),
-        ],
-        label: "format-video",
-        membershipPolicy: .subtractBaseline
-      )
     }
   }
 }

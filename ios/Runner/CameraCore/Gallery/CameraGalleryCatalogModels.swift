@@ -56,7 +56,6 @@ enum CameraGalleryDateIntent: Equatable, Sendable {
   case all
   case today
   case specificDay(Date)
-  case range(from: Date, to: Date)
 }
 
 enum CameraGalleryFormatIntent: Equatable, Sendable {
@@ -64,7 +63,6 @@ enum CameraGalleryFormatIntent: Equatable, Sendable {
   case jpg
   case heif
   case raw
-  case video
 }
 
 enum CameraGallerySortIntent: Equatable, Sendable {
@@ -95,13 +93,54 @@ struct CameraGalleryFilterIntent: Equatable, Sendable {
     switch format {
     case .all:
       return false
-    case .jpg, .raw, .heif, .video:
+    case .jpg, .raw, .heif:
       return true
     }
   }
 
   func hasSameCameraMembership(as other: CameraGalleryFilterIntent) -> Bool {
     format == other.format
+  }
+}
+
+enum CameraGalleryFilterSubmission: Equatable, Sendable {
+  case intent(CameraGalleryFilterIntent)
+  case unsupported(CameraGalleryUnsupportedReason)
+}
+
+enum CameraGalleryLegacyFilterAdapter {
+  static func submission(
+    for rule: CameraMediaFilterRule,
+    sort: CameraGallerySortIntent
+  ) -> CameraGalleryFilterSubmission {
+    let date: CameraGalleryDateIntent
+    switch rule.date {
+    case .all:
+      date = .all
+    case .today:
+      date = .today
+    case .specificDay(let day):
+      date = .specificDay(day)
+    }
+
+    let format: CameraGalleryFormatIntent
+    switch CameraFilterEngine.plan(for: rule.formats) {
+    case .allCatalog:
+      format = .all
+    case .exactFormats(let formats) where formats == [.jpg]:
+      format = .jpg
+    case .exactFormats(let formats) where formats == [.raw]:
+      format = .raw
+    case .exactFormats, .objectInfoFallback:
+      return .unsupported(.sharedFilterQueryPending)
+    }
+
+    return .intent(CameraGalleryFilterIntent(
+      date: date,
+      format: format,
+      sort: sort,
+      downloadStatus: rule.downloadScope == .notDownloaded ? .notDownloaded : .all
+    ))
   }
 }
 
@@ -133,7 +172,7 @@ struct CameraGallerySnapshotID: Equatable, Hashable, Sendable {
 enum CameraGalleryUnsupportedReason: Equatable, Sendable {
   case dateWireFormatUnproven
   case heifCatalogUnverified
-  case videoCatalogUnverified
+  case sharedFilterQueryPending
 
   var message: String {
     switch self {
@@ -141,8 +180,8 @@ enum CameraGalleryUnsupportedReason: Equatable, Sendable {
       return "日期筛选尚未取得原厂 XApp 的完整 wire 证据"
     case .heifCatalogUnverified:
       return "当前相机尚未验证 HEIF 精确目录"
-    case .videoCatalogUnverified:
-      return "当前相机尚未验证视频格式目录"
+    case .sharedFilterQueryPending:
+      return "该格式组合将在共享相机查询引擎接入后可用"
     }
   }
 }

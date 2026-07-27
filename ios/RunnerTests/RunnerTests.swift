@@ -4060,7 +4060,7 @@ final class RunnerTests: XCTestCase {
     let sourceURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
-      .appendingPathComponent("Runner/NativeConnectViewController.swift")
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
     let galleryStart = try XCTUnwrap(source.range(of: "private final class NativeGalleryViewController")?.lowerBound)
     let galleryPage = String(source[galleryStart...])
@@ -7133,6 +7133,201 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(rule.isEnabled)
   }
 
+  func testMediaFormatSelectionMakesAllExclusiveFromSpecificFormats() {
+    let specific = CameraMediaFormatSelection.normalized([.jpg, .raw])
+
+    XCTAssertEqual(specific.selectingAll(), .all)
+    XCTAssertEqual(CameraMediaFormatSelection.normalized([]), .all)
+  }
+
+  func testMediaFormatSelectionCodableNormalizesEmptySpecificSelectionToAll() throws {
+    let encoder = JSONEncoder()
+    let decoder = JSONDecoder()
+    let emptySelection = CameraMediaFormatSelection.selected([])
+    let encodedEmptySelection = try encoder.encode(emptySelection)
+    let encodedAll = try encoder.encode(CameraMediaFormatSelection.all)
+    let legacyEmptySelection = Data(#"{"selected":{"_0":[]}}"#.utf8)
+
+    XCTAssertEqual(encodedEmptySelection, encodedAll)
+    XCTAssertEqual(
+      try decoder.decode(CameraMediaFormatSelection.self, from: legacyEmptySelection),
+      .all
+    )
+  }
+
+  func testMediaFormatSelectionAllowsJpgRawAndHeifMultiSelection() {
+    let selection = CameraMediaFormatSelection.normalized([.jpg, .raw, .heif])
+
+    XCTAssertEqual(selection, .selected([.jpg, .raw, .heif]))
+  }
+
+  func testGalleryDefaultFilterIsAllFormatsAllDatesAllDownloads() {
+    XCTAssertEqual(
+      CameraMediaFilterRule.galleryDefault,
+      CameraMediaFilterRule(formats: .all, date: .all, downloadScope: .all)
+    )
+  }
+
+  func testQuickDownloadDefaultFilterIsJpgAllDatesNotDownloaded() {
+    XCTAssertEqual(
+      CameraMediaFilterRule.quickDownloadDefault,
+      CameraMediaFilterRule(
+        formats: .selected([.jpg]),
+        date: .all,
+        downloadScope: .notDownloaded
+      )
+    )
+  }
+
+  func testFilterPlannerUsesExactQueriesForJpgAndRaw() {
+    XCTAssertEqual(
+      CameraFilterEngine.plan(for: .selected([.jpg])),
+      .exactFormats([.jpg])
+    )
+    XCTAssertEqual(
+      CameraFilterEngine.plan(for: .selected([.jpg, .raw])),
+      .exactFormats([.jpg, .raw])
+    )
+  }
+
+  func testFilterPlannerUsesFallbackWheneverHeifIsSelected() {
+    XCTAssertEqual(
+      CameraFilterEngine.plan(for: .selected([.heif])),
+      .objectInfoFallback(requestedFormats: [.heif])
+    )
+    XCTAssertEqual(
+      CameraFilterEngine.plan(for: .selected([.jpg, .heif])),
+      .objectInfoFallback(requestedFormats: [.jpg, .heif])
+    )
+  }
+
+  func testFilterProjectionAppliesDateAndDownloadScopeOnce() {
+    let calendar = Calendar(identifier: .gregorian)
+    let today = calendar.date(from: DateComponents(year: 2026, month: 7, day: 27, hour: 12))!
+    let yesterday = calendar.date(byAdding: .day, value: -1, to: today)!
+    let candidates = [
+      CameraMediaFilterCandidate(handle: 1, captureDate: today),
+      CameraMediaFilterCandidate(handle: 2, captureDate: today),
+      CameraMediaFilterCandidate(handle: 3, captureDate: yesterday),
+    ]
+    let rule = CameraMediaFilterRule(
+      formats: .all,
+      date: .today,
+      downloadScope: .notDownloaded
+    )
+
+    let projected = CameraFilterEngine.project(
+      candidates,
+      rule: rule,
+      downloadedHandles: [2],
+      now: today,
+      calendar: calendar
+    )
+
+    XCTAssertEqual(projected.map(\.handle), [1])
+  }
+
+  func testGallerySubmissionBridgeRejectsMultiSelectAndHeifWithoutQuerying() {
+    XCTAssertEqual(
+      NativeGalleryFilterState(formats: .selected([.jpg])).catalogSubmission,
+      .intent(CameraGalleryFilterIntent(
+        date: .all,
+        format: .jpg,
+        sort: .newest,
+        downloadStatus: .all
+      ))
+    )
+    XCTAssertEqual(
+      NativeGalleryFilterState(formats: .selected([.jpg, .raw])).catalogSubmission,
+      .unsupported(.sharedFilterQueryPending)
+    )
+    XCTAssertEqual(
+      NativeGalleryFilterState(formats: .selected([.heif])).catalogSubmission,
+      .unsupported(.sharedFilterQueryPending)
+    )
+  }
+
+  func testQuickDownloadDefaultRuleSubmitsExactJpgIntentBeforeFiltering() {
+    XCTAssertEqual(
+      CameraGalleryLegacyFilterAdapter.submission(
+        for: .quickDownloadDefault,
+        sort: .newest
+      ),
+      .intent(CameraGalleryFilterIntent(
+        date: .all,
+        format: .jpg,
+        sort: .newest,
+        downloadStatus: .notDownloaded
+      ))
+    )
+  }
+
+  func testQuickDownloadCoordinatorSubmitsAndWaitsForRequestedCatalogIntent() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Runner/QuickDownloadCoordinator.swift")
+    )
+
+    let wait = try XCTUnwrap(source.range(of: "waitForCatalogReady()")?.lowerBound)
+    let submit = try XCTUnwrap(source.range(of: "runtime.submitGalleryIntent(intent)")?.lowerBound)
+    XCTAssertLessThan(wait, submit)
+    XCTAssertTrue(source.contains("presentation.catalog.intent == self.requestedCatalogIntent"))
+    XCTAssertFalse(source.contains("formatLabel"))
+    XCTAssertFalse(source.contains("filename"))
+  }
+
+  func testCatalogRuntimeIsTheOnlyConsumerApplyingFilterProjection() throws {
+    let runner = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner")
+    let runtime = try String(
+      contentsOf: runner.appendingPathComponent("CameraCore/Gallery/CameraGalleryCatalogRuntime.swift")
+    )
+    let galleryPolicy = try String(
+      contentsOf: runner.appendingPathComponent("NativeGalleryPolicies.swift")
+    )
+    let quick = try String(
+      contentsOf: runner.appendingPathComponent("QuickDownloadCoordinator.swift")
+    )
+
+    XCTAssertTrue(runtime.contains("CameraFilterEngine.project("))
+    XCTAssertFalse(galleryPolicy.contains("CameraFilterEngine.project("))
+    XCTAssertFalse(quick.contains("CameraFilterEngine.project("))
+  }
+
+  func testQuickSettingsUsesSharedFourFormatMultiSelectionWithoutPresetsOrVideo() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Runner/NativeAutoDownloadSettingsViewController.swift")
+    )
+
+    XCTAssertTrue(source.contains("[\"all\", \"jpg\", \"raw\", \"heif\"]"))
+    XCTAssertTrue(source.contains("allowsMultipleSelection = true"))
+    XCTAssertTrue(source.contains("exclusiveSelectionID = \"all\""))
+    XCTAssertFalse(source.contains("JPG + RAW"))
+    XCTAssertFalse(source.contains("JPG + HEIF"))
+    XCTAssertFalse(source.contains("视频"))
+  }
+
+  func testGalleryFormatUIUsesSharedMultiSelectionAndKeepsSortSeparate() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Runner/NativeGalleryViewController.swift")
+    )
+
+    XCTAssertTrue(source.contains("formatChips.allowsMultipleSelection = true"))
+    XCTAssertTrue(source.contains("formatChips.exclusiveSelectionID = \"all\""))
+    XCTAssertFalse(source.contains(".init(id: \"video\", title: \"视频\")"))
+    XCTAssertFalse(source.contains("sort: filterState.sort"))
+  }
+
   func testNativePairedCameraCardShowsQuickDownloadAndGalleryAsEqualPrimaryActions() throws {
     let runnerDirectory = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
@@ -7242,7 +7437,7 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(state.selectedHandles, [1])
   }
 
-  func testNativeGalleryFilterPolicyFiltersByFormat() {
+  func testNativeGalleryFilterPolicyDoesNotReapplyRuntimeFormatProjection() {
     let items = [
       CameraVendorGalleryItem(handle: 1, filename: "A.JPG", formatLabel: "JPG", captureDate: "", byteSizeText: "1 MB"),
       CameraVendorGalleryItem(handle: 2, filename: "B.HEIC", formatLabel: "HEIF", captureDate: "", byteSizeText: "1 MB"),
@@ -7252,17 +7447,17 @@ final class RunnerTests: XCTestCase {
 
     let filtered = NativeGalleryFilterPolicy.filteredItems(
       items,
-      state: NativeGalleryFilterState(format: .heif),
+      state: NativeGalleryFilterState(formats: .selected([.heif])),
       now: Date(timeIntervalSince1970: 0)
     )
 
-    XCTAssertEqual(filtered.map(\.handle), [2])
+    XCTAssertEqual(filtered.map(\.handle), [4, 3, 2, 1])
   }
 
   func testNativeGalleryFilterStateKeepsExactlyOneFormat() {
-    let state = NativeGalleryFilterState(format: .raw)
+    let state = NativeGalleryFilterState(formats: .selected([.raw]))
 
-    XCTAssertEqual(state.format, .raw)
+    XCTAssertEqual(state.formats, .selected([.raw]))
     XCTAssertFalse(state.isAllFormats)
   }
 
@@ -7270,7 +7465,7 @@ final class RunnerTests: XCTestCase {
     let sourceURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
-      .appendingPathComponent("Runner/NativeConnectViewController.swift")
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
     let applyStart = try XCTUnwrap(
       source.range(of: "private func applyCatalogPresentation(_ presentation: CameraGalleryPresentation)")?.lowerBound
@@ -7349,7 +7544,7 @@ final class RunnerTests: XCTestCase {
       .deletingLastPathComponent()
       .deletingLastPathComponent()
     let gallerySource = try String(
-      contentsOf: runnerDirectory.appendingPathComponent("Runner/NativeConnectViewController.swift")
+      contentsOf: runnerDirectory.appendingPathComponent("Runner/NativeGalleryViewController.swift")
     )
 
     let chipStart = try XCTUnwrap(gallerySource.range(of: "@objc private func chipFilterChanged()")?.lowerBound)
@@ -7361,7 +7556,7 @@ final class RunnerTests: XCTestCase {
     )
     let chipBody = String(gallerySource[chipStart..<chipEnd])
 
-    XCTAssertTrue(chipBody.contains("previousDate != filterState.date || previousFormat != filterState.format"))
+    XCTAssertTrue(chipBody.contains("filterState.formats = CameraMediaFormatSelection.normalized(selectedFormats)"))
     XCTAssertTrue(chipBody.contains("submitGalleryIntent()"))
   }
 
@@ -7370,11 +7565,13 @@ final class RunnerTests: XCTestCase {
       .deletingLastPathComponent()
       .deletingLastPathComponent()
     let gallerySource = try String(
-      contentsOf: runnerDirectory.appendingPathComponent("Runner/NativeConnectViewController.swift")
+      contentsOf: runnerDirectory.appendingPathComponent("Runner/NativeGalleryViewController.swift")
     )
 
     XCTAssertTrue(gallerySource.contains("private func submitGalleryIntent()"))
-    XCTAssertTrue(gallerySource.contains("runtime.submitGalleryIntent(filterState.catalogIntent)"))
+    XCTAssertTrue(gallerySource.contains("switch filterState.catalogSubmission"))
+    XCTAssertTrue(gallerySource.contains("runtime.submitGalleryIntent(intent)"))
+    XCTAssertTrue(gallerySource.contains("runtime.submitUnsupportedGalleryFilter(reason)"))
     XCTAssertTrue(gallerySource.contains("private func applyCatalogPresentation(_ presentation: CameraGalleryPresentation)"))
     XCTAssertFalse(gallerySource.contains("runtime.requestCameraCatalog(query:"))
     XCTAssertFalse(gallerySource.contains("runtime.requestCompleteGalleryCatalog()"))
@@ -7382,7 +7579,7 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(gallerySource.contains("presentationState.format = .all"))
   }
 
-  func testNativeGalleryFilterPolicyDoesNotUseAmbiguousFormatHints() {
+  func testNativeGalleryFilterPolicyDoesNotUseFormatHintsForMembership() {
     let items = [
       CameraVendorGalleryItem(
         handle: 9,
@@ -7396,20 +7593,20 @@ final class RunnerTests: XCTestCase {
 
     let heifFiltered = NativeGalleryFilterPolicy.filteredItems(
       items,
-      state: NativeGalleryFilterState(format: .heif),
+      state: NativeGalleryFilterState(formats: .selected([.heif])),
       now: Date(timeIntervalSince1970: 0)
     )
     let rawFiltered = NativeGalleryFilterPolicy.filteredItems(
       items,
-      state: NativeGalleryFilterState(format: .raw),
+      state: NativeGalleryFilterState(formats: .selected([.raw])),
       now: Date(timeIntervalSince1970: 0)
     )
 
-    XCTAssertTrue(heifFiltered.isEmpty)
-    XCTAssertTrue(rawFiltered.isEmpty)
+    XCTAssertEqual(heifFiltered.map(\.handle), [9])
+    XCTAssertEqual(rawFiltered.map(\.handle), [9])
   }
 
-  func testNativeGalleryFilterPolicyUsesResolvedFormatLabelBeforeAmbiguousHints() {
+  func testNativeGalleryFilterPolicyDoesNotUseResolvedFormatLabelForMembership() {
     let items = [
       CameraVendorGalleryItem(
         handle: 11,
@@ -7431,17 +7628,17 @@ final class RunnerTests: XCTestCase {
 
     let rawFiltered = NativeGalleryFilterPolicy.filteredItems(
       items,
-      state: NativeGalleryFilterState(format: .raw),
+      state: NativeGalleryFilterState(formats: .selected([.raw])),
       now: Date(timeIntervalSince1970: 0)
     )
     let heifFiltered = NativeGalleryFilterPolicy.filteredItems(
       items,
-      state: NativeGalleryFilterState(format: .heif),
+      state: NativeGalleryFilterState(formats: .selected([.heif])),
       now: Date(timeIntervalSince1970: 0)
     )
 
-    XCTAssertEqual(rawFiltered.map(\.handle), [12])
-    XCTAssertEqual(heifFiltered.map(\.handle), [11])
+    XCTAssertEqual(rawFiltered.map(\.handle), [12, 11])
+    XCTAssertEqual(heifFiltered.map(\.handle), [12, 11])
   }
 
   func testNativeGalleryFilterPerformancePolicyCachesCaptureDatesDuringFilter() {
@@ -7449,7 +7646,7 @@ final class RunnerTests: XCTestCase {
     XCTAssertTrue(NativeGalleryFilterPerformancePolicy.shouldDisableReloadAnimation)
   }
 
-  func testNativeGalleryFilterPolicyDoesNotTreatUnresolvedPlaceholderAsJpg() {
+  func testNativeGalleryFilterPolicyLeavesMembershipToCatalogRuntime() {
     let items = [
       CameraVendorGalleryItem(handle: 1, filename: "0x00000001", formatLabel: "", captureDate: "", byteSizeText: ""),
       CameraVendorGalleryItem(handle: 2, filename: "0x00000002", formatLabel: "0x3000", captureDate: "", byteSizeText: ""),
@@ -7458,11 +7655,11 @@ final class RunnerTests: XCTestCase {
 
     let filtered = NativeGalleryFilterPolicy.filteredItems(
       items,
-      state: NativeGalleryFilterState(format: .jpg),
+      state: NativeGalleryFilterState(formats: .selected([.jpg])),
       now: Date(timeIntervalSince1970: 0)
     )
 
-    XCTAssertEqual(filtered.map(\.handle), [3])
+    XCTAssertEqual(filtered.map(\.handle), [3, 2, 1])
   }
 
   func testNativeGalleryFormatDisplayPolicyHidesUnresolvedPlaceholderFormat() {
@@ -7589,7 +7786,7 @@ final class RunnerTests: XCTestCase {
     let state = NativeGalleryFilterState()
 
     XCTAssertEqual(state.date, .all)
-    XCTAssertEqual(state.format, .all)
+    XCTAssertEqual(state.formats, .all)
     XCTAssertEqual(state.sort, .newest)
   }
 
@@ -7688,7 +7885,7 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(request.contains(800))
   }
 
-  func testNativeGalleryFilterPolicyAppliesOneSelectedFormat() {
+  func testNativeGalleryFilterPolicyOnlySortsRuntimeProjectedItems() {
     let calendar = Calendar(identifier: .gregorian)
     let now = calendar.date(from: DateComponents(year: 2026, month: 5, day: 4, hour: 12))!
     let items = [
@@ -7699,14 +7896,14 @@ final class RunnerTests: XCTestCase {
 
     let filtered = NativeGalleryFilterPolicy.filteredItems(
       items,
-      state: NativeGalleryFilterState(date: .today, format: .heif),
+      state: NativeGalleryFilterState(formats: .selected([.heif]), date: .today),
       now: now
     )
 
-    XCTAssertEqual(filtered.map(\.handle), [2])
+    XCTAssertEqual(filtered.map(\.handle), [3, 2, 1])
   }
 
-  func testNativeGalleryFilterPolicyFiltersTodayByCaptureDate() {
+  func testNativeGalleryFilterPolicyDoesNotReapplyDateProjection() {
     let calendar = Calendar(identifier: .gregorian)
     let now = calendar.date(from: DateComponents(year: 2026, month: 5, day: 4, hour: 12))!
     let items = [
@@ -7720,10 +7917,10 @@ final class RunnerTests: XCTestCase {
       now: now
     )
 
-    XCTAssertEqual(filtered.map(\.handle), [1])
+    XCTAssertEqual(filtered.map(\.handle), [1, 2])
   }
 
-  func testNativeGalleryFilterPolicyCombinesDateAndFormat() {
+  func testNativeGalleryFilterPolicyDoesNotCombineDuplicateMembershipFilters() {
     let calendar = Calendar(identifier: .gregorian)
     let now = calendar.date(from: DateComponents(year: 2026, month: 5, day: 4, hour: 12))!
     let items = [
@@ -7734,11 +7931,11 @@ final class RunnerTests: XCTestCase {
 
     let filtered = NativeGalleryFilterPolicy.filteredItems(
       items,
-      state: NativeGalleryFilterState(date: .today, format: .heif),
+      state: NativeGalleryFilterState(formats: .selected([.heif]), date: .today),
       now: now
     )
 
-    XCTAssertEqual(filtered.map(\.handle), [2])
+    XCTAssertEqual(filtered.map(\.handle), [2, 1, 3])
   }
 
   func testHandshakeCompletionSummaryContainsDeviceAndSerial() {
@@ -10680,7 +10877,7 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(
       NativeGalleryFilterPolicy.filteredItems(
         [merged],
-        state: NativeGalleryFilterState(format: .heif),
+        state: NativeGalleryFilterState(formats: .selected([.heif])),
         now: Date(timeIntervalSince1970: 0)
       ),
       []
@@ -10788,7 +10985,7 @@ final class RunnerTests: XCTestCase {
 
     XCTAssertFalse(
       NativeGalleryBackgroundMetadataUIRefreshPolicy.canRefreshVisibleItemsOnly(
-        filterState: NativeGalleryFilterState(format: .heif)
+        filterState: NativeGalleryFilterState(formats: .selected([.heif]))
       )
     )
 
@@ -11058,7 +11255,7 @@ final class RunnerTests: XCTestCase {
     let sourceURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
-      .appendingPathComponent("Runner/NativeConnectViewController.swift")
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
     XCTAssertFalse(source.contains("private func requestPauseDownload()"))
     XCTAssertFalse(source.contains("private func requestBackgroundBudgetPauseIfNeeded(reason: String)"))
@@ -11448,7 +11645,7 @@ final class RunnerTests: XCTestCase {
     let sourceURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
-      .appendingPathComponent("Runner/NativeConnectViewController.swift")
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
     let requestStart = try XCTUnwrap(
       source.range(of: "private func submitGalleryIntent()")?.lowerBound
@@ -11458,7 +11655,9 @@ final class RunnerTests: XCTestCase {
     )
     let requestBody = String(source[requestStart..<requestEnd])
 
-    XCTAssertTrue(requestBody.contains("runtime.submitGalleryIntent(filterState.catalogIntent)"))
+    XCTAssertTrue(requestBody.contains("switch filterState.catalogSubmission"))
+    XCTAssertTrue(requestBody.contains("runtime.submitGalleryIntent(intent)"))
+    XCTAssertTrue(requestBody.contains("runtime.submitUnsupportedGalleryFilter(reason)"))
     XCTAssertFalse(requestBody.contains("runtime.requestCameraCatalog(query:"))
     XCTAssertFalse(requestBody.contains("runtime.requestCompleteGalleryCatalog()"))
   }
@@ -12241,7 +12440,7 @@ final class RunnerTests: XCTestCase {
       .deletingLastPathComponent()
       .deletingLastPathComponent()
     let controllerSource = try String(
-      contentsOf: runnerDirectory.appendingPathComponent("Runner/NativeConnectViewController.swift")
+      contentsOf: runnerDirectory.appendingPathComponent("Runner/NativeGalleryViewController.swift")
     )
     let runtimeSource = try String(
       contentsOf: runnerDirectory.appendingPathComponent("Runner/CameraSessionRuntime.swift")
@@ -12674,7 +12873,7 @@ final class RunnerTests: XCTestCase {
       .deletingLastPathComponent()
       .deletingLastPathComponent()
     let gallerySource = try String(
-      contentsOf: runnerDirectory.appendingPathComponent("Runner/NativeConnectViewController.swift")
+      contentsOf: runnerDirectory.appendingPathComponent("Runner/NativeGalleryViewController.swift")
     )
 
     let chipStart = try XCTUnwrap(gallerySource.range(of: "@objc private func chipFilterChanged()")?.lowerBound)
@@ -12682,7 +12881,7 @@ final class RunnerTests: XCTestCase {
       gallerySource.range(of: "private func submitGalleryIntent()", range: chipStart..<gallerySource.endIndex)?.lowerBound
     )
     let chipBody = String(gallerySource[chipStart..<chipEnd])
-    XCTAssertTrue(chipBody.contains("previousDate != filterState.date || previousFormat != filterState.format"))
+    XCTAssertTrue(chipBody.contains("filterState.formats = CameraMediaFormatSelection.normalized(selectedFormats)"))
     XCTAssertTrue(chipBody.contains("submitGalleryIntent()"))
   }
 

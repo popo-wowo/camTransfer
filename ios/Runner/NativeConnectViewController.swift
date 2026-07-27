@@ -553,6 +553,7 @@ final class NativeChipBarControl: UIControl {
 
   var onSelected: ((String) -> Void)?
   var onSelectionChanged: ((Set<String>) -> Void)?
+  var exclusiveSelectionID: String?
   var allowsMultipleSelection = false {
     didSet {
       if !allowsMultipleSelection, let selectedID {
@@ -663,6 +664,16 @@ final class NativeChipBarControl: UIControl {
       button.addAction(UIAction { [weak self] _ in
         guard let self else { return }
         if self.allowsMultipleSelection {
+          if item.id == self.exclusiveSelectionID {
+            self.selectedIDs = [item.id]
+            self.selectedID = item.id
+            self.refreshButtonStates(animated: true)
+            self.onSelectionChanged?(self.selectedIDs)
+            return
+          }
+          if let exclusiveSelectionID = self.exclusiveSelectionID {
+            self.selectedIDs.remove(exclusiveSelectionID)
+          }
           if self.selectedIDs.contains(item.id) {
             guard self.selectedIDs.count > 1 else { return }
             self.selectedIDs.remove(item.id)
@@ -2728,46 +2739,25 @@ final class NativeGradientChromeView: UIView {
   }
 }
 
-final class NativeDateRangePickerController: UIViewController {
+final class NativeDatePickerController: UIViewController {
   private let onCancel: () -> Void
-  private let onConfirm: (Date, Date) -> Void
-  private let initialFrom: Date
-  private let initialTo: Date
+  private let onConfirm: (Date) -> Void
+  private let initialDate: Date
 
   private let brand = NativeLuxuryTheme.makeBrandLabel("CAPTURE DATE", size: 9)
   private let titleLabel = NativeLuxuryTheme.makeTitleLabel("筛选拍摄日期", size: 24)
 
-  private let fromHeader: UILabel = {
+  private let dateHeader: UILabel = {
     let label = UILabel()
     label.translatesAutoresizingMaskIntoConstraints = false
-    label.text = "开始"
+    label.text = "日期"
     label.font = .systemFont(ofSize: 11, weight: .heavy)
     label.textColor = NativeLuxuryTheme.accent
     label.letterSpacing = 1.4
     return label
   }()
 
-  private let toHeader: UILabel = {
-    let label = UILabel()
-    label.translatesAutoresizingMaskIntoConstraints = false
-    label.text = "结束"
-    label.font = .systemFont(ofSize: 11, weight: .heavy)
-    label.textColor = NativeLuxuryTheme.accent
-    label.letterSpacing = 1.4
-    return label
-  }()
-
-  private let fromPicker: UIDatePicker = {
-    let picker = UIDatePicker()
-    picker.translatesAutoresizingMaskIntoConstraints = false
-    picker.datePickerMode = .date
-    picker.preferredDatePickerStyle = .compact
-    picker.maximumDate = Date()
-    picker.tintColor = NativeLuxuryTheme.ink
-    return picker
-  }()
-
-  private let toPicker: UIDatePicker = {
+  private let datePicker: UIDatePicker = {
     let picker = UIDatePicker()
     picker.translatesAutoresizingMaskIntoConstraints = false
     picker.datePickerMode = .date
@@ -2799,13 +2789,11 @@ final class NativeDateRangePickerController: UIViewController {
   }()
 
   init(
-    initialFrom: Date,
-    initialTo: Date,
+    initialDate: Date,
     onCancel: @escaping () -> Void,
-    onConfirm: @escaping (Date, Date) -> Void
+    onConfirm: @escaping (Date) -> Void
   ) {
-    self.initialFrom = initialFrom
-    self.initialTo = initialTo
+    self.initialDate = initialDate
     self.onCancel = onCancel
     self.onConfirm = onConfirm
     super.init(nibName: nil, bundle: nil)
@@ -2820,18 +2808,15 @@ final class NativeDateRangePickerController: UIViewController {
     super.viewDidLoad()
     view.backgroundColor = NativeLuxuryTheme.background
 
-    fromPicker.date = initialFrom
-    toPicker.date = initialTo
+    datePicker.date = initialDate
 
     let headerStack = UIStackView(arrangedSubviews: [brand, titleLabel])
     headerStack.translatesAutoresizingMaskIntoConstraints = false
     headerStack.axis = .vertical
     headerStack.spacing = 6
 
-    let fromCard = makeFieldCard(headerLabel: fromHeader, picker: fromPicker)
-    let toCard = makeFieldCard(headerLabel: toHeader, picker: toPicker)
-
-    let fieldsStack = UIStackView(arrangedSubviews: [fromCard, toCard])
+    let dateCard = makeFieldCard(headerLabel: dateHeader, picker: datePicker)
+    let fieldsStack = UIStackView(arrangedSubviews: [dateCard])
     fieldsStack.translatesAutoresizingMaskIntoConstraints = false
     fieldsStack.axis = .vertical
     fieldsStack.spacing = 12
@@ -2881,7 +2866,7 @@ final class NativeDateRangePickerController: UIViewController {
   }
 
   @objc private func confirmTapped() {
-    onConfirm(fromPicker.date, toPicker.date)
+    onConfirm(datePicker.date)
   }
 
   @objc private func cancelTapped() {

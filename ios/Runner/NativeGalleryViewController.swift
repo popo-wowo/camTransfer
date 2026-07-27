@@ -387,6 +387,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
 
   private let dateChips = NativeChipBarControl()
   private let formatChips = NativeChipBarControl()
+  private let downloadScopeChips = NativeChipBarControl()
   private let sortChips = NativeChipBarControl()
   private let filterHeaderView: UIView = {
     let view = UIView()
@@ -728,14 +729,18 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       .init(id: "today", title: "今天"),
       .init(id: "pickDate", title: "选择日期"),
     ], selectedID: "all")
-    formatChips.allowsMultipleSelection = false
+    formatChips.allowsMultipleSelection = true
+    formatChips.exclusiveSelectionID = "all"
     formatChips.configure(items: [
       .init(id: "all", title: "全部格式"),
       .init(id: "jpg", title: "JPG"),
-      .init(id: "heif", title: "HEIF"),
       .init(id: "raw", title: "RAW"),
-      .init(id: "video", title: "视频"),
+      .init(id: "heif", title: "HEIF"),
     ], selectedIDs: ["all"])
+    downloadScopeChips.configure(items: [
+      .init(id: "all", title: "全部下载状态"),
+      .init(id: "notDownloaded", title: "未下载"),
+    ], selectedID: "all")
     sortChips.configure(items: [
       .init(id: "newest", title: NativeGalleryChromeCopy.sortOptionTitles[0]),
       .init(id: "oldest", title: NativeGalleryChromeCopy.sortOptionTitles[1]),
@@ -743,10 +748,12 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     ], selectedID: "newest")
     dateChips.onSelected = { [weak self] _ in self?.chipFilterChanged() }
     sortChips.onSelected = { [weak self] _ in self?.chipFilterChanged() }
-    formatChips.onSelected = { [weak self] _ in self?.chipFilterChanged() }
+    formatChips.onSelectionChanged = { [weak self] _ in self?.chipFilterChanged() }
+    downloadScopeChips.onSelected = { [weak self] _ in self?.chipFilterChanged() }
 
     filterContentStack.addArrangedSubview(dateChips)
     filterContentStack.addArrangedSubview(formatChips)
+    filterContentStack.addArrangedSubview(downloadScopeChips)
     filterContentStack.addArrangedSubview(sortChips)
 
     view.addSubview(galleryToolRow)
@@ -1237,8 +1244,6 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     guard NativeGalleryDownloadModePresentationPolicy.canInteractWithGallery(isDownloading: runtime.isDownloading) else {
       return
     }
-    let previousDate = filterState.date
-    let previousFormat = filterState.format
     switch dateChips.selectedID {
     case "all": filterState.date = .all
     case "today": filterState.date = .today
@@ -1248,18 +1253,14 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     default: filterState.date = .all
     }
 
-    switch formatChips.selectedID {
-    case "jpg": filterState.format = .jpg
-    case "heif": filterState.format = .heif
-    case "raw": filterState.format = .raw
-    case "video": filterState.format = .video
-    default: filterState.format = .all
-    }
+    let selectedFormats = Set(formatChips.selectedIDs.compactMap(CameraMediaFormat.init(rawValue:)))
+    filterState.formats = CameraMediaFormatSelection.normalized(selectedFormats)
+    filterState.downloadScope = downloadScopeChips.selectedID == "notDownloaded" ? .notDownloaded : .all
 
     appendDiagnostic(
       "[OBS] GALLERY_FILTER_UI_APPLIED " +
       "date=\(dateChips.selectedID ?? "nil") " +
-      "format=\(formatChips.selectedID ?? "all") " +
+      "formats=\(formatChips.selectedIDs.sorted()) " +
       "sort=\(sortChips.selectedID ?? "nil")"
     )
 
@@ -1272,11 +1273,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       filterState.sort = .newest
     }
 
-    if previousDate != filterState.date || previousFormat != filterState.format {
-      submitGalleryIntent()
-    } else {
-      submitGalleryIntent()
-    }
+    submitGalleryIntent()
     refreshFilterSummary()
   }
 
@@ -1295,9 +1292,14 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     prioritizeGalleryInteraction()
     appendDiagnostic(
       "[OBS] GALLERY_CATALOG_INTENT_SUBMITTED " +
-      "date=\(dateChips.selectedID ?? "all") format=\(formatChips.selectedID ?? "all")"
+      "date=\(dateChips.selectedID ?? "all") formats=\(formatChips.selectedIDs.sorted())"
     )
-    runtime.submitGalleryIntent(filterState.catalogIntent)
+    switch filterState.catalogSubmission {
+    case .intent(let intent):
+      runtime.submitGalleryIntent(intent)
+    case .unsupported(let reason):
+      runtime.submitUnsupportedGalleryFilter(reason)
+    }
   }
 
   @objc private func toggleFilterPanel() {
@@ -1404,11 +1406,6 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     switch filterState.date {
     case .specificDay(let date):
       return date
-    case .range(_, let to):
-      return NativeGalleryHDPreviewSessionPolicy.preferredActiveDate(
-        items: catalogPresentation.items,
-        currentDate: to
-      )
     case .all, .today:
       return NativeGalleryHDPreviewSessionPolicy.preferredActiveDate(
         items: catalogPresentation.items,
@@ -1632,37 +1629,26 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
 
   private func presentDatePicker() {
     let now = Date()
-    var initialFrom = Calendar.current.date(byAdding: .day, value: -6, to: now) ?? now
-    var initialTo = now
-    if case let .range(from, to) = filterState.date {
-      initialFrom = from
-      initialTo = to
-    } else if case let .specificDay(day) = filterState.date {
-      initialFrom = day
-      initialTo = day
+    let initialDate: Date
+    if case let .specificDay(day) = filterState.date {
+      initialDate = day
+    } else {
+      initialDate = now
     }
-    let picker = NativeDateRangePickerController(
-      initialFrom: initialFrom,
-      initialTo: initialTo,
+    let picker = NativeDatePickerController(
+      initialDate: initialDate,
       onCancel: { [weak self] in
         self?.dismiss(animated: true)
         self?.dateChips.setSelected(self?.dateFilterChipID() ?? "all")
       },
-      onConfirm: { [weak self] from, to in
+      onConfirm: { [weak self] date in
         guard let self else { return }
         self.dismiss(animated: true)
         guard NativeGalleryDownloadModePresentationPolicy.canInteractWithGallery(isDownloading: self.runtime.isDownloading) else {
           return
         }
-        let normalizedFrom = min(from, to)
-        let normalizedTo = max(from, to)
-        if Calendar.current.isDate(normalizedFrom, inSameDayAs: normalizedTo) {
-          self.filterState.date = .specificDay(normalizedFrom)
-          self.dateChips.refreshTitle(forID: "pickDate", title: self.dateChipTitle(for: normalizedFrom))
-        } else {
-          self.filterState.date = .range(from: normalizedFrom, to: normalizedTo)
-          self.dateChips.refreshTitle(forID: "pickDate", title: self.dateRangeChipTitle(from: normalizedFrom, to: normalizedTo))
-        }
+        self.filterState.date = .specificDay(date)
+        self.dateChips.refreshTitle(forID: "pickDate", title: self.dateChipTitle(for: date))
         self.submitGalleryIntent()
       }
     )
@@ -1680,7 +1666,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     switch filterState.date {
     case .all: return "all"
     case .today: return "today"
-    case .specificDay, .range: return "pickDate"
+    case .specificDay: return "pickDate"
     }
   }
 
@@ -1689,13 +1675,6 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     formatter.locale = Locale(identifier: "zh_CN")
     formatter.dateFormat = "M月d日"
     return formatter.string(from: date)
-  }
-
-  private func dateRangeChipTitle(from: Date, to: Date) -> String {
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "zh_CN")
-    formatter.dateFormat = "M月d日"
-    return "\(formatter.string(from: from)) – \(formatter.string(from: to))"
   }
 
   private func configureDiagnostics() {
@@ -2135,16 +2114,13 @@ extension NativeGalleryViewController {
       dateText = "今天"
     case .specificDay:
       dateText = "指定日期"
-    case .range:
-      dateText = "日期范围"
     }
     let formatText: String
-    switch filterState.format {
-    case .all: formatText = "全部格式"
-    case .jpg: formatText = "JPG"
-    case .heif: formatText = "HEIF"
-    case .raw: formatText = "RAW"
-    case .video: formatText = "视频"
+    switch filterState.formats {
+    case .all:
+      formatText = "全部格式"
+    case .selected(let formats):
+      formatText = CameraMediaFormat.allCases.filter(formats.contains).map(\.displayTitle).joined(separator: "+")
     }
     let sortText: String
     switch filterState.sort {
@@ -2155,7 +2131,8 @@ extension NativeGalleryViewController {
     case .notDownloaded:
       sortText = "未下载优先"
     }
-    filterSummaryLabel.text = "\(dateText) · \(formatText) · \(sortText)"
+    let downloadScopeText = filterState.downloadScope == .notDownloaded ? "未下载" : "全部下载状态"
+    filterSummaryLabel.text = "\(dateText) · \(formatText) · \(downloadScopeText) · \(sortText)"
     galleryFilterButton.accessibilityValue = filterSummaryLabel.text
   }
 

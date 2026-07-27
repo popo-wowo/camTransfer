@@ -433,21 +433,6 @@ enum NativeGalleryAndroidParityLayoutPolicy {
   static let bottomBarBottomInset: CGFloat = 10
 }
 
-enum NativeGalleryDateFilter: Equatable {
-  case all
-  case today
-  case specificDay(Date)
-  case range(from: Date, to: Date)
-}
-
-enum NativeGalleryFormatFilter: Hashable {
-  case all
-  case jpg
-  case heif
-  case raw
-  case video
-}
-
 enum NativeGallerySortMode: Equatable {
   case newest
   case oldest
@@ -455,70 +440,75 @@ enum NativeGallerySortMode: Equatable {
 }
 
 struct NativeGalleryFilterState: Equatable {
-  var date: NativeGalleryDateFilter
-  var format: NativeGalleryFormatFilter
+  var rule: CameraMediaFilterRule
   var sort: NativeGallerySortMode
 
   var isAllFormats: Bool {
-    format == .all
+    rule.formats == .all
+  }
+
+  var date: CameraMediaDateSelection {
+    get { rule.date }
+    set {
+      rule = CameraMediaFilterRule(
+        formats: rule.formats,
+        date: newValue,
+        downloadScope: rule.downloadScope
+      )
+    }
+  }
+
+  var formats: CameraMediaFormatSelection {
+    get { rule.formats }
+    set {
+      rule = CameraMediaFilterRule(
+        formats: newValue,
+        date: rule.date,
+        downloadScope: rule.downloadScope
+      )
+    }
+  }
+
+  var downloadScope: CameraMediaDownloadScope {
+    get { rule.downloadScope }
+    set {
+      rule = CameraMediaFilterRule(
+        formats: rule.formats,
+        date: rule.date,
+        downloadScope: newValue
+      )
+    }
   }
 
   init(
-    date: NativeGalleryDateFilter = .all,
-    format: NativeGalleryFormatFilter = .all,
+    formats: CameraMediaFormatSelection = CameraMediaFilterRule.galleryDefault.formats,
+    date: CameraMediaDateSelection = CameraMediaFilterRule.galleryDefault.date,
+    downloadScope: CameraMediaDownloadScope = CameraMediaFilterRule.galleryDefault.downloadScope,
     sort: NativeGallerySortMode = .newest
   ) {
-    self.date = date
-    self.format = format
+    self.rule = CameraMediaFilterRule(
+      formats: formats,
+      date: date,
+      downloadScope: downloadScope
+    )
     self.sort = sort
   }
 }
 
 extension NativeGalleryFilterState {
-  var catalogIntent: CameraGalleryFilterIntent {
-    let dateIntent: CameraGalleryDateIntent
-    switch date {
-    case .all:
-      dateIntent = .all
-    case .today:
-      dateIntent = .today
-    case .specificDay(let day):
-      dateIntent = .specificDay(day)
-    case .range(let from, let to):
-      dateIntent = .range(from: from, to: to)
-    }
-
-    let formatIntent: CameraGalleryFormatIntent
-    switch format {
-    case .all: formatIntent = .all
-    case .jpg: formatIntent = .jpg
-    case .heif: formatIntent = .heif
-    case .raw: formatIntent = .raw
-    case .video: formatIntent = .video
-    }
-
+  var catalogSubmission: CameraGalleryFilterSubmission {
     let sortIntent: CameraGallerySortIntent
-    let downloadStatus: CameraGalleryDownloadStatusIntent
     switch sort {
     case .newest:
       sortIntent = .newest
-      downloadStatus = .all
     case .oldest:
       sortIntent = .oldest
-      downloadStatus = .all
     case .notDownloaded:
       sortIntent = .notDownloaded
-      downloadStatus = .notDownloaded
     }
 
-    return CameraGalleryFilterIntent(
-      date: dateIntent,
-      format: formatIntent,
-      sort: sortIntent,
-      downloadStatus: downloadStatus
-    )
+    return CameraGalleryLegacyFilterAdapter.submission(for: rule, sort: sortIntent)
   }
-
 }
 
 enum NativeTopChromeIconButtonStylePolicy {
@@ -625,6 +615,9 @@ enum NativeGalleryFilterPolicy {
     now: Date = Date(),
     calendar: Calendar = Calendar(identifier: .gregorian)
   ) -> [CameraVendorGalleryItem] {
+    _ = state.rule
+    _ = now
+    _ = calendar
     let captureDateIndex = NativeGalleryFilterPerformancePolicy.shouldBuildCaptureDateIndex
       ? NativeGalleryCaptureDateIndex(items: items)
       : nil
@@ -635,12 +628,7 @@ enum NativeGalleryFilterPolicy {
       return parsedCaptureDate(item.captureDate)
     }
 
-    let filtered = items.filter { item in
-      matchesFormat(item, format: state.format) &&
-        matchesDate(captureDate(for: item), date: state.date, now: now, calendar: calendar)
-    }
-
-    return filtered.sorted { left, right in
+    return items.sorted { left, right in
       let leftDate = captureDate(for: left)
       let rightDate = captureDate(for: right)
       switch state.sort {
@@ -659,75 +647,8 @@ enum NativeGalleryFilterPolicy {
     }
   }
 
-  private static func matchesFormat(_ item: CameraVendorGalleryItem, format: NativeGalleryFormatFilter) -> Bool {
-    if format == .all {
-      return true
-    }
-    return resolvedFormat(from: item.formatLabel) == format
-  }
-
-  private static func resolvedFormat(from formatLabel: String) -> NativeGalleryFormatFilter? {
-    let normalized = formatLabel.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-    guard !normalized.isEmpty, !normalized.hasPrefix("0X") else { return nil }
-    switch normalized {
-    case "JPG", "JPEG":
-      return .jpg
-    case "HEIF", "HEIC", "HIF":
-      return .heif
-    case "RAW", "RAF":
-      return .raw
-    case "VIDEO", "MOV", "MP4":
-      return .video
-    default:
-      return nil
-    }
-  }
-
-  private static func matchesDate(
-    _ captureDate: Date?,
-    date: NativeGalleryDateFilter,
-    now: Date,
-    calendar: Calendar
-  ) -> Bool {
-    guard date != .all else { return true }
-    guard let captureDate else { return false }
-    switch date {
-    case .all:
-      return true
-    case .today:
-      return calendar.isDate(captureDate, inSameDayAs: now)
-    case .specificDay(let day):
-      return calendar.isDate(captureDate, inSameDayAs: day)
-    case .range(let from, let to):
-      let startOfFrom = calendar.startOfDay(for: from)
-      let startOfDayAfterTo = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: to)) ?? to
-      return captureDate >= startOfFrom && captureDate < startOfDayAfterTo
-    }
-  }
-
   static func parsedCaptureDate(_ text: String) -> Date? {
-    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-      return nil
-    }
-    for formatter in captureDateFormatters {
-      if let date = formatter.date(from: text) {
-        return date
-      }
-    }
-    return nil
-  }
-
-  private static let captureDateFormatters: [DateFormatter] = [
-    "yyyy:MM:dd HH:mm:ss",
-    "yyyyMMdd",
-    "yyyyMMdd'T'HHmmss",
-    "yyyyMMdd'T'HHmmss.SSS",
-  ].map { format in
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.dateFormat = format
-    formatter.isLenient = false
-    return formatter
+    CameraFilterEngine.parseCaptureDate(text)
   }
 
   private static func sortNewest(

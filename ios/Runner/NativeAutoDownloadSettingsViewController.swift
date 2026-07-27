@@ -24,8 +24,7 @@ final class NativeAutoDownloadSettingsViewController: UIViewController {
   private let enableSwitch = UISwitch()
   private let disconnectSwitch = UISwitch()
 
-  private var formatSegmentsRow1: UISegmentedControl!
-  private var formatSegmentsRow2: UISegmentedControl!
+  private let formatChips = NativeChipBarControl()
   private var dateSegments: UISegmentedControl!
   private var statusSegments: UISegmentedControl!
   private var modeSegments: UISegmentedControl!
@@ -84,20 +83,17 @@ final class NativeAutoDownloadSettingsViewController: UIViewController {
       contentStack.addArrangedSubview(makeSwitchRow(title: "启用自动下载", toggle: enableSwitch, isOn: rule.isEnabled, action: #selector(enableChanged)))
     }
 
-    // Format: two rows of 3
-    let formatRow1Titles = ["全部格式", "JPG", "HEIF"]
-    formatSegmentsRow1 = UISegmentedControl(items: formatRow1Titles)
-    formatSegmentsRow1.addTarget(self, action: #selector(formatRow1Changed), for: .valueChanged)
-
-    let formatRow2Titles = ["RAW", "JPG + HEIF", "JPG + RAW"]
-    formatSegmentsRow2 = UISegmentedControl(items: formatRow2Titles)
-    formatSegmentsRow2.addTarget(self, action: #selector(formatRow2Changed), for: .valueChanged)
-
-    refreshFormatSelection()
-    let formatStack = UIStackView(arrangedSubviews: [formatSegmentsRow1, formatSegmentsRow2])
-    formatStack.axis = .vertical
-    formatStack.spacing = 8
-    contentStack.addArrangedSubview(makeSection(title: "下载格式", control: formatStack))
+    let formatIDs = ["all", "jpg", "raw", "heif"]
+    formatChips.allowsMultipleSelection = true
+    formatChips.exclusiveSelectionID = "all"
+    formatChips.configure(
+      items: formatIDs.map { NativeChipBarControl.Item(id: $0, title: formatTitle(for: $0)) },
+      selectedIDs: selectedFormatIDs
+    )
+    formatChips.onSelectionChanged = { [weak self] selectedIDs in
+      self?.updateFormats(selectedIDs)
+    }
+    contentStack.addArrangedSubview(makeSection(title: "下载格式", control: formatChips))
 
     // Date: 全部日期 / 今天 / 选择日期
     dateSegments = UISegmentedControl(items: ["全部日期", "今天", "选择日期"])
@@ -113,10 +109,10 @@ final class NativeAutoDownloadSettingsViewController: UIViewController {
     picker.datePickerMode = .date
     picker.preferredDatePickerStyle = .compact
     picker.addTarget(self, action: #selector(datePickerChanged), for: .valueChanged)
-    if case .specificDate(let d) = rule.date {
+    if case .specificDay(let d) = rule.filter.date {
       picker.date = d
     }
-    picker.isHidden = !rule.date.isSpecificDate
+    picker.isHidden = !rule.filter.date.isSpecificDay
     datePicker = picker
     dateStack.addArrangedSubview(picker)
 
@@ -124,7 +120,7 @@ final class NativeAutoDownloadSettingsViewController: UIViewController {
 
     // Status
     statusSegments = UISegmentedControl(items: ["全部", "未下载的"])
-    statusSegments.selectedSegmentIndex = rule.downloadStatus == .all ? 0 : 1
+    statusSegments.selectedSegmentIndex = rule.filter.downloadScope == .all ? 0 : 1
     statusSegments.addTarget(self, action: #selector(statusChanged), for: .valueChanged)
     contentStack.addArrangedSubview(makeSection(title: "下载范围", control: statusSegments))
 
@@ -146,23 +142,30 @@ final class NativeAutoDownloadSettingsViewController: UIViewController {
     contentStack.addArrangedSubview(footerLabel)
   }
 
-  // MARK: - Format helpers
-
-  private static let formatRow1Cases: [CameraAutoDownloadFormat] = [.all, .jpg, .heif]
-  private static let formatRow2Cases: [CameraAutoDownloadFormat] = [.raw, .jpgAndHeif, .jpgAndRaw]
-
-  private func refreshFormatSelection() {
-    if let idx = Self.formatRow1Cases.firstIndex(of: rule.format) {
-      formatSegmentsRow1.selectedSegmentIndex = idx
-      formatSegmentsRow2.selectedSegmentIndex = UISegmentedControl.noSegment
-    } else if let idx = Self.formatRow2Cases.firstIndex(of: rule.format) {
-      formatSegmentsRow1.selectedSegmentIndex = UISegmentedControl.noSegment
-      formatSegmentsRow2.selectedSegmentIndex = idx
+  private var selectedFormatIDs: Set<String> {
+    switch rule.filter.formats {
+    case .all:
+      return ["all"]
+    case .selected(let formats):
+      return Set(formats.map(\.rawValue))
     }
   }
 
+  private func formatTitle(for id: String) -> String {
+    id == "all" ? "全部格式" : id.uppercased()
+  }
+
+  private func updateFormats(_ selectedIDs: Set<String>) {
+    let formats = Set(selectedIDs.compactMap(CameraMediaFormat.init(rawValue:)))
+    rule.filter = CameraMediaFilterRule(
+      formats: CameraMediaFormatSelection.normalized(formats),
+      date: rule.filter.date,
+      downloadScope: rule.filter.downloadScope
+    )
+  }
+
   private func refreshDateSelection() {
-    switch rule.date {
+    switch rule.filter.date {
     case .all:
       dateSegments.selectedSegmentIndex = 0
     case .today:
@@ -182,44 +185,44 @@ final class NativeAutoDownloadSettingsViewController: UIViewController {
     rule.disconnectAfterDownload = disconnectSwitch.isOn
   }
 
-  @objc private func formatRow1Changed() {
-    let idx = formatSegmentsRow1.selectedSegmentIndex
-    guard Self.formatRow1Cases.indices.contains(idx) else { return }
-    rule.format = Self.formatRow1Cases[idx]
-    formatSegmentsRow2.selectedSegmentIndex = UISegmentedControl.noSegment
-  }
-
-  @objc private func formatRow2Changed() {
-    let idx = formatSegmentsRow2.selectedSegmentIndex
-    guard Self.formatRow2Cases.indices.contains(idx) else { return }
-    rule.format = Self.formatRow2Cases[idx]
-    formatSegmentsRow1.selectedSegmentIndex = UISegmentedControl.noSegment
-  }
-
   @objc private func dateChanged() {
+    let date: CameraMediaDateSelection
     switch dateSegments.selectedSegmentIndex {
     case 0:
-      rule.date = .all
+      date = .all
       datePicker?.isHidden = true
     case 1:
-      rule.date = .today
+      date = .today
       datePicker?.isHidden = true
     case 2:
       let pickerDate = datePicker?.date ?? Date()
-      rule.date = .specificDate(pickerDate)
+      date = .specificDay(pickerDate)
       datePicker?.isHidden = false
     default:
-      break
+      return
     }
+    rule.filter = CameraMediaFilterRule(
+      formats: rule.filter.formats,
+      date: date,
+      downloadScope: rule.filter.downloadScope
+    )
   }
 
   @objc private func datePickerChanged() {
     guard let picker = datePicker else { return }
-    rule.date = .specificDate(picker.date)
+    rule.filter = CameraMediaFilterRule(
+      formats: rule.filter.formats,
+      date: .specificDay(picker.date),
+      downloadScope: rule.filter.downloadScope
+    )
   }
 
   @objc private func statusChanged() {
-    rule.downloadStatus = statusSegments.selectedSegmentIndex == 0 ? .all : .notDownloaded
+    rule.filter = CameraMediaFilterRule(
+      formats: rule.filter.formats,
+      date: rule.filter.date,
+      downloadScope: statusSegments.selectedSegmentIndex == 0 ? .all : .notDownloaded
+    )
   }
 
   @objc private func modeChanged() {

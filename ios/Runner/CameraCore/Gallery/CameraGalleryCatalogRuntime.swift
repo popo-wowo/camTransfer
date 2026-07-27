@@ -72,6 +72,27 @@ actor CameraGalleryCatalogRuntime {
     await submit(intent, forceCameraTransaction: false)
   }
 
+  func submitUnsupported(
+    _ reason: CameraGalleryUnsupportedReason,
+    submissionID: CameraGalleryIntentSubmissionID
+  ) async {
+    guard submissionID > latestIntentSubmissionID, !isTransportLost, !isShuttingDown else { return }
+    latestIntentSubmissionID = submissionID
+    pendingTransaction = nil
+    activeTransactionTask?.cancel()
+    isAcceptingChildWork = false
+    await cancelAndJoinChildWork()
+    await activeTransactionTask?.value
+    activeTransactionTask = nil
+    currentPresentation = CameraGalleryPresentation(
+      state: .unsupported(generation: allocateGeneration(), reason: reason),
+      intent: currentIntent,
+      items: [],
+      entries: []
+    )
+    await publishCurrentPresentation()
+  }
+
   func updateDownloadedHandles(_ handles: Set<Int>) async {
     downloadedHandles = handles
     guard isAcceptingChildWork,
@@ -553,61 +574,44 @@ actor CameraGalleryCatalogRuntime {
     _ items: [CameraVendorGalleryItem],
     intent: CameraGalleryFilterIntent
   ) -> [CameraVendorGalleryItem] {
-    let dateFiltered = clientSideDateFilter(items, date: intent.date)
+    let dateSelection: CameraMediaDateSelection
+    switch intent.date {
+    case .all:
+      dateSelection = .all
+    case .today:
+      dateSelection = .today
+    case .specificDay(let day):
+      dateSelection = .specificDay(day)
+    }
+    let downloadScope: CameraMediaDownloadScope = intent.downloadStatus == .notDownloaded
+      ? .notDownloaded
+      : .all
+    let rule = CameraMediaFilterRule(
+      formats: .all,
+      date: dateSelection,
+      downloadScope: downloadScope
+    )
+    let candidates = items.map {
+      CameraMediaFilterCandidate(
+        handle: $0.handle,
+        captureDate: CameraFilterEngine.parseCaptureDate($0.captureDate)
+      )
+    }
+    let projectedHandles = Set(CameraFilterEngine.project(
+      candidates,
+      rule: rule,
+      downloadedHandles: downloadedHandles
+    ).map(\.handle))
+    let projected = items.filter { projectedHandles.contains($0.handle) }
     switch intent.sort {
     case .newest:
-      return dateFiltered
+      return projected
     case .oldest:
-      return Array(dateFiltered.reversed())
+      return Array(projected.reversed())
     case .notDownloaded:
-      return dateFiltered.filter { !downloadedHandles.contains($0.handle) } +
-        dateFiltered.filter { downloadedHandles.contains($0.handle) }
+      return projected.filter { !downloadedHandles.contains($0.handle) } +
+        projected.filter { downloadedHandles.contains($0.handle) }
     }
-  }
-
-  private func clientSideDateFilter(
-    _ items: [CameraVendorGalleryItem],
-    date: CameraGalleryDateIntent
-  ) -> [CameraVendorGalleryItem] {
-    guard date != .all else { return items }
-    let calendar = Calendar(identifier: .gregorian)
-    let now = Date()
-    return items.filter { item in
-      guard let captureDate = parseCaptureDate(item.captureDate) else { return false }
-      switch date {
-      case .all:
-        return true
-      case .today:
-        return calendar.isDate(captureDate, inSameDayAs: now)
-      case .specificDay(let day):
-        return calendar.isDate(captureDate, inSameDayAs: day)
-      case .range(let from, let to):
-        let startOfFrom = calendar.startOfDay(for: from)
-        let startOfDayAfterTo = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: to)) ?? to
-        return captureDate >= startOfFrom && captureDate < startOfDayAfterTo
-      }
-    }
-  }
-
-  private func parseCaptureDate(_ text: String) -> Date? {
-    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return nil }
-    // Format: "20260711T094525" or "2026-07-11"
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    if trimmed.count >= 15, trimmed.contains("T") {
-      formatter.dateFormat = "yyyyMMdd'T'HHmmss"
-      return formatter.date(from: String(trimmed.prefix(15)))
-    }
-    if trimmed.count >= 10, trimmed.contains("-") {
-      formatter.dateFormat = "yyyy-MM-dd"
-      return formatter.date(from: String(trimmed.prefix(10)))
-    }
-    if trimmed.count >= 8 {
-      formatter.dateFormat = "yyyyMMdd"
-      return formatter.date(from: String(trimmed.prefix(8)))
-    }
-    return nil
   }
 
   private func publishCurrentPresentation() async {

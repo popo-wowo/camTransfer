@@ -228,6 +228,17 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     }
   }
 
+  func submitUnsupportedGalleryFilter(_ reason: CameraGalleryUnsupportedReason) {
+    guard canSubmitCatalogCommand, let catalogRuntime else { return }
+    nextCatalogIntentSubmissionRawValue &+= 1
+    let submissionID = CameraGalleryIntentSubmissionID(
+      rawValue: nextCatalogIntentSubmissionRawValue
+    )
+    Task {
+      await catalogRuntime.submitUnsupported(reason, submissionID: submissionID)
+    }
+  }
+
   func requestVisibleGalleryThumbnails(handles: [Int]) {
     guard canSubmitCatalogCommand, let catalogRuntime else { return }
     Task {

@@ -26,6 +26,7 @@ final class QuickDownloadCoordinator {
   private var catalogObserverID: UUID?
   private var completion: ((QuickDownloadResult) -> Void)?
   private var isCancelled = false
+  private var requestedCatalogIntent: CameraGalleryFilterIntent?
 
   init(runtime: CameraSessionRuntime, rule: CameraAutoDownloadRule) {
     self.runtime = runtime
@@ -49,7 +50,19 @@ final class QuickDownloadCoordinator {
       return
     }
 
-    evaluateCatalog()
+    switch CameraGalleryLegacyFilterAdapter.submission(for: rule.filter, sort: .newest) {
+    case .unsupported:
+      finish(.failed(reason: "该格式组合将在共享相机查询引擎接入后可用"))
+    case .intent(let intent):
+      requestedCatalogIntent = intent
+      let catalog = runtime.presentation.catalog
+      if case .ready = catalog.state, catalog.intent == intent {
+        applyRuleAndFinish(catalog: catalog)
+      } else {
+        waitForCatalogReady()
+        runtime.submitGalleryIntent(intent)
+      }
+    }
   }
 
   /// Cancel an in-progress quick-download evaluation.
@@ -61,35 +74,13 @@ final class QuickDownloadCoordinator {
 
   // MARK: - Private
 
-  private func evaluateCatalog() {
-    let catalog = runtime.presentation.catalog
-    CameraVendorFileLogger.log(
-      "[QUICK_DOWNLOAD] evaluating rule=\(rule.summaryText) " +
-      "catalogState=\(catalog.state) items=\(catalog.items.count)"
-    )
-
-    guard case .ready = catalog.state, !catalog.items.isEmpty else {
-      CameraVendorFileLogger.log("[QUICK_DOWNLOAD] catalog not ready, waiting...")
-      waitForCatalogReady()
-      return
-    }
-
-    applyRuleAndFinish(items: catalog.items)
-  }
-
-  private func applyRuleAndFinish(items: [CameraVendorGalleryItem]) {
+  private func applyRuleAndFinish(catalog: CameraGalleryPresentation) {
     guard !isCancelled else { return }
-
-    let savedHandles = runtime.savedDownloadHandles()
-    let matchedHandles = CameraAutoDownloadRuleFilter.matchingHandles(
-      items: items,
-      rule: rule,
-      savedHandles: savedHandles
-    )
+    let matchedHandles = catalog.items.map { UInt32($0.handle) }
 
     CameraVendorFileLogger.log(
       "[QUICK_DOWNLOAD] rule=\(rule.summaryText) " +
-      "totalItems=\(items.count) matched=\(matchedHandles.count)"
+      "totalItems=\(catalog.items.count) matched=\(matchedHandles.count)"
     )
 
     guard !matchedHandles.isEmpty else {
@@ -115,9 +106,9 @@ final class QuickDownloadCoordinator {
       }
       switch presentation.catalog.state {
       case .ready:
-        guard !presentation.catalog.items.isEmpty else { return }
+        guard presentation.catalog.intent == self.requestedCatalogIntent else { return }
         self.cancelObserver()
-        self.applyRuleAndFinish(items: presentation.catalog.items)
+        self.applyRuleAndFinish(catalog: presentation.catalog)
       case .failed, .transportLost, .unsupported:
         CameraVendorFileLogger.log("[QUICK_DOWNLOAD] catalog failed while waiting")
         self.cancelObserver()
