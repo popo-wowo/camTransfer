@@ -92,7 +92,7 @@ actor CameraCatalogQueryEngine {
     rule: CameraMediaFilterRule,
     downloadedHandles: Set<Int>
   ) async throws -> CameraCatalogResolution {
-    var orderedItems: [CameraVendorGalleryItem] = []
+    var orderedItems: [CameraGalleryCatalogItem] = []
     var seenHandles: Set<Int> = []
     for format in [CameraMediaFormat.jpg, .raw] where formats.contains(format) {
       let snapshot = try await source.loadExactCatalog(for: format)
@@ -130,7 +130,7 @@ actor CameraCatalogQueryEngine {
       downloadScope: .all
     )
     let dateCandidates = project(snapshot.items, rule: dateOnlyRule, downloadedHandles: [])
-    var classifiedItems: [CameraVendorGalleryItem] = []
+    var classifiedItems: [CameraGalleryCatalogItem] = []
     var authoritativeObjectInfos: [Int: CameraGalleryObjectInfoResult] = [:]
     for item in dateCandidates {
       try checkActive()
@@ -194,10 +194,10 @@ actor CameraCatalogQueryEngine {
   }
 
   private func project(
-    _ items: [CameraVendorGalleryItem],
+    _ items: [CameraGalleryCatalogItem],
     rule: CameraMediaFilterRule,
     downloadedHandles: Set<Int>
-  ) -> [CameraVendorGalleryItem] {
+  ) -> [CameraGalleryCatalogItem] {
     let candidates = items.map {
       CameraMediaFilterCandidate(
         handle: $0.handle,
@@ -212,7 +212,7 @@ actor CameraCatalogQueryEngine {
     return items.filter { handles.contains($0.handle) }
   }
 
-  private func makeSnapshot(items: [CameraVendorGalleryItem]) -> CameraGalleryCatalogSnapshot {
+  private func makeSnapshot(items: [CameraGalleryCatalogItem]) -> CameraGalleryCatalogSnapshot {
     let groupedDates = Dictionary(grouping: items) { item in
       String(item.captureDate.prefix(8))
     }
@@ -224,7 +224,7 @@ actor CameraCatalogQueryEngine {
     return CameraGalleryCatalogSnapshot(
       snapshotID: CameraGallerySnapshotID(),
       dateGroups: orderedDates.map {
-        CameraVendorSpecifiedObjectDateGroup(
+        CameraGalleryDateGroup(
           dateText: $0,
           objectCount: UInt32(groupedDates[$0]?.count ?? 0)
         )

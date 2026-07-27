@@ -1,5 +1,52 @@
 import Foundation
 
+enum CameraGalleryFormatHint: String, Equatable, Hashable, Sendable {
+  case jpg
+  case heif
+  case raw
+  case video
+  case extendedStillCandidate
+}
+
+struct CameraGalleryCatalogItem: Equatable, Sendable {
+  let handle: Int
+  let filename: String
+  let formatLabel: String
+  let captureDate: String
+  let byteSizeText: String
+  let compressedSize: UInt32?
+  let orientation: Int?
+  let formatHints: Set<CameraGalleryFormatHint>
+  var thumbnailData: Data? = nil
+
+  init(
+    handle: Int,
+    filename: String,
+    formatLabel: String,
+    captureDate: String,
+    byteSizeText: String,
+    compressedSize: UInt32? = nil,
+    orientation: Int? = nil,
+    formatHints: Set<CameraGalleryFormatHint> = [],
+    thumbnailData: Data? = nil
+  ) {
+    self.handle = handle
+    self.filename = filename
+    self.formatLabel = formatLabel
+    self.captureDate = captureDate
+    self.byteSizeText = byteSizeText
+    self.compressedSize = compressedSize
+    self.orientation = orientation
+    self.formatHints = formatHints
+    self.thumbnailData = thumbnailData
+  }
+}
+
+struct CameraGalleryDateGroup: Equatable, Sendable {
+  let dateText: String
+  let objectCount: UInt32
+}
+
 enum CameraGalleryConfirmedValue<Value: Equatable & Sendable>: Equatable, Sendable {
   case confirmed(Value)
   case unknown
@@ -210,7 +257,7 @@ enum CameraGalleryCatalogState: Equatable, Sendable {
 struct CameraGalleryPresentation: Equatable, @unchecked Sendable {
   let state: CameraGalleryCatalogState
   let intent: CameraGalleryFilterIntent
-  let items: [CameraVendorGalleryItem]
+  let items: [CameraGalleryCatalogItem]
   let entries: [CameraGalleryEntryViewState]
 
   static let unavailable = CameraGalleryPresentation(
@@ -253,9 +300,9 @@ struct CameraGalleryPresentation: Equatable, @unchecked Sendable {
 
 struct CameraGalleryCatalogSnapshot: Equatable, @unchecked Sendable {
   let snapshotID: CameraGallerySnapshotID
-  let dateGroups: [CameraVendorSpecifiedObjectDateGroup]
+  let dateGroups: [CameraGalleryDateGroup]
   let orderedHandles: [UInt32]
-  let items: [CameraVendorGalleryItem]
+  let items: [CameraGalleryCatalogItem]
 }
 
 struct CameraGalleryChildIdentity: Equatable, Hashable, Sendable {

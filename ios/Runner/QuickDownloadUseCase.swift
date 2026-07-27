@@ -32,7 +32,7 @@ final class QuickDownloadUseCase {
       )
 
       guard !handles.isEmpty else {
-        guard runtime.routeQuickDownloadNoMatch(completionPolicy: rule.completionPolicy) else {
+        guard await runtime.routeQuickDownloadNoMatch(completionPolicy: rule.completionPolicy) else {
           return .failed(reason: "自动下载失败：连接异常")
         }
         return .noMatch(ruleSummary: rule.summaryText)
@@ -47,12 +47,20 @@ final class QuickDownloadUseCase {
         completionPolicy: rule.completionPolicy
       )
       guard runtime.submitDownload(submission) else {
+        _ = await runtime.routeQuickDownloadFailure(
+          completionPolicy: rule.completionPolicy,
+          reason: "quick-download-submit-rejected"
+        )
         return .failed(reason: "自动下载失败：已有下载任务正在执行")
       }
       return .started(matchedCount: handles.count, handles: handles)
     } catch is CancellationError {
       return .failed(reason: "自动下载已取消")
     } catch {
+      _ = await runtime.routeQuickDownloadFailure(
+        completionPolicy: rule.completionPolicy,
+        reason: "quick-download-query-failed"
+      )
       return .failed(reason: "自动下载失败：相册加载失败")
     }
   }

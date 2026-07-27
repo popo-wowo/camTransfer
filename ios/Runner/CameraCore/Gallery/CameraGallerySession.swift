@@ -17,7 +17,6 @@ final class CameraGallerySession {
   let sessionEpoch: UUID
   private let filterStore: CameraGalleryFilterStateStore
   private let downloadedHandles: () -> Set<Int>
-  private let queryEngine: CameraCatalogQueryEngine
   private let catalogRuntime: CameraGalleryCatalogRuntime
   private let thumbnailPipeline: CameraGalleryThumbnailPipeline
   private let hdPreviewPipeline: CameraGalleryHDPreviewPipeline
@@ -35,13 +34,13 @@ final class CameraGallerySession {
   init(
     identity: CameraSessionIdentity,
     source: CameraGalleryCatalogRuntimeSource,
+    sessionEpoch: UUID,
+    queryEngine: CameraCatalogQueryEngine,
     filterStore: CameraGalleryFilterStateStore = CameraGalleryFilterStateStore(),
     downloadedHandles: @escaping () -> Set<Int>,
     previewCache: NativeGalleryHighDefinitionPreviewCache = NativeGalleryHighDefinitionPreviewCache(),
     fetchPreview: @escaping CameraGalleryHDPreviewPipeline.FetchPreview
   ) {
-    let sessionEpoch = UUID()
-    let queryEngine = CameraCatalogQueryEngine(source: source, sessionEpoch: sessionEpoch)
     let callbacks = CameraGallerySessionCallbacks()
     let thumbnailBox = CameraGalleryThumbnailPipelineBox()
     let catalogRuntime = CameraGalleryCatalogRuntime(
@@ -85,7 +84,6 @@ final class CameraGallerySession {
     self.sessionEpoch = sessionEpoch
     self.filterStore = filterStore
     self.downloadedHandles = downloadedHandles
-    self.queryEngine = queryEngine
     self.catalogRuntime = catalogRuntime
     self.thumbnailPipeline = thumbnailPipeline
     self.hdPreviewPipeline = hdPreviewPipeline
@@ -171,21 +169,6 @@ final class CameraGallerySession {
     hdPreviewPipeline.cachedPreview(for: handle)
   }
 
-  func resolveCatalog(
-    rule: CameraMediaFilterRule,
-    owner: CameraCatalogAccessOwner
-  ) async throws -> CameraCatalogResolution {
-    guard !isInvalidated else { throw CancellationError() }
-    let resolution = try await queryEngine.resolve(
-      rule: rule,
-      owner: owner,
-      downloadedHandles: downloadedHandles()
-    )
-    try Task.checkCancellation()
-    guard !isInvalidated else { throw CancellationError() }
-    return resolution
-  }
-
   func markTransportLost(_ message: String) async {
     await catalogRuntime.markTransportLost(message)
   }
@@ -231,7 +214,6 @@ final class CameraGallerySession {
     presentationObservers.removeAll()
     incrementalObservers.removeAll()
     previewObservers.removeAll()
-    await queryEngine.invalidate()
     await catalogRuntime.cancelAllChildren()
     await thumbnailPipeline.invalidateSession()
     await hdPreviewPipeline.invalidateSession()

@@ -12917,6 +12917,34 @@ final class RunnerTests: XCTestCase {
     }
   }
 
+  func testCameraCoreCatalogContractsExposeNoVendorCatalogDTOs() throws {
+    let galleryDirectory = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/CameraCore/Gallery")
+    let enumerator = try XCTUnwrap(
+      FileManager.default.enumerator(
+        at: galleryDirectory,
+        includingPropertiesForKeys: nil
+      )
+    )
+    let forbidden = [
+      "CameraVendorGalleryItem",
+      "CameraVendorSpecifiedObjectDateGroup",
+      "CameraVendorGalleryFormatHint",
+    ]
+
+    for case let fileURL as URL in enumerator where fileURL.pathExtension == "swift" {
+      let source = try String(contentsOf: fileURL)
+      for typeName in forbidden {
+        XCTAssertFalse(
+          source.contains(typeName),
+          "\(fileURL.lastPathComponent) exposes vendor catalog DTO: \(typeName)"
+        )
+      }
+    }
+  }
+
   func testGalleryControllerOwnsNoCatalogLifecycleTaskOrCameraRequestTask() throws {
     let sourceURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
@@ -15894,9 +15922,12 @@ final class RunnerTests: XCTestCase {
     defaults.removePersistentDomain(forName: suiteName)
     defer { defaults.removePersistentDomain(forName: suiteName) }
     let source = CameraGalleryCatalogRuntimeSourceSpy()
+    let sessionEpoch = UUID()
     let session = CameraGallerySession(
       identity: CameraSessionIdentity(cameraName: "new-camera", historyKey: "new-serial"),
       source: source,
+      sessionEpoch: sessionEpoch,
+      queryEngine: CameraCatalogQueryEngine(source: source, sessionEpoch: sessionEpoch),
       filterStore: CameraGalleryFilterStateStore(defaults: defaults),
       downloadedHandles: { [] },
       fetchPreview: { _ in throw CancellationError() }
@@ -15929,6 +15960,27 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(controllerSource.contains("CameraGalleryHDPreviewPipeline("))
   }
 
+  func testRuntimeOwnsSharedQueryEngineIndependentOfGallerySession() throws {
+    let runner = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner")
+    let runtimeSource = try String(
+      contentsOf: runner.appendingPathComponent("CameraSessionRuntime.swift")
+    )
+    let sessionSource = try String(
+      contentsOf: runner.appendingPathComponent("CameraCore/Gallery/CameraGallerySession.swift")
+    )
+
+    XCTAssertTrue(runtimeSource.contains("private var catalogQueryEngine: CameraCatalogQueryEngine?"))
+    XCTAssertTrue(runtimeSource.contains("CameraCatalogQueryEngine(source: source, sessionEpoch: sessionEpoch)"))
+    XCTAssertTrue(runtimeSource.contains("queryEngine: queryEngine"))
+    XCTAssertTrue(runtimeSource.contains("return try await queryEngine.resolve("))
+    XCTAssertTrue(sessionSource.contains("queryEngine: CameraCatalogQueryEngine"))
+    XCTAssertFalse(sessionSource.contains("CameraCatalogQueryEngine(source:"))
+    XCTAssertFalse(sessionSource.contains("await queryEngine.invalidate()"))
+  }
+
   @MainActor
   func testGallerySessionSwitchesFilterWithLatestGenerationOnly() async throws {
     let suiteName = "RunnerTests.CameraGallerySession.Generation.\(UUID().uuidString)"
@@ -15936,9 +15988,12 @@ final class RunnerTests: XCTestCase {
     defaults.removePersistentDomain(forName: suiteName)
     defer { defaults.removePersistentDomain(forName: suiteName) }
     let source = CameraGalleryCatalogRuntimeSourceSpy()
+    let sessionEpoch = UUID()
     let session = CameraGallerySession(
       identity: CameraSessionIdentity(cameraName: "X-T5", historyKey: "serial"),
       source: source,
+      sessionEpoch: sessionEpoch,
+      queryEngine: CameraCatalogQueryEngine(source: source, sessionEpoch: sessionEpoch),
       filterStore: CameraGalleryFilterStateStore(defaults: defaults),
       downloadedHandles: { [] },
       fetchPreview: { _ in throw CancellationError() }
@@ -15989,8 +16044,15 @@ final class RunnerTests: XCTestCase {
     XCTAssertTrue(invalidateBody.contains("await hdPreviewPipeline.invalidateSession()"))
     let exitStart = try XCTUnwrap(runtimeSource.range(of: "func exitGalleryAndDisconnect(reason: String) async")?.lowerBound)
     let exitBody = String(runtimeSource[exitStart...])
-    let invalidateCall = try XCTUnwrap(exitBody.range(of: "await gallerySession.invalidate()"))
-    let terminateCall = try XCTUnwrap(exitBody.range(of: "transport.terminateCameraCommunication(reason: reason)"))
+    XCTAssertTrue(exitBody.contains("await terminateCatalogSession(reason: reason)"))
+    let terminationStart = try XCTUnwrap(
+      runtimeSource.range(of: "private func beginCatalogSessionTermination(reason: String)")?.lowerBound
+    )
+    let terminationBody = String(runtimeSource[terminationStart..<exitStart])
+    let invalidateCall = try XCTUnwrap(terminationBody.range(of: "await previousSession?.invalidate()"))
+    let terminateCall = try XCTUnwrap(
+      terminationBody.range(of: "transport.terminateCameraCommunication(reason: reason)")
+    )
     XCTAssertLessThan(invalidateCall.lowerBound, terminateCall.lowerBound)
   }
 
@@ -16108,6 +16170,94 @@ final class RunnerTests: XCTestCase {
   }
 
   @MainActor
+  func testQuickDownloadFailureRoutesByDisconnectCompletionPolicy() async throws {
+    for disconnectAfterDownload in [false, true] {
+      let flow = CameraSessionRuntimeConnectionFlowSpy()
+      let worker = CameraSessionRuntimeConnectionWorker(flow: flow)
+      let transport = CameraSessionRuntimeSpy()
+      let runtime = CameraSessionRuntime(
+        transport: transport,
+        connectionWorker: worker,
+        gallerySessionActivator: CameraSessionRuntimeGallerySessionActivatorSpy()
+      )
+      let connected = expectation(description: "gallery connected")
+      runtime.startRememberedGalleryConnection(
+        record: CameraSessionRuntimeConnectionFlowSpy.record
+      ) { state in
+        guard case .galleryReady = state else {
+          XCTFail("Expected GalleryReady before Quick query failure")
+          return
+        }
+        connected.fulfill()
+      }
+      await flow.waitUntilRememberedGalleryStarts()
+      flow.finishRememberedGallery()
+      await fulfillment(of: [connected], timeout: 1)
+
+      var routedDestinations: [CameraSessionRuntimePresentationDestination] = []
+      runtime.onPresentationDestinationReady = { routedDestinations.append($0) }
+      transport.catalogError = NSError(
+        domain: "RunnerTests.QuickDownloadQuery",
+        code: 1
+      )
+      let rule = CameraAutoDownloadRule(
+        isEnabled: true,
+        filter: .quickDownloadDefault,
+        downloadMode: .original,
+        disconnectAfterDownload: disconnectAfterDownload
+      )
+
+      let result = await QuickDownloadUseCase(runtime: runtime).execute(rule: rule)
+      for _ in 0..<1_000 where routedDestinations.isEmpty {
+        await Task.yield()
+      }
+
+      XCTAssertEqual(result, .failed(reason: "自动下载失败：相册加载失败"))
+      if disconnectAfterDownload {
+        XCTAssertEqual(runtime.presentation.phase, .idle)
+        XCTAssertEqual(transport.terminateCount, 1)
+        XCTAssertTrue(routedDestinations.contains { if case .home = $0 { return true }; return false })
+      } else {
+        XCTAssertEqual(runtime.presentation.phase, .galleryReady)
+        XCTAssertEqual(transport.terminateCount, 0)
+        XCTAssertTrue(routedDestinations.contains { if case .gallery = $0 { return true }; return false })
+      }
+    }
+  }
+
+  @MainActor
+  func testDisconnectToHomePublishesOnlyAfterCameraTermination() async throws {
+    let transport = CameraSessionRuntimeSpy()
+    transport.catalogItems = [galleryItem(handle: 101, formatLabel: "JPG")]
+    transport.suspendsThumbnailRequestsUntilReleased = true
+    let runtime = CameraSessionRuntime(transport: transport)
+    runtime.send(.enterGallery(CameraSessionIdentity(cameraName: "X-T5")))
+    await waitForRuntimeGalleryReady(runtime)
+    runtime.requestVisibleGalleryThumbnails(handles: [101])
+    await transport.waitForThumbnailRequestCount(1)
+    for _ in 0..<20 { await Task.yield() }
+
+    var terminalEvents: [String] = []
+    transport.onTerminate = { terminalEvents.append("terminate") }
+    runtime.onPresentationDestinationReady = { destination in
+      if case .home = destination { terminalEvents.append("home") }
+    }
+
+    let routingTask = Task { @MainActor in
+      await runtime.routeQuickDownloadNoMatch(completionPolicy: .disconnectToHome)
+    }
+    for _ in 0..<20 { await Task.yield() }
+
+    XCTAssertEqual(terminalEvents, [])
+    XCTAssertEqual(transport.terminateCount, 0)
+
+    transport.releaseThumbnailRequests()
+    let didRoute = await routingTask.value
+    XCTAssertTrue(didRoute)
+    XCTAssertEqual(terminalEvents, ["terminate", "home"])
+  }
+
+  @MainActor
   func testRuntimeRejectsOverlappingDownloadBatch() async throws {
     let transport = CameraSessionRuntimeSpy()
     let runtime = CameraSessionRuntime(transport: transport)
@@ -16208,6 +16358,7 @@ final class RunnerTests: XCTestCase {
       completionPolicy: .disconnectToHome
     ))
     disconnectRuntime.send(.transferFinished(handle: 201))
+    for _ in 0..<1_000 where !routedHome { await Task.yield() }
 
     XCTAssertEqual(disconnectRuntime.presentation.phase, .idle)
     XCTAssertTrue(routedHome)
@@ -16232,6 +16383,7 @@ final class RunnerTests: XCTestCase {
 
     runtime.send(.cancelDownloadByUser)
     runtime.send(.transferCancelled(handle: 101))
+    for _ in 0..<1_000 where !routedHome { await Task.yield() }
 
     XCTAssertEqual(runtime.presentation.phase, .idle)
     XCTAssertTrue(routedHome)
@@ -18647,6 +18799,7 @@ private final class CameraSessionRuntimeSpy: CameraSessionRuntimeTransport {
   private(set) var capturedCatalogQueries: [CameraVendorCatalogQuery] = []
   var suspendsCatalogRequests = false
   var suspendsThumbnailRequestsUntilReleased = false
+  var catalogError: Error?
   var onThumbnailRequestCancelled: (@Sendable () -> Void)?
   var onTerminate: (() -> Void)?
   var catalogItems: [CameraVendorGalleryItem] = []
@@ -18696,6 +18849,7 @@ private final class CameraSessionRuntimeSpy: CameraSessionRuntimeTransport {
     requestedCatalogLabels.append(query.label)
     capturedCatalogQueries.append(query)
     resumeCatalogCountWaitersIfNeeded()
+    if let catalogError { throw catalogError }
     guard suspendsCatalogRequests else { return catalogSnapshot(items: catalogItems) }
     return try await withCheckedThrowingContinuation { continuation in
       catalogContinuations.append(continuation)

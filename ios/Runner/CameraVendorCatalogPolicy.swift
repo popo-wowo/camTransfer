@@ -14,10 +14,7 @@ enum CameraVendorInitialCatalogBootstrapRecoveryPolicy {
   }
 }
 
-struct CameraVendorSpecifiedObjectDateGroup: Equatable {
-  let dateText: String
-  let objectCount: UInt32
-}
+typealias CameraVendorSpecifiedObjectDateGroup = CameraGalleryDateGroup
 
 enum CameraVendorSearchModeAllCondition: Equatable {
   case uint16(propertyCode: UInt16, value: UInt16)

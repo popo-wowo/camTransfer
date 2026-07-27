@@ -2,10 +2,10 @@ import Foundation
 
 enum CameraGalleryRepositoryAdapter {
   static func item(
-    existingItem: CameraVendorGalleryItem,
+    existingItem: CameraGalleryCatalogItem,
     thumbnailData: Data,
     resolvedMetadata: CameraGalleryResolvedItemMetadata?
-  ) -> CameraVendorGalleryItem {
+  ) -> CameraGalleryCatalogItem {
     var item = resolvedMetadata.map {
       mergedItem(existingItem: existingItem, resolvedMetadata: $0)
     } ?? existingItem
@@ -14,9 +14,9 @@ enum CameraGalleryRepositoryAdapter {
   }
 
   static func mergedItem(
-    existingItem: CameraVendorGalleryItem,
+    existingItem: CameraGalleryCatalogItem,
     resolvedMetadata: CameraGalleryResolvedItemMetadata
-  ) -> CameraVendorGalleryItem {
+  ) -> CameraGalleryCatalogItem {
     let existingFilename = existingItem.filename.trimmingCharacters(in: .whitespacesAndNewlines)
     let resolvedFilename = resolvedMetadata.filename.trimmingCharacters(in: .whitespacesAndNewlines)
     let filename = isPlaceholderFilename(existingFilename) && !resolvedFilename.isEmpty
@@ -25,7 +25,7 @@ enum CameraGalleryRepositoryAdapter {
     let formatLabel = confirmedFormatLabel(existingItem.formatLabel) != nil
       ? existingItem.formatLabel
       : resolvedMetadata.formatLabel
-    return CameraVendorGalleryItem(
+    return CameraGalleryCatalogItem(
       handle: existingItem.handle,
       filename: filename,
       formatLabel: formatLabel,
@@ -36,13 +36,13 @@ enum CameraGalleryRepositoryAdapter {
       formatHints: confirmedFormatLabel(formatLabel) == nil
         ? (resolvedMetadata.formatHints.isEmpty
             ? existingItem.formatHints
-            : Set(resolvedMetadata.formatHints.compactMap(CameraVendorGalleryFormatHint.init(rawValue:))))
+            : Set(resolvedMetadata.formatHints.compactMap(CameraGalleryFormatHint.init(rawValue:))))
         : [],
       thumbnailData: existingItem.thumbnailData
     )
   }
 
-  static func summary(from item: CameraVendorGalleryItem) -> CameraGalleryEntrySummary {
+  static func summary(from item: CameraGalleryCatalogItem) -> CameraGalleryEntrySummary {
     let normalizedFilename = item.filename.trimmingCharacters(in: .whitespacesAndNewlines)
     let filename: CameraGalleryConfirmedValue<String> =
       normalizedFilename.hasPrefix("0x") ? .unknown : .confirmed(normalizedFilename)
@@ -61,7 +61,7 @@ enum CameraGalleryRepositoryAdapter {
     entryDetails(from: detailsResult(from: info))
   }
 
-  static func details(from item: CameraVendorGalleryItem) -> CameraGalleryEntryDetails {
+  static func details(from item: CameraGalleryCatalogItem) -> CameraGalleryEntryDetails {
     entryDetails(from: detailsResult(from: item))
   }
 
@@ -79,7 +79,7 @@ enum CameraGalleryRepositoryAdapter {
     )
   }
 
-  static func detailsResult(from item: CameraVendorGalleryItem) -> CameraGalleryDetailsSourceResult {
+  static func detailsResult(from item: CameraGalleryCatalogItem) -> CameraGalleryDetailsSourceResult {
     CameraGalleryDetailsSourceResult(
       handle: item.handle,
       orientation: item.orientation.map(CameraGalleryConfirmedValue.confirmed) ?? .unknown,
@@ -139,7 +139,7 @@ enum CameraGalleryRepositoryAdapter {
     )
   }
 
-  static func resolvedMetadata(from item: CameraVendorGalleryItem) -> CameraGalleryResolvedItemMetadata {
+  static func resolvedMetadata(from item: CameraGalleryCatalogItem) -> CameraGalleryResolvedItemMetadata {
     CameraGalleryResolvedItemMetadata(
       handle: item.handle,
       filename: item.filename,
@@ -154,10 +154,10 @@ enum CameraGalleryRepositoryAdapter {
 
   static func legacyItem(
     from summary: CameraGalleryEntrySummary,
-    fallback item: CameraVendorGalleryItem
-  ) -> CameraVendorGalleryItem {
+    fallback item: CameraGalleryCatalogItem
+  ) -> CameraGalleryCatalogItem {
     let formatLabel = confirmedFormatLabel(from: summary.format) ?? item.formatLabel
-    return CameraVendorGalleryItem(
+    return CameraGalleryCatalogItem(
       handle: item.handle,
       filename: confirmedFilename(from: summary.filename) ?? item.filename,
       formatLabel: formatLabel,

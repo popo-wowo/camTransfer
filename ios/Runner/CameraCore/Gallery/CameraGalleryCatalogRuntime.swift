@@ -424,9 +424,9 @@ actor CameraGalleryCatalogRuntime {
   }
 
   private func sort(
-    _ items: [CameraVendorGalleryItem],
+    _ items: [CameraGalleryCatalogItem],
     by sort: CameraGallerySortIntent
-  ) -> [CameraVendorGalleryItem] {
+  ) -> [CameraGalleryCatalogItem] {
     switch sort {
     case .newest:
       return items

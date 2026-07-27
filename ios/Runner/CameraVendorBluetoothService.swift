@@ -1289,13 +1289,7 @@ enum CameraVendorHandshakeCompletionPolicy {
   }
 }
 
-enum CameraVendorGalleryFormatHint: String, Equatable, Hashable {
-  case jpg
-  case heif
-  case raw
-  case video
-  case extendedStillCandidate
-}
+typealias CameraVendorGalleryFormatHint = CameraGalleryFormatHint
 
 enum CameraVendorGalleryFormatResolutionPolicy {
   static func isResolvedStillOrVideoFormat(_ formatLabel: String) -> Bool {
@@ -1308,39 +1302,7 @@ enum CameraVendorGalleryFormatResolutionPolicy {
   }
 }
 
-struct CameraVendorGalleryItem: Equatable {
-  let handle: Int
-  let filename: String
-  let formatLabel: String
-  let captureDate: String
-  let byteSizeText: String
-  let compressedSize: UInt32?
-  let orientation: Int?
-  let formatHints: Set<CameraVendorGalleryFormatHint>
-  var thumbnailData: Data? = nil
-
-  init(
-    handle: Int,
-    filename: String,
-    formatLabel: String,
-    captureDate: String,
-    byteSizeText: String,
-    compressedSize: UInt32? = nil,
-    orientation: Int? = nil,
-    formatHints: Set<CameraVendorGalleryFormatHint> = [],
-    thumbnailData: Data? = nil
-  ) {
-    self.handle = handle
-    self.filename = filename
-    self.formatLabel = formatLabel
-    self.captureDate = captureDate
-    self.byteSizeText = byteSizeText
-    self.compressedSize = compressedSize
-    self.orientation = orientation
-    self.formatHints = formatHints
-    self.thumbnailData = thumbnailData
-  }
-}
+typealias CameraVendorGalleryItem = CameraGalleryCatalogItem
 
 enum CameraVendorCatalogPlaceholderPolicy {
   static func placeholderItems(

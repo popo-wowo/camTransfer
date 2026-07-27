@@ -180,6 +180,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   private(set) var galleryPresentationPayload: CameraSessionRuntimeGalleryPresentationPayload?
   private var galleryItemCount = 0
   private var gallerySession: CameraGallerySession?
+  private var catalogQueryEngine: CameraCatalogQueryEngine?
   private var catalogLifecycleTask: Task<Void, Never>?
   private var catalogSessionID: UUID?
   private(set) var galleryCatalogIdentity: CameraGalleryCatalogIdentity?
@@ -246,8 +247,12 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     owner: CameraCatalogAccessOwner
   ) async throws -> CameraCatalogResolution {
     try validateCatalogCommand()
-    guard let gallerySession else { throw CancellationError() }
-    return try await gallerySession.resolveCatalog(rule: rule, owner: owner)
+    guard let queryEngine = catalogQueryEngine else { throw CancellationError() }
+    return try await queryEngine.resolve(
+      rule: rule,
+      owner: owner,
+      downloadedHandles: savedDownloadHandles()
+    )
   }
 
   func requestVisibleGalleryThumbnails(handles: [Int]) {
@@ -320,12 +325,17 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
 
   private func configureCatalogRuntime() {
     let previousSession = gallerySession
+    let previousQueryEngine = catalogQueryEngine
     let previousLifecycleTask = catalogLifecycleTask
     let source = CameraSessionGalleryCatalogRuntimeSource(transport: transport)
     guard let identity else { return }
+    let sessionEpoch = UUID()
+    let queryEngine = CameraCatalogQueryEngine(source: source, sessionEpoch: sessionEpoch)
     let session = CameraGallerySession(
       identity: identity,
       source: source,
+      sessionEpoch: sessionEpoch,
+      queryEngine: queryEngine,
       downloadedHandles: { [weak self] in self?.savedDownloadHandles() ?? [] },
       fetchPreview: { [weak self] mediaIdentity in
         guard let self else { throw CancellationError() }
@@ -334,16 +344,19 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
         )
       }
     )
-    let sessionID = session.sessionEpoch
+    let sessionID = sessionEpoch
     catalogSessionID = sessionID
+    catalogQueryEngine = queryEngine
     galleryCatalogIdentity = nil
     gallerySession = nil
     catalogLifecycleTask = Task { @MainActor [weak self] in
       await previousLifecycleTask?.value
       await previousSession?.invalidate()
+      await previousQueryEngine?.invalidate()
       guard let self,
             self.catalogSessionID == sessionID else {
         await session.invalidate()
+        await queryEngine.invalidate()
         return
       }
       self.gallerySession = session
@@ -933,7 +946,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
       releaseDownloadLease()
       releaseBackgroundExecution(reason: reason)
       backgroundMaintainer?.stop(reason: reason)
-      terminateCatalogSession(reason: reason)
+      _ = beginCatalogSessionTermination(reason: reason)
       pendingGalleryActivation = nil
       queuedDownloads = []
       hasRequestedRecoveredConnection = false
@@ -1007,16 +1020,33 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   @discardableResult
   func routeQuickDownloadNoMatch(
     completionPolicy: CameraDownloadCompletionPolicy
-  ) -> Bool {
+  ) async -> Bool {
+    await routeQuickDownloadTerminal(
+      completionPolicy: completionPolicy,
+      reason: "quick-download-no-match"
+    )
+  }
+
+  func routeQuickDownloadFailure(
+    completionPolicy: CameraDownloadCompletionPolicy,
+    reason: String
+  ) async -> Bool {
+    await routeQuickDownloadTerminal(
+      completionPolicy: completionPolicy,
+      reason: reason
+    )
+  }
+
+  private func routeQuickDownloadTerminal(
+    completionPolicy: CameraDownloadCompletionPolicy,
+    reason: String
+  ) async -> Bool {
     guard identity != nil,
           presentation.phase == .galleryReady,
           activeDownloadSubmission == nil else {
       return false
     }
-    applyDownloadCompletionRouting(
-      completionPolicy,
-      reason: "quick-download-no-match"
-    )
+    await applyDownloadCompletionRouting(completionPolicy, reason: reason)
     publishPresentation()
     return true
   }
@@ -1490,50 +1520,77 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     }
   }
 
-  private func terminateCatalogSession(reason: String) {
+  private func beginCatalogSessionTermination(reason: String) -> Task<Void, Never> {
+    if gallerySession == nil,
+       catalogQueryEngine == nil,
+       let catalogLifecycleTask {
+      return catalogLifecycleTask
+    }
     let previousSession = gallerySession
+    let previousQueryEngine = catalogQueryEngine
     let previousLifecycleTask = catalogLifecycleTask
     catalogSessionID = nil
     galleryCatalogIdentity = nil
     gallerySession = nil
-    catalogLifecycleTask = Task { @MainActor [weak self] in
+    catalogQueryEngine = nil
+    let terminationTask = Task { @MainActor [weak self] in
       await previousLifecycleTask?.value
       await previousSession?.invalidate()
+      await previousQueryEngine?.invalidate()
       guard let self else { return }
       self.transport.terminateCameraCommunication(reason: reason)
       self.activeTransportBinding = nil
     }
+    catalogLifecycleTask = terminationTask
+    return terminationTask
+  }
+
+  private func terminateCatalogSession(reason: String) async {
+    await beginCatalogSessionTermination(reason: reason).value
   }
 
   private func finishDownloadSubmission(reason: String) {
     let completionPolicy = activeDownloadSubmission?.completionPolicy ?? .returnToGallery
     activeDownloadSubmission = nil
     queuedDownloads = []
-    applyDownloadCompletionRouting(completionPolicy, reason: reason)
+    switch completionPolicy {
+    case .returnToGallery:
+      applyReturnToGalleryRouting()
+    case .disconnectToHome:
+      Task { @MainActor [weak self] in
+        guard let self else { return }
+        await self.applyDownloadCompletionRouting(completionPolicy, reason: reason)
+        self.publishPresentation()
+      }
+    }
   }
 
   private func applyDownloadCompletionRouting(
     _ completionPolicy: CameraDownloadCompletionPolicy,
     reason: String
-  ) {
+  ) async {
     switch completionPolicy {
     case .returnToGallery:
-      presentation = CameraSessionPresentation(
-        phase: identity == nil ? .idle : .galleryReady,
-        queuedHandles: [],
-        inFlightHandle: nil,
-        catalog: identity == nil ? .unavailable : presentation.catalog
-      )
-      routeDownloadCompletionToGalleryIfPossible()
+      applyReturnToGalleryRouting()
     case .disconnectToHome:
       identity = nil
       galleryPresentationPayload = nil
       pendingGalleryActivation = nil
       hasRequestedRecoveredConnection = false
       presentation = .idle
-      terminateCatalogSession(reason: reason)
+      await terminateCatalogSession(reason: reason)
       onPresentationDestinationReady?(.home)
     }
+  }
+
+  private func applyReturnToGalleryRouting() {
+    presentation = CameraSessionPresentation(
+      phase: identity == nil ? .idle : .galleryReady,
+      queuedHandles: [],
+      inFlightHandle: nil,
+      catalog: identity == nil ? .unavailable : presentation.catalog
+    )
+    routeDownloadCompletionToGalleryIfPossible()
   }
 
   private func routeDownloadCompletionToGalleryIfPossible() {
@@ -1542,15 +1599,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   }
 
   func exitGalleryAndDisconnect(reason: String) async {
-    let gallerySession = self.gallerySession
-    self.gallerySession = nil
-    catalogSessionID = nil
-    galleryCatalogIdentity = nil
-    if let gallerySession {
-      await gallerySession.invalidate()
-    }
-    transport.terminateCameraCommunication(reason: reason)
-    activeTransportBinding = nil
+    await terminateCatalogSession(reason: reason)
     identity = nil
     galleryPresentationPayload = nil
     activeDownloadSubmission = nil
@@ -1643,13 +1692,6 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   }
 
   // MARK: - HEIF Count Sweep Experiment (Diagnostic Only)
-
-  /// Fetch the ALL baseline catalog (empty SearchMode conditions).
-  /// Used by auto-download to compute HEIF handles via set subtraction.
-  func fetchBaselineCatalog() async throws -> CameraVendorCatalogSnapshot {
-    let query = CameraVendorCatalogQuery(conditions: [], label: "auto-download-baseline")
-    return try await transport.fetchCameraCatalog(query: query)
-  }
 
   func runCountSweepExperiment() {
     guard presentation.phase == .galleryReady else {

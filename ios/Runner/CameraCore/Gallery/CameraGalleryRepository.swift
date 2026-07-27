@@ -3,7 +3,7 @@ import Foundation
 struct CameraGalleryRepository {
   private(set) var generation: CameraGalleryGenerationID?
   private(set) var snapshotID: CameraGallerySnapshotID?
-  private(set) var items: [CameraVendorGalleryItem] = []
+  private(set) var items: [CameraGalleryCatalogItem] = []
   private(set) var entries: [CameraGalleryEntryViewState] = []
 
   mutating func install(
