@@ -161,6 +161,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   private(set) var galleryPresentationPayload: CameraSessionRuntimeGalleryPresentationPayload?
   private var galleryItemCount = 0
   private var catalogRuntime: CameraGalleryCatalogRuntime?
+  private var catalogQueryEngine: CameraCatalogQueryEngine?
   private var catalogLifecycleTask: Task<Void, Never>?
   private var catalogSessionID: UUID?
   private var nextCatalogIntentSubmissionRawValue: UInt64 = 0
@@ -212,7 +213,10 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
 
   var activeCameraIdentity: CameraSessionIdentity? { identity }
 
-  func submitGalleryIntent(_ intent: CameraGalleryFilterIntent) {
+  func submitGalleryFilter(
+    rule: CameraMediaFilterRule,
+    sort: CameraGallerySortIntent
+  ) {
     guard canSubmitCatalogCommand, let catalogRuntime else { return }
     nextCatalogIntentSubmissionRawValue &+= 1
     let submissionID = CameraGalleryIntentSubmissionID(
@@ -221,22 +225,33 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     let downloadedHandles = savedDownloadHandles()
     Task {
       await catalogRuntime.submit(
-        intent,
+        CameraGalleryFilterIntent(rule: rule, sort: sort),
         submissionID: submissionID,
         downloadedHandles: downloadedHandles
       )
     }
   }
 
-  func submitUnsupportedGalleryFilter(_ reason: CameraGalleryUnsupportedReason) {
-    guard canSubmitCatalogCommand, let catalogRuntime else { return }
-    nextCatalogIntentSubmissionRawValue &+= 1
-    let submissionID = CameraGalleryIntentSubmissionID(
-      rawValue: nextCatalogIntentSubmissionRawValue
-    )
-    Task {
-      await catalogRuntime.submitUnsupported(reason, submissionID: submissionID)
+  func resolveCatalog(
+    rule: CameraMediaFilterRule,
+    owner: CameraCatalogAccessOwner
+  ) async throws -> CameraCatalogResolution {
+    try validateCatalogCommand()
+    guard let engine = catalogQueryEngine,
+          let sessionEpoch = catalogSessionID else {
+      throw CancellationError()
     }
+    let resolution = try await engine.resolve(
+      rule: rule,
+      owner: owner,
+      downloadedHandles: savedDownloadHandles()
+    )
+    try Task.checkCancellation()
+    guard catalogQueryEngine === engine,
+          catalogSessionID == sessionEpoch else {
+      throw CancellationError()
+    }
+    return resolution
   }
 
   func requestVisibleGalleryThumbnails(handles: [Int]) {
@@ -261,17 +276,25 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   private func configureCatalogRuntime() {
     let sessionID = UUID()
     let previousRuntime = catalogRuntime
+    let previousQueryEngine = catalogQueryEngine
     let previousLifecycleTask = catalogLifecycleTask
+    let source = CameraSessionGalleryCatalogRuntimeSource(transport: transport)
+    let queryEngine = CameraCatalogQueryEngine(source: source, sessionEpoch: sessionID)
     catalogSessionID = sessionID
     catalogRuntime = nil
+    catalogQueryEngine = queryEngine
     catalogLifecycleTask = Task { @MainActor [weak self] in
+      await previousQueryEngine?.invalidate()
       await previousLifecycleTask?.value
       await previousRuntime?.cancelAllChildren()
-      guard let self, self.catalogSessionID == sessionID else { return }
+      guard let self,
+            self.catalogSessionID == sessionID,
+            self.catalogQueryEngine === queryEngine else { return }
 
-      let source = CameraSessionGalleryCatalogRuntimeSource(transport: self.transport)
       let catalogRuntime = CameraGalleryCatalogRuntime(
         source: source,
+        queryEngine: queryEngine,
+        queryOwner: .gallery(sessionID),
         publishPresentation: { [weak self] catalog in
           guard self?.catalogSessionID == sessionID else { return }
           self?.installCatalogPresentation(catalog)
@@ -1373,10 +1396,13 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
 
   private func terminateCatalogSession(reason: String) {
     let previousRuntime = catalogRuntime
+    let previousQueryEngine = catalogQueryEngine
     let previousLifecycleTask = catalogLifecycleTask
     catalogSessionID = nil
     catalogRuntime = nil
+    catalogQueryEngine = nil
     catalogLifecycleTask = Task { @MainActor [weak self] in
+      await previousQueryEngine?.invalidate()
       await previousLifecycleTask?.value
       await previousRuntime?.cancelAllChildren()
       guard let self else { return }

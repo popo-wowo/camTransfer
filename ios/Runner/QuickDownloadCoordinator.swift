@@ -23,10 +23,9 @@ enum QuickDownloadResult: Equatable {
 final class QuickDownloadCoordinator {
   private let runtime: CameraSessionRuntime
   private let rule: CameraAutoDownloadRule
-  private var catalogObserverID: UUID?
+  private var queryTask: Task<Void, Never>?
   private var completion: ((QuickDownloadResult) -> Void)?
   private var isCancelled = false
-  private var requestedCatalogIntent: CameraGalleryFilterIntent?
 
   init(runtime: CameraSessionRuntime, rule: CameraAutoDownloadRule) {
     self.runtime = runtime
@@ -50,17 +49,20 @@ final class QuickDownloadCoordinator {
       return
     }
 
-    switch CameraGalleryLegacyFilterAdapter.submission(for: rule.filter, sort: .newest) {
-    case .unsupported:
-      finish(.failed(reason: "该格式组合将在共享相机查询引擎接入后可用"))
-    case .intent(let intent):
-      requestedCatalogIntent = intent
-      let catalog = runtime.presentation.catalog
-      if case .ready = catalog.state, catalog.intent == intent {
-        applyRuleAndFinish(catalog: catalog)
-      } else {
-        waitForCatalogReady()
-        runtime.submitGalleryIntent(intent)
+    let ownerID = UUID()
+    queryTask = Task { [weak self] in
+      guard let self else { return }
+      do {
+        let resolution = try await runtime.resolveCatalog(
+          rule: rule.filter,
+          owner: .quickDownload(ownerID)
+        )
+        guard !Task.isCancelled, !isCancelled else { return }
+        applyRuleAndFinish(handles: resolution.snapshot.items.map { UInt32($0.handle) })
+      } catch is CancellationError {
+        return
+      } catch {
+        finish(.failed(reason: "自动下载失败：相册加载失败"))
       }
     }
   }
@@ -68,19 +70,19 @@ final class QuickDownloadCoordinator {
   /// Cancel an in-progress quick-download evaluation.
   func cancel() {
     isCancelled = true
-    cancelObserver()
+    queryTask?.cancel()
+    queryTask = nil
     completion = nil
   }
 
   // MARK: - Private
 
-  private func applyRuleAndFinish(catalog: CameraGalleryPresentation) {
+  private func applyRuleAndFinish(handles matchedHandles: [UInt32]) {
     guard !isCancelled else { return }
-    let matchedHandles = catalog.items.map { UInt32($0.handle) }
 
     CameraVendorFileLogger.log(
       "[QUICK_DOWNLOAD] rule=\(rule.summaryText) " +
-      "totalItems=\(catalog.items.count) matched=\(matchedHandles.count)"
+      "matched=\(matchedHandles.count)"
     )
 
     guard !matchedHandles.isEmpty else {
@@ -94,42 +96,10 @@ final class QuickDownloadCoordinator {
     finish(.started(matchedCount: matchedHandles.count, handles: matchedHandles))
   }
 
-  private func waitForCatalogReady() {
-    cancelObserver()
-    var hasSkippedInitialCallback = false
-    catalogObserverID = runtime.observe { [weak self] presentation in
-      guard let self, !self.isCancelled else { return }
-      // Skip the immediate callback from observe() to avoid re-entry
-      guard hasSkippedInitialCallback else {
-        hasSkippedInitialCallback = true
-        return
-      }
-      switch presentation.catalog.state {
-      case .ready:
-        guard presentation.catalog.intent == self.requestedCatalogIntent else { return }
-        self.cancelObserver()
-        self.applyRuleAndFinish(catalog: presentation.catalog)
-      case .failed, .transportLost, .unsupported:
-        CameraVendorFileLogger.log("[QUICK_DOWNLOAD] catalog failed while waiting")
-        self.cancelObserver()
-        self.finish(.failed(reason: "自动下载失败：相册加载失败"))
-      case .loading, .unavailable:
-        break
-      }
-    }
-  }
-
-  private func cancelObserver() {
-    if let id = catalogObserverID {
-      runtime.removeObserver(id)
-      catalogObserverID = nil
-    }
-  }
-
   private func finish(_ result: QuickDownloadResult) {
     guard let completion else { return }
     self.completion = nil
-    cancelObserver()
+    queryTask = nil
     completion(result)
   }
 }

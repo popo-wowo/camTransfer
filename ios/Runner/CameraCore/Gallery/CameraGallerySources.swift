@@ -40,7 +40,14 @@ struct CameraGalleryCatalogTransactionFailure: Error, Equatable, Sendable {
 }
 
 @MainActor
-protocol CameraGalleryCatalogRuntimeSource: AnyObject {
+protocol CameraCatalogQuerySource: AnyObject {
+  func loadExpandedCatalog() async throws -> CameraGalleryCatalogSnapshot
+  func loadExactCatalog(for format: CameraMediaFormat) async throws -> CameraGalleryCatalogSnapshot
+  func loadObjectInfo(handle: Int) async throws -> CameraVendorCameraObjectInfo
+}
+
+@MainActor
+protocol CameraGalleryCatalogRuntimeSource: CameraCatalogQuerySource {
   func loadInitialCatalog() async throws -> CameraGalleryCatalogSnapshot
   func loadCatalog(for intent: CameraGalleryFilterIntent) async throws -> CameraGalleryCatalogSnapshot
   func loadThumbnail(handle: Int) async throws -> CameraVendorGalleryThumbnail

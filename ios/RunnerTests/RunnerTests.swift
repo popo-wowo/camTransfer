@@ -7227,42 +7227,153 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(projected.map(\.handle), [1])
   }
 
-  func testGallerySubmissionBridgeRejectsMultiSelectAndHeifWithoutQuerying() {
-    XCTAssertEqual(
-      NativeGalleryFilterState(formats: .selected([.jpg])).catalogSubmission,
-      .intent(CameraGalleryFilterIntent(
-        date: .all,
-        format: .jpg,
-        sort: .newest,
-        downloadStatus: .all
-      ))
+  func testCatalogIdentityRejectsAnotherCameraSessionEpoch() {
+    let generation = CameraGalleryGenerationID(rawValue: 7)
+    let snapshotID = CameraGallerySnapshotID()
+    let current = CameraGalleryCatalogIdentity(
+      cameraID: "camera-a",
+      sessionEpoch: UUID(),
+      generation: generation,
+      snapshotID: snapshotID
     )
-    XCTAssertEqual(
-      NativeGalleryFilterState(formats: .selected([.jpg, .raw])).catalogSubmission,
-      .unsupported(.sharedFilterQueryPending)
+    let previous = CameraGalleryCatalogIdentity(
+      cameraID: current.cameraID,
+      sessionEpoch: UUID(),
+      generation: generation,
+      snapshotID: snapshotID
     )
-    XCTAssertEqual(
-      NativeGalleryFilterState(formats: .selected([.heif])).catalogSubmission,
-      .unsupported(.sharedFilterQueryPending)
+
+    XCTAssertNotEqual(current, previous)
+    XCTAssertNotEqual(
+      CameraGalleryMediaIdentity(catalog: current, handle: 9, variant: .thumbnail),
+      CameraGalleryMediaIdentity(catalog: previous, handle: 9, variant: .thumbnail)
     )
   }
 
-  func testQuickDownloadDefaultRuleSubmitsExactJpgIntentBeforeFiltering() {
-    XCTAssertEqual(
-      CameraGalleryLegacyFilterAdapter.submission(
-        for: .quickDownloadDefault,
-        sort: .newest
+  func testCatalogAccessGateAllowsOnlyOneLogicalOwnerUntilRelease() async {
+    let gate = CameraCatalogAccessGate()
+    let firstOwner = CameraCatalogAccessOwner.gallery(UUID())
+    let secondOwner = CameraCatalogAccessOwner.quickDownload(UUID())
+    let firstLease = await gate.acquire(owner: firstOwner)
+    let secondDidAcquire = CatalogLeaseAcquisitionFlag()
+    let secondTask = Task {
+      let lease = await gate.acquire(owner: secondOwner)
+      await secondDidAcquire.markAcquired()
+      return lease
+    }
+
+    for _ in 0..<20 { await Task.yield() }
+    let acquiredBeforeRelease = await secondDidAcquire.value
+    XCTAssertFalse(acquiredBeforeRelease)
+
+    await firstLease.release()
+    await firstLease.release()
+    let secondLease = await secondTask.value
+    let acquiredAfterRelease = await secondDidAcquire.value
+    XCTAssertTrue(acquiredAfterRelease)
+    await secondLease.release()
+  }
+
+  @MainActor
+  func testCatalogQueryEngineReturnsExactJpgAndRawUnionWithoutMutatingGalleryState() async throws {
+    let source = CameraCatalogQuerySourceSpy(
+      exactSnapshots: [
+        .jpg: .fixture(handles: [5, 3]),
+        .raw: .fixture(handles: [4, 3]),
+      ]
+    )
+    let engine = CameraCatalogQueryEngine(source: source)
+    let repository = CameraGalleryRepository()
+
+    let resolution = try await engine.resolve(
+      rule: CameraMediaFilterRule(
+        formats: .selected([.jpg, .raw]),
+        date: .all,
+        downloadScope: .all
       ),
-      .intent(CameraGalleryFilterIntent(
-        date: .all,
-        format: .jpg,
-        sort: .newest,
-        downloadStatus: .notDownloaded
-      ))
+      owner: .gallery(UUID()),
+      downloadedHandles: []
     )
+
+    XCTAssertEqual(source.exactRequests, [.jpg, .raw])
+    XCTAssertEqual(source.expandedRequestCount, 0)
+    XCTAssertEqual(resolution.snapshot.items.map(\.handle), [5, 3, 4])
+    XCTAssertNil(repository.generation)
+    XCTAssertNil(repository.snapshotID)
   }
 
-  func testQuickDownloadCoordinatorSubmitsAndWaitsForRequestedCatalogIntent() throws {
+  @MainActor
+  func testCatalogQueryEngineUsesAllCatalogAndObjectInfoWhenHeifIsSelected() async throws {
+    let source = CameraCatalogQuerySourceSpy(
+      expandedSnapshot: .fixture(handles: [3, 2, 1]),
+      objectInfos: [
+        3: .fixture(handle: 3, formatCode: 0x3812),
+        2: .fixture(handle: 2, formatCode: 0x3801),
+        1: .fixture(handle: 1, formatCode: 0x300D),
+      ]
+    )
+    let engine = CameraCatalogQueryEngine(source: source)
+
+    let resolution = try await engine.resolve(
+      rule: CameraMediaFilterRule(
+        formats: .selected([.heif]),
+        date: .all,
+        downloadScope: .all
+      ),
+      owner: .gallery(UUID()),
+      downloadedHandles: []
+    )
+
+    XCTAssertEqual(source.expandedRequestCount, 1)
+    XCTAssertEqual(source.exactRequests, [])
+    XCTAssertEqual(source.objectInfoRequests, [3, 2, 1])
+    XCTAssertEqual(resolution.snapshot.items.map(\.handle), [3])
+  }
+
+  @MainActor
+  func testCatalogQueryEngineFailsWholeResolutionWhenFallbackObjectInfoIsIncomplete() async {
+    let source = CameraCatalogQuerySourceSpy(
+      expandedSnapshot: .fixture(handles: [3, 2]),
+      objectInfos: [3: .fixture(handle: 3, formatCode: 0x3812)]
+    )
+    let engine = CameraCatalogQueryEngine(source: source)
+
+    do {
+      _ = try await engine.resolve(
+        rule: CameraMediaFilterRule(
+          formats: .selected([.heif]),
+          date: .all,
+          downloadScope: .all
+        ),
+        owner: .gallery(UUID()),
+        downloadedHandles: []
+      )
+      XCTFail("Incomplete ObjectInfo classification must fail the whole resolution")
+    } catch {
+      XCTAssertEqual(source.objectInfoRequests, [3, 2])
+    }
+  }
+
+  func testGalleryFilterStatePassesSharedRuleAndKeepsSortSeparate() {
+    let state = NativeGalleryFilterState(
+      formats: .selected([.jpg, .raw, .heif]),
+      date: .today,
+      downloadScope: .notDownloaded,
+      sort: .oldest
+    )
+
+    XCTAssertEqual(
+      state.catalogIntent.rule,
+      CameraMediaFilterRule(
+        formats: .selected([.jpg, .raw, .heif]),
+        date: .today,
+        downloadScope: .notDownloaded
+      )
+    )
+    XCTAssertEqual(state.catalogIntent.sort, .oldest)
+  }
+
+  func testQuickDownloadCoordinatorUsesTransientSharedQueryWithoutObservingGallery() throws {
     let source = try String(
       contentsOf: URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
@@ -7270,10 +7381,11 @@ final class RunnerTests: XCTestCase {
         .appendingPathComponent("Runner/QuickDownloadCoordinator.swift")
     )
 
-    let wait = try XCTUnwrap(source.range(of: "waitForCatalogReady()")?.lowerBound)
-    let submit = try XCTUnwrap(source.range(of: "runtime.submitGalleryIntent(intent)")?.lowerBound)
-    XCTAssertLessThan(wait, submit)
-    XCTAssertTrue(source.contains("presentation.catalog.intent == self.requestedCatalogIntent"))
+    XCTAssertTrue(source.contains("runtime.resolveCatalog("))
+    XCTAssertTrue(source.contains("rule: rule.filter"))
+    XCTAssertTrue(source.contains("owner: .quickDownload"))
+    XCTAssertFalse(source.contains("runtime.observe"))
+    XCTAssertFalse(source.contains("runtime.submitGalleryIntent"))
     XCTAssertFalse(source.contains("formatLabel"))
     XCTAssertFalse(source.contains("filename"))
   }
@@ -7293,7 +7405,12 @@ final class RunnerTests: XCTestCase {
       contentsOf: runner.appendingPathComponent("QuickDownloadCoordinator.swift")
     )
 
-    XCTAssertTrue(runtime.contains("CameraFilterEngine.project("))
+    let queryEngine = try String(
+      contentsOf: runner.appendingPathComponent("CameraCore/Gallery/CameraCatalogQueryEngine.swift")
+    )
+
+    XCTAssertTrue(queryEngine.contains("CameraFilterEngine.project("))
+    XCTAssertFalse(runtime.contains("CameraFilterEngine.project("))
     XCTAssertFalse(galleryPolicy.contains("CameraFilterEngine.project("))
     XCTAssertFalse(quick.contains("CameraFilterEngine.project("))
   }
@@ -7585,9 +7702,11 @@ final class RunnerTests: XCTestCase {
     )
 
     XCTAssertTrue(gallerySource.contains("private func submitGalleryIntent()"))
-    XCTAssertTrue(gallerySource.contains("switch filterState.catalogSubmission"))
-    XCTAssertTrue(gallerySource.contains("runtime.submitGalleryIntent(intent)"))
-    XCTAssertTrue(gallerySource.contains("runtime.submitUnsupportedGalleryFilter(reason)"))
+    XCTAssertFalse(gallerySource.contains("catalogSubmission"))
+    XCTAssertTrue(gallerySource.contains("runtime.submitGalleryFilter("))
+    XCTAssertTrue(gallerySource.contains("rule: filterState.rule"))
+    XCTAssertTrue(gallerySource.contains("sort: filterState.sortIntent"))
+    XCTAssertFalse(gallerySource.contains("submitUnsupportedGalleryFilter"))
     XCTAssertTrue(gallerySource.contains("private func applyCatalogPresentation(_ presentation: CameraGalleryPresentation)"))
     XCTAssertFalse(gallerySource.contains("runtime.requestCameraCatalog(query:"))
     XCTAssertFalse(gallerySource.contains("runtime.requestCompleteGalleryCatalog()"))
@@ -11671,9 +11790,10 @@ final class RunnerTests: XCTestCase {
     )
     let requestBody = String(source[requestStart..<requestEnd])
 
-    XCTAssertTrue(requestBody.contains("switch filterState.catalogSubmission"))
-    XCTAssertTrue(requestBody.contains("runtime.submitGalleryIntent(intent)"))
-    XCTAssertTrue(requestBody.contains("runtime.submitUnsupportedGalleryFilter(reason)"))
+    XCTAssertTrue(requestBody.contains("runtime.submitGalleryFilter("))
+    XCTAssertTrue(requestBody.contains("rule: filterState.rule"))
+    XCTAssertTrue(requestBody.contains("sort: filterState.sortIntent"))
+    XCTAssertFalse(requestBody.contains("submitUnsupportedGalleryFilter"))
     XCTAssertFalse(requestBody.contains("runtime.requestCameraCatalog(query:"))
     XCTAssertFalse(requestBody.contains("runtime.requestCompleteGalleryCatalog()"))
   }
@@ -12274,131 +12394,6 @@ final class RunnerTests: XCTestCase {
   }
 
   @MainActor
-  func testCatalogRuntimeKeepsUnsupportedHEIFStateWhenDownloadedHandlesChange() async {
-    let source = CameraGalleryCatalogRuntimeSourceSpy()
-    let initialReady = expectation(description: "initial catalog ready")
-    let heifUnsupported = expectation(description: "HEIF catalog unsupported")
-    var didObserveInitialReady = false
-    var didObserveHEIFUnsupported = false
-    let runtime = CameraGalleryCatalogRuntime(
-      source: source,
-      publishPresentation: { presentation in
-        if !didObserveInitialReady, case .ready = presentation.state {
-          didObserveInitialReady = true
-          initialReady.fulfill()
-        }
-        if !didObserveHEIFUnsupported,
-           presentation.intent.format == .heif,
-           case .unsupported = presentation.state {
-          didObserveHEIFUnsupported = true
-          heifUnsupported.fulfill()
-        }
-      },
-      reportTransportEvidence: { _ in }
-    )
-
-    await runtime.start(initial: .all)
-    await fulfillment(of: [initialReady], timeout: 1)
-    await runtime.submit(CameraGalleryFilterIntent(
-      date: .all,
-      format: .heif,
-      sort: .newest,
-      downloadStatus: .all
-    ), submissionID: CameraGalleryIntentSubmissionID(rawValue: 1), downloadedHandles: [])
-    await fulfillment(of: [heifUnsupported], timeout: 1)
-
-    await runtime.updateDownloadedHandles([3])
-
-    let presentation = await runtime.presentation()
-    guard case .unsupported(_, .heifCatalogUnverified) = presentation.state else {
-      return XCTFail("Downloaded-handle projection must preserve unsupported HEIF state")
-    }
-    XCTAssertEqual(presentation.intent.format, .heif)
-    XCTAssertEqual(source.catalogIntents, [])
-    await runtime.cancelAllChildren()
-  }
-
-  @MainActor
-  func testCatalogRuntimeReprojectsUnsupportedHEIFWhenSortChangesWithoutTransport() async {
-    let source = CameraGalleryCatalogRuntimeSourceSpy()
-    let initialReady = expectation(description: "initial catalog ready")
-    let heifUnsupported = expectation(description: "HEIF catalog unsupported")
-    var didObserveInitialReady = false
-    var didObserveHEIFUnsupported = false
-    let runtime = CameraGalleryCatalogRuntime(
-      source: source,
-      publishPresentation: { presentation in
-        if !didObserveInitialReady, case .ready = presentation.state {
-          didObserveInitialReady = true
-          initialReady.fulfill()
-        }
-        if !didObserveHEIFUnsupported,
-           presentation.intent.format == .heif,
-           case .unsupported = presentation.state {
-          didObserveHEIFUnsupported = true
-          heifUnsupported.fulfill()
-        }
-      },
-      reportTransportEvidence: { _ in }
-    )
-
-    await runtime.start(initial: .all)
-    await fulfillment(of: [initialReady], timeout: 1)
-    await runtime.submit(CameraGalleryFilterIntent(
-      date: .all,
-      format: .heif,
-      sort: .newest,
-      downloadStatus: .all
-    ), submissionID: CameraGalleryIntentSubmissionID(rawValue: 1), downloadedHandles: [])
-    await fulfillment(of: [heifUnsupported], timeout: 1)
-
-    await runtime.submit(CameraGalleryFilterIntent(
-      date: .all,
-      format: .heif,
-      sort: .oldest,
-      downloadStatus: .all
-    ), submissionID: CameraGalleryIntentSubmissionID(rawValue: 2), downloadedHandles: [])
-
-    let presentation = await runtime.presentation()
-    guard case .unsupported(_, .heifCatalogUnverified) = presentation.state else {
-      return XCTFail("Sort projection must preserve unsupported HEIF state")
-    }
-    XCTAssertEqual(presentation.intent.sort, .oldest)
-    XCTAssertEqual(source.catalogIntents, [])
-    await runtime.cancelAllChildren()
-  }
-
-  @MainActor
-  func testCatalogRuntimeKeepsUnverifiedHEIFUnsupportedWithoutTransportRequest() async {
-    let source = CameraGalleryCatalogRuntimeSourceSpy()
-    let unsupported = expectation(description: "unverified HEIF remains unsupported")
-    var lastPresentation = CameraGalleryPresentation.unavailable
-    let runtime = CameraGalleryCatalogRuntime(
-      source: source,
-      publishPresentation: { presentation in
-        lastPresentation = presentation
-        guard case .unsupported = presentation.state,
-              presentation.intent.format == .heif else { return }
-        unsupported.fulfill()
-      },
-      reportTransportEvidence: { _ in }
-    )
-
-    await runtime.start(initial: .all)
-    await runtime.submit(CameraGalleryFilterIntent(
-      date: .all,
-      format: .heif,
-      sort: .newest,
-      downloadStatus: .all
-    ), submissionID: CameraGalleryIntentSubmissionID(rawValue: 1), downloadedHandles: [])
-    await fulfillment(of: [unsupported], timeout: 1)
-
-    XCTAssertEqual(source.catalogIntents, [])
-    XCTAssertEqual(lastPresentation.items, [])
-    await runtime.cancelAllChildren()
-  }
-
-  @MainActor
   func testCatalogRuntimeCancelsStaleGenerationWithoutMetadataMembershipMutation() async {
     let source = CameraGalleryCatalogRuntimeSourceSpy()
     let initialReady = expectation(description: "initial catalog ready")
@@ -12642,23 +12637,14 @@ final class RunnerTests: XCTestCase {
   }
 
   @MainActor
-  func testRuntimeCatalogSourceRejectsHEIFUntilExactCameraMembershipIsProven() async throws {
+  func testRuntimeCatalogSourceProvidesExpandedCatalogWithoutSendingExactHEIFQuery() async throws {
     let transport = CameraSessionRuntimeSpy()
     let source = CameraSessionGalleryCatalogRuntimeSource(transport: transport)
 
-    do {
-      _ = try await source.loadCatalog(for: CameraGalleryFilterIntent(
-        date: .all,
-        format: .heif,
-        sort: .newest,
-        downloadStatus: .all
-      ))
-      XCTFail("HEIF must remain unsupported until the camera returns a proven exact directory")
-    } catch let failure as CameraGalleryCatalogTransactionFailure {
-      XCTAssertEqual(failure.primaryMessage, "当前相机尚未验证 HEIF 精确目录")
-    }
+    _ = try await source.loadExpandedCatalog()
 
     XCTAssertEqual(transport.capturedCatalogQueries, [])
+    XCTAssertEqual(transport.initialCatalogRequestCount, 1)
   }
 
   func testPriorityDownloadBatchFinishSkipsD226ResetAfterSocketLoss() throws {
@@ -18589,6 +18575,29 @@ private final class CameraGalleryCatalogRuntimeSourceSpy: CameraGalleryCatalogRu
   private(set) var thumbnailBatchFinishStartCount = 0
   private(set) var finishedThumbnailBatchHandles: [[Int]] = []
 
+  func loadExpandedCatalog() async throws -> CameraGalleryCatalogSnapshot {
+    try await loadInitialCatalog()
+  }
+
+  func loadExactCatalog(for format: CameraMediaFormat) async throws -> CameraGalleryCatalogSnapshot {
+    let formatIntent: CameraGalleryFormatIntent
+    switch format {
+    case .jpg: formatIntent = .jpg
+    case .raw: formatIntent = .raw
+    case .heif: formatIntent = .heif
+    }
+    return try await loadCatalog(for: CameraGalleryFilterIntent(
+      date: .all,
+      format: formatIntent,
+      sort: .newest,
+      downloadStatus: .all
+    ))
+  }
+
+  func loadObjectInfo(handle: Int) async throws -> CameraVendorCameraObjectInfo {
+    CameraVendorCameraObjectInfo.placeholder(handle: UInt32(handle), captureDate: "20260714")
+  }
+
   func loadInitialCatalog() async throws -> CameraGalleryCatalogSnapshot {
     initialCatalogRequestCount += 1
     if let catalogError {
@@ -18779,5 +18788,75 @@ private final class CameraGalleryCatalogRuntimeSourceSpy: CameraGalleryCatalogRu
     let ready = thumbnailBatchFinishStartWaiters.filter { thumbnailBatchFinishStartCount >= $0.count }
     thumbnailBatchFinishStartWaiters.removeAll { thumbnailBatchFinishStartCount >= $0.count }
     ready.forEach { $0.continuation.resume() }
+  }
+}
+
+private actor CatalogLeaseAcquisitionFlag {
+  private(set) var value = false
+
+  func markAcquired() {
+    value = true
+  }
+}
+
+@MainActor
+private final class CameraCatalogQuerySourceSpy: CameraCatalogQuerySource {
+  private let expandedSnapshot: CameraGalleryCatalogSnapshot
+  private let exactSnapshots: [CameraMediaFormat: CameraGalleryCatalogSnapshot]
+  private let objectInfos: [Int: CameraVendorCameraObjectInfo]
+  private(set) var expandedRequestCount = 0
+  private(set) var exactRequests: [CameraMediaFormat] = []
+  private(set) var objectInfoRequests: [Int] = []
+
+  init(
+    expandedSnapshot: CameraGalleryCatalogSnapshot? = nil,
+    exactSnapshots: [CameraMediaFormat: CameraGalleryCatalogSnapshot] = [:],
+    objectInfos: [Int: CameraVendorCameraObjectInfo] = [:]
+  ) {
+    self.expandedSnapshot = expandedSnapshot ?? .fixture(handles: [])
+    self.exactSnapshots = exactSnapshots
+    self.objectInfos = objectInfos
+  }
+
+  func loadExpandedCatalog() async throws -> CameraGalleryCatalogSnapshot {
+    expandedRequestCount += 1
+    return expandedSnapshot
+  }
+
+  func loadExactCatalog(for format: CameraMediaFormat) async throws -> CameraGalleryCatalogSnapshot {
+    exactRequests.append(format)
+    guard let snapshot = exactSnapshots[format] else {
+      throw NSError(domain: "CameraCatalogQuerySourceSpy", code: 1)
+    }
+    return snapshot
+  }
+
+  func loadObjectInfo(handle: Int) async throws -> CameraVendorCameraObjectInfo {
+    objectInfoRequests.append(handle)
+    guard let info = objectInfos[handle] else {
+      throw NSError(domain: "CameraCatalogQuerySourceSpy", code: 2)
+    }
+    return info
+  }
+}
+
+@MainActor
+private extension CameraGalleryCatalogSnapshot {
+  static func fixture(handles: [Int]) -> CameraGalleryCatalogSnapshot {
+    CameraGalleryCatalogRuntimeSourceSpy.snapshot(handles: handles)
+  }
+}
+
+private extension CameraVendorCameraObjectInfo {
+  static func fixture(handle: Int, formatCode: UInt16) -> CameraVendorCameraObjectInfo {
+    CameraVendorCameraObjectInfo(
+      handle: handle,
+      storageID: 1,
+      formatCode: formatCode,
+      compressedSize: 1,
+      thumbCompressedSize: 1,
+      filename: "ignored.bin",
+      captureDate: "20260727T120000"
+    )
   }
 }

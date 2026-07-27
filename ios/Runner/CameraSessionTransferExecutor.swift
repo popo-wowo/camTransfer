@@ -164,7 +164,7 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
     self.transport = transport
   }
 
-  func loadInitialCatalog() async throws -> CameraGalleryCatalogSnapshot {
+  func loadExpandedCatalog() async throws -> CameraGalleryCatalogSnapshot {
     do {
       let snapshot = try await transport.fetchInitialCameraCatalog()
       return CameraGalleryCatalogSnapshot(
@@ -184,12 +184,8 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
     }
   }
 
-  func loadCatalog(for intent: CameraGalleryFilterIntent) async throws -> CameraGalleryCatalogSnapshot {
-    // "All" uses the same expanded initial catalog logic (which includes HEIF handles)
-    if intent.format == .all {
-      return try await loadInitialCatalog()
-    }
-    let query = try cameraCatalogQuery(for: intent)
+  func loadExactCatalog(for format: CameraMediaFormat) async throws -> CameraGalleryCatalogSnapshot {
+    let query = cameraCatalogQuery(for: format)
     do {
       let snapshot = try await transport.fetchCameraCatalog(query: query)
       return CameraGalleryCatalogSnapshot(
@@ -203,6 +199,29 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
     } catch {
       throw CameraGalleryCatalogTransactionFailure(
         primaryMessage: error.localizedDescription,
+        restorationMessage: nil,
+        provesTransportLost: false
+      )
+    }
+  }
+
+  func loadObjectInfo(handle: Int) async throws -> CameraVendorCameraObjectInfo {
+    try await transport.fetchObjectInfo(for: handle)
+  }
+
+  func loadInitialCatalog() async throws -> CameraGalleryCatalogSnapshot {
+    try await loadExpandedCatalog()
+  }
+
+  func loadCatalog(for intent: CameraGalleryFilterIntent) async throws -> CameraGalleryCatalogSnapshot {
+    switch CameraFilterEngine.plan(for: intent.rule.formats) {
+    case .allCatalog:
+      return try await loadExpandedCatalog()
+    case .exactFormats(let formats) where formats.count == 1:
+      return try await loadExactCatalog(for: formats.first!)
+    case .exactFormats, .objectInfoFallback:
+      throw CameraGalleryCatalogTransactionFailure(
+        primaryMessage: "目录组合必须通过共享相机查询引擎解析",
         restorationMessage: nil,
         provesTransportLost: false
       )
@@ -245,12 +264,8 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
     transport.finishVisibleThumbnailBatch(handles: handles)
   }
 
-  private func cameraCatalogQuery(
-    for intent: CameraGalleryFilterIntent
-  ) throws -> CameraVendorCatalogQuery {
-    switch intent.format {
-    case .all:
-      return CameraVendorCatalogQuery(conditions: [], label: "all")
+  private func cameraCatalogQuery(for format: CameraMediaFormat) -> CameraVendorCatalogQuery {
+    switch format {
     case .jpg:
       return CameraVendorCatalogQuery(
         conditions: [
@@ -272,16 +287,7 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
         label: "format-raw"
       )
     case .heif:
-      return CameraVendorCatalogQuery(
-        conditions: [
-          .uint16(
-            propertyCode: CameraVendorSearchModeAllPayload.objectFormatPropertyCode,
-            value: CameraVendorSearchModeAllPayload.heifObjectFormatMask
-          ),
-        ],
-        label: "format-heif",
-        membershipPolicy: .subtractBaseline
-      )
+      preconditionFailure("HEIF must resolve from expanded catalog plus authoritative ObjectInfo")
     }
   }
 }

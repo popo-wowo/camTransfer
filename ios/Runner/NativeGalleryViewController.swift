@@ -1294,12 +1294,10 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       "[OBS] GALLERY_CATALOG_INTENT_SUBMITTED " +
       "date=\(dateChips.selectedID ?? "all") formats=\(formatChips.selectedIDs.sorted())"
     )
-    switch filterState.catalogSubmission {
-    case .intent(let intent):
-      runtime.submitGalleryIntent(intent)
-    case .unsupported(let reason):
-      runtime.submitUnsupportedGalleryFilter(reason)
-    }
+    runtime.submitGalleryFilter(
+      rule: filterState.rule,
+      sort: filterState.sortIntent
+    )
   }
 
   @objc private func toggleFilterPanel() {

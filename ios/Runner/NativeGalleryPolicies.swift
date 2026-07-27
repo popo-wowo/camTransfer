@@ -496,18 +496,19 @@ struct NativeGalleryFilterState: Equatable {
 }
 
 extension NativeGalleryFilterState {
-  var catalogSubmission: CameraGalleryFilterSubmission {
-    let sortIntent: CameraGallerySortIntent
+  var sortIntent: CameraGallerySortIntent {
     switch sort {
     case .newest:
-      sortIntent = .newest
+      return .newest
     case .oldest:
-      sortIntent = .oldest
+      return .oldest
     case .notDownloaded:
-      sortIntent = .notDownloaded
+      return .notDownloaded
     }
+  }
 
-    return CameraGalleryLegacyFilterAdapter.submission(for: rule, sort: sortIntent)
+  var catalogIntent: CameraGalleryFilterIntent {
+    CameraGalleryFilterIntent(rule: rule, sort: sortIntent)
   }
 }
 

@@ -24,6 +24,8 @@ actor CameraGalleryCatalogRuntime {
   }
 
   private let source: CameraGalleryCatalogRuntimeSource
+  private let queryEngine: CameraCatalogQueryEngine
+  private let queryOwner: CameraCatalogAccessOwner
   private let publishPresentation: PresentationPublisher
   private let publishIncrementalUpdate: IncrementalUpdatePublisher
   private let reportTransportEvidence: TransportEvidenceReporter
@@ -47,11 +49,15 @@ actor CameraGalleryCatalogRuntime {
 
   init(
     source: CameraGalleryCatalogRuntimeSource,
+    queryEngine: CameraCatalogQueryEngine? = nil,
+    queryOwner: CameraCatalogAccessOwner = .gallery(UUID()),
     publishPresentation: @escaping PresentationPublisher,
     publishIncrementalUpdate: @escaping IncrementalUpdatePublisher = { _, _ in },
     reportTransportEvidence: @escaping TransportEvidenceReporter
   ) {
     self.source = source
+    self.queryEngine = queryEngine ?? CameraCatalogQueryEngine(source: source)
+    self.queryOwner = queryOwner
     self.publishPresentation = publishPresentation
     self.publishIncrementalUpdate = publishIncrementalUpdate
     self.reportTransportEvidence = reportTransportEvidence
@@ -70,27 +76,6 @@ actor CameraGalleryCatalogRuntime {
     latestIntentSubmissionID = submissionID
     self.downloadedHandles = downloadedHandles
     await submit(intent, forceCameraTransaction: false)
-  }
-
-  func submitUnsupported(
-    _ reason: CameraGalleryUnsupportedReason,
-    submissionID: CameraGalleryIntentSubmissionID
-  ) async {
-    guard submissionID > latestIntentSubmissionID, !isTransportLost, !isShuttingDown else { return }
-    latestIntentSubmissionID = submissionID
-    pendingTransaction = nil
-    activeTransactionTask?.cancel()
-    isAcceptingChildWork = false
-    await cancelAndJoinChildWork()
-    await activeTransactionTask?.value
-    activeTransactionTask = nil
-    currentPresentation = CameraGalleryPresentation(
-      state: .unsupported(generation: allocateGeneration(), reason: reason),
-      intent: currentIntent,
-      items: [],
-      entries: []
-    )
-    await publishCurrentPresentation()
   }
 
   func updateDownloadedHandles(_ handles: Set<Int>) async {
@@ -202,7 +187,7 @@ actor CameraGalleryCatalogRuntime {
     currentPresentation = CameraGalleryPresentation(
       state: .transportLost(message),
       intent: currentIntent,
-      items: project(repository.items, intent: currentIntent),
+      items: sort(repository.items, by: currentIntent.sort),
       entries: repository.entries
     )
     await publishCurrentPresentation()
@@ -284,19 +269,19 @@ actor CameraGalleryCatalogRuntime {
 
   private func execute(_ transaction: PendingTransaction) async {
     do {
-      let snapshot: CameraGalleryCatalogSnapshot
-      switch transaction.sourceOperation {
-      case .initial:
-        snapshot = try await source.loadInitialCatalog()
-      case .filtered:
-        snapshot = try await source.loadCatalog(for: transaction.intent)
-      }
+      let resolution = try await queryEngine.resolve(
+        rule: transaction.intent.rule,
+        owner: queryOwner,
+        downloadedHandles: downloadedHandles
+      )
+      let snapshot = resolution.snapshot
       guard !isShuttingDown,
             transaction.generation == currentPresentation.generation else {
         await finishTransactionAndStartPendingIfNeeded()
         return
       }
       repository.install(snapshot, generation: transaction.generation)
+      enrichedObjectInfos = resolution.authoritativeObjectInfos
       installedMembershipIntent = transaction.intent
       currentIntent = transaction.intent
       currentPresentation = makeReadyPresentation()
@@ -541,7 +526,7 @@ actor CameraGalleryCatalogRuntime {
     return CameraGalleryPresentation(
       state: .ready(generation: generation, snapshotID: snapshotID),
       intent: currentIntent,
-      items: project(repository.items, intent: currentIntent),
+      items: sort(repository.items, by: currentIntent.sort),
       entries: repository.entries
     )
   }
@@ -570,47 +555,18 @@ actor CameraGalleryCatalogRuntime {
     )
   }
 
-  private func project(
+  private func sort(
     _ items: [CameraVendorGalleryItem],
-    intent: CameraGalleryFilterIntent
+    by sort: CameraGallerySortIntent
   ) -> [CameraVendorGalleryItem] {
-    let dateSelection: CameraMediaDateSelection
-    switch intent.date {
-    case .all:
-      dateSelection = .all
-    case .today:
-      dateSelection = .today
-    case .specificDay(let day):
-      dateSelection = .specificDay(day)
-    }
-    let downloadScope: CameraMediaDownloadScope = intent.downloadStatus == .notDownloaded
-      ? .notDownloaded
-      : .all
-    let rule = CameraMediaFilterRule(
-      formats: .all,
-      date: dateSelection,
-      downloadScope: downloadScope
-    )
-    let candidates = items.map {
-      CameraMediaFilterCandidate(
-        handle: $0.handle,
-        captureDate: CameraFilterEngine.parseCaptureDate($0.captureDate)
-      )
-    }
-    let projectedHandles = Set(CameraFilterEngine.project(
-      candidates,
-      rule: rule,
-      downloadedHandles: downloadedHandles
-    ).map(\.handle))
-    let projected = items.filter { projectedHandles.contains($0.handle) }
-    switch intent.sort {
+    switch sort {
     case .newest:
-      return projected
+      return items
     case .oldest:
-      return Array(projected.reversed())
+      return Array(items.reversed())
     case .notDownloaded:
-      return projected.filter { !downloadedHandles.contains($0.handle) } +
-        projected.filter { downloadedHandles.contains($0.handle) }
+      return items.filter { !downloadedHandles.contains($0.handle) } +
+        items.filter { downloadedHandles.contains($0.handle) }
     }
   }
 
