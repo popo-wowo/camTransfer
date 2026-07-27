@@ -394,6 +394,7 @@ final class CameraVendorGallerySessionRuntimeTransport: CameraSessionRuntimeTran
   private var activeTransferTask: Task<Void, Never>?
   private var activeTransferID: UUID?
   private var activeTransferCommitGate: CameraSessionRuntimeTransferCommitGate?
+  private var exclusiveDownloadWindowOwnerID: CameraVendorExclusiveDownloadWindowOwnerID?
 
   init(
     galleryService: CameraVendorGalleryService,
@@ -516,13 +517,17 @@ final class CameraVendorGallerySessionRuntimeTransport: CameraSessionRuntimeTran
   }
 
   func beginDownloadLease() {
-    (galleryService as? CameraVendorExclusiveDownloadWindowControlling)?
-      .beginExclusiveDownloadWindow()
+    guard exclusiveDownloadWindowOwnerID == nil else { return }
+    exclusiveDownloadWindowOwnerID =
+      (galleryService as? CameraVendorExclusiveDownloadWindowControlling)?
+        .beginExclusiveDownloadWindow()
   }
 
   func endDownloadLease() {
+    guard let ownerID = exclusiveDownloadWindowOwnerID else { return }
+    exclusiveDownloadWindowOwnerID = nil
     (galleryService as? CameraVendorExclusiveDownloadWindowControlling)?
-      .endExclusiveDownloadWindow()
+      .endExclusiveDownloadWindow(ownerID: ownerID)
   }
 
   func fetchThumbnailWithInfo(for handle: Int) async throws -> CameraVendorGalleryThumbnail {

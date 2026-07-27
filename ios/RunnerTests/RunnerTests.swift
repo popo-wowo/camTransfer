@@ -9679,7 +9679,7 @@ final class RunnerTests: XCTestCase {
     let barrierProbeResult = await barrierProbe.value
     XCTAssertEqual(barrierProbeResult, "cancelled")
 
-    runtime.endExclusiveDownloadWindow()
+    runtime.forceEndExclusiveDownloadWindow()
     let windowResult = await window.value
     XCTAssertEqual(windowResult, "cancelled")
     XCTAssertEqual(operationLock.withLock { operationCount }, 0)
@@ -9756,10 +9756,10 @@ final class RunnerTests: XCTestCase {
       }
     }
 
-    service.beginExclusiveDownloadWindow()
-    service.beginExclusiveDownloadWindow()
-    try await service.awaitExclusiveDownloadWindowReady()
-    try await service.awaitExclusiveDownloadWindowReady()
+    let firstOwner = service.beginExclusiveDownloadWindow()
+    let secondOwner = service.beginExclusiveDownloadWindow()
+    try await service.awaitExclusiveDownloadWindowReady(ownerID: firstOwner)
+    try await service.awaitExclusiveDownloadWindowReady(ownerID: secondOwner)
     XCTAssertEqual(
       logLock.withLock {
         logs.filter { $0.contains("PTP_EXCLUSIVE_DOWNLOAD_ADMISSION_READY") }.count
@@ -9768,8 +9768,8 @@ final class RunnerTests: XCTestCase {
     )
 
     service.terminateCameraCommunication(reason: "test-force-release")
-    service.endExclusiveDownloadWindow()
-    service.endExclusiveDownloadWindow()
+    service.endExclusiveDownloadWindow(ownerID: firstOwner)
+    service.endExclusiveDownloadWindow(ownerID: secondOwner)
 
     let probeResult: String
     do {
@@ -9787,6 +9787,157 @@ final class RunnerTests: XCTestCase {
       },
       1
     )
+  }
+
+  func testPtpRuntimeOldOwnerReleaseAfterForceEndDoesNotReleaseReplacementWindow() async throws {
+    let lane = CameraCommandLane()
+    let runtime = makePtpRuntimeForExclusiveWindowTests(commandLane: lane)
+    let oldOwner = runtime.beginExclusiveDownloadWindow()
+    try await runtime.awaitExclusiveDownloadWindowReady(ownerID: oldOwner)
+
+    runtime.forceEndExclusiveDownloadWindow()
+    let replacementOwner = runtime.beginExclusiveDownloadWindow()
+    try await runtime.awaitExclusiveDownloadWindowReady(ownerID: replacementOwner)
+
+    runtime.endExclusiveDownloadWindow(ownerID: oldOwner)
+    let probeResult: String
+    do {
+      probeResult = try await lane.run(priority: .visibleThumbnail) { "ran" }
+    } catch is CancellationError {
+      probeResult = "cancelled"
+    }
+
+    runtime.endExclusiveDownloadWindow(ownerID: replacementOwner)
+
+    XCTAssertEqual(probeResult, "cancelled")
+  }
+
+  func testPtpRuntimeOldWaiterCannotObserveReplacementAcquisitionAsReady() async throws {
+    let lane = CameraCommandLane()
+    let runtime = makePtpRuntimeForExclusiveWindowTests(commandLane: lane)
+    let activeStarted = expectation(description: "active command started")
+    let releaseActive = DispatchSemaphore(value: 0)
+    let active = Task {
+      try await lane.run(priority: .details) {
+        activeStarted.fulfill()
+        releaseActive.wait()
+      }
+    }
+    await fulfillment(of: [activeStarted], timeout: 1)
+
+    let oldOwner = runtime.beginExclusiveDownloadWindow()
+    let oldWaiter = Task { () -> String in
+      do {
+        try await runtime.awaitExclusiveDownloadWindowReady(ownerID: oldOwner)
+        return "ready"
+      } catch is CancellationError {
+        return "cancelled"
+      } catch {
+        return "failed"
+      }
+    }
+    await Task.yield()
+
+    runtime.forceEndExclusiveDownloadWindow()
+    let replacementOwner = runtime.beginExclusiveDownloadWindow()
+    releaseActive.signal()
+    _ = try? await active.value
+    try await runtime.awaitExclusiveDownloadWindowReady(ownerID: replacementOwner)
+
+    let oldWaiterResult = await oldWaiter.value
+    XCTAssertEqual(oldWaiterResult, "cancelled")
+    runtime.endExclusiveDownloadWindow(ownerID: replacementOwner)
+  }
+
+  func testRealtimeGalleryServiceOldOwnerReleaseAfterTerminateDoesNotFinishReplacementBatch() async throws {
+    let service = CameraVendorRealtimeGalleryService()
+    let logLock = NSLock()
+    var logs: [String] = []
+    service.diagnosticHandler = { message in
+      logLock.withLock {
+        logs.append(message)
+      }
+    }
+    let oldOwner = service.beginExclusiveDownloadWindow()
+    try await service.awaitExclusiveDownloadWindowReady(ownerID: oldOwner)
+
+    service.terminateCameraCommunication(reason: "replace-exclusive-owner")
+    let replacementOwner = service.beginExclusiveDownloadWindow()
+    try await service.awaitExclusiveDownloadWindowReady(ownerID: replacementOwner)
+
+    service.endExclusiveDownloadWindow(ownerID: oldOwner)
+
+    XCTAssertEqual(
+      logLock.withLock {
+        logs.filter { $0.contains("PRIORITY_DOWNLOAD_FINISH") }.count
+      },
+      1
+    )
+    service.endExclusiveDownloadWindow(ownerID: replacementOwner)
+  }
+
+  func testRealtimeGalleryServiceDiagnosticCallbackCanEndWindowWithoutDeadlock() async throws {
+    let service = CameraVendorRealtimeGalleryService()
+    let ownerID = service.beginExclusiveDownloadWindow()
+    let callbackReturned = expectation(description: "diagnostic callback returned after ending window")
+    service.diagnosticHandler = { message in
+      guard message.contains("PTP_PRIORITY_DOWNLOAD_BATCH_BEGIN_COMMAND_LANE") else { return }
+      service.endExclusiveDownloadWindow(ownerID: ownerID)
+      callbackReturned.fulfill()
+    }
+
+    let waiter = Task { () -> String in
+      do {
+        try await service.awaitExclusiveDownloadWindowReady(ownerID: ownerID)
+        return "ready"
+      } catch is CancellationError {
+        return "cancelled"
+      } catch {
+        return "failed"
+      }
+    }
+
+    await fulfillment(of: [callbackReturned], timeout: 1)
+    let waiterResult = await waiter.value
+    XCTAssertEqual(waiterResult, "cancelled")
+  }
+
+  func testPriorityBatchFinishIsSerializedBeforeNextCommandLaneOperation() async throws {
+    let lane = CameraCommandLane()
+    let lease = try await lane.acquireExclusiveDownloadLease()
+    let activeStarted = expectation(description: "active download command started")
+    let releaseActive = DispatchSemaphore(value: 0)
+    let orderLock = NSLock()
+    var order: [String] = []
+    let active = Task {
+      try await lane.run(priority: .download) {
+        activeStarted.fulfill()
+        releaseActive.wait()
+        orderLock.withLock {
+          order.append("active")
+        }
+      }
+    }
+    await fulfillment(of: [activeStarted], timeout: 1)
+
+    lease.release(afterSerialized: {
+      orderLock.withLock {
+        order.append("finish")
+      }
+    })
+    let next = Task {
+      try await lane.run(priority: .visibleThumbnail) {
+        orderLock.withLock {
+          order.append("next")
+        }
+      }
+    }
+
+    releaseActive.signal()
+    _ = try? await active.value
+    _ = try? await next.value
+
+    XCTAssertEqual(orderLock.withLock { order }, ["active", "finish", "next"])
   }
 
   func testCameraCommandLaneUsesOnePriorityOrderForAllPtpConsumers() {
@@ -10718,13 +10869,16 @@ final class RunnerTests: XCTestCase {
     )
     let cancellationBody = acquisitionBody[waitUntilReadyStart..<acquisitionBody.endIndex]
     XCTAssertTrue(cancellationBody.contains("task.cancel()"))
-    XCTAssertTrue(cancellationBody.contains("state.cancel()"))
+    XCTAssertTrue(cancellationBody.contains("state.cancel(afterSerialized: finalizer)"))
 
     let beginStart = try XCTUnwrap(
-      source.range(of: "func beginExclusiveDownloadWindow()", range: acquisitionEnd..<source.endIndex)?.lowerBound
+      source.range(
+        of: "func beginExclusiveDownloadWindow(ownerID:",
+        range: acquisitionEnd..<source.endIndex
+      )?.lowerBound
     )
     let awaitStart = try XCTUnwrap(
-      source.range(of: "func awaitExclusiveDownloadWindowReady()", range: beginStart..<source.endIndex)?.lowerBound
+      source.range(of: "func awaitExclusiveDownloadWindowReady(", range: beginStart..<source.endIndex)?.lowerBound
     )
     let beginBody = source[beginStart..<awaitStart]
     let construction = try XCTUnwrap(
@@ -10736,7 +10890,7 @@ final class RunnerTests: XCTestCase {
 
     XCTAssertLessThan(construction.lowerBound, publication.lowerBound)
     XCTAssertFalse(beginBody.contains("acquisition.start("))
-    XCTAssertTrue(source.contains("func awaitExclusiveDownloadWindowReady() async throws"))
+    XCTAssertTrue(source.contains("func awaitExclusiveDownloadWindowReady(\n    ownerID:"))
     XCTAssertTrue(source.contains("async throws -> T"))
     XCTAssertFalse(source.contains("async rethrows -> T"))
   }
@@ -12262,9 +12416,9 @@ final class RunnerTests: XCTestCase {
     let sourceURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
-      .appendingPathComponent("Runner/CameraVendorBluetoothService.swift")
+      .appendingPathComponent("Runner/CameraVendorPtpSession.swift")
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
-    let start = try XCTUnwrap(source.range(of: "func finishPriorityDownloadBatch()")?.lowerBound)
+    let start = try XCTUnwrap(source.range(of: "func finishPriorityDownloadBatchOnCommandLane()")?.lowerBound)
     let end = try XCTUnwrap(
       source.range(of: "private func prepareDownloadModeForPriorityBatch(", range: start..<source.endIndex)?.lowerBound
     )
@@ -12429,21 +12583,27 @@ final class RunnerTests: XCTestCase {
   }
 
   func testD226SessionLifetimeExperimentLogsGenerationAtTheExistingBatchOwner() throws {
-    let sourceURL = URL(fileURLWithPath: #filePath)
+    let runnerDirectory = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
-      .appendingPathComponent("Runner/CameraVendorBluetoothService.swift")
-    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let source = try String(
+      contentsOf: runnerDirectory.appendingPathComponent("Runner/CameraVendorPtpSession.swift"),
+      encoding: .utf8
+    )
+    let serviceSource = try String(
+      contentsOf: runnerDirectory.appendingPathComponent("Runner/CameraVendorRealtimeGalleryService.swift"),
+      encoding: .utf8
+    )
 
     XCTAssertTrue(source.contains("func beginPriorityDownloadBatch(generation: UInt64)"))
-    XCTAssertTrue(source.contains("session.beginPriorityDownloadBatch(") )
-    XCTAssertTrue(source.contains("generation: currentCommunicationGeneration()"))
+    XCTAssertTrue(serviceSource.contains("session.beginPriorityDownloadBatch(") )
+    XCTAssertTrue(serviceSource.contains("generation: self.currentCommunicationGeneration()"))
 
     let start = try XCTUnwrap(
       source.range(of: "func beginPriorityDownloadBatch(generation: UInt64)")?.lowerBound
     )
     let end = try XCTUnwrap(
-      source.range(of: "func finishPriorityDownloadBatch()", range: start..<source.endIndex)?.lowerBound
+      source.range(of: "func finishPriorityDownloadBatchOnCommandLane()", range: start..<source.endIndex)?.lowerBound
     )
     let body = String(source[start..<end])
     XCTAssertTrue(body.contains("d226Lifetime="))

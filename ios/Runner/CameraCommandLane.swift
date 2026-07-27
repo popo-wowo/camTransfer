@@ -11,19 +11,19 @@ enum CameraCommandPriority: Int, Sendable {
 
 final class CameraCommandLease: @unchecked Sendable {
   private let lock = NSLock()
-  private var releaseHandler: (() -> Void)?
+  private var releaseHandler: (((() -> Void)?) -> Void)?
 
-  init(releaseHandler: @escaping () -> Void) {
+  init(releaseHandler: @escaping ((() -> Void)?) -> Void) {
     self.releaseHandler = releaseHandler
   }
 
-  func release() {
-    let handler: (() -> Void)?
+  func release(afterSerialized finalizer: (() -> Void)? = nil) {
+    let handler: (((() -> Void)?) -> Void)?
     lock.lock()
     handler = releaseHandler
     releaseHandler = nil
     lock.unlock()
-    handler?()
+    handler?(finalizer)
   }
 
   deinit {
@@ -91,6 +91,7 @@ final class CameraCommandLane {
   private var exclusiveDownloadLeaseIDs = Set<Int>()
   private var nextExclusiveDownloadLeaseID = 0
   private var isExclusiveSessionMutationBarrierActive = false
+  private var serializedFinalizers: [() -> Void] = []
   private var idleWaiters: [IdleWaiter] = []
   private var nextIdleWaiterID = 0
   private let onWaiterQueued: ((CameraCommandPriority) -> Void)?
@@ -130,8 +131,8 @@ final class CameraCommandLane {
     do {
       try await waitUntilIdle()
       try Task.checkCancellation()
-      return CameraCommandLease { [weak self] in
-        self?.endExclusiveDownloadBarrier(leaseID: leaseID)
+      return CameraCommandLease { [weak self] finalizer in
+        self?.endExclusiveDownloadBarrier(leaseID: leaseID, finalizer: finalizer)
       }
     } catch {
       endExclusiveDownloadBarrier(leaseID: leaseID)
@@ -196,23 +197,42 @@ final class CameraCommandLane {
     return leaseID
   }
 
-  private func endExclusiveDownloadBarrier(leaseID: Int) {
+  private func endExclusiveDownloadBarrier(
+    leaseID: Int,
+    finalizer: (() -> Void)? = nil
+  ) {
     let next: Waiter?
+    let finalizerToRun: (() -> Void)?
     lock.lock()
     guard exclusiveDownloadLeaseIDs.remove(leaseID) != nil else {
       lock.unlock()
       return
     }
+    if let finalizer {
+      serializedFinalizers.append(finalizer)
+    }
     if !isExclusiveDownloadBarrierActive && !isCommandActive {
-      next = removeNextRunnableWaiterLocked()
-      if next != nil {
+      finalizerToRun = takeNextSerializedFinalizerLocked()
+      if finalizerToRun != nil {
         isCommandActive = true
+        next = nil
+      } else {
+        next = removeNextRunnableWaiterLocked()
+        if next != nil {
+          isCommandActive = true
+        }
       }
     } else {
       next = nil
+      finalizerToRun = nil
     }
     lock.unlock()
-    next?.continuation.resume()
+    if let finalizerToRun {
+      finalizerToRun()
+      releaseNext()
+    } else {
+      next?.continuation.resume()
+    }
   }
 
   private func beginExclusiveSessionMutationBarrier() {
@@ -296,23 +316,40 @@ final class CameraCommandLane {
 
   private func releaseNext() {
     let next: Waiter?
+    let finalizerToRun: (() -> Void)?
     let idleWaitersToResume: [IdleWaiter]
     lock.lock()
-    if let runnable = removeNextRunnableWaiterLocked() {
+    if let finalizer = takeNextSerializedFinalizerLocked() {
+      finalizerToRun = finalizer
+      next = nil
+      idleWaitersToResume = []
+    } else if let runnable = removeNextRunnableWaiterLocked() {
+      finalizerToRun = nil
       next = runnable
       idleWaitersToResume = []
     } else {
+      finalizerToRun = nil
       isCommandActive = false
       next = nil
       idleWaitersToResume = takeIdleWaitersIfReadyLocked()
     }
     lock.unlock()
-    next?.continuation.resume()
-    idleWaitersToResume.forEach { $0.continuation.resume() }
+    if let finalizerToRun {
+      finalizerToRun()
+      releaseNext()
+    } else {
+      next?.continuation.resume()
+      idleWaitersToResume.forEach { $0.continuation.resume() }
+    }
   }
 
   private var isIdleLocked: Bool {
-    !isCommandActive && waiters.isEmpty
+    !isCommandActive && waiters.isEmpty && serializedFinalizers.isEmpty
+  }
+
+  private func takeNextSerializedFinalizerLocked() -> (() -> Void)? {
+    guard !serializedFinalizers.isEmpty else { return nil }
+    return serializedFinalizers.removeFirst()
   }
 
   private func takeIdleWaitersIfReadyLocked() -> [IdleWaiter] {

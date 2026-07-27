@@ -432,7 +432,7 @@ final class CameraVendorPtpSession {
     )
   }
 
-  func finishPriorityDownloadBatch() {
+  func finishPriorityDownloadBatchOnCommandLane() {
     let actions = originalDownloadBatchModeState.actionsForEndingBatch(
       lifetime: originalDownloadD226Lifetime
     )
