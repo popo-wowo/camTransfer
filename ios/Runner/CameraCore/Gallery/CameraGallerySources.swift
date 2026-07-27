@@ -47,11 +47,15 @@ protocol CameraCatalogQuerySource: AnyObject {
 }
 
 @MainActor
-protocol CameraGalleryCatalogRuntimeSource: CameraCatalogQuerySource {
-  func loadInitialCatalog() async throws -> CameraGalleryCatalogSnapshot
-  func loadCatalog(for intent: CameraGalleryFilterIntent) async throws -> CameraGalleryCatalogSnapshot
+protocol CameraGalleryThumbnailPipelineSource: AnyObject {
   func loadThumbnail(handle: Int) async throws -> CameraVendorGalleryThumbnail
   func loadDetails(handle: Int) async throws -> CameraGalleryDetailsSourceResult
   func beginVisibleThumbnailBatch(handles: [Int])
   func finishVisibleThumbnailBatch(handles: [Int]) async
+}
+
+@MainActor
+protocol CameraGalleryCatalogRuntimeSource: CameraCatalogQuerySource, CameraGalleryThumbnailPipelineSource {
+  func loadInitialCatalog() async throws -> CameraGalleryCatalogSnapshot
+  func loadCatalog(for intent: CameraGalleryFilterIntent) async throws -> CameraGalleryCatalogSnapshot
 }

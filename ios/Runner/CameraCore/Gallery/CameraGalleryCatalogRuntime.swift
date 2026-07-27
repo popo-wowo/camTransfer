@@ -16,16 +16,9 @@ actor CameraGalleryCatalogRuntime {
     let sourceOperation: SourceOperation
   }
 
-  private struct ActiveThumbnailRequest {
-    let id: UInt64
-    let generation: CameraGalleryGenerationID
-    let snapshotID: CameraGallerySnapshotID
-    let handles: Set<Int>
-  }
-
-  private let source: CameraGalleryCatalogRuntimeSource
   private let queryEngine: CameraCatalogQueryEngine
   private let queryOwner: CameraCatalogAccessOwner
+  private let cameraID: String
   private let publishPresentation: PresentationPublisher
   private let publishIncrementalUpdate: IncrementalUpdatePublisher
   private let reportTransportEvidence: TransportEvidenceReporter
@@ -36,11 +29,7 @@ actor CameraGalleryCatalogRuntime {
   private var currentPresentation = CameraGalleryPresentation.unavailable
   private var activeTransactionTask: Task<Void, Never>?
   private var pendingTransaction: PendingTransaction?
-  private var thumbnailTask: Task<Void, Never>?
-  private var activeThumbnailRequest: ActiveThumbnailRequest?
-  private var nextThumbnailRequestID: UInt64 = 0
-  private var detailsTask: Task<Void, Never>?
-  private var enrichedObjectInfos: [Int: CameraVendorCameraObjectInfo] = [:]
+  private var thumbnailPipeline: CameraGalleryThumbnailPipeline!
   private var downloadedHandles: Set<Int> = []
   private var installedMembershipIntent: CameraGalleryFilterIntent?
   private var isAcceptingChildWork = false
@@ -51,16 +40,21 @@ actor CameraGalleryCatalogRuntime {
     source: CameraGalleryCatalogRuntimeSource,
     queryEngine: CameraCatalogQueryEngine? = nil,
     queryOwner: CameraCatalogAccessOwner = .gallery(UUID()),
+    cameraID: String = "gallery",
     publishPresentation: @escaping PresentationPublisher,
     publishIncrementalUpdate: @escaping IncrementalUpdatePublisher = { _, _ in },
     reportTransportEvidence: @escaping TransportEvidenceReporter
   ) {
-    self.source = source
     self.queryEngine = queryEngine ?? CameraCatalogQueryEngine(source: source)
     self.queryOwner = queryOwner
+    self.cameraID = cameraID
     self.publishPresentation = publishPresentation
     self.publishIncrementalUpdate = publishIncrementalUpdate
     self.reportTransportEvidence = reportTransportEvidence
+    thumbnailPipeline = CameraGalleryThumbnailPipeline(source: source) { [weak self] publication in
+      guard let self else { return }
+      await self.applyPipelinePublication(publication)
+    }
   }
 
   func start(initial intent: CameraGalleryFilterIntent = .all) async {
@@ -100,47 +94,17 @@ actor CameraGalleryCatalogRuntime {
           installedMembershipIntent.hasSameCameraMembership(as: currentIntent) else {
       return
     }
-    let knownHandles = Set(repository.items.map(\.handle))
-    let requestedHandles = handles.filter { knownHandles.contains($0) }
-    guard !requestedHandles.isEmpty else {
-      return
-    }
-    let requestedHandleSet = Set(requestedHandles)
-    if let activeThumbnailRequest,
-       activeThumbnailRequest.generation == generation,
-       activeThumbnailRequest.snapshotID == snapshotID,
-       requestedHandleSet.isSubset(of: activeThumbnailRequest.handles) {
-      return
-    }
-
-    thumbnailTask?.cancel()
-    nextThumbnailRequestID &+= 1
-    let request = ActiveThumbnailRequest(
-      id: nextThumbnailRequestID,
-      generation: generation,
-      snapshotID: snapshotID,
-      handles: requestedHandleSet
-    )
-    activeThumbnailRequest = request
-    thumbnailTask = Task { [weak self] in
-      guard let self else { return }
-      await self.loadThumbnails(
-        handles: requestedHandles,
-        generation: generation,
-        snapshotID: snapshotID
-      )
-      await self.finishThumbnailRequest(id: request.id)
-    }
+    await thumbnailPipeline.requestVisible(handles: handles)
   }
 
   func suspendChildWorkForHighDefinitionPreview() async {
     hdPreviewSuspensionCount += 1
     guard hdPreviewSuspensionCount == 1 else { return }
     isAcceptingChildWork = false
-    await cancelAndJoinChildWork()
+    await thumbnailPipeline.suspend()
   }
 
-  func resumeChildWorkAfterHighDefinitionPreview() {
+  func resumeChildWorkAfterHighDefinitionPreview() async {
     guard hdPreviewSuspensionCount > 0 else { return }
     hdPreviewSuspensionCount -= 1
     guard hdPreviewSuspensionCount == 0,
@@ -151,11 +115,7 @@ actor CameraGalleryCatalogRuntime {
       return
     }
     isAcceptingChildWork = true
-    startDetailsWork(
-      handles: repository.items.map(\.handle),
-      generation: generation,
-      snapshotID: snapshotID
-    )
+    await thumbnailPipeline.resume()
   }
 
   func isChildWorkSuspendedForHighDefinitionPreview() -> Bool {
@@ -165,25 +125,21 @@ actor CameraGalleryCatalogRuntime {
   func cancelAllChildren() async {
     isShuttingDown = true
     isAcceptingChildWork = false
-    await cancelAndJoinChildWork()
+    await thumbnailPipeline.cancelAndJoin()
     pendingTransaction = nil
     await activeTransactionTask?.value
     activeTransactionTask = nil
-    enrichedObjectInfos = [:]
+    await thumbnailPipeline.invalidateSession()
   }
 
   func cancelActiveThumbnailWork() async {
-    thumbnailTask?.cancel()
-    await thumbnailTask?.value
-    thumbnailTask = nil
-    activeThumbnailRequest = nil
+    await thumbnailPipeline.cancelAndJoin()
   }
 
   func markTransportLost(_ message: String) async {
     isAcceptingChildWork = false
-    await cancelAndJoinChildWork()
+    await thumbnailPipeline.invalidateSession()
     pendingTransaction = nil
-    enrichedObjectInfos = [:]
     currentPresentation = CameraGalleryPresentation(
       state: .transportLost(message),
       intent: currentIntent,
@@ -225,7 +181,7 @@ actor CameraGalleryCatalogRuntime {
     let generation = allocateGeneration()
     currentIntent = intent
     isAcceptingChildWork = false
-    await cancelAndJoinChildWork()
+    await thumbnailPipeline.cancelAndJoin()
 
     if let unsupportedReason = unsupportedReason(for: intent) {
       pendingTransaction = nil
@@ -281,19 +237,21 @@ actor CameraGalleryCatalogRuntime {
         return
       }
       repository.install(snapshot, generation: transaction.generation)
-      enrichedObjectInfos = resolution.authoritativeObjectInfos
       installedMembershipIntent = transaction.intent
       currentIntent = transaction.intent
       currentPresentation = makeReadyPresentation()
       isAcceptingChildWork = hdPreviewSuspensionCount == 0
       await publishCurrentPresentation()
-      if isAcceptingChildWork {
-        startDetailsWork(
-          handles: snapshot.items.map(\.handle),
+      await thumbnailPipeline.install(
+        catalogIdentity: CameraGalleryCatalogIdentity(
+          cameraID: cameraID,
+          sessionEpoch: queryEngine.sessionEpoch,
           generation: transaction.generation,
           snapshotID: snapshot.snapshotID
-        )
-      }
+        ),
+        membership: snapshot.items.map(\.handle),
+        reusableObjectInfos: resolution.authoritativeObjectInfos
+      )
     } catch is CancellationError {
       // A cancelled transaction may still finish mandatory transport cleanup.
       // It never publishes and the latest pending intent is started below.
@@ -345,156 +303,51 @@ actor CameraGalleryCatalogRuntime {
     start(pendingTransaction)
   }
 
-  private func startDetailsWork(
-    handles: [Int],
-    generation: CameraGalleryGenerationID,
-    snapshotID: CameraGallerySnapshotID
-  ) {
-    detailsTask?.cancel()
-    detailsTask = Task { [weak self] in
-      guard let self else { return }
-      for handle in handles {
-        guard !Task.isCancelled else { return }
-        do {
-          let result: CameraGalleryDetailsSourceResult
-          if let cachedInfo = await self.verifiedObjectInfo(handle: handle) {
-            result = Self.detailsResult(from: cachedInfo)
-          } else {
-            result = try await self.source.loadDetails(handle: handle)
-          }
-          await self.applyDetails(
-            result,
-            identity: CameraGalleryChildIdentity(
-              generation: generation,
-              snapshotID: snapshotID,
-              handle: handle
-            )
-          )
-        } catch is CancellationError {
-          return
-        } catch {
-          // Details are enrichment only. The catalog runtime never disconnects
-          // the camera because an enrichment request failed.
-          continue
-        }
-      }
+  private func applyPipelinePublication(
+    _ publication: CameraGalleryThumbnailPipeline.Publication
+  ) async {
+    switch publication {
+    case .thumbnail(let mediaIdentity, let thumbnail):
+      guard mediaIdentity.variant == .thumbnail,
+            isCurrentPublication(
+              mediaIdentity.catalog,
+              handle: mediaIdentity.handle
+            ) else { return }
+      let childIdentity = CameraGalleryChildIdentity(
+        generation: mediaIdentity.catalog.generation,
+        snapshotID: mediaIdentity.catalog.snapshotID,
+        handle: mediaIdentity.handle
+      )
+      guard repository.applyThumbnail(thumbnail, identity: childIdentity) else { return }
+      currentPresentation = makeReadyPresentation()
+      await publishIncrementalUpdate(currentPresentation, [mediaIdentity.handle])
+    case .details(let catalogIdentity, let result):
+      guard isCurrentPublication(catalogIdentity, handle: result.handle) else { return }
+      let childIdentity = CameraGalleryChildIdentity(
+        generation: catalogIdentity.generation,
+        snapshotID: catalogIdentity.snapshotID,
+        handle: result.handle
+      )
+      guard repository.applyDetails(result, identity: childIdentity) else { return }
+      currentPresentation = makeReadyPresentation()
+      await publishIncrementalUpdate(currentPresentation, [result.handle])
     }
   }
 
-  private func loadThumbnails(
-    handles: [Int],
-    generation: CameraGalleryGenerationID,
-    snapshotID: CameraGallerySnapshotID
-  ) async {
-    await source.beginVisibleThumbnailBatch(handles: handles)
-    for handle in handles {
-      guard !Task.isCancelled else { break }
-      do {
-        let thumbnail = try await source.loadThumbnail(handle: handle)
-        await applyThumbnail(
-          thumbnail,
-          identity: CameraGalleryChildIdentity(
-            generation: generation,
-            snapshotID: snapshotID,
-            handle: handle
-          )
-        )
-      } catch is CancellationError {
-        break
-      } catch {
-        continue
-      }
-    }
-    await source.finishVisibleThumbnailBatch(handles: handles)
-  }
-
-  private func applyThumbnail(
-    _ thumbnail: CameraVendorGalleryThumbnail,
-    identity: CameraGalleryChildIdentity
-  ) async {
-    guard isCurrentChild(identity) else { return }
-    guard repository.applyThumbnail(thumbnail, identity: identity) else { return }
-    currentPresentation = makeReadyPresentation()
-    await publishIncrementalUpdate(currentPresentation, [identity.handle])
-  }
-
-  private func applyDetails(
-    _ result: CameraGalleryDetailsSourceResult,
-    identity: CameraGalleryChildIdentity
-  ) async {
-    guard isCurrentChild(identity) else { return }
-    guard repository.applyDetails(result, identity: identity) else { return }
-    if let objectInfo = result.objectInfo,
-       objectInfo.handle == identity.handle,
-       result.handle == identity.handle,
-       isReusableEnrichment(objectInfo) {
-      enrichedObjectInfos[identity.handle] = objectInfo
-    }
-    currentPresentation = makeReadyPresentation()
-    await publishIncrementalUpdate(currentPresentation, [identity.handle])
-  }
-
-  private func verifiedObjectInfo(handle: Int) -> CameraVendorCameraObjectInfo? {
-    enrichedObjectInfos[handle]
-  }
-
-  private func isReusableEnrichment(
-    _ info: CameraVendorCameraObjectInfo
+  private func isCurrentPublication(
+    _ catalogIdentity: CameraGalleryCatalogIdentity,
+    handle: Int
   ) -> Bool {
-    info.hasResolvedFormat && info.captureDate.count >= 8
-  }
-
-  private static func detailsResult(
-    from info: CameraVendorCameraObjectInfo
-  ) -> CameraGalleryDetailsSourceResult {
-    let item = CameraVendorGalleryItem(
-      handle: info.handle,
-      filename: info.filename,
-      formatLabel: info.galleryFormatLabel,
-      captureDate: info.captureDate,
-      byteSizeText: info.compressedSize > 0
-        ? ByteCountFormatter.string(fromByteCount: Int64(info.compressedSize), countStyle: .file)
-        : "",
-      compressedSize: info.compressedSize == 0 ? nil : info.compressedSize,
-      orientation: info.orientation
-    )
-    let details = CameraGalleryRepositoryAdapter.detailsResult(from: info)
-    return CameraGalleryDetailsSourceResult(
-      handle: details.handle,
-      orientation: details.orientation,
-      refinedFormat: details.refinedFormat,
-      notes: details.notes,
-      resolvedItem: item,
-      objectInfo: info
-    )
-  }
-
-  private func cancelAndJoinChildWork() async {
-    let thumbnailTask = thumbnailTask
-    let detailsTask = detailsTask
-    self.thumbnailTask = nil
-    activeThumbnailRequest = nil
-    self.detailsTask = nil
-    thumbnailTask?.cancel()
-    detailsTask?.cancel()
-    await thumbnailTask?.value
-    await detailsTask?.value
-  }
-
-  private func finishThumbnailRequest(id: UInt64) {
-    guard activeThumbnailRequest?.id == id else { return }
-    activeThumbnailRequest = nil
-    thumbnailTask = nil
-  }
-
-  private func isCurrentChild(_ identity: CameraGalleryChildIdentity) -> Bool {
     guard isAcceptingChildWork,
           !isShuttingDown,
           case .ready(let generation, let snapshotID) = currentPresentation.state,
-          generation == identity.generation,
-          snapshotID == identity.snapshotID,
+          catalogIdentity.cameraID == cameraID,
+          catalogIdentity.sessionEpoch == queryEngine.sessionEpoch,
+          generation == catalogIdentity.generation,
+          snapshotID == catalogIdentity.snapshotID,
           repository.generation == generation,
           repository.snapshotID == snapshotID,
+          repository.items.contains(where: { $0.handle == handle }),
           let installedMembershipIntent,
           installedMembershipIntent.hasSameCameraMembership(as: currentIntent) else {
       return false

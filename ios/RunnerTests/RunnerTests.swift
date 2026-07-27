@@ -11820,6 +11820,145 @@ final class RunnerTests: XCTestCase {
     await runtime.cancelAllChildren()
   }
 
+  func testCatalogRuntimeDelegatesThumbnailAndDetailsTasksToPipeline() throws {
+    let root = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/CameraCore/Gallery")
+    let runtimeSource = try String(
+      contentsOf: root.appendingPathComponent("CameraGalleryCatalogRuntime.swift")
+    )
+
+    XCTAssertTrue(runtimeSource.contains("CameraGalleryThumbnailPipeline"))
+    XCTAssertFalse(runtimeSource.contains("private var thumbnailTask"))
+    XCTAssertFalse(runtimeSource.contains("private var detailsTask"))
+    XCTAssertFalse(runtimeSource.contains("private var activeThumbnailRequest"))
+    XCTAssertFalse(runtimeSource.contains("private var enrichedObjectInfos"))
+  }
+
+  @MainActor
+  func testThumbnailPipelineRejectsPublicationFromAnOldCatalogIdentity() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    source.suspendsThumbnailResultsUntilReleased = true
+    let oldIdentity = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let currentIdentity = CameraGalleryCatalogIdentity.fixture(
+      sessionEpoch: oldIdentity.sessionEpoch,
+      generation: 2
+    )
+    var publications: [CameraGalleryThumbnailPipeline.Publication] = []
+    let pipeline = CameraGalleryThumbnailPipeline(source: source) { publication in
+      publications.append(publication)
+    }
+
+    await pipeline.install(
+      catalogIdentity: oldIdentity,
+      membership: [7],
+      reusableObjectInfos: [:]
+    )
+    await pipeline.requestVisible(handles: [7])
+    await source.waitForThumbnailRequestCount(1)
+    let installCurrent = Task {
+      await pipeline.install(
+        catalogIdentity: currentIdentity,
+        membership: [7],
+        reusableObjectInfos: [:]
+      )
+    }
+    for _ in 0..<20 { await Task.yield() }
+    source.releaseThumbnailResults()
+    await installCurrent.value
+    await pipeline.waitUntilIdle()
+
+    XCTAssertEqual(publications.count, 0)
+    await pipeline.cancelAndJoin()
+  }
+
+  @MainActor
+  func testThumbnailPipelinePreservesSameSessionHandleCacheAcrossFilterChange() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    let firstIdentity = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let secondIdentity = CameraGalleryCatalogIdentity.fixture(
+      sessionEpoch: firstIdentity.sessionEpoch,
+      generation: 2
+    )
+    var publishedIdentities: [CameraGalleryMediaIdentity] = []
+    let pipeline = CameraGalleryThumbnailPipeline(source: source) { publication in
+      if case .thumbnail(let identity, _) = publication {
+        publishedIdentities.append(identity)
+      }
+    }
+
+    await pipeline.install(
+      catalogIdentity: firstIdentity,
+      membership: [7],
+      reusableObjectInfos: [:]
+    )
+    await pipeline.requestVisible(handles: [7])
+    await pipeline.waitUntilIdle()
+    await pipeline.install(
+      catalogIdentity: secondIdentity,
+      membership: [7],
+      reusableObjectInfos: [:]
+    )
+    await pipeline.requestVisible(handles: [7])
+    await pipeline.waitUntilIdle()
+
+    XCTAssertEqual(source.requestedThumbnailHandles, [7])
+    XCTAssertEqual(publishedIdentities.map(\.catalog), [firstIdentity, secondIdentity])
+    await pipeline.cancelAndJoin()
+  }
+
+  @MainActor
+  func testThumbnailPipelineClearsCacheWhenSessionEpochChanges() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    let firstIdentity = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let secondIdentity = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let pipeline = CameraGalleryThumbnailPipeline(source: source) { _ in }
+
+    await pipeline.install(
+      catalogIdentity: firstIdentity,
+      membership: [7],
+      reusableObjectInfos: [:]
+    )
+    await pipeline.requestVisible(handles: [7])
+    await pipeline.waitUntilIdle()
+    await pipeline.invalidateSession()
+    await pipeline.install(
+      catalogIdentity: secondIdentity,
+      membership: [7],
+      reusableObjectInfos: [:]
+    )
+    await pipeline.requestVisible(handles: [7])
+    await pipeline.waitUntilIdle()
+
+    XCTAssertNotEqual(firstIdentity.sessionEpoch, secondIdentity.sessionEpoch)
+    XCTAssertEqual(source.requestedThumbnailHandles, [7, 7])
+    await pipeline.cancelAndJoin()
+  }
+
+  @MainActor
+  func testThumbnailPipelineSuspendPreservesLoadedAndRetryState() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    source.thumbnailFailuresRemaining[8] = 1
+    let identity = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let pipeline = CameraGalleryThumbnailPipeline(source: source) { _ in }
+
+    await pipeline.install(
+      catalogIdentity: identity,
+      membership: [7, 8],
+      reusableObjectInfos: [:]
+    )
+    await pipeline.requestVisible(handles: [7, 8])
+    await pipeline.waitUntilIdle()
+    await pipeline.suspend()
+    await pipeline.resume()
+    await pipeline.requestVisible(handles: [7, 8])
+    await pipeline.waitUntilIdle()
+
+    XCTAssertEqual(source.requestedThumbnailHandles, [7, 8, 8])
+    await pipeline.cancelAndJoin()
+  }
+
   @MainActor
   func testGalleryCatalogTransportFailurePersistsAnErrorInsteadOfLookingEmpty() async throws {
     let source = CameraGalleryCatalogRuntimeSourceSpy()
@@ -18558,11 +18697,14 @@ private final class CameraGalleryCatalogRuntimeSourceSpy: CameraGalleryCatalogRu
   private var thumbnailBatchFinishStartWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
   private var detailsRequestContinuations: [CheckedContinuation<Void, Never>] = []
   private var thumbnailBatchFinishContinuations: [CheckedContinuation<Void, Never>] = []
+  private var thumbnailResultContinuations: [CheckedContinuation<Void, Never>] = []
   var catalogError: Error?
   var suspendsCatalogRequests = false
   var suspendsChildRequests = false
   var suspendsDetailsRequestsUntilReleased = false
   var suspendsThumbnailBatchFinishUntilReleased = false
+  var suspendsThumbnailResultsUntilReleased = false
+  var thumbnailFailuresRemaining: [Int: Int] = [:]
   var onDetailsRequestCancelled: (@Sendable () -> Void)?
   var initialSnapshotHandles: [Int] = [3, 2, 1]
   var initialSnapshotHasDateGroups = true
@@ -18623,6 +18765,15 @@ private final class CameraGalleryCatalogRuntimeSourceSpy: CameraGalleryCatalogRu
   func loadThumbnail(handle: Int) async throws -> CameraVendorGalleryThumbnail {
     requestedThumbnailHandles.append(handle)
     resumeThumbnailCountWaitersIfNeeded()
+    if suspendsThumbnailResultsUntilReleased {
+      await withCheckedContinuation { continuation in
+        thumbnailResultContinuations.append(continuation)
+      }
+    }
+    if let remaining = thumbnailFailuresRemaining[handle], remaining > 0 {
+      thumbnailFailuresRemaining[handle] = remaining - 1
+      throw NSError(domain: "CameraGalleryCatalogRuntimeSourceSpy.thumbnail", code: handle)
+    }
     if suspendsChildRequests {
       while !Task.isCancelled {
         await Task.yield()
@@ -18728,6 +18879,13 @@ private final class CameraGalleryCatalogRuntimeSourceSpy: CameraGalleryCatalogRu
   func releaseThumbnailBatchFinishes() {
     let continuations = thumbnailBatchFinishContinuations
     thumbnailBatchFinishContinuations = []
+    continuations.forEach { $0.resume() }
+  }
+
+  func releaseThumbnailResults() {
+    suspendsThumbnailResultsUntilReleased = false
+    let continuations = thumbnailResultContinuations
+    thumbnailResultContinuations = []
     continuations.forEach { $0.resume() }
   }
 
@@ -18857,6 +19015,21 @@ private extension CameraVendorCameraObjectInfo {
       thumbCompressedSize: 1,
       filename: "ignored.bin",
       captureDate: "20260727T120000"
+    )
+  }
+}
+
+private extension CameraGalleryCatalogIdentity {
+  static func fixture(
+    cameraID: String = "camera-a",
+    sessionEpoch: UUID = UUID(),
+    generation: UInt64
+  ) -> CameraGalleryCatalogIdentity {
+    CameraGalleryCatalogIdentity(
+      cameraID: cameraID,
+      sessionEpoch: sessionEpoch,
+      generation: CameraGalleryGenerationID(rawValue: generation),
+      snapshotID: CameraGallerySnapshotID()
     )
   }
 }

@@ -295,6 +295,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
         source: source,
         queryEngine: queryEngine,
         queryOwner: .gallery(sessionID),
+        cameraID: self.identity?.historyKey ?? sessionID.uuidString,
         publishPresentation: { [weak self] catalog in
           guard self?.catalogSessionID == sessionID else { return }
           self?.installCatalogPresentation(catalog)

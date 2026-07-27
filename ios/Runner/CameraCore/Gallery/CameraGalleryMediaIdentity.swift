@@ -22,4 +22,22 @@ struct CameraGalleryMediaCacheKey: Hashable, Sendable {
   let sessionEpoch: UUID
   let handle: Int
   let variant: CameraGalleryMediaVariant
+
+  init(
+    sessionEpoch: UUID,
+    handle: Int,
+    variant: CameraGalleryMediaVariant
+  ) {
+    self.sessionEpoch = sessionEpoch
+    self.handle = handle
+    self.variant = variant
+  }
+
+  init(mediaIdentity: CameraGalleryMediaIdentity) {
+    self.init(
+      sessionEpoch: mediaIdentity.catalog.sessionEpoch,
+      handle: mediaIdentity.handle,
+      variant: mediaIdentity.variant
+    )
+  }
 }
