@@ -1,0 +1,22 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "271cf688b907f997557219646122ac1c01c61dfc",
+  "prompts": {
+    "5a3893da983ba365": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ecddea44-f2dc-42d7-9666-856f59f602ee",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 185,
+      "total_deletions": 126,
+      "accepted_lines": 168,
+      "overriden_lines": 3,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/f9ddddc78f897adca3722e510a77fa57beefe28dfcb31428906fb4ac25e4da4a"
+    }
+  }
+}
