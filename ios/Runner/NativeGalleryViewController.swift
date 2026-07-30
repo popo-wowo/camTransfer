@@ -102,15 +102,25 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
   private let summary: CameraVendorConnectionSummary
   private let rememberedPeripheralID: UUID?
   private let runtime: CameraSessionRuntime
-  private var catalogPresentation = CameraGalleryPresentation.unavailable
+  private var galleryRenderState = NativeGalleryRenderState(
+    presentation: .unavailable
+  )
+  private var catalogPresentation: CameraGalleryPresentation {
+    galleryRenderState.presentation
+  }
+  private var gallerySections: [NativeGalleryDaySection] {
+    galleryRenderState.sections
+  }
   private var selectedHandles: Set<Int> = []
-  private var gallerySections: [NativeGalleryDaySection] = []
   private var filterState = NativeGalleryFilterState()
   private var currentPreferCompressedDownloads: Bool
   private var visibleThumbnailRefreshWorkItem: DispatchWorkItem?
+  private var lastSubmittedThumbnailViewportIdentity: NativeGalleryThumbnailViewportIdentity?
   private var thumbnailRehydrateTasks: [Int: Task<Void, Never>] = [:]
-  private let thumbnailImageCache = NSCache<NSNumber, UIImage>()
+  private let thumbnailImageCache = NSCache<NSString, UIImage>()
+  private var thumbnailCacheKeysByHandle: [Int: NSString] = [:]
   private var runtimePresentationObserverID: UUID?
+  private var incrementalCatalogObserverID: UUID?
   private var galleryPreviewObserverID: UUID?
   private var previousIdleTimerDisabled: Bool?
   private var wifiPromptOverlay: NativeWifiPromptOverlay?
@@ -135,8 +145,8 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
 
   private var browseMode: NativeGalleryBrowseMode = .thumbnail
   private var hdPresentationState: NativeGalleryHDPreviewState?
-  private var hdRenderedDisplayHandles: [Int] = []
-  private var hdActiveDate: Date?
+  private var hdRenderedSectionDisplayHandles: [[Int]] = []
+  private var hdDecodeFailureLoggedHandles: Set<Int> = []
   private var hdTransitionTask: Task<Void, Never>?
   private let browseModeControl = NativeGalleryModeControl()
 
@@ -238,31 +248,8 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     return label
   }()
 
-  private let hdDateButton: UIButton = {
-    let button = UIButton(type: .system)
-    button.translatesAutoresizingMaskIntoConstraints = false
-    var configuration = UIButton.Configuration.filled()
-    configuration.title = "选择日期"
-    configuration.image = UIImage(systemName: "calendar")
-    configuration.imagePadding = 5
-    configuration.cornerStyle = .capsule
-    configuration.baseBackgroundColor = UIColor.black.withAlphaComponent(0.72)
-    configuration.baseForegroundColor = .white
-    configuration.contentInsets = NSDirectionalEdgeInsets(top: 5, leading: 10, bottom: 5, trailing: 10)
-    button.configuration = configuration
-    button.isHidden = true
-    button.accessibilityLabel = "选择高清预览日期"
-    return button
-  }()
-
   private lazy var hdTopChipRow: UIStackView = {
-    let arrangedSubviews: [UIView]
-    if NativeGalleryHDChromePolicy.showsLoadCountBeforeDate {
-      arrangedSubviews = [hdStatusLabel, hdDateButton]
-    } else {
-      arrangedSubviews = [hdDateButton, hdStatusLabel]
-    }
-    let stack = UIStackView(arrangedSubviews: arrangedSubviews)
+    let stack = UIStackView(arrangedSubviews: [hdStatusLabel])
     stack.translatesAutoresizingMaskIntoConstraints = false
     stack.axis = .horizontal
     stack.alignment = .center
@@ -539,6 +526,65 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     return collectionView
   }()
 
+  private let filteredEmptyTitleLabel: UILabel = {
+    let label = UILabel()
+    label.translatesAutoresizingMaskIntoConstraints = false
+    label.text = NativeGalleryEmptyStatePolicy.title
+    label.font = .systemFont(ofSize: 17, weight: .bold)
+    label.textColor = NativeLuxuryTheme.ink
+    label.textAlignment = .center
+    return label
+  }()
+
+  private let filteredEmptyMessageLabel: UILabel = {
+    let label = UILabel()
+    label.translatesAutoresizingMaskIntoConstraints = false
+    label.text = NativeGalleryEmptyStatePolicy.message
+    label.font = .systemFont(ofSize: 13, weight: .regular)
+    label.textColor = NativeLuxuryTheme.secondaryInk
+    label.textAlignment = .center
+    label.numberOfLines = 0
+    return label
+  }()
+
+  private let showAllPhotosButton: UIButton = {
+    let button = UIButton(type: .system)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    var configuration = UIButton.Configuration.filled()
+    configuration.title = NativeGalleryEmptyStatePolicy.actionTitle
+    configuration.cornerStyle = .capsule
+    configuration.baseBackgroundColor = NativeLuxuryTheme.ink
+    configuration.baseForegroundColor = NativeLuxuryTheme.cardBackground
+    configuration.contentInsets = NSDirectionalEdgeInsets(top: 9, leading: 18, bottom: 9, trailing: 18)
+    button.configuration = configuration
+    return button
+  }()
+
+  private lazy var filteredEmptyContainer: UIStackView = {
+    let icon = UIImageView(
+      image: UIImage(
+        systemName: "line.3.horizontal.decrease.circle",
+        withConfiguration: UIImage.SymbolConfiguration(pointSize: 34, weight: .light)
+      )
+    )
+    icon.translatesAutoresizingMaskIntoConstraints = false
+    icon.tintColor = NativeLuxuryTheme.secondaryInk.withAlphaComponent(0.55)
+    icon.contentMode = .scaleAspectFit
+
+    let stack = UIStackView(arrangedSubviews: [
+      icon,
+      filteredEmptyTitleLabel,
+      filteredEmptyMessageLabel,
+      showAllPhotosButton,
+    ])
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    stack.axis = .vertical
+    stack.alignment = .center
+    stack.spacing = 10
+    stack.isHidden = true
+    return stack
+  }()
+
   init(
     summary: CameraVendorConnectionSummary,
     rememberedPeripheralID: UUID? = nil,
@@ -586,15 +632,34 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       self.applyCatalogPresentation(presentation.catalog)
       NotificationCenter.default.post(name: .nativeDownloadStateDidChange, object: nil)
     }
-    runtime.observeIncrementalCatalogUpdates { [weak self] catalog, handles in
+    incrementalCatalogObserverID = runtime.observeIncrementalCatalogUpdates { [weak self] catalog, delta in
       guard let self else { return }
-      self.catalogPresentation = catalog
+      self.galleryRenderState = self.galleryRenderState.applyingIncremental(
+        presentation: catalog,
+        delta: delta
+      )
+      let handles = delta.changedHandles
+      let retryableFailedHandles = handles.filter { handle in
+        guard let item = catalog.items.first(where: { $0.handle == handle }),
+              let entry = catalog.entries.first(where: { $0.summary.handle == handle }) else {
+          return false
+        }
+        return item.thumbnailData == nil && entry.thumbnail.state == .failed
+      }
+      self.invalidateThumbnailDecodes(forHandles: delta.orientationChangedHandles)
+      if delta.requiresStructuralRefresh {
+        self.selectedHandles.formIntersection(catalog.items.map(\.handle))
+        self.collapsedSections.removeAll()
+        self.refreshStatusText()
+        self.collectionView.reloadData()
+        self.refreshGalleryEmptyState()
+      }
       // Decode new thumbnail data to UIImage cache for changed handles
       var rehydrateRequests: [(handle: Int, data: Data)] = []
       for handle in handles {
         guard let item = catalog.items.first(where: { $0.handle == handle }),
               let data = item.thumbnailData,
-              self.thumbnailImageCache.object(forKey: NSNumber(value: handle)) == nil else {
+              !self.hasCurrentDecodedThumbnailImage(for: handle) else {
           continue
         }
         rehydrateRequests.append((handle: handle, data: data))
@@ -604,13 +669,19 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       } else {
         self.refreshVisibleCells(forHandles: handles)
       }
+      if !retryableFailedHandles.isEmpty {
+        self.scheduleVisibleThumbnailRefresh(after: 0.25)
+      }
     }
     galleryPreviewObserverID = runtime.observeGalleryPreview { [weak self] publication in
+      guard let self else { return }
       switch publication {
-      case .state(_, let state):
-        self?.applyHDPreviewState(state)
-      case .preview(_, let state):
-        self?.applyHDPreviewState(state)
+      case .state(let catalogIdentity, let state):
+        guard catalogIdentity == self.runtime.galleryCatalogIdentity else { return }
+        self.applyHDPreviewState(state)
+      case .preview(let mediaIdentity, let state):
+        guard mediaIdentity.catalog == self.runtime.galleryCatalogIdentity else { return }
+        self.applyHDPreviewState(state)
       }
     }
     NotificationCenter.default.addObserver(
@@ -630,6 +701,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
   deinit {
     NotificationCenter.default.removeObserver(self)
     let observerID = runtimePresentationObserverID
+    let incrementalObserverID = incrementalCatalogObserverID
     let previewObserverID = galleryPreviewObserverID
     let runtime = runtime
     visibleThumbnailRefreshWorkItem?.cancel()
@@ -640,6 +712,9 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       thumbnailRehydrateTasks.values.forEach { $0.cancel() }
       if let observerID {
         runtime.removeObserver(observerID)
+      }
+      if let incrementalObserverID {
+        runtime.removeObserver(incrementalObserverID)
       }
       if let previewObserverID {
         runtime.removeObserver(previewObserverID)
@@ -653,19 +728,20 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     NativeLuxuryTheme.applyNavigationAppearance(to: navigationController)
     applyTopChromeNavigationState(animated: animated)
     protectGalleryExitNavigation()
-    if browseMode == .highDefinition, !runtime.isDownloading {
-      runtime.resumeGalleryHDPreviewAfterDownload()
-    }
   }
 
   override func viewDidAppear(_ animated: Bool) {
     super.viewDidAppear(animated)
     updateNavigationLock()
     updateIdleTimerProtection()
+    scheduleVisibleThumbnailRefresh(after: 0)
   }
 
   override func viewWillDisappear(_ animated: Bool) {
     super.viewWillDisappear(animated)
+    visibleThumbnailRefreshWorkItem?.cancel()
+    visibleThumbnailRefreshWorkItem = nil
+    lastSubmittedThumbnailViewportIdentity = nil
     restoreGalleryExitNavigation()
     if isMovingFromParent || isBeingDismissed || navigationController?.isBeingDismissed == true {
       restoreTopChromeNavigationState(animated: animated)
@@ -722,7 +798,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       .init(id: "oldest", title: NativeGalleryChromeCopy.sortOptionTitles[1]),
       .init(id: "notDownloaded", title: NativeGalleryChromeCopy.sortOptionTitles[2]),
     ], selectedID: "newest")
-    dateChips.onSelected = { [weak self] _ in self?.chipFilterChanged() }
+    dateChips.onSelected = { [weak self] selectedID in self?.dateChipSelected(selectedID) }
     sortChips.onSelected = { [weak self] _ in self?.chipFilterChanged() }
     formatChips.onSelectionChanged = { [weak self] _ in self?.chipFilterChanged() }
     downloadScopeChips.onSelected = { [weak self] _ in self?.chipFilterChanged() }
@@ -736,6 +812,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     view.addSubview(filterContentStack)
     view.addSubview(collectionView)
     view.addSubview(hdCollectionView)
+    view.addSubview(filteredEmptyContainer)
     view.addSubview(hdTopChipRow)
     view.addSubview(bottomDownloadBar)
     view.addSubview(toastLabel)
@@ -746,7 +823,6 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
 
     galleryBackButton.addTarget(self, action: #selector(exitGalleryTapped), for: .touchUpInside)
     galleryFilterButton.addTarget(self, action: #selector(toggleFilterPanel), for: .touchUpInside)
-    hdDateButton.addTarget(self, action: #selector(selectHDDateTapped), for: .touchUpInside)
     configureGalleryToolsMenu()
     reservedReceiveProbeButton.addTarget(self, action: #selector(reservedReceiveProbeTapped), for: .touchUpInside)
     bottomSelectAllButton.addTarget(self, action: #selector(selectAllTapped), for: .touchUpInside)
@@ -756,6 +832,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       preferCompressedDownloads: currentPreferCompressedDownloads
     )
     bottomDownloadButton.addTarget(self, action: #selector(downloadSelectedTapped), for: .touchUpInside)
+    showAllPhotosButton.addTarget(self, action: #selector(showAllPhotosTapped), for: .touchUpInside)
 
     collectionView.dataSource = self
     collectionView.delegate = self
@@ -835,6 +912,11 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
       collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
 
+      filteredEmptyContainer.centerXAnchor.constraint(equalTo: collectionView.centerXAnchor),
+      filteredEmptyContainer.centerYAnchor.constraint(equalTo: collectionView.centerYAnchor, constant: -36),
+      filteredEmptyContainer.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 36),
+      filteredEmptyContainer.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -36),
+
       hdCollectionView.topAnchor.constraint(equalTo: collectionView.topAnchor),
       hdCollectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
       hdCollectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -842,7 +924,6 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
 
       hdTopChipRow.topAnchor.constraint(equalTo: hdCollectionView.topAnchor, constant: 12),
       hdTopChipRow.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
-      hdDateButton.heightAnchor.constraint(equalToConstant: 30),
       hdStatusLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 56),
       hdStatusLabel.heightAnchor.constraint(equalToConstant: 30),
 
@@ -1001,11 +1082,8 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       leaveGallery()
       return
     }
-    Task { @MainActor [weak self] in
-      guard let self else { return }
-      await self.runtime.exitGalleryAndDisconnect(reason: "user-confirmed-gallery-exit")
-      self.leaveGallery()
-    }
+    runtime.exitGalleryAndDisconnect(reason: "user-confirmed-gallery-exit")
+    leaveGallery()
   }
 
   private func leaveGallery() {
@@ -1221,19 +1299,26 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     )
   }
 
-  @objc private func chipFilterChanged() {
+  private func dateChipSelected(_ selectedID: String) {
     guard NativeGalleryDownloadModePresentationPolicy.canInteractWithGallery(isDownloading: runtime.isDownloading) else {
       return
     }
-    switch dateChips.selectedID {
+    switch selectedID {
     case "all": filterState.date = .all
     case "today": filterState.date = .today
     case "pickDate":
       presentDatePicker()
       return
-    default: filterState.date = .all
+    default:
+      return
     }
+    chipFilterChanged()
+  }
 
+  @objc private func chipFilterChanged() {
+    guard NativeGalleryDownloadModePresentationPolicy.canInteractWithGallery(isDownloading: runtime.isDownloading) else {
+      return
+    }
     let selectedFormats = Set(formatChips.selectedIDs.compactMap(CameraMediaFormat.init(rawValue:)))
     filterState.formats = CameraMediaFormatSelection.normalized(selectedFormats)
     filterState.downloadScope = downloadScopeChips.selectedID == "notDownloaded" ? .notDownloaded : .all
@@ -1275,19 +1360,26 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       "[OBS] GALLERY_CATALOG_INTENT_SUBMITTED " +
       "date=\(dateChips.selectedID ?? "all") formats=\(formatChips.selectedIDs.sorted())"
     )
-    let sortIntent = filterState.sortIntent
     runtime.submitGalleryFilter(
       rule: filterState.rule,
-      sort: sortIntent
+      sort: filterState.sortIntent
     )
+  }
+
+  @objc private func showAllPhotosTapped() {
+    guard NativeGalleryDownloadModePresentationPolicy.canInteractWithGallery(
+      isDownloading: runtime.isDownloading
+    ) else { return }
+    filterState = NativeGalleryFilterState(sort: filterState.sort)
+    applyFilterStateToControls()
+    filteredEmptyContainer.isHidden = true
+    submitGalleryIntent()
+    refreshFilterSummary()
+    showToast("已显示全部照片")
   }
 
   @objc private func toggleFilterPanel() {
     guard NativeGalleryDownloadModePresentationPolicy.canInteractWithGallery(isDownloading: runtime.isDownloading) else {
-      return
-    }
-    guard NativeGalleryAndroidParityChromePolicy.canExpandFilters(mode: browseMode) else {
-      showToast("高清模式使用当前日期，筛选面板已锁定")
       return
     }
     isFilterPanelExpanded.toggle()
@@ -1328,7 +1420,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     }
 
     browseMode = mode
-    galleryFilterButton.isEnabled = NativeGalleryAndroidParityChromePolicy.canExpandFilters(mode: mode)
+    galleryFilterButton.isEnabled = true
     switch mode {
     case .thumbnail:
       hdCollectionView.isHidden = true
@@ -1337,13 +1429,12 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       enqueueHDTransition { [weak self] in
         await self?.runtime.switchGalleryPreviewMode(.thumbnail)
         await MainActor.run { [weak self] in
-          self?.scheduleVisibleThumbnailRefresh(after: 0.05)
+          self?.lastSubmittedThumbnailViewportIdentity = nil
+          self?.scheduleVisibleThumbnailRefresh(after: 0)
         }
       }
       view.backgroundColor = NativeLuxuryTheme.background
     case .highDefinition:
-      isFilterPanelExpanded = false
-      updateFilterPanelLayout(animated: false)
       visibleThumbnailRefreshWorkItem?.cancel()
       visibleThumbnailRefreshWorkItem = nil
 
@@ -1352,21 +1443,21 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       view.backgroundColor = NativeLuxuryTheme.background
       startHDPreviewLoading()
     }
+    refreshGalleryEmptyState()
     refreshBottomDownloadBar()
   }
 
   private func startHDPreviewLoading() {
     guard let catalogIdentity = runtime.galleryCatalogIdentity else { return }
-    let activeDate = preferredHDActiveDate()
     let snapshot = NativeGalleryHDPreviewSessionPolicy.snapshot(
-      items: catalogPresentation.items,
-      activeDate: activeDate
+      sections: gallerySections
     )
-    hdRenderedDisplayHandles = []
+    hdRenderedSectionDisplayHandles = []
     applyHDPreviewState(NativeGalleryHDPreviewState(
       snapshot: snapshot,
       loadedHandles: runtime.galleryHDPreviewLoadedHandles(for: catalogIdentity)
     ))
+    hdCollectionView.layoutIfNeeded()
     let visibleHandles = hdVisibleHandles()
     enqueueHDTransition { [weak self] in
       guard let self else { return }
@@ -1374,24 +1465,6 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
         .highDefinition,
         snapshot: snapshot,
         visibleHandles: visibleHandles
-      )
-    }
-  }
-
-  private func preferredHDActiveDate() -> Date {
-    if let hdActiveDate {
-      return NativeGalleryHDPreviewSessionPolicy.preferredActiveDate(
-        items: catalogPresentation.items,
-        currentDate: hdActiveDate
-      )
-    }
-    switch filterState.date {
-    case .specificDay(let date):
-      return date
-    case .all, .today:
-      return NativeGalleryHDPreviewSessionPolicy.preferredActiveDate(
-        items: catalogPresentation.items,
-        currentDate: Date()
       )
     }
   }
@@ -1407,20 +1480,22 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
   private func hdVisibleHandles() -> [Int] {
     guard let snapshot = hdPresentationState?.snapshot else { return [] }
     return hdCollectionView.indexPathsForVisibleItems
-      .sorted { $0.item < $1.item }
-      .compactMap { snapshot.items[hdSafe: $0.item]?.displayItem.handle }
+      .sorted {
+        $0.section == $1.section ? $0.item < $1.item : $0.section < $1.section
+      }
+      .compactMap { snapshot.item(at: $0)?.displayItem.handle }
   }
 
   private func applyHDPreviewState(_ state: NativeGalleryHDPreviewState?) {
     guard browseMode == .highDefinition else { return }
     hdPresentationState = state
-    let handles = state?.snapshot.displayHandles ?? []
-    if handles != hdRenderedDisplayHandles {
-      hdRenderedDisplayHandles = handles
+    let sectionHandles = state?.snapshot.sectionDisplayHandles ?? []
+    if sectionHandles != hdRenderedSectionDisplayHandles {
+      hdRenderedSectionDisplayHandles = sectionHandles
       hdCollectionView.reloadData()
     } else {
       for indexPath in hdCollectionView.indexPathsForVisibleItems {
-        guard let item = state?.snapshot.items[hdSafe: indexPath.item],
+        guard let item = state?.snapshot.item(at: indexPath),
               let cell = hdCollectionView.cellForItem(at: indexPath) as? NativeGalleryHDPreviewCell else {
           continue
         }
@@ -1433,13 +1508,13 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
 
   private func refreshHDCell(for handle: Int) {
     guard browseMode == .highDefinition else { return }
-    guard let items = hdPresentationState?.snapshot.items,
-          let row = items.firstIndex(where: { $0.displayItem.handle == handle }) else {
+    guard let snapshot = hdPresentationState?.snapshot,
+          let indexPath = snapshot.indexPath(forDisplayHandle: handle),
+          let item = snapshot.item(at: indexPath) else {
       return
     }
-    let indexPath = IndexPath(item: row, section: 0)
     if let cell = hdCollectionView.cellForItem(at: indexPath) as? NativeGalleryHDPreviewCell {
-      configureHDCell(cell, previewItem: items[row])
+      configureHDCell(cell, previewItem: item)
     }
   }
 
@@ -1448,43 +1523,9 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       hdTopChipRow.isHidden = true
       return
     }
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "zh_CN")
-    formatter.dateFormat = NativeGalleryHDChromePolicy.dateFormat
-    hdDateButton.configuration?.title = formatter.string(from: state.snapshot.activeDate)
-    hdDateButton.isHidden = false
     hdStatusLabel.text = "  \(state.loadedCount)/\(state.totalCount)  "
     hdStatusLabel.isHidden = false
     hdTopChipRow.isHidden = false
-  }
-
-  @objc private func selectHDDateTapped() {
-    guard browseMode == .highDefinition,
-          NativeGalleryDownloadModePresentationPolicy.canInteractWithGallery(isDownloading: runtime.isDownloading) else {
-      return
-    }
-    let dates = NativeGalleryHDPreviewSessionPolicy.availableDates(items: catalogPresentation.items)
-    guard !dates.isEmpty else {
-      showToast("没有可选择的拍摄日期")
-      return
-    }
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "zh_CN")
-    formatter.dateFormat = NativeGalleryHDChromePolicy.dateFormat
-    let alert = UIAlertController(title: "选择高清预览日期", message: nil, preferredStyle: .actionSheet)
-    dates.forEach { [weak self] date in
-      alert.addAction(UIAlertAction(title: formatter.string(from: date), style: .default) { _ in
-        guard let self else { return }
-        self.hdActiveDate = date
-        self.startHDPreviewLoading()
-      })
-    }
-    alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-    if let popover = alert.popoverPresentationController {
-      popover.sourceView = hdDateButton
-      popover.sourceRect = hdDateButton.bounds
-    }
-    present(alert, animated: true)
   }
 
   private func hdLoadState(for item: CameraVendorGalleryItem) -> NativeGalleryHDPreviewCell.LoadState {
@@ -1492,9 +1533,17 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     if let preview = runtime.cachedGalleryHDPreview(for: handle) {
       if let image = CameraVendorGalleryThumbnailRenderer.decoded(
         from: preview.data,
-        objectOrientation: preview.objectOrientation
+        objectOrientation: preview.objectOrientation,
+        diagnosticHandle: handle
       ) {
+        hdDecodeFailureLoggedHandles.remove(handle)
         return .loaded(image)
+      }
+      if hdDecodeFailureLoggedHandles.insert(handle).inserted {
+        CameraVendorFileLogger.log(
+          "[OBS] HD_PREVIEW_DECODE_FAILED handle=0x\(String(format: "%08X", handle)) " +
+          "bytes=\(preview.data.count) orientation=\(preview.objectOrientation.map(String.init) ?? "unknown")"
+        )
       }
       return .failed
     }
@@ -1514,6 +1563,13 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     let item = previewItem.displayItem
     let handle = item.handle
     let state = hdLoadState(for: item)
+    let allowsDisplayQueueWithoutImage = NativeGalleryHDDownloadRequestPolicy.isRaw(item)
+    let hasLoadedPreview: Bool
+    if case .loaded = state {
+      hasLoadedPreview = true
+    } else {
+      hasLoadedPreview = false
+    }
     let isQueued = selectedHandles.contains(handle)
     let hasRaw = previewItem.rawSidecar != nil
     let isRawQueued = previewItem.rawSidecar.map { selectedHandles.contains($0.handle) } ?? false
@@ -1533,6 +1589,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     cell.configure(
       loadState: state,
       hasRawSidecar: hasRaw,
+      allowsDisplayQueueWithoutImage: allowsDisplayQueueWithoutImage,
       displayQueueState: displayQueueState,
       rawQueueState: rawQueueState
     )
@@ -1550,7 +1607,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
         self.runtime.retryGalleryHDPreview(handle: handle)
         return
       }
-      guard case .loaded = state,
+      guard (hasLoadedPreview || allowsDisplayQueueWithoutImage),
             NativeGalleryDownloadModePresentationPolicy.canInteractWithGallery(isDownloading: self.runtime.isDownloading),
             NativeGalleryDownloadSelectionPolicy.canSelect(
               downloadState: self.runtime.downloadState(for: handle)
@@ -1842,8 +1899,16 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
   }
 
   private func applyCatalogPresentation(_ presentation: CameraGalleryPresentation) {
+    let previousPresentation = catalogPresentation
     let previousItems = catalogPresentation.items
-    catalogPresentation = presentation
+    guard let nextRenderState = galleryRenderState.replacingPresentation(presentation) else {
+      refreshStatusText()
+      refreshGalleryEmptyState()
+      return
+    }
+    let isCatalogReplacement = previousPresentation.generation != presentation.generation ||
+      previousPresentation.intent != presentation.intent
+    galleryRenderState = nextRenderState
     let sort: NativeGallerySortMode
     switch presentation.intent.sort {
     case .newest: sort = .newest
@@ -1863,12 +1928,34 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       resolvedItems: presentation.items
     )
     invalidateThumbnailDecodes(forHandles: handlesNeedingReDecode)
-    refreshGallerySections()
+    collapsedSections.removeAll()
     refreshStatusText()
     collectionView.reloadData()
+    if isCatalogReplacement {
+      visibleThumbnailRefreshWorkItem?.cancel()
+      visibleThumbnailRefreshWorkItem = nil
+      lastSubmittedThumbnailViewportIdentity = nil
+      collectionView.layoutIfNeeded()
+      collectionView.setContentOffset(
+        CGPoint(x: 0, y: -collectionView.adjustedContentInset.top),
+        animated: false
+      )
+      collectionView.layoutIfNeeded()
+      hdCollectionView.layoutIfNeeded()
+      hdCollectionView.setContentOffset(
+        CGPoint(x: 0, y: -hdCollectionView.adjustedContentInset.top),
+        animated: false
+      )
+      hdCollectionView.layoutIfNeeded()
+    }
+    refreshGalleryEmptyState()
 
     if case .ready = presentation.state {
-      loadVisibleThumbnails()
+      if browseMode == .highDefinition {
+        startHDPreviewLoading()
+      } else {
+        scheduleVisibleThumbnailRefresh(after: 0)
+      }
       if !presentation.items.isEmpty {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
           self?.showPinchHintIfNeeded()
@@ -1908,9 +1995,29 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
   private func invalidateThumbnailDecodes(forHandles handles: Set<Int>) {
     for handle in handles {
       thumbnailRehydrateTasks.removeValue(forKey: handle)?.cancel()
-      thumbnailImageCache.removeObject(forKey: NSNumber(value: handle))
-      CameraVendorFileLogger.log("[ORIENTATION_THUMBNAIL] invalidated handle=\(handle) reason=late-object-info")
+      CameraVendorFileLogger.log("[ORIENTATION_THUMBNAIL] stale handle=\(handle) reason=late-object-info")
     }
+  }
+
+  private func decodedThumbnailCacheKey(for handle: Int) -> NativeGalleryDecodedThumbnailCacheKey? {
+    guard let sessionEpoch = runtime.galleryCatalogIdentity?.sessionEpoch else { return nil }
+    let orientation = catalogPresentation.items.first(where: { $0.handle == handle })?.orientation
+    return NativeGalleryDecodedThumbnailCacheKey(
+      sessionEpoch: sessionEpoch,
+      handle: handle,
+      orientation: orientation
+    )
+  }
+
+  private func cachedThumbnailImage(for handle: Int) -> UIImage? {
+    guard let storedKey = thumbnailCacheKeysByHandle[handle] else { return nil }
+    return thumbnailImageCache.object(forKey: storedKey)
+  }
+
+  private func hasCurrentDecodedThumbnailImage(for handle: Int) -> Bool {
+    guard let expectedKey = decodedThumbnailCacheKey(for: handle)?.storageKey,
+          thumbnailCacheKeysByHandle[handle] == expectedKey else { return false }
+    return thumbnailImageCache.object(forKey: expectedKey) != nil
   }
 
   private func openDownloadCenter(for handles: [Int]) {
@@ -1922,9 +2029,9 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     if browseMode == .highDefinition, let snapshot = hdPresentationState?.snapshot {
       let selected = Set(handles)
       candidateRequests = NativeGalleryHDDownloadRequestPolicy.requests(
-        displayHandles: snapshot.items
-          .map(\.displayItem.handle)
-          .filter { selected.contains($0) },
+        displayItems: snapshot.items
+          .map(\.displayItem)
+          .filter { selected.contains($0.handle) },
         rawHandles: snapshot.items
           .compactMap(\.rawSidecar?.handle)
           .filter { selected.contains($0) },
@@ -1957,30 +2064,25 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     }
     let itemsToDownload = catalogPresentation.items.filter { handlesToDownload.contains($0.handle) }
     let previousSelection = selectedHandles
-    selectedHandles = NativeGalleryPostDownloadSelectionPolicy.selectionAfterStartingDownload(
-      selectedHandles: selectedHandles
-    )
     let startDownload = { [weak self] in
       guard let self else { return }
-      self.runtime.submitDownload(CameraDownloadSubmission(
+      guard self.runtime.submitDownload(CameraDownloadSubmission(
         id: UUID(),
         requests: requestsToDownload,
         origin: .gallery,
         completionPolicy: .returnToGallery
-      ))
+      )) else {
+        self.showToast("下载未启动，请重新进入相册后重试")
+        return
+      }
+      self.selectedHandles = NativeGalleryPostDownloadSelectionPolicy.selectionAfterStartingDownload(
+        selectedHandles: self.selectedHandles
+      )
       self.finishOpeningDownloadCenter(
         handlesToDownload: handlesToDownload,
         itemsToDownload: itemsToDownload,
         previousSelection: previousSelection
       )
-    }
-    if browseMode == .highDefinition {
-      enqueueHDTransition { [weak self] in
-        guard let self else { return }
-        await self.runtime.pauseGalleryHDPreviewForDownload()
-        startDownload()
-      }
-      return
     }
     startDownload()
   }
@@ -2133,6 +2235,15 @@ extension NativeGalleryViewController {
     refreshBottomDownloadBar()
   }
 
+  private func refreshGalleryEmptyState() {
+    filteredEmptyContainer.isHidden = !NativeGalleryEmptyStatePolicy.shouldShow(
+      itemCount: catalogPresentation.items.count,
+      isLoading: catalogPresentation.isLoading,
+      errorMessage: catalogPresentation.errorMessage,
+      filterState: filterState
+    )
+  }
+
   private func refreshFilterSummary() {
     let dateText: String
     switch filterState.date {
@@ -2218,11 +2329,6 @@ extension NativeGalleryViewController {
     catalogPresentation.entries.first { $0.summary.handle == handle }
   }
 
-  private func refreshGallerySections() {
-    gallerySections = NativeGallerySectionPolicy.sections(from: catalogPresentation.items)
-    collapsedSections.removeAll()
-  }
-
   private func loadVisibleThumbnails() {
     collectionView.layoutIfNeeded()
     let orderedHandles = catalogPresentation.items.map(\.handle)
@@ -2234,14 +2340,28 @@ extension NativeGalleryViewController {
       columnCount: currentColumnCount
     )
     let itemsByHandle = Dictionary(uniqueKeysWithValues: catalogPresentation.items.map { ($0.handle, $0) })
+    let entriesByHandle = Dictionary(uniqueKeysWithValues: catalogPresentation.entries.map { ($0.summary.handle, $0) })
+    let retryableFailedHandles = requestedHandles.filter { handle in
+      itemsByHandle[handle]?.thumbnailData == nil &&
+        entriesByHandle[handle]?.thumbnail.state == .failed
+    }
+    let nextViewportIdentity = runtime.galleryCatalogIdentity.map {
+      NativeGalleryThumbnailViewportIdentity(
+        catalogIdentity: $0,
+        orderedHandles: requestedHandles,
+        retryableFailedHandles: retryableFailedHandles
+      )
+    }
     var handles: [Int] = []
     var rehydrateRequests: [(handle: Int, data: Data)] = []
     for handle in requestedHandles {
       guard let item = itemsByHandle[handle] else { continue }
       switch NativeGalleryVisibleThumbnailPolicy.action(
         thumbnailData: item.thumbnailData,
-        cachedImage: thumbnailImageCache.object(forKey: NSNumber(value: handle)),
-        hasFailedThumbnailRequest: false
+        cachedImage: hasCurrentDecodedThumbnailImage(for: handle)
+          ? cachedThumbnailImage(for: handle)
+          : nil,
+        hasFailedThumbnailRequest: entriesByHandle[handle]?.thumbnail.state == .failed
       ) {
       case .none:
         continue
@@ -2262,7 +2382,22 @@ extension NativeGalleryViewController {
       appendDiagnostic("Runtime 当前不接受缩略图命令，跳过本轮缩略图加载")
       return
     }
-    runtime.requestVisibleGalleryThumbnails(handles: handles)
+    guard let nextViewportIdentity,
+          NativeGalleryThumbnailViewportSubmissionPolicy.shouldSubmit(
+            previous: lastSubmittedThumbnailViewportIdentity,
+            next: nextViewportIdentity
+          ) else { return }
+    lastSubmittedThumbnailViewportIdentity = nextViewportIdentity
+    CameraVendorFileLogger.log(
+      "[OBS] THUMBNAIL_VIEWPORT_SUBMIT generation=\(nextViewportIdentity.catalogIdentity.generation.rawValue) " +
+      "visible=\(visibleHandles.count) requested=\(requestedHandles.count) " +
+      "camera=\(handles.count) rehydrate=\(rehydrateRequests.count) " +
+      "retryableFailed=\(retryableFailedHandles.count)"
+    )
+    runtime.requestVisibleGalleryThumbnails(
+      handles: handles,
+      expectedCatalogIdentity: nextViewportIdentity.catalogIdentity
+    )
   }
 
   private func rehydrateCachedThumbnailImages(_ requests: [(handle: Int, data: Data)]) {
@@ -2270,18 +2405,31 @@ extension NativeGalleryViewController {
       let handle = request.handle
       let data = request.data
       thumbnailRehydrateTasks[handle] = Task { [weak self] in
-        let orientation = await MainActor.run {
-          self?.catalogPresentation.items.first(where: { $0.handle == handle })?.orientation
+        let decodeContext: (orientation: Int?, cacheKey: NativeGalleryDecodedThumbnailCacheKey)? = await MainActor.run { [weak self] in
+          guard let self,
+                let cacheKey = self.decodedThumbnailCacheKey(for: handle) else { return nil }
+          let orientation = self.catalogPresentation.items.first(where: { $0.handle == handle })?.orientation
+          return (orientation, cacheKey)
         }
+        guard let decodeContext else { return }
         let decodedImage = await NativeGalleryThumbnailDecodePipeline.decodedImage(
           from: data,
-          objectOrientation: orientation
+          objectOrientation: decodeContext.orientation,
+          diagnosticHandle: handle
         )
         await MainActor.run { [weak self] in
           guard let self else { return }
           self.thumbnailRehydrateTasks.removeValue(forKey: handle)
-          guard !Task.isCancelled, let decodedImage else { return }
-          self.thumbnailImageCache.setObject(decodedImage, forKey: NSNumber(value: handle))
+          guard !Task.isCancelled,
+                let decodedImage,
+                self.decodedThumbnailCacheKey(for: handle) == decodeContext.cacheKey else { return }
+          let storageKey = decodeContext.cacheKey.storageKey
+          let previousStorageKey = self.thumbnailCacheKeysByHandle[handle]
+          self.thumbnailImageCache.setObject(decodedImage, forKey: storageKey)
+          self.thumbnailCacheKeysByHandle[handle] = storageKey
+          if let previousStorageKey, previousStorageKey != storageKey {
+            self.thumbnailImageCache.removeObject(forKey: previousStorageKey)
+          }
           self.refreshVisibleCells(forHandles: [handle])
         }
       }
@@ -2392,7 +2540,8 @@ extension NativeGalleryViewController {
       collapsedSections.insert(sectionIndex)
     }
     UIView.performWithoutAnimation {
-      collectionView.reloadSections(IndexSet(integer: sectionIndex))
+      let activeCollectionView = browseMode == .highDefinition ? hdCollectionView : collectionView
+      activeCollectionView.reloadSections(IndexSet(integer: sectionIndex))
     }
   }
 
@@ -2417,7 +2566,7 @@ extension NativeGalleryViewController {
       viewState: galleryEntryViewState(for: item.handle),
       isSelected: selectedHandles.contains(item.handle),
       downloadState: downloadState,
-      thumbnailImage: thumbnailImageCache.object(forKey: NSNumber(value: item.handle))
+      thumbnailImage: cachedThumbnailImage(for: item.handle)
     )
     cell.onSelectionTapped = { [weak self, weak cell] in
       guard let self,
@@ -2523,52 +2672,83 @@ extension NativeGalleryViewController {
       return
     }
     guard let previewImageCache = runtime.galleryPreviewCache else { return }
-    let controller = NativePhotoPreviewViewController(
-      items: catalogPresentation.items,
-      initialIndex: index,
-      runtime: runtime,
-      previewImageCache: previewImageCache,
-      previewCatalogIdentity: runtime.galleryCatalogIdentity,
-      shouldLoadPreviewThumbnail: { [weak self] in
-        NativeGalleryPriorityDownloadPolicy.shouldLoadPreviewThumbnail(
-          isDownloading: self?.runtime.isDownloading == true
-        )
-      },
-      cachedThumbnailImageProvider: { [weak self] handle in
-        self?.thumbnailImageCache.object(forKey: NSNumber(value: handle))
-      },
-      displayStateProvider: { [weak self] handle in
-        self?.galleryEntryViewState(for: handle)
-      },
-      isSelected: { [weak self] handle in
-        self?.selectedHandles.contains(handle) ?? false
-      },
-      downloadStateProvider: { [weak self] handle in
-        self?.runtime.downloadState(for: handle) ?? .idle
-      },
-      onSelectionToggle: { [weak self] item in
-        guard let self,
-              NativeGalleryDownloadModePresentationPolicy.canInteractWithGallery(isDownloading: self.runtime.isDownloading),
-              NativeGalleryDownloadSelectionPolicy.canSelect(
-                downloadState: self.runtime.downloadState(for: item.handle)
-              ) else { return }
-        self.toggleSelection(for: item)
-      },
-      onDownload: { [weak self] item in
-        guard let self else { return }
-        if NativeGalleryPreviewDownloadPolicy.shouldDismissAfterStartingDownload {
-          self.navigationController?.popViewController(animated: false)
-        }
-        self.openDownloadCenter(for: [item.handle])
-      },
-      isTransferLocked: { [weak self] in
-        self?.runtime.isDownloading ?? false
-      },
-      onTransferLockedDismissAttempt: { [weak self] in
-        self?.showToast("正在下载，请先保持在当前页面")
+    let previewItems = catalogPresentation.items
+    guard previewItems.indices.contains(index),
+          let previewCatalogIdentity = runtime.galleryCatalogIdentity else { return }
+
+    enqueueHDTransition { [weak self] in
+      guard let self else { return }
+      await self.runtime.suspendGalleryContentWorkForFullScreenPreview()
+      guard self.runtime.galleryCatalogIdentity == previewCatalogIdentity else {
+        await self.runtime.resumeGalleryContentWorkAfterFullScreenPreview()
+        return
       }
-    )
-    navigationController?.pushViewController(controller, animated: true)
+
+      let controller = NativePhotoPreviewViewController(
+        items: previewItems,
+        initialIndex: index,
+        runtime: self.runtime,
+        previewImageCache: previewImageCache,
+        previewCatalogIdentity: previewCatalogIdentity,
+        onPreviewClosed: { [weak self] in
+          guard let self else { return }
+          self.enqueueHDTransition { [weak self] in
+            guard let self else { return }
+            await self.runtime.resumeGalleryContentWorkAfterFullScreenPreview()
+            if self.browseMode == .thumbnail {
+              self.lastSubmittedThumbnailViewportIdentity = nil
+              self.scheduleVisibleThumbnailRefresh(after: 0)
+            } else {
+              self.runtime.updateGalleryHDPreviewVisibleHandles(self.hdVisibleHandles())
+            }
+          }
+        },
+        shouldLoadPreviewThumbnail: { [weak self] in
+          NativeGalleryPriorityDownloadPolicy.shouldLoadPreviewThumbnail(
+            isDownloading: self?.runtime.isDownloading == true
+          )
+        },
+        cachedThumbnailImageProvider: { [weak self] handle in
+          self?.cachedThumbnailImage(for: handle)
+        },
+        displayStateProvider: { [weak self] handle in
+          self?.galleryEntryViewState(for: handle)
+        },
+        isSelected: { [weak self] handle in
+          self?.selectedHandles.contains(handle) ?? false
+        },
+        downloadStateProvider: { [weak self] handle in
+          self?.runtime.downloadState(for: handle) ?? .idle
+        },
+        onSelectionToggle: { [weak self] item in
+          guard let self,
+                NativeGalleryDownloadModePresentationPolicy.canInteractWithGallery(isDownloading: self.runtime.isDownloading),
+                NativeGalleryDownloadSelectionPolicy.canSelect(
+                  downloadState: self.runtime.downloadState(for: item.handle)
+                ) else { return }
+          self.toggleSelection(for: item)
+        },
+        onDownload: { [weak self] item in
+          guard let self else { return }
+          if NativeGalleryPreviewDownloadPolicy.shouldDismissAfterStartingDownload {
+            self.navigationController?.popViewController(animated: false)
+          }
+          self.openDownloadCenter(for: [item.handle])
+        },
+        isTransferLocked: { [weak self] in
+          self?.runtime.isDownloading ?? false
+        },
+        onTransferLockedDismissAttempt: { [weak self] in
+          self?.showToast("正在下载，请先保持在当前页面")
+        }
+      )
+
+      guard let navigationController = self.navigationController else {
+        await self.runtime.resumeGalleryContentWorkAfterFullScreenPreview()
+        return
+      }
+      navigationController.pushViewController(controller, animated: true)
+    }
   }
 
   private func presentNotice(title: String, message: String) {
@@ -2656,19 +2836,43 @@ enum CameraVendorGalleryThumbnailRenderer {
   /// extra letterboxing. We also detect & trim CameraVendor's baked-in black bars
   /// (cameras often hard-encode 4:3 thumbnails for 3:2 photos by adding
   /// black strips top & bottom; native UIImage(data:) preserves them).
-  static func decoded(from data: Data, objectOrientation: Int? = nil) -> UIImage? {
+  static func decoded(
+    from data: Data,
+    objectOrientation: Int? = nil,
+    diagnosticHandle: Int? = nil
+  ) -> UIImage? {
     guard let raw = decodeRaw(data: data) else { return nil }
     let cropped = cropBlackBars(raw) ?? raw
     if cropped.imageOrientation != .up {
+      if let diagnosticHandle {
+        CameraVendorFileLogger.log(
+          "[OBS] ORIENTATION_DECISION handle=0x\(String(format: "%08X", diagnosticHandle)) " +
+          "source=uiimage object=\(objectOrientation.map(String.init) ?? "unknown") " +
+          "decoded=\(Int(cropped.size.width))x\(Int(cropped.size.height)) " +
+          "uiOrientation=\(cropped.imageOrientation.rawValue) selected=0 alreadyApplied=true"
+        )
+      }
       return NativePhotoPreviewImageRenderer.rendered(image: cropped, manualRotationDegrees: 0)
     }
-    let degrees = NativePhotoPreviewRotationPolicy.autoRotationDegrees(
+    let decision = NativePhotoPreviewRotationPolicy.rotationDecision(
       objectOrientation: objectOrientation,
       decodedWidth: Int(cropped.size.width),
       decodedHeight: Int(cropped.size.height),
       imageData: data
     )
-    return NativePhotoPreviewImageRenderer.rendered(image: cropped, manualRotationDegrees: degrees)
+    if let diagnosticHandle {
+      CameraVendorFileLogger.log(
+        "[OBS] ORIENTATION_DECISION handle=0x\(String(format: "%08X", diagnosticHandle)) " +
+        "source=\(decision.source) object=\(objectOrientation.map(String.init) ?? "unknown") " +
+        "metadataDegrees=\(decision.metadataDegrees.map(String.init) ?? "none") " +
+        "decoded=\(Int(cropped.size.width))x\(Int(cropped.size.height)) " +
+        "selected=\(decision.degrees) alreadyApplied=\(decision.rotationAlreadyApplied)"
+      )
+    }
+    return NativePhotoPreviewImageRenderer.rendered(
+      image: cropped,
+      manualRotationDegrees: decision.degrees
+    )
   }
 
   private static func decodeRaw(data: Data) -> UIImage? {
@@ -2760,6 +2964,7 @@ final class NativeDownloadListViewController: UIViewController {
     collectionView.reloadData()
   }
   private var runtimePresentationObserverID: UUID?
+  private var incrementalCatalogObserverID: UUID?
   private var hasObservedActiveTransfer = false
   private let thumbnailImageCache = NSCache<NSNumber, UIImage>()
   private var thumbnailRehydrateTasks: [Int: Task<Void, Never>] = [:]
@@ -2958,13 +3163,14 @@ final class NativeDownloadListViewController: UIViewController {
     runtime.onDownloadThumbnailGenerated = { [weak self] handle, image in
       self?.setDownloadThumbnail(handle: Int(handle), image: image)
     }
-    runtime.observeIncrementalCatalogUpdates { [weak self] _, handles in
+    incrementalCatalogObserverID = runtime.observeIncrementalCatalogUpdates { [weak self] _, delta in
       guard let self else { return }
+      let handles = delta.changedHandles
       // Thumbnail arrived — rehydrate and refresh visible cells
       let items = self.itemsProvider()
       for handle in handles {
         guard let item = items.first(where: { $0.handle == handle }),
-              let data = item.thumbnailData,
+              item.thumbnailData != nil,
               self.thumbnailImageCache.object(forKey: NSNumber(value: handle)) == nil else {
           continue
         }
@@ -2980,14 +3186,15 @@ final class NativeDownloadListViewController: UIViewController {
     NotificationCenter.default.removeObserver(self)
     cancelThumbnailRehydrateTasks()
     let runtime = runtime
-    if let runtimePresentationObserverID {
-      Task { @MainActor in
-        runtime.onDownloadThumbnailGenerated = nil
-        runtime.removeObserver(runtimePresentationObserverID)
+    let presentationObserverID = runtimePresentationObserverID
+    let incrementalObserverID = incrementalCatalogObserverID
+    Task { @MainActor in
+      runtime.onDownloadThumbnailGenerated = nil
+      if let presentationObserverID {
+        runtime.removeObserver(presentationObserverID)
       }
-    } else {
-      Task { @MainActor in
-        runtime.onDownloadThumbnailGenerated = nil
+      if let incrementalObserverID {
+        runtime.removeObserver(incrementalObserverID)
       }
     }
   }
@@ -3113,8 +3320,14 @@ final class NativeDownloadListViewController: UIViewController {
     refreshEmptyState()
 
     // When downloads finish (PTP lane free), request thumbnails for saved items
-    if hasObservedActiveTransfer, !isTransferActive, !newlySavedHandles.isEmpty {
-      runtime.requestVisibleGalleryThumbnails(handles: newlySavedHandles)
+    if hasObservedActiveTransfer,
+       !isTransferActive,
+       !newlySavedHandles.isEmpty,
+       let expectedCatalogIdentity = runtime.galleryCatalogIdentity {
+      runtime.requestVisibleGalleryThumbnails(
+        handles: newlySavedHandles,
+        expectedCatalogIdentity: expectedCatalogIdentity
+      )
     }
 
     guard hasObservedActiveTransfer,
@@ -3245,7 +3458,8 @@ final class NativeDownloadListViewController: UIViewController {
       thumbnailRehydrateTasks[handle] = Task { [weak self] in
         let decodedImage = await NativeGalleryThumbnailDecodePipeline.decodedImage(
           from: data,
-          objectOrientation: orientation
+          objectOrientation: orientation,
+          diagnosticHandle: handle
         )
         await MainActor.run { [weak self] in
           guard let self else { return }
@@ -3331,13 +3545,18 @@ extension NativeDownloadListViewController: UICollectionViewDataSource, UICollec
 
 extension NativeGalleryViewController: UICollectionViewDataSource {
   func numberOfSections(in collectionView: UICollectionView) -> Int {
-    if collectionView === hdCollectionView { return 1 }
+    if collectionView === hdCollectionView {
+      return hdPresentationState?.snapshot.sections.count ?? 0
+    }
     return gallerySections.isEmpty ? 1 : gallerySections.count
   }
 
   func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
     if collectionView === hdCollectionView {
-      return hdPresentationState?.snapshot.items.count ?? 0
+      guard let snapshot = hdPresentationState?.snapshot,
+            snapshot.sections.indices.contains(section),
+            !collapsedSections.contains(section) else { return 0 }
+      return snapshot.sections[section].items.count
     }
     guard gallerySections.indices.contains(section) else { return 0 }
     if collapsedSections.contains(section) { return 0 }
@@ -3355,7 +3574,7 @@ extension NativeGalleryViewController: UICollectionViewDataSource {
       ) as? NativeGalleryHDPreviewCell else {
         return UICollectionViewCell()
       }
-      if let item = hdPresentationState?.snapshot.items[hdSafe: indexPath.item] {
+      if let item = hdPresentationState?.snapshot.item(at: indexPath) {
         configureHDCell(cell, previewItem: item)
       }
       return cell
@@ -3427,10 +3646,10 @@ extension NativeGalleryViewController: UICollectionViewDelegateFlowLayout {
   ) -> CGSize {
     if collectionView === hdCollectionView {
       let width = collectionView.bounds.width
-      let handle = hdPresentationState?.snapshot.items[hdSafe: indexPath.item]?.displayItem.handle
+      let handle = hdPresentationState?.snapshot.item(at: indexPath)?.displayItem.handle
       // Use actual image dimensions from cache if loaded, otherwise default 3:2 landscape
       if let handle,
-         let preview = runtime.cachedGalleryHDPreview(for: handle),
+         let preview = runtime.peekCachedGalleryHDPreview(for: handle),
          let image = UIImage(data: preview.data) {
         let height = NativeGalleryHDPreviewLayoutPolicy.cellHeight(
           forWidth: width,
@@ -3470,9 +3689,6 @@ extension NativeGalleryViewController: UICollectionViewDelegateFlowLayout {
     referenceSizeForHeaderInSection section: Int
   ) -> CGSize {
     guard gallerySections.indices.contains(section) else { return .zero }
-    if collectionView === hdCollectionView {
-      return .zero
-    }
     return CGSize(
       width: collectionView.bounds.width,
       height: NativeGalleryAndroidParityGridPolicy.sectionHeaderHeight
@@ -3786,7 +4002,13 @@ final class NativeGalleryGridCell: UICollectionViewCell {
     formatBadgeLabel.text = NativeGalleryFormatDisplayPolicy.badgeText(for: item, viewState: viewState)
     formatBadgeLabel.isHidden = formatBadgeLabel.text == nil
     let decodedFallbackImage = NativeGalleryCellThumbnailDecodePolicy.shouldDecodeDataDuringCellConfigure
-      ? item.thumbnailData.flatMap { CameraVendorGalleryThumbnailRenderer.decoded(from: $0, objectOrientation: item.orientation) }
+      ? item.thumbnailData.flatMap {
+        CameraVendorGalleryThumbnailRenderer.decoded(
+          from: $0,
+          objectOrientation: item.orientation,
+          diagnosticHandle: item.handle
+        )
+      }
       : nil
     if let image = thumbnailImage ?? decodedFallbackImage {
       imageView.contentMode = .scaleAspectFill

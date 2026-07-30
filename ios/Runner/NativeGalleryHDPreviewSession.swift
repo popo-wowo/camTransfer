@@ -7,8 +7,6 @@ enum NativeGalleryBrowseMode {
 
 enum NativeGalleryHDChromePolicy {
   static let usesGalleryBackground = true
-  static let dateFormat = "yyyy-MM-dd"
-  static let showsLoadCountBeforeDate = true
 }
 
 enum NativeGalleryHDPreviewFailureLogPolicy {
@@ -22,18 +20,66 @@ struct NativeGalleryHDPreviewItem: Equatable {
   let rawSidecar: CameraVendorGalleryItem?
 }
 
-struct NativeGalleryHDPreviewSnapshot: Equatable {
-  let activeDate: Date
+struct NativeGalleryHDPreviewSection: Equatable {
+  let day: Date?
+  let title: String
+  let orderedRepresentedHandles: [Int]
   let items: [NativeGalleryHDPreviewItem]
+}
+
+struct NativeGalleryHDPreviewSnapshot: Equatable {
+  let sections: [NativeGalleryHDPreviewSection]
+
+  var items: [NativeGalleryHDPreviewItem] {
+    sections.flatMap(\.items)
+  }
+
+  var sectionDisplayHandles: [[Int]] {
+    sections.map { $0.items.map(\.displayItem.handle) }
+  }
 
   var displayHandles: [Int] {
     items.map(\.displayItem.handle)
   }
 
-  var allDownloadHandles: Set<Int> {
+  var orderedRepresentedHandles: [Int] {
+    sections.flatMap(\.orderedRepresentedHandles)
+  }
+
+  var loadableDisplayHandles: [Int] {
+    items.compactMap { item in
+      NativeGalleryPreviewImageLoadPolicy.shouldRequestPreviewImage(
+        item: item.displayItem,
+        hasPreviewImage: false
+      ) ? item.displayItem.handle : nil
+    }
+  }
+
+  var allRepresentedHandles: Set<Int> {
     Set(items.flatMap { item in
       [item.displayItem.handle] + (item.rawSidecar.map { [$0.handle] } ?? [])
     })
+  }
+
+  var allDownloadHandles: Set<Int> {
+    allRepresentedHandles
+  }
+
+  func item(at indexPath: IndexPath) -> NativeGalleryHDPreviewItem? {
+    guard sections.indices.contains(indexPath.section),
+          sections[indexPath.section].items.indices.contains(indexPath.item) else {
+      return nil
+    }
+    return sections[indexPath.section].items[indexPath.item]
+  }
+
+  func indexPath(forDisplayHandle handle: Int) -> IndexPath? {
+    for (sectionIndex, section) in sections.enumerated() {
+      if let itemIndex = section.items.firstIndex(where: { $0.displayItem.handle == handle }) {
+        return IndexPath(item: itemIndex, section: sectionIndex)
+      }
+    }
+    return nil
   }
 }
 
@@ -92,9 +138,9 @@ struct NativeGalleryHDPreviewState: Equatable {
 
   var loadedCount: Int {
     NativeGalleryHDPreviewSessionPolicy.loadedCount(
-      sessionHandles: Set(snapshot.displayHandles),
+      sessionHandles: Set(snapshot.loadableDisplayHandles),
       loadedHandles: loadedHandles
-    )
+    ) + snapshot.displayHandles.count - snapshot.loadableDisplayHandles.count
   }
 
   var totalCount: Int {
@@ -104,18 +150,18 @@ struct NativeGalleryHDPreviewState: Equatable {
 
 enum NativeGalleryHDDownloadRequestPolicy {
   static func requests(
-    displayHandles: [Int],
+    displayItems: [CameraVendorGalleryItem],
     rawHandles: [Int],
     preferCompressedDisplay: Bool
   ) -> [CameraSessionQueuedDownload] {
     var seen = Set<Int>()
     var result: [CameraSessionQueuedDownload] = []
 
-    for handle in displayHandles where seen.insert(handle).inserted {
-      guard let requestHandle = UInt32(exactly: handle) else { continue }
+    for item in displayItems where seen.insert(item.handle).inserted {
+      guard let requestHandle = UInt32(exactly: item.handle) else { continue }
       result.append(CameraSessionQueuedDownload(
         handle: requestHandle,
-        mode: preferCompressedDisplay ? .compressed : .original
+        mode: isRaw(item) || !preferCompressedDisplay ? .original : .compressed
       ))
     }
     for handle in rawHandles where seen.insert(handle).inserted {
@@ -124,59 +170,55 @@ enum NativeGalleryHDDownloadRequestPolicy {
     }
     return result
   }
+
+  static func isRaw(_ item: CameraVendorGalleryItem) -> Bool {
+    let label = item.formatLabel.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    let filename = item.filename.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    return label == "RAW" ||
+      label == "RAF" ||
+      item.formatHints.contains(.raw) ||
+      filename.hasSuffix(".RAW") ||
+      filename.hasSuffix(".RAF")
+  }
 }
 
 enum NativeGalleryHDPreviewSessionPolicy {
-  static func availableDates(
-    items: [CameraVendorGalleryItem],
-    calendar: Calendar = .current
-  ) -> [Date] {
-    let dates = items.compactMap { item -> Date? in
-      guard !isVideoCandidate(item),
-            let captureDate = NativeGalleryFilterPolicy.parsedCaptureDate(item.captureDate) else {
-        return nil
-      }
-      return calendar.startOfDay(for: captureDate)
-    }
-    return Array(Set(dates)).sorted(by: >)
-  }
-
-  static func preferredActiveDate(
-    items: [CameraVendorGalleryItem],
-    currentDate: Date,
-    calendar: Calendar = .current
-  ) -> Date {
-    let dates = availableDates(items: items, calendar: calendar)
-    if let current = dates.first(where: { calendar.isDate($0, inSameDayAs: currentDate) }) {
-      return current
-    }
-    return dates.first ?? calendar.startOfDay(for: currentDate)
-  }
-
   static func snapshot(
-    items: [CameraVendorGalleryItem],
-    activeDate: Date,
-    calendar: Calendar = .current
+    sections: [NativeGalleryDaySection]
   ) -> NativeGalleryHDPreviewSnapshot {
-    let dayItems = items.filter { item in
-      guard let captureDate = NativeGalleryFilterPolicy.parsedCaptureDate(item.captureDate) else {
-        return false
+    NativeGalleryHDPreviewSnapshot(
+      sections: sections.map { section in
+        NativeGalleryHDPreviewSection(
+          day: section.day,
+          title: section.title,
+          orderedRepresentedHandles: section.items.map(\.handle),
+          items: previewItems(from: section.items)
+        )
       }
-      return calendar.isDate(captureDate, inSameDayAs: activeDate)
-    }
-    let ambiguousItems = ambiguousExtendedStillItems(dayItems)
-    var ambiguousHandles = Set<Int>()
-    for item in ambiguousItems {
-      ambiguousHandles.insert(item.displayItem.handle)
-      if let rawSidecar = item.rawSidecar {
-        ambiguousHandles.insert(rawSidecar.handle)
-      }
-    }
-    let resolvedDayItems = dayItems.filter { !ambiguousHandles.contains($0.handle) }
-    let rawCandidates = resolvedDayItems.filter(isRawCandidate)
-    var usedRawHandles = Set<Int>()
+    )
+  }
 
-    let resolvedPreviewItems = resolvedDayItems.filter(isDisplayCandidate).map { displayItem in
+  private static func previewItems(
+    from sectionItems: [CameraVendorGalleryItem]
+  ) -> [NativeGalleryHDPreviewItem] {
+    let indexByHandle = Dictionary(
+      uniqueKeysWithValues: sectionItems.enumerated().map { ($0.element.handle, $0.offset) }
+    )
+    let ambiguousItems = ambiguousExtendedStillItems(sectionItems)
+    var representedHandles = Set<Int>()
+    for item in ambiguousItems {
+      representedHandles.insert(item.displayItem.handle)
+      if let rawSidecar = item.rawSidecar {
+        representedHandles.insert(rawSidecar.handle)
+      }
+    }
+
+    let remaining = sectionItems.filter { !representedHandles.contains($0.handle) }
+    let rawCandidates = remaining.filter(isRawCandidate)
+    var usedRawHandles = Set<Int>()
+    var cards = ambiguousItems
+
+    for displayItem in remaining where isDisplayCandidate(displayItem) {
       let sidecar = rawSidecar(
         for: displayItem,
         candidates: rawCandidates,
@@ -184,47 +226,60 @@ enum NativeGalleryHDPreviewSessionPolicy {
       )
       if let sidecar {
         usedRawHandles.insert(sidecar.handle)
+        representedHandles.insert(sidecar.handle)
       }
-      return NativeGalleryHDPreviewItem(displayItem: displayItem, rawSidecar: sidecar)
+      representedHandles.insert(displayItem.handle)
+      cards.append(NativeGalleryHDPreviewItem(
+        displayItem: displayItem,
+        rawSidecar: sidecar
+      ))
     }
 
-    return NativeGalleryHDPreviewSnapshot(
-      activeDate: calendar.startOfDay(for: activeDate),
-      items: (ambiguousItems + resolvedPreviewItems).sorted { lhs, rhs in
-        let lDate = NativeGalleryFilterPolicy.parsedCaptureDate(lhs.displayItem.captureDate) ?? .distantPast
-        let rDate = NativeGalleryFilterPolicy.parsedCaptureDate(rhs.displayItem.captureDate) ?? .distantPast
-        return lDate > rDate
-      }
-    )
+    for item in sectionItems where !representedHandles.contains(item.handle) {
+      representedHandles.insert(item.handle)
+      cards.append(NativeGalleryHDPreviewItem(displayItem: item, rawSidecar: nil))
+    }
+
+    return cards.sorted { left, right in
+      let leftIndex = indexByHandle[left.displayItem.handle] ?? Int.max
+      let rightIndex = indexByHandle[right.displayItem.handle] ?? Int.max
+      return leftIndex < rightIndex
+    }
   }
 
   static func priorityWindow(
     orderedHandles: [Int],
     visibleHandles: [Int],
-    loadedHandles: Set<Int>,
-    loadingHandles: Set<Int>,
-    failedHandles: Set<Int>
+    limit: Int = 30
   ) -> [Int] {
-    let indexByHandle = Dictionary(uniqueKeysWithValues: orderedHandles.enumerated().map { ($0.element, $0.offset) })
-    let visible = orderedUnique(visibleHandles.filter { indexByHandle[$0] != nil })
+    let boundedLimit = max(1, limit)
+    let ordered = orderedUnique(orderedHandles)
+    let visibleSet = Set(visibleHandles)
+    let visible = ordered.filter { visibleSet.contains($0) }
     guard !visible.isEmpty else {
-      return orderedHandles.prefix(20).filter {
-        !loadedHandles.contains($0) && !loadingHandles.contains($0) && !failedHandles.contains($0)
-      }
+      return Array(ordered.prefix(boundedLimit))
     }
 
-    let indices = visible.compactMap { indexByHandle[$0] }
-    guard let firstVisibleIndex = indices.min(), let lastVisibleIndex = indices.max() else {
-      return []
-    }
-    let afterStart = min(lastVisibleIndex + 1, orderedHandles.count)
-    let afterEnd = min(afterStart + 20, orderedHandles.count)
-    let beforeStart = max(0, firstVisibleIndex - 5)
+    let indexByHandle = Dictionary(
+      uniqueKeysWithValues: ordered.enumerated().map { ($0.element, $0.offset) }
+    )
+    let visibleIndices = visible.compactMap { indexByHandle[$0] }
+    guard let firstVisibleIndex = visibleIndices.min(),
+          let lastVisibleIndex = visibleIndices.max() else { return [] }
 
-    let after = Array(orderedHandles[afterStart..<afterEnd])
-    let before = Array(orderedHandles[beforeStart..<firstVisibleIndex])
-    let excluded = loadedHandles.union(loadingHandles).union(failedHandles)
-    return orderedUnique(visible + after + before).filter { !excluded.contains($0) }
+    var result = Array(visible.prefix(boundedLimit))
+    var nextBelow = lastVisibleIndex + 1
+    while result.count < boundedLimit, nextBelow < ordered.count {
+      result.append(ordered[nextBelow])
+      nextBelow += 1
+    }
+
+    var nextAbove = firstVisibleIndex - 1
+    while result.count < boundedLimit, nextAbove >= 0 {
+      result.append(ordered[nextAbove])
+      nextAbove -= 1
+    }
+    return orderedUnique(result)
   }
 
   static func loadedCount(sessionHandles: Set<Int>, loadedHandles: Set<Int>) -> Int {
@@ -236,19 +291,11 @@ enum NativeGalleryHDPreviewSessionPolicy {
     candidates: [CameraVendorGalleryItem],
     excluding usedHandles: Set<Int>
   ) -> CameraVendorGalleryItem? {
-    let available = candidates.filter { !usedHandles.contains($0.handle) }
     let displayStem = filenameStem(displayItem.filename)
-    if !displayStem.isEmpty,
-       let exact = available.first(where: { filenameStem($0.filename) == displayStem }) {
-      return exact
+    guard !displayStem.isEmpty else { return nil }
+    return candidates.first {
+      !usedHandles.contains($0.handle) && filenameStem($0.filename) == displayStem
     }
-    return available
-      .filter { abs($0.handle - displayItem.handle) <= 3 }
-      .min { left, right in
-        let leftDistance = abs(left.handle - displayItem.handle)
-        let rightDistance = abs(right.handle - displayItem.handle)
-        return leftDistance == rightDistance ? left.handle < right.handle : leftDistance < rightDistance
-      }
   }
 
   private static func isDisplayCandidate(_ item: CameraVendorGalleryItem) -> Bool {

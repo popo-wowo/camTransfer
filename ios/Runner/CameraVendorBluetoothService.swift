@@ -1911,6 +1911,17 @@ protocol CameraVendorGalleryObjectInfoSource {
 struct CameraVendorGalleryThumbnail {
   let data: Data
   let item: CameraVendorGalleryItem?
+  let objectInfo: CameraVendorCameraObjectInfo?
+
+  init(
+    data: Data,
+    item: CameraVendorGalleryItem?,
+    objectInfo: CameraVendorCameraObjectInfo? = nil
+  ) {
+    self.data = data
+    self.item = item
+    self.objectInfo = objectInfo
+  }
 }
 
 struct CameraVendorGalleryPreview {
@@ -1946,7 +1957,7 @@ extension CameraVendorGalleryService {
   }
 
   func fetchThumbnailWithInfo(for handle: Int) async throws -> CameraVendorGalleryThumbnail {
-    CameraVendorGalleryThumbnail(data: try await fetchThumbnail(for: handle), item: nil)
+    CameraVendorGalleryThumbnail(data: try await fetchThumbnail(for: handle), item: nil, objectInfo: nil)
   }
 
   func fetchPreviewImage(for handle: Int) async throws -> Data {
@@ -2453,6 +2464,7 @@ enum CameraVendorDeviceMatcher {
 final class CameraVendorLogStore {
   private let fileURL: URL
   private let fileManager: FileManager
+  private let lock = NSLock()
   private var recentLines: [String] = []
   private let maxMemoryLineCount = 1500
 
@@ -2464,8 +2476,11 @@ final class CameraVendorLogStore {
   }
 
   var currentContents: String {
-    if !recentLines.isEmpty {
-      return recentLines.joined(separator: "\n")
+    lock.lock()
+    let lines = recentLines
+    lock.unlock()
+    if !lines.isEmpty {
+      return lines.joined(separator: "\n")
     }
     return (try? String(contentsOf: fileURL, encoding: .utf8)) ?? ""
   }
@@ -2475,7 +2490,9 @@ final class CameraVendorLogStore {
   }
 
   func clear() {
+    lock.lock()
     recentLines.removeAll()
+    lock.unlock()
     try? "".write(to: fileURL, atomically: true, encoding: .utf8)
     for index in 1...CameraVendorFileLogPolicy.maxArchiveLogCount {
       try? fileManager.removeItem(at: archivedFileURL(index: index))
@@ -2483,10 +2500,12 @@ final class CameraVendorLogStore {
   }
 
   func append(_ line: String, writesToDisk: Bool = true) {
+    lock.lock()
     recentLines.append(line)
     if recentLines.count > maxMemoryLineCount {
       recentLines.removeFirst(recentLines.count - maxMemoryLineCount)
     }
+    lock.unlock()
     guard writesToDisk else {
       return
     }

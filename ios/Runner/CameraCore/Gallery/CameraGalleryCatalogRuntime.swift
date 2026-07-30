@@ -2,11 +2,12 @@ import Foundation
 
 actor CameraGalleryCatalogRuntime {
   typealias PresentationPublisher = @MainActor (CameraGalleryPresentation) -> Void
-  typealias IncrementalUpdatePublisher = @MainActor (CameraGalleryPresentation, Set<Int>) -> Void
+  typealias SubmissionPresentationPublisher = @MainActor (
+    CameraGalleryPresentation,
+    CameraGalleryIntentSubmissionID
+  ) -> Void
+  typealias IncrementalUpdatePublisher = @MainActor (CameraGalleryPresentation, CameraGalleryIncrementalDelta) -> Void
   typealias TransportEvidenceReporter = @MainActor (CameraGalleryCatalogFailure) -> Void
-  typealias ThumbnailPipelineFactory = (
-    _ publisher: @escaping CameraGalleryThumbnailPipeline.Publisher
-  ) -> CameraGalleryThumbnailPipeline
 
   private struct PendingTransaction {
     enum SourceOperation {
@@ -19,10 +20,19 @@ actor CameraGalleryCatalogRuntime {
     let sourceOperation: SourceOperation
   }
 
+  private final class ThumbnailPublicationRelay: @unchecked Sendable {
+    weak var runtime: CameraGalleryCatalogRuntime?
+
+    func publish(_ publication: CameraGalleryThumbnailPipeline.Publication) async {
+      await runtime?.applyPipelinePublication(publication)
+    }
+  }
+
   private let queryEngine: CameraCatalogQueryEngine
   private let queryOwner: CameraCatalogAccessOwner
   private let cameraID: String
   private let publishPresentation: PresentationPublisher
+  private let publishSubmissionPresentation: SubmissionPresentationPublisher
   private let publishIncrementalUpdate: IncrementalUpdatePublisher
   private let reportTransportEvidence: TransportEvidenceReporter
   private var repository = CameraGalleryRepository()
@@ -32,11 +42,13 @@ actor CameraGalleryCatalogRuntime {
   private var currentPresentation = CameraGalleryPresentation.unavailable
   private var activeTransactionTask: Task<Void, Never>?
   private var pendingTransaction: PendingTransaction?
-  private var thumbnailPipeline: CameraGalleryThumbnailPipeline!
+  private let thumbnailPipeline: CameraGalleryThumbnailPipeline
   private var downloadedHandles: Set<Int> = []
+  private var downloadedProjectionNeedsPublish = false
   private var installedMembershipIntent: CameraGalleryFilterIntent?
   private var isAcceptingChildWork = false
   private var hdPreviewSuspensionCount = 0
+  private var downloadSuspensionCount = 0
   private var isShuttingDown = false
 
   init(
@@ -44,8 +56,8 @@ actor CameraGalleryCatalogRuntime {
     queryEngine: CameraCatalogQueryEngine? = nil,
     queryOwner: CameraCatalogAccessOwner = .gallery(UUID()),
     cameraID: String = "gallery",
-    makeThumbnailPipeline: ThumbnailPipelineFactory? = nil,
     publishPresentation: @escaping PresentationPublisher,
+    publishSubmissionPresentation: @escaping SubmissionPresentationPublisher = { _, _ in },
     publishIncrementalUpdate: @escaping IncrementalUpdatePublisher = { _, _ in },
     reportTransportEvidence: @escaping TransportEvidenceReporter
   ) {
@@ -53,19 +65,28 @@ actor CameraGalleryCatalogRuntime {
     self.queryOwner = queryOwner
     self.cameraID = cameraID
     self.publishPresentation = publishPresentation
+    self.publishSubmissionPresentation = publishSubmissionPresentation
     self.publishIncrementalUpdate = publishIncrementalUpdate
     self.reportTransportEvidence = reportTransportEvidence
-    let publisher: CameraGalleryThumbnailPipeline.Publisher = { [weak self] publication in
-      guard let self else { return }
-      await self.applyPipelinePublication(publication)
+    let relay = ThumbnailPublicationRelay()
+    let publisher: CameraGalleryThumbnailPipeline.Publisher = { publication in
+      await relay.publish(publication)
     }
-    thumbnailPipeline = makeThumbnailPipeline?(publisher) ?? CameraGalleryThumbnailPipeline(
+    thumbnailPipeline = CameraGalleryThumbnailPipeline(
       source: source,
       publish: publisher
     )
+    relay.runtime = self
   }
 
-  func start(initial intent: CameraGalleryFilterIntent = .all) async {
+  func start(
+    initial intent: CameraGalleryFilterIntent = .all,
+    submissionID: CameraGalleryIntentSubmissionID? = nil
+  ) async {
+    if let submissionID {
+      guard submissionID > latestIntentSubmissionID else { return }
+      latestIntentSubmissionID = submissionID
+    }
     await submit(intent, forceCameraTransaction: true, sourceOperation: .initial)
   }
 
@@ -82,19 +103,27 @@ actor CameraGalleryCatalogRuntime {
 
   func updateDownloadedHandles(_ handles: Set<Int>) async {
     downloadedHandles = handles
-    guard isAcceptingChildWork,
+    guard !isShuttingDown,
           case .ready(let generation, let snapshotID) = currentPresentation.state,
           repository.generation == generation,
           repository.snapshotID == snapshotID,
           let installedMembershipIntent,
           installedMembershipIntent.hasSameCameraMembership(as: currentIntent) else { return }
     currentPresentation = makeReadyPresentation()
+    guard downloadSuspensionCount == 0 else {
+      downloadedProjectionNeedsPublish = true
+      return
+    }
+    downloadedProjectionNeedsPublish = false
     await publishCurrentPresentation()
   }
 
-  func requestVisibleThumbnails(handles: [Int]) async {
-    guard isAcceptingChildWork,
-          !isShuttingDown,
+  func requestVisibleThumbnails(
+    handles: [Int],
+    submissionID: UInt64? = nil,
+    expectedCatalogIdentity: CameraGalleryCatalogIdentity? = nil
+  ) async {
+    guard !isShuttingDown,
           case .ready(let generation, let snapshotID) = currentPresentation.state,
           repository.generation == generation,
           repository.snapshotID == snapshotID,
@@ -102,32 +131,62 @@ actor CameraGalleryCatalogRuntime {
           installedMembershipIntent.hasSameCameraMembership(as: currentIntent) else {
       return
     }
-    await thumbnailPipeline.requestVisible(handles: handles)
+    let currentCatalogIdentity = CameraGalleryCatalogIdentity(
+      cameraID: cameraID,
+      sessionEpoch: queryEngine.sessionEpoch,
+      generation: generation,
+      snapshotID: snapshotID
+    )
+    if let expectedCatalogIdentity,
+       expectedCatalogIdentity != currentCatalogIdentity {
+      CameraVendorFileLogger.log(
+        "[OBS] THUMBNAIL_VIEWPORT_SKIPPED reason=stale-catalog " +
+        "expectedGeneration=\(expectedCatalogIdentity.generation.rawValue) " +
+        "currentGeneration=\(generation.rawValue) submission=\(submissionID ?? 0)"
+      )
+      return
+    }
+    if let submissionID {
+      await thumbnailPipeline.requestVisible(
+        handles: handles,
+        submissionID: submissionID
+      )
+    } else {
+      await thumbnailPipeline.requestVisible(handles: handles)
+    }
   }
 
   func suspendChildWorkForHighDefinitionPreview() async {
     hdPreviewSuspensionCount += 1
     guard hdPreviewSuspensionCount == 1 else { return }
     isAcceptingChildWork = false
-    await thumbnailPipeline.suspend()
+    await thumbnailPipeline.suspendForExternalWork()
   }
 
   func resumeChildWorkAfterHighDefinitionPreview() async {
     guard hdPreviewSuspensionCount > 0 else { return }
     hdPreviewSuspensionCount -= 1
-    guard hdPreviewSuspensionCount == 0,
-          !isShuttingDown,
-          case .ready(let generation, let snapshotID) = currentPresentation.state,
-          repository.generation == generation,
-          repository.snapshotID == snapshotID else {
-      return
-    }
-    isAcceptingChildWork = true
-    await thumbnailPipeline.resume()
+    guard hdPreviewSuspensionCount == 0 else { return }
+    await resumeChildWorkIfPossible()
   }
 
   func isChildWorkSuspendedForHighDefinitionPreview() -> Bool {
     hdPreviewSuspensionCount > 0
+  }
+
+  func suspendChildWorkForDownload() async {
+    downloadSuspensionCount += 1
+    guard downloadSuspensionCount == 1 else { return }
+    isAcceptingChildWork = false
+    await thumbnailPipeline.suspendForExternalWork()
+  }
+
+  func resumeChildWorkAfterDownload() async {
+    guard downloadSuspensionCount > 0 else { return }
+    downloadSuspensionCount -= 1
+    guard downloadSuspensionCount == 0 else { return }
+    await publishDeferredDownloadedProjectionIfPossible()
+    await resumeChildWorkIfPossible()
   }
 
   func cancelAllChildren() async {
@@ -142,6 +201,34 @@ actor CameraGalleryCatalogRuntime {
 
   func cancelActiveThumbnailWork() async {
     await thumbnailPipeline.cancelAndJoin()
+  }
+
+  private func resumeChildWorkIfPossible() async {
+    guard hdPreviewSuspensionCount == 0,
+          downloadSuspensionCount == 0,
+          !isShuttingDown,
+          case .ready(let generation, let snapshotID) = currentPresentation.state,
+          repository.generation == generation,
+          repository.snapshotID == snapshotID else {
+      return
+    }
+    isAcceptingChildWork = true
+    await thumbnailPipeline.resumeExternalWork()
+  }
+
+  private func publishDeferredDownloadedProjectionIfPossible() async {
+    guard downloadedProjectionNeedsPublish,
+          !isShuttingDown,
+          case .ready(let generation, let snapshotID) = currentPresentation.state,
+          repository.generation == generation,
+          repository.snapshotID == snapshotID,
+          let installedMembershipIntent,
+          installedMembershipIntent.hasSameCameraMembership(as: currentIntent) else {
+      return
+    }
+    downloadedProjectionNeedsPublish = false
+    currentPresentation = makeReadyPresentation()
+    await publishCurrentPresentation()
   }
 
   func markTransportLost(_ message: String) async {
@@ -196,10 +283,11 @@ actor CameraGalleryCatalogRuntime {
     let generation = allocateGeneration()
     currentIntent = intent
     isAcceptingChildWork = false
-    await thumbnailPipeline.cancelAndJoin()
+    await thumbnailPipeline.suspendForCatalogChange()
 
     if let unsupportedReason = unsupportedReason(for: intent) {
       pendingTransaction = nil
+      await thumbnailPipeline.cancelAndJoin()
       currentPresentation = CameraGalleryPresentation(
         state: .unsupported(generation: generation, reason: unsupportedReason),
         intent: intent,
@@ -210,13 +298,16 @@ actor CameraGalleryCatalogRuntime {
       return
     }
 
+    let shouldPublishLoading = repository.snapshotID == nil
     currentPresentation = CameraGalleryPresentation(
       state: .loading(generation: generation, intent: intent),
       intent: intent,
-      items: [],
-      entries: []
+      items: sort(repository.items, by: intent.sort),
+      entries: repository.entries
     )
-    await publishCurrentPresentation()
+    if shouldPublishLoading {
+      await publishCurrentPresentation()
+    }
 
     let transaction = PendingTransaction(
       generation: generation,
@@ -240,23 +331,33 @@ actor CameraGalleryCatalogRuntime {
 
   private func execute(_ transaction: PendingTransaction) async {
     do {
+      let queryStartedAt = Date()
       let resolution = try await queryEngine.resolve(
         rule: transaction.intent.rule,
         owner: queryOwner,
         downloadedHandles: downloadedHandles
       )
-      let snapshot = resolution.snapshot
+      let snapshot = resolution.membershipSnapshot
+      CameraVendorFileLogger.log(
+        "[OBS] CATALOG_QUERY_RESOLVED generation=\(transaction.generation.rawValue) " +
+        "items=\(snapshot.items.count) authoritativeInfo=\(resolution.authoritativeObjectInfos.count) " +
+        "elapsedMs=\(Int(Date().timeIntervalSince(queryStartedAt) * 1000))"
+      )
       guard !isShuttingDown,
             transaction.generation == currentPresentation.generation else {
         await finishTransactionAndStartPendingIfNeeded()
         return
       }
+      let repositoryInstallStartedAt = Date()
       repository.install(snapshot, generation: transaction.generation)
+      CameraVendorFileLogger.log(
+        "[OBS] CATALOG_REPOSITORY_INSTALL_END generation=\(transaction.generation.rawValue) " +
+        "items=\(repository.items.count) elapsedMs=\(Int(Date().timeIntervalSince(repositoryInstallStartedAt) * 1000))"
+      )
       installedMembershipIntent = transaction.intent
       currentIntent = transaction.intent
       currentPresentation = makeReadyPresentation()
-      isAcceptingChildWork = hdPreviewSuspensionCount == 0
-      await publishCurrentPresentation()
+      downloadedProjectionNeedsPublish = false
       await thumbnailPipeline.install(
         catalogIdentity: CameraGalleryCatalogIdentity(
           cameraID: cameraID,
@@ -267,6 +368,8 @@ actor CameraGalleryCatalogRuntime {
         membership: snapshot.items.map(\.handle),
         reusableObjectInfos: resolution.authoritativeObjectInfos
       )
+      isAcceptingChildWork = hdPreviewSuspensionCount == 0 && downloadSuspensionCount == 0
+      await publishCurrentPresentation()
     } catch is CancellationError {
       // A cancelled transaction may still finish mandatory transport cleanup.
       // It never publishes and the latest pending intent is started below.
@@ -333,9 +436,44 @@ actor CameraGalleryCatalogRuntime {
         snapshotID: mediaIdentity.catalog.snapshotID,
         handle: mediaIdentity.handle
       )
+      let previousPresentation = currentPresentation
       guard repository.applyThumbnail(thumbnail, identity: childIdentity) else { return }
+      // If thumbnail carries resolvedMetadata with a confirmed format,
+      // also update entries details so the format label appears immediately.
+      if let metadata = thumbnail.resolvedMetadata,
+         !metadata.formatLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        let detailsResult = CameraGalleryRepositoryAdapter.detailsResult(
+          fromResolvedMetadata: metadata
+        )
+        repository.applyDetails(detailsResult, identity: childIdentity)
+      }
       currentPresentation = makeReadyPresentation()
-      await publishIncrementalUpdate(currentPresentation, [mediaIdentity.handle])
+      let delta = CameraGalleryIncrementalDelta.between(
+        previous: previousPresentation,
+        current: currentPresentation,
+        changedHandles: [mediaIdentity.handle]
+      )
+      await publishIncrementalUpdate(currentPresentation, delta)
+    case .thumbnailState(let mediaIdentity, let state):
+      guard mediaIdentity.variant == .thumbnail,
+            isCurrentPublication(
+              mediaIdentity.catalog,
+              handle: mediaIdentity.handle
+            ) else { return }
+      let childIdentity = CameraGalleryChildIdentity(
+        generation: mediaIdentity.catalog.generation,
+        snapshotID: mediaIdentity.catalog.snapshotID,
+        handle: mediaIdentity.handle
+      )
+      let previousPresentation = currentPresentation
+      guard repository.applyThumbnailState(state, identity: childIdentity) else { return }
+      currentPresentation = makeReadyPresentation()
+      let delta = CameraGalleryIncrementalDelta.between(
+        previous: previousPresentation,
+        current: currentPresentation,
+        changedHandles: [mediaIdentity.handle]
+      )
+      await publishIncrementalUpdate(currentPresentation, delta)
     case .details(let catalogIdentity, let result):
       guard isCurrentPublication(catalogIdentity, handle: result.handle) else { return }
       let childIdentity = CameraGalleryChildIdentity(
@@ -343,9 +481,15 @@ actor CameraGalleryCatalogRuntime {
         snapshotID: catalogIdentity.snapshotID,
         handle: result.handle
       )
+      let previousPresentation = currentPresentation
       guard repository.applyDetails(result, identity: childIdentity) else { return }
       currentPresentation = makeReadyPresentation()
-      await publishIncrementalUpdate(currentPresentation, [result.handle])
+      let delta = CameraGalleryIncrementalDelta.between(
+        previous: previousPresentation,
+        current: currentPresentation,
+        changedHandles: [result.handle]
+      )
+      await publishIncrementalUpdate(currentPresentation, delta)
     }
   }
 
@@ -391,11 +535,29 @@ actor CameraGalleryCatalogRuntime {
           let snapshotID = repository.snapshotID else {
       return CameraGalleryPresentation.unavailable
     }
+    let candidates = repository.items.map {
+      CameraMediaFilterCandidate(
+        handle: $0.handle,
+        captureDate: CameraFilterEngine.parseCaptureDate($0.captureDate)
+      )
+    }
+    let projectedHandles = Set(CameraFilterEngine.project(
+      candidates,
+      rule: currentIntent.rule,
+      downloadedHandles: downloadedHandles
+    ).map(\.handle))
+    let items = sort(
+      repository.items.filter { projectedHandles.contains($0.handle) },
+      by: currentIntent.sort
+    )
+    let entriesByHandle = Dictionary(
+      uniqueKeysWithValues: repository.entries.map { ($0.summary.handle, $0) }
+    )
     return CameraGalleryPresentation(
       state: .ready(generation: generation, snapshotID: snapshotID),
       intent: currentIntent,
-      items: sort(repository.items, by: currentIntent.sort),
-      entries: repository.entries
+      items: items,
+      entries: items.compactMap { entriesByHandle[$0.handle] }
     )
   }
 
@@ -440,6 +602,14 @@ actor CameraGalleryCatalogRuntime {
 
   private func publishCurrentPresentation() async {
     let presentation = currentPresentation
+    let submissionID = latestIntentSubmissionID
+    let startedAt = Date()
     await publishPresentation(presentation)
+    await publishSubmissionPresentation(presentation, submissionID)
+    CameraVendorFileLogger.log(
+      "[OBS] CATALOG_PRESENTATION_PUBLISH_END generation=\(presentation.generation?.rawValue ?? 0) " +
+      "submission=\(submissionID.rawValue) items=\(presentation.items.count) " +
+      "loading=\(presentation.isLoading) elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1000))"
+    )
   }
 }

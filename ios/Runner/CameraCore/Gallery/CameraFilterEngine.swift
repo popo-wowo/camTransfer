@@ -3,7 +3,7 @@ import Foundation
 enum CameraFilterPlan: Equatable, Sendable {
   case allCatalog
   case exactFormats(Set<CameraMediaFormat>)
-  case objectInfoFallback(requestedFormats: Set<CameraMediaFormat>)
+  case subtractBaseline(Set<CameraMediaFormat>)
 }
 
 struct CameraMediaFilterCandidate: Equatable, Sendable {
@@ -22,7 +22,9 @@ enum CameraFilterEngine {
         return .allCatalog
       }
       if requestedFormats.contains(.heif) {
-        return .objectInfoFallback(requestedFormats: requestedFormats)
+        // HEIF uses subtractBaseline: camera PTP set difference is fast,
+        // no per-handle ObjectInfo needed.
+        return .subtractBaseline(requestedFormats)
       }
       return .exactFormats(requestedFormats)
     }

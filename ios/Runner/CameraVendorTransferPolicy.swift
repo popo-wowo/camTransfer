@@ -415,7 +415,9 @@ enum CameraVendorThumbnailFetchPolicy {
   static let shouldReadObjectInfoBeforeGetThumb = true
   static let shouldTryStandardGetThumbFirst = true
   static let shouldUsePartialPreviewFallback = false
+  static let objectInfoReadTimeoutSeconds: TimeInterval = 1
   static let standardGetThumbReadTimeoutSeconds: TimeInterval = 3
+  static let postGetThumbObjectInfoReadTimeoutSeconds: TimeInterval = 1
   static let partialPreviewReadSize: UInt32 = 256 * 1_024
   static let minimumUsefulThumbnailBytes = 100
 }

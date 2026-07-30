@@ -759,6 +759,11 @@ final class NativeChipBarControl: UIControl {
 
 
 
+private enum NativeRememberedCameraConnectionPurpose: Equatable {
+  case gallery
+  case quickDownload
+}
+
 final class NativeConnectViewController: UIViewController {
   private let scrollView: UIScrollView = {
     let scrollView = UIScrollView()
@@ -929,7 +934,6 @@ final class NativeConnectViewController: UIViewController {
   private let cameraSessionRuntime: CameraSessionRuntime
   private let wiredImportProbeService = WiredCameraImportService()
   private var autoDownloadRule = CameraAutoDownloadRuleStore.load()
-  private var isAutoDownloadPending = false
   private var quickDownloadTask: Task<Void, Never>?
   private var cameras: [IOSCameraDiscoveredCamera] = []
   private var wiredImportDevices: [WiredCameraImportDevice] = []
@@ -1613,7 +1617,10 @@ final class NativeConnectViewController: UIViewController {
     }
   }
 
-  private func connectRememberedCamera(_ record: IOSCameraRememberedCameraRecord) {
+  private func connectRememberedCamera(
+    _ record: IOSCameraRememberedCameraRecord,
+    purpose: NativeRememberedCameraConnectionPurpose = .gallery
+  ) {
     // Cancel any in-progress probe — user is explicitly connecting now.
     pairingProbeTask?.cancel()
     pairingProbeTask = nil
@@ -1644,7 +1651,7 @@ final class NativeConnectViewController: UIViewController {
     logView.text = ""
     isEnteringGalleryFromRememberedCamera = true
     showConnectingOverlay(deviceName: record.identity.displayName)
-    cameraSessionRuntime.startRememberedGalleryConnection(record: record) { [weak self] state in
+    let completion: (IOSCameraConnectFlowState) -> Void = { [weak self] state in
       guard let self else { return }
       CameraVendorFileLogger.log(
         NativeConnectFlowResultLogPolicy.message(
@@ -1654,7 +1661,9 @@ final class NativeConnectViewController: UIViewController {
       )
       switch state {
       case .galleryReady:
-        break
+        if purpose == .quickDownload {
+          self.executeQuickDownload()
+        }
       case .failed(let issue):
         self.handleConnectFlowFailure(
           title: "进入相机相册失败",
@@ -1667,6 +1676,18 @@ final class NativeConnectViewController: UIViewController {
         self.isEnteringGalleryFromRememberedCamera = false
       }
     }
+    switch purpose {
+    case .gallery:
+      cameraSessionRuntime.startRememberedGalleryConnection(
+        record: record,
+        completion: completion
+      )
+    case .quickDownload:
+      cameraSessionRuntime.startRememberedQuickDownloadConnection(
+        record: record,
+        completion: completion
+      )
+    }
     updateRememberedCameraCard()
   }
 
@@ -1677,10 +1698,18 @@ final class NativeConnectViewController: UIViewController {
     }
     let overlay = NativeConnectingOverlay()
     overlay.configure(deviceName: deviceName)
-    overlay.onCancel = { [weak self] in
+    overlay.onCancel = { [weak self, weak overlay] in
       guard let self else { return }
+      overlay?.onCancel = nil
+      let transportBinding = self.cameraSessionRuntime.currentTransportBinding
       if !self.cameraSessionRuntime.cancelRecoveredDownloadFromConnectionOverlay() {
         self.cancelConnectFlow(reason: "connecting-overlay-user-cancel")
+        if let transportBinding {
+          self.cameraSessionRuntime.exitGalleryAndDisconnect(
+            reason: "connecting-overlay-user-cancel",
+            expectedBinding: transportBinding
+          )
+        }
       }
       self.hideConnectingOverlay()
       self.isEnteringGalleryFromRememberedCamera = false
@@ -1924,12 +1953,7 @@ final class NativeConnectViewController: UIViewController {
         }
         navigationController.popToViewController(self, animated: false)
       }
-      if isAutoDownloadPending {
-        isAutoDownloadPending = false
-        executeQuickDownload()
-      } else {
-        finishRememberedGalleryEntryIfPossible()
-      }
+      finishRememberedGalleryEntryIfPossible()
     case .recoveryDownloadCenter(let payload):
       finishRecoveredDownloadEntryIfPossible(payload: payload)
     case .home:
@@ -1945,7 +1969,12 @@ final class NativeConnectViewController: UIViewController {
     let runtime = cameraSessionRuntime
     let rule = autoDownloadRule
     quickDownloadTask = Task { [weak self] in
-      let result = await QuickDownloadUseCase(runtime: runtime).execute(rule: rule)
+      let result = await QuickDownloadUseCase(runtime: runtime).execute(rule: rule) { [weak self] progress in
+        switch progress {
+        case .queryingCatalog:
+          self?.connectingOverlay?.update(status: "正在筛选相机照片")
+        }
+      }
       guard !Task.isCancelled else { return }
       self?.quickDownloadTask = nil
       self?.handleQuickDownloadResult(result)
@@ -1954,12 +1983,12 @@ final class NativeConnectViewController: UIViewController {
 
   private func handleQuickDownloadResult(_ result: QuickDownloadResult) {
     switch result {
-    case .started(let matchedCount, _):
+    case .started(let matchedCount, _, let items):
       latestServiceStatus = "自动下载 \(matchedCount) 张"
       statusBadgeLabel.text = latestServiceStatus
       spinner.stopAnimating()
       isEnteringGalleryFromRememberedCamera = false
-      pushQuickDownloadCenter()
+      pushQuickDownloadCenter(items: items)
 
     case .noMatch(let ruleSummary):
       latestServiceStatus = "没有匹配的新照片"
@@ -1986,14 +2015,23 @@ final class NativeConnectViewController: UIViewController {
     }
   }
 
-  private func pushQuickDownloadCenter() {
+  private func pushQuickDownloadCenter(items: [CameraVendorGalleryItem]) {
     let pushDownloadCenter: () -> Void = { [weak self] in
       guard let self else { return }
       let controller = NativeDownloadListViewController(
         runtime: self.cameraSessionRuntime,
         itemsProvider: { [weak runtime = self.cameraSessionRuntime] in
           guard let runtime else { return [] }
-          return runtime.presentation.catalog.items.filter { runtime.downloadState(for: $0.handle) != .idle }
+          // Use the resolved items from quick download; fall back to catalog items
+          // for handles that gained state after submission (e.g. saved on retry).
+          let resolvedByHandle = Dictionary(uniqueKeysWithValues: items.map { ($0.handle, $0) })
+          let catalogByHandle = Dictionary(
+            uniqueKeysWithValues: runtime.presentation.catalog.items.map { ($0.handle, $0) }
+          )
+          let merged = resolvedByHandle.merging(catalogByHandle) { resolved, _ in resolved }
+          return merged.values
+            .filter { runtime.downloadState(for: $0.handle) != .idle }
+            .sorted { $0.handle > $1.handle }
         },
         stateProvider: { [weak runtime = self.cameraSessionRuntime] handle in
           runtime?.downloadState(for: handle) ?? .idle
@@ -2316,8 +2354,7 @@ final class NativeConnectViewController: UIViewController {
       // Session still alive — run auto-download directly
       executeQuickDownload()
     } else {
-      isAutoDownloadPending = true
-      connectRememberedCamera(record)
+      connectRememberedCamera(record, purpose: .quickDownload)
     }
   }
 

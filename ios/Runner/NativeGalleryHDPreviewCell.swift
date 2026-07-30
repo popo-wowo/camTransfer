@@ -149,6 +149,7 @@ final class NativeGalleryHDPreviewCell: UICollectionViewCell {
   func configure(
     loadState: LoadState,
     hasRawSidecar: Bool,
+    allowsDisplayQueueWithoutImage: Bool = false,
     displayQueueState: NativeGalleryHDCardQueueState,
     rawQueueState: NativeGalleryHDCardQueueState
   ) {
@@ -157,7 +158,7 @@ final class NativeGalleryHDPreviewCell: UICollectionViewCell {
     case .waiting:
       hasImage = false
       imageView.image = nil
-      statusLabel.text = "等待预览"
+      statusLabel.text = allowsDisplayQueueWithoutImage ? "RAW 原片" : "等待预览"
       statusLabel.isHidden = false
       spinner.stopAnimating()
     case .loading:
@@ -180,8 +181,16 @@ final class NativeGalleryHDPreviewCell: UICollectionViewCell {
 
     queueRawButton.isHidden = !hasRawSidecar
     updateQueueButton(
-      title: NativeGalleryHDCardActionPolicy.displayTitle(hasImage: hasImage, state: displayQueueState),
-      enabled: NativeGalleryHDCardActionPolicy.canQueue(hasImage: hasImage, state: displayQueueState),
+      title: NativeGalleryHDCardActionPolicy.displayTitle(
+        hasImage: hasImage,
+        allowsQueueWithoutImage: allowsDisplayQueueWithoutImage,
+        state: displayQueueState
+      ),
+      enabled: NativeGalleryHDCardActionPolicy.canQueue(
+        hasImage: hasImage,
+        allowsQueueWithoutImage: allowsDisplayQueueWithoutImage,
+        state: displayQueueState
+      ),
       queued: displayQueueState == .queued
     )
     updateRawQueueButton(

@@ -28,20 +28,31 @@ actor CameraCatalogAccessLease {
 
 actor CameraCatalogAccessGate {
   private struct Waiter {
+    let id: UUID
     let owner: CameraCatalogAccessOwner
-    let continuation: CheckedContinuation<CameraCatalogAccessLease, Never>
+    let continuation: CheckedContinuation<CameraCatalogAccessLease, Error>
   }
 
   private var activeOwner: CameraCatalogAccessOwner?
   private var waiters: [Waiter] = []
 
-  func acquire(owner: CameraCatalogAccessOwner) async -> CameraCatalogAccessLease {
+  func acquire(owner: CameraCatalogAccessOwner) async throws -> CameraCatalogAccessLease {
+    try Task.checkCancellation()
     guard activeOwner != nil else {
       activeOwner = owner
       return makeLease(for: owner)
     }
-    return await withCheckedContinuation { continuation in
-      waiters.append(Waiter(owner: owner, continuation: continuation))
+    let waiterID = UUID()
+    return try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { continuation in
+        guard !Task.isCancelled else {
+          continuation.resume(throwing: CancellationError())
+          return
+        }
+        waiters.append(Waiter(id: waiterID, owner: owner, continuation: continuation))
+      }
+    } onCancel: {
+      Task { await self.cancelWaiter(id: waiterID) }
     }
   }
 
@@ -60,5 +71,11 @@ actor CameraCatalogAccessGate {
     let waiter = waiters.removeFirst()
     activeOwner = waiter.owner
     waiter.continuation.resume(returning: makeLease(for: waiter.owner))
+  }
+
+  private func cancelWaiter(id: UUID) {
+    guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+    let waiter = waiters.remove(at: index)
+    waiter.continuation.resume(throwing: CancellationError())
   }
 }

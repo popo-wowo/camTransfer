@@ -19,13 +19,13 @@ struct CameraSessionQueuedDownload: Equatable, Sendable {
   let mode: CameraVendorTransferDownloadMode
 }
 
-enum CameraDownloadOrigin: Equatable, Sendable {
+enum CameraDownloadOrigin: String, Codable, Equatable, Sendable {
   case gallery
   case quickDownload
   case recovery
 }
 
-enum CameraDownloadCompletionPolicy: Equatable, Sendable {
+enum CameraDownloadCompletionPolicy: String, Codable, Equatable, Sendable {
   case returnToGallery
   case disconnectToHome
 }
@@ -162,6 +162,8 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   private var identity: CameraSessionIdentity?
   private var queuedDownloads: [CameraSessionQueuedDownload] = []
   private var activeDownloadSubmission: CameraDownloadSubmission?
+  private var downloadAdmissionTask: Task<Void, Never>?
+  private var suspendedGallerySessionForDownload: CameraGallerySession?
   private var itemStates: [UInt32: CameraVendorDownloadState] = [:]
   private var itemProgress: [UInt32: String] = [:]
   private var galleryItemsByHandle: [UInt32: CameraVendorGalleryItem] = [:]
@@ -178,16 +180,20 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   private var activitySessionID: UUID?
   private var activeTransportBinding: CameraSessionRuntimeBinding?
   private(set) var galleryPresentationPayload: CameraSessionRuntimeGalleryPresentationPayload?
+  private var isQuickDownloadQuerySession = false
+  private var quickDownloadGalleryReadySession: IOSCameraGallerySession?
   private var galleryItemCount = 0
   private var gallerySession: CameraGallerySession?
   private var catalogQueryEngine: CameraCatalogQueryEngine?
+  private var catalogGenerationFence: CameraSessionGenerationFence?
   private var catalogLifecycleTask: Task<Void, Never>?
   private var catalogSessionID: UUID?
   private(set) var galleryCatalogIdentity: CameraGalleryCatalogIdentity?
   private var pendingGalleryActivation: PendingGalleryActivation?
   private var hasRequestedRecoveredConnection = false
   private var presentationObservers: [UUID: (CameraSessionPresentation) -> Void] = [:]
-  private var incrementalCatalogObservers: [UUID: (CameraGalleryPresentation, Set<Int>) -> Void] = [:]
+  private var incrementalCatalogObservers: [UUID: (CameraGalleryPresentation, CameraGalleryIncrementalDelta) -> Void] = [:]
+  private var galleryThumbnailViewportRevision: UInt64 = 0
   private var downloadStopWaiters: [CheckedContinuation<Void, Never>] = []
   var onConnectionSnapshotChanged: ((IOSCameraHomeSnapshot) -> Void)?
   var onConnectionLogAppended: ((String) -> Void)?
@@ -244,21 +250,48 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
 
   func resolveCatalog(
     rule: CameraMediaFilterRule,
-    owner: CameraCatalogAccessOwner
+    owner: CameraCatalogAccessOwner,
+    onProgress: (@MainActor @Sendable (CameraCatalogQueryProgress) -> Void)? = nil
   ) async throws -> CameraCatalogResolution {
     try validateCatalogCommand()
     guard let queryEngine = catalogQueryEngine else { throw CancellationError() }
-    return try await queryEngine.resolve(
+    let resolution = try await queryEngine.resolve(
       rule: rule,
       owner: owner,
-      downloadedHandles: savedDownloadHandles()
+      downloadedHandles: savedDownloadHandles(),
+      onProgress: onProgress
     )
+    try validateCatalogCommand()
+    guard catalogQueryEngine === queryEngine else { throw CancellationError() }
+    for item in resolution.snapshot.items {
+      galleryItemsByHandle[UInt32(item.handle)] = item
+    }
+    return resolution
   }
 
   func requestVisibleGalleryThumbnails(handles: [Int]) {
-    guard canSubmitCatalogCommand, let gallerySession else { return }
+    guard let expectedCatalogIdentity = galleryCatalogIdentity else { return }
+    requestVisibleGalleryThumbnails(
+      handles: handles,
+      expectedCatalogIdentity: expectedCatalogIdentity
+    )
+  }
+
+  func requestVisibleGalleryThumbnails(
+    handles: [Int],
+    expectedCatalogIdentity: CameraGalleryCatalogIdentity
+  ) {
+    guard canSubmitCatalogCommand,
+          let gallerySession,
+          expectedCatalogIdentity == galleryCatalogIdentity else { return }
+    galleryThumbnailViewportRevision &+= 1
+    let submissionID = galleryThumbnailViewportRevision
     Task {
-      await gallerySession.requestVisibleThumbnails(handles: handles)
+      await gallerySession.requestVisibleThumbnails(
+        handles: handles,
+        submissionID: submissionID,
+        expectedCatalogIdentity: expectedCatalogIdentity
+      )
     }
   }
 
@@ -266,12 +299,12 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     await gallerySession?.cancelActiveThumbnailWork()
   }
 
-  func suspendGalleryChildWorkForHighDefinitionPreview() async {
-    await gallerySession?.suspendThumbnailWorkForHDPreview()
+  func suspendGalleryContentWorkForFullScreenPreview() async {
+    await gallerySession?.suspendContentWorkForFullScreenPreview()
   }
 
-  func resumeGalleryChildWorkAfterHighDefinitionPreview() async {
-    await gallerySession?.resumeThumbnailWorkAfterHDPreview()
+  func resumeGalleryContentWorkAfterFullScreenPreview() async {
+    await gallerySession?.resumeContentWorkAfterFullScreenPreview()
   }
 
   var galleryPreviewCache: NativeGalleryHighDefinitionPreviewCache? {
@@ -298,16 +331,12 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     gallerySession?.retryHDPreview(handle: handle)
   }
 
-  func pauseGalleryHDPreviewForDownload() async {
-    await gallerySession?.pauseHDPreviewForDownload()
-  }
-
-  func resumeGalleryHDPreviewAfterDownload() {
-    gallerySession?.resumeHDPreviewAfterDownload()
-  }
-
   func cachedGalleryHDPreview(for handle: Int) -> NativeGalleryCachedPreview? {
     gallerySession?.cachedPreview(for: handle)
+  }
+
+  func peekCachedGalleryHDPreview(for handle: Int) -> NativeGalleryCachedPreview? {
+    gallerySession?.peekCachedPreview(for: handle)
   }
 
   func galleryHDPreviewLoadedHandles(
@@ -323,11 +352,87 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     gallerySession?.observePreview(observer)
   }
 
+  private func beginFreshConnectedSession(
+    identity: CameraSessionIdentity,
+    phase: CameraSessionPhase,
+    startsGalleryCatalog: Bool
+  ) {
+    if recoveredSnapshot != nil || hasInterruptedRecoverably {
+      (recoveryConnector as? CameraSessionRuntimeRecoveryCancelling)?
+        .cancelRecoveryConnection(reason: "fresh-session-superseded-download-recovery")
+      recoveryStore?.clear()
+    }
+    self.identity = identity
+    activeDownloadSubmission = nil
+    recoveredSnapshot = nil
+    hasRequestedRecoveredConnection = false
+    endActivity(reason: startsGalleryCatalog ? "superseded-gallery" : "quick-download-connected")
+    hasInterruptedRecoverably = false
+    queuedDownloads = []
+    itemStates = [:]
+    itemProgress = [:]
+    galleryItemsByHandle = [:]
+    synchronizeSavedHistoryFromStore()
+    completedCount = 0
+    failedCount = 0
+    galleryItemCount = 0
+    presentation = CameraSessionPresentation(
+      phase: phase,
+      queuedHandles: [],
+      inFlightHandle: nil,
+      catalog: .unavailable
+    )
+    isQuickDownloadQuerySession = !startsGalleryCatalog
+    if startsGalleryCatalog {
+      configureCatalogRuntime()
+    } else {
+      configureCatalogQueryRuntime()
+    }
+    (backgroundMaintainer as? CameraSessionRuntimeBackgroundExecutionPreparing)?
+      .prepareBackgroundExecution()
+  }
+
+  private func configureCatalogQueryRuntime() {
+    let previousSession = gallerySession
+    let previousQueryEngine = catalogQueryEngine
+    let previousGenerationFence = catalogGenerationFence
+    let previousLifecycleTask = catalogLifecycleTask
+    previousGenerationFence?.invalidate()
+    guard identity != nil else { return }
+    let sessionEpoch = UUID()
+    let generationFence = CameraSessionGenerationFence()
+    let source = CameraSessionGalleryCatalogRuntimeSource(
+      transport: transport,
+      generationFence: generationFence
+    )
+    let queryEngine = CameraCatalogQueryEngine(source: source, sessionEpoch: sessionEpoch)
+    catalogSessionID = sessionEpoch
+    catalogQueryEngine = queryEngine
+    catalogGenerationFence = generationFence
+    galleryCatalogIdentity = nil
+    gallerySession = nil
+    catalogLifecycleTask = Task { @MainActor [weak self] in
+      await previousLifecycleTask?.value
+      await previousQueryEngine?.invalidate()
+      await previousSession?.invalidate()
+      guard self?.catalogSessionID == sessionEpoch else {
+        await queryEngine.invalidate()
+        return
+      }
+    }
+  }
+
   private func configureCatalogRuntime() {
     let previousSession = gallerySession
     let previousQueryEngine = catalogQueryEngine
+    let previousGenerationFence = catalogGenerationFence
     let previousLifecycleTask = catalogLifecycleTask
-    let source = CameraSessionGalleryCatalogRuntimeSource(transport: transport)
+    previousGenerationFence?.invalidate()
+    let generationFence = CameraSessionGenerationFence()
+    let source = CameraSessionGalleryCatalogRuntimeSource(
+      transport: transport,
+      generationFence: generationFence
+    )
     guard let identity else { return }
     let sessionEpoch = UUID()
     let queryEngine = CameraCatalogQueryEngine(source: source, sessionEpoch: sessionEpoch)
@@ -339,20 +444,22 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
       downloadedHandles: { [weak self] in self?.savedDownloadHandles() ?? [] },
       fetchPreview: { [weak self] mediaIdentity in
         guard let self else { throw CancellationError() }
-        return CameraGalleryRepositoryAdapter.previewResult(
-          from: try await self.transport.fetchPreviewImageWithInfo(for: mediaIdentity.handle)
-        )
+        try generationFence.checkActive()
+        let preview = try await self.transport.fetchPreviewImageWithInfo(for: mediaIdentity.handle)
+        try generationFence.checkActive()
+        return CameraGalleryRepositoryAdapter.previewResult(from: preview)
       }
     )
     let sessionID = sessionEpoch
     catalogSessionID = sessionID
     catalogQueryEngine = queryEngine
+    catalogGenerationFence = generationFence
     galleryCatalogIdentity = nil
     gallerySession = nil
     catalogLifecycleTask = Task { @MainActor [weak self] in
       await previousLifecycleTask?.value
-      await previousSession?.invalidate()
       await previousQueryEngine?.invalidate()
+      await previousSession?.invalidate()
       guard let self,
             self.catalogSessionID == sessionID else {
         await session.invalidate()
@@ -373,9 +480,9 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
         guard self?.catalogSessionID == sessionID else { return }
         self?.installCatalogPresentation(catalog)
       }
-      session.observeIncrementalUpdates { [weak self] catalog, handles in
+      session.observeIncrementalUpdates { [weak self] catalog, delta in
         guard self?.catalogSessionID == sessionID else { return }
-        self?.publishIncrementalCatalogUpdate(catalog, handles)
+        self?.publishIncrementalCatalogUpdate(catalog, delta)
       }
       await session.enter()
     }
@@ -430,8 +537,13 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
 
   func beginTransportBinding(identity: CameraSessionIdentity) -> CameraSessionRuntimeBinding {
     let binding = CameraSessionRuntimeBinding(sessionID: UUID(), identity: identity)
+    catalogGenerationFence?.invalidate()
     activeTransportBinding = binding
     return binding
+  }
+
+  var currentTransportBinding: CameraSessionRuntimeBinding? {
+    activeTransportBinding
   }
 
   func acceptsTransportCallback(_ binding: CameraSessionRuntimeBinding?) -> Bool {
@@ -539,6 +651,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     record: IOSCameraRememberedCameraRecord,
     completion: @escaping (IOSCameraConnectFlowState) -> Void
   ) {
+    quickDownloadGalleryReadySession = nil
     connectionWorker?.enterRememberedGallery(record: record) { [weak self] state in
       guard let self else { return }
       guard case .galleryReady = state else {
@@ -567,6 +680,30 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     }
   }
 
+  func startRememberedQuickDownloadConnection(
+    record: IOSCameraRememberedCameraRecord,
+    completion: @escaping (IOSCameraConnectFlowState) -> Void
+  ) {
+    quickDownloadGalleryReadySession = nil
+    connectionWorker?.enterRememberedGallery(record: record) { [weak self] state in
+      guard let self else { return }
+      guard case let .galleryReady(session) = state else {
+        completion(state)
+        return
+      }
+      do {
+        self.galleryPresentationPayload = try self.activateRememberedQuickDownloadSession()
+        self.quickDownloadGalleryReadySession = session
+        completion(state)
+      } catch {
+        completion(.failed(IOSCameraConnectionIssue(
+          step: .loadGallery,
+          reason: error.localizedDescription
+        )))
+      }
+    }
+  }
+
   func cancelConnectionWorker(reason: String) {
     connectionWorker?.cancel(reason: reason)
   }
@@ -575,6 +712,28 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   /// produced a GalleryReady navigation event. Home receives the returned
   /// presentation payload solely to render the gallery.
   func activateRememberedGallerySession() throws -> CameraSessionRuntimeGalleryPresentationPayload {
+    let (payload, identity) = try activateRememberedTransportSession()
+    send(.enterGallery(identity))
+    galleryPresentationPayload = payload
+    return payload
+  }
+
+  private func activateRememberedQuickDownloadSession() throws -> CameraSessionRuntimeGalleryPresentationPayload {
+    let (payload, identity) = try activateRememberedTransportSession()
+    beginFreshConnectedSession(
+      identity: identity,
+      phase: .galleryReady,
+      startsGalleryCatalog: false
+    )
+    galleryPresentationPayload = payload
+    publishPresentation()
+    return payload
+  }
+
+  private func activateRememberedTransportSession() throws -> (
+    CameraSessionRuntimeGalleryPresentationPayload,
+    CameraSessionIdentity
+  ) {
     guard case let .enterGallery(session)? = connectionWorker?.navigationEvent else {
       throw CameraSessionRuntimeGalleryActivationError.missingGalleryNavigation
     }
@@ -588,54 +747,37 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     guard payload.rememberedPeripheralID == rememberedPeripheralID else {
       throw CameraSessionRuntimeGalleryActivationError.mismatchedRememberedCamera
     }
-    send(
-      .enterGallery(
-        CameraSessionIdentity(
-          cameraName: payload.summary.navigationTitle,
-          peripheralID: rememberedPeripheralID,
-          historyKey: payload.summary.serialNumber.isEmpty
-            ? payload.summary.deviceName
-            : payload.summary.serialNumber
-        )
-      )
+    let identity = CameraSessionIdentity(
+      cameraName: payload.summary.navigationTitle,
+      peripheralID: rememberedPeripheralID,
+      historyKey: payload.summary.serialNumber.isEmpty
+        ? payload.summary.deviceName
+        : payload.summary.serialNumber
     )
-    galleryPresentationPayload = payload
-    return payload
+    return (payload, identity)
   }
 
   func send(_ command: CameraSessionCommand) {
     defer { publishPresentation() }
     switch command {
     case .enterGallery(let identity):
-      if let recoveredSnapshot,
-         (identity.peripheralID == nil || recoveredSnapshot.peripheralID == identity.peripheralID),
-         presentation.phase == .recovering {
-        self.identity = identity
-        configureCatalogRuntime()
-        return
+      if presentation.phase == .recovering {
+        let hasSameProcessRecovery = hasInterruptedRecoverably &&
+          activeDownloadSubmission != nil &&
+          !queuedDownloads.isEmpty
+        let recoveryPeripheralID = recoveredSnapshot?.peripheralID ?? self.identity?.peripheralID
+        if (recoveredSnapshot != nil || hasSameProcessRecovery),
+           recoveryPeripheralID == identity.peripheralID {
+          self.identity = identity
+          configureCatalogRuntime()
+          return
+        }
       }
-      self.identity = identity
-      activeDownloadSubmission = nil
-      hasRequestedRecoveredConnection = false
-      endActivity(reason: "superseded-gallery")
-      hasInterruptedRecoverably = false
-      queuedDownloads = []
-      itemStates = [:]
-      itemProgress = [:]
-      galleryItemsByHandle = [:]
-      synchronizeSavedHistoryFromStore()
-      completedCount = 0
-      failedCount = 0
-      galleryItemCount = 0
-      presentation = CameraSessionPresentation(
+      beginFreshConnectedSession(
+        identity: identity,
         phase: .galleryLoading,
-        queuedHandles: [],
-        inFlightHandle: nil,
-        catalog: .unavailable
+        startsGalleryCatalog: true
       )
-      configureCatalogRuntime()
-      (backgroundMaintainer as? CameraSessionRuntimeBackgroundExecutionPreparing)?
-        .prepareBackgroundExecution()
 
     case .startDownload(let handles, let mode):
       submitDownload(CameraDownloadSubmission(
@@ -686,32 +828,37 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
         (recoveryConnector as? CameraSessionRuntimeRecoveryCancelling)?
           .cancelRecoveryConnection(reason: "user-cancelled-download-recovery")
       }
+      let completionPolicy = activeDownloadSubmission?.completionPolicy ?? .returnToGallery
+      finishDownloadAdmission()
       releaseBackgroundExecution(reason: "user-cancelled-download")
       backgroundMaintainer?.stop(reason: "user-cancelled-download")
       endActivity(reason: "user-cancelled-download")
       recoveryStore?.clear()
+      activeDownloadSubmission = nil
       queuedDownloads = []
       recoveredSnapshot = nil
       hasInterruptedRecoverably = false
       hasRequestedRecoveredConnection = false
-      presentation = presentation.phase == .recovering
-        ? .idle
-        : CameraSessionPresentation(
-          phase: .galleryReady,
-          queuedHandles: [],
-          inFlightHandle: nil,
-          catalog: presentation.catalog
-        )
+      applyDownloadCompletionRouting(
+        completionPolicy,
+        reason: "user-cancelled-interrupted-download"
+      )
 
     case .applicationWillResignActive:
       isApplicationTransitioningToBackground = true
       logLifecycleTransition(event: "will-resign-active")
-      guard identity != nil, isDownloadingPhase else { return }
+      guard identity != nil else { return }
+      let needsFiniteBackgroundTask = isDownloadingPhase
+        || presentation.phase == .galleryLoading
+        || presentation.phase == .galleryReady
+      guard needsFiniteBackgroundTask else { return }
       let acquiredBackgroundExecution = hasBackgroundExecutionAuthority ||
-        (executionAuthority?.acquire(reason: "download-background-transition") ?? false)
+        (executionAuthority?.acquire(reason: "camera-background-transition") ?? false)
       hasBackgroundExecutionAuthority = acquiredBackgroundExecution
       guard acquiredBackgroundExecution else {
-        interruptRecoverably(reason: "background-execution-unavailable")
+        if isDownloadingPhase {
+          interruptRecoverably(reason: "background-execution-unavailable")
+        }
         return
       }
 
@@ -744,7 +891,9 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
         return
       }
       if isDownloadingPhase {
-        if presentation.inFlightHandle == nil, !queuedDownloads.isEmpty {
+        if downloadAdmissionTask != nil {
+          presentDownloadAwaitingAdmission(phase: .downloadingBackground)
+        } else if presentation.inFlightHandle == nil, !queuedDownloads.isEmpty {
           startNextDownload(phase: .downloadingBackground)
         } else {
           present(phase: .downloadingBackground)
@@ -765,7 +914,9 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
           .prepareBackgroundExecution()
       }
       if presentation.phase == .downloadingBackground {
-        if presentation.inFlightHandle == nil, !queuedDownloads.isEmpty {
+        if downloadAdmissionTask != nil {
+          presentDownloadAwaitingAdmission(phase: .downloadingForeground)
+        } else if presentation.inFlightHandle == nil, !queuedDownloads.isEmpty {
           startNextDownload(phase: .downloadingForeground)
         } else {
           present(phase: .downloadingForeground)
@@ -773,7 +924,11 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
       } else if isDownloadingPhase,
                 presentation.inFlightHandle == nil,
                 !queuedDownloads.isEmpty {
-        startNextDownload(phase: .downloadingForeground)
+        if downloadAdmissionTask != nil {
+          presentDownloadAwaitingAdmission(phase: .downloadingForeground)
+        } else {
+          startNextDownload(phase: .downloadingForeground)
+        }
       }
       publishActivity(reason: "application-became-active")
       requestRecoveredConnectionIfNeeded()
@@ -849,6 +1004,12 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
       queuedDownloads = snapshot.queue.map {
         CameraSessionQueuedDownload(handle: UInt32($0.handle), mode: $0.downloadMode)
       }
+      activeDownloadSubmission = CameraDownloadSubmission(
+        id: UUID(),
+        requests: queuedDownloads,
+        origin: snapshot.origin,
+        completionPolicy: snapshot.completionPolicy
+      )
       itemStates = Dictionary(uniqueKeysWithValues: queuedDownloads.map { ($0.handle, .queued) })
       itemProgress = [:]
       completedCount = snapshot.completedCount
@@ -892,17 +1053,20 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
       }
       failedCount += unavailableHandles.count
       queuedDownloads.removeAll { savedHandles.contains($0.handle) || !availableHandles.contains($0.handle) }
+      let completionPolicy = activeDownloadSubmission?.completionPolicy
+        ?? recoveredSnapshot?.completionPolicy
+        ?? .returnToGallery
       guard !queuedDownloads.isEmpty else {
         recoveredSnapshot = nil
         recoveryStore?.clear()
-        presentation = CameraSessionPresentation(
-          phase: .galleryReady,
-          queuedHandles: [],
-          inFlightHandle: nil,
-          catalog: presentation.catalog
-        )
+        activeDownloadSubmission = nil
+        hasInterruptedRecoverably = false
+        hasRequestedRecoveredConnection = false
         endActivity(reason: "recovered-download-reconciled")
-        routeDownloadCompletionToGalleryIfPossible()
+        applyDownloadCompletionRouting(
+          completionPolicy,
+          reason: "recovered-download-reconciled"
+        )
         return
       }
       let recoveredRequests = queuedDownloads
@@ -910,11 +1074,12 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
       hasInterruptedRecoverably = false
       recoveredSnapshot = nil
       hasRequestedRecoveredConnection = false
+      activeDownloadSubmission = nil
       submitDownload(CameraDownloadSubmission(
         id: UUID(),
         requests: recoveredRequests,
         origin: .recovery,
-        completionPolicy: .returnToGallery
+        completionPolicy: completionPolicy
       ))
 
     case .clearSavedDownloadHistory(let handle):
@@ -938,11 +1103,15 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
         (recoveryConnector as? CameraSessionRuntimeRecoveryCancelling)?
           .cancelRecoveryConnection(reason: reason)
       }
-      // Explicit disconnect releases session/presentation ownership now. The
-      // transport still closes only after Catalog children have drained.
+      // Explicit disconnect fences the current generation and closes the
+      // physical transport immediately; retired Catalog children drain later.
       identity = nil
       galleryPresentationPayload = nil
+      isQuickDownloadQuerySession = false
+      quickDownloadGalleryReadySession = nil
       activeDownloadSubmission = nil
+      recoveredSnapshot = nil
+      hasInterruptedRecoverably = false
       releaseDownloadLease()
       releaseBackgroundExecution(reason: reason)
       backgroundMaintainer?.stop(reason: reason)
@@ -950,6 +1119,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
       pendingGalleryActivation = nil
       queuedDownloads = []
       hasRequestedRecoveredConnection = false
+      recoveryStore?.clear()
       endActivity(reason: reason)
       presentation = .idle
 
@@ -994,11 +1164,35 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
       itemStates[request.handle] = .queued
     }
     ensureActivitySessionID()
-    acquireDownloadLease()
+    presentDownloadAwaitingAdmission()
+    beginDownloadAdmission(submissionID: submission.id)
+    return true
+  }
+
+  private func beginDownloadAdmission(submissionID: UUID) {
+    downloadAdmissionTask?.cancel()
+    let gallerySession = gallerySession
+    downloadAdmissionTask = Task { @MainActor [weak self] in
+      await gallerySession?.suspendChildWorkForDownload()
+      guard let self,
+            !Task.isCancelled,
+            self.activeDownloadSubmission?.id == submissionID,
+            self.identity != nil else {
+        await gallerySession?.resumeChildWorkAfterDownload()
+        return
+      }
+      self.downloadAdmissionTask = nil
+      self.suspendedGallerySessionForDownload = gallerySession
+      self.acquireDownloadLease()
+      self.startAdmittedDownload()
+    }
+  }
+
+  private func startAdmittedDownload() {
     if isApplicationInBackground {
       guard hasBackgroundExecutionAuthority else {
         interruptQueuedDownloadBeforeStarting(reason: "background-execution-unavailable")
-        return true
+        return
       }
       backgroundMaintainer?.start(allowingPtpKeepAlive: false)
       startNextDownload(phase: .downloadingBackground)
@@ -1008,13 +1202,34 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
       hasBackgroundExecutionAuthority = acquiredBackgroundExecution
       guard acquiredBackgroundExecution else {
         interruptQueuedDownloadBeforeStarting(reason: "background-execution-unavailable")
-        return true
+        return
       }
       presentQueuedDownloadAwaitingLifecycleTransition()
     } else {
       startNextDownload(phase: .downloadingForeground)
     }
-    return true
+  }
+
+  private func presentDownloadAwaitingAdmission(
+    phase: CameraSessionPhase? = nil
+  ) {
+    presentation = CameraSessionPresentation(
+      phase: phase ?? (isApplicationInBackground ? .downloadingBackground : .downloadingForeground),
+      queuedHandles: queuedDownloads.map(\.handle),
+      inFlightHandle: nil,
+      catalog: presentation.catalog
+    )
+    publishActivity(reason: "download-awaiting-gallery-children")
+  }
+
+  private func finishDownloadAdmission() {
+    downloadAdmissionTask?.cancel()
+    downloadAdmissionTask = nil
+    guard let gallerySession = suspendedGallerySessionForDownload else { return }
+    suspendedGallerySessionForDownload = nil
+    Task {
+      await gallerySession.resumeChildWorkAfterDownload()
+    }
   }
 
   @discardableResult
@@ -1046,7 +1261,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
           activeDownloadSubmission == nil else {
       return false
     }
-    await applyDownloadCompletionRouting(completionPolicy, reason: reason)
+    applyDownloadCompletionRouting(completionPolicy, reason: reason)
     publishPresentation()
     return true
   }
@@ -1066,13 +1281,18 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   }
 
   @discardableResult
-  func observeIncrementalCatalogUpdates(_ observer: @escaping (CameraGalleryPresentation, Set<Int>) -> Void) -> UUID {
+  func observeIncrementalCatalogUpdates(
+    _ observer: @escaping (CameraGalleryPresentation, CameraGalleryIncrementalDelta) -> Void
+  ) -> UUID {
     let id = UUID()
     incrementalCatalogObservers[id] = observer
     return id
   }
 
-  private func publishIncrementalCatalogUpdate(_ catalog: CameraGalleryPresentation, _ handles: Set<Int>) {
+  private func publishIncrementalCatalogUpdate(
+    _ catalog: CameraGalleryPresentation,
+    _ delta: CameraGalleryIncrementalDelta
+  ) {
     // Update the session presentation's catalog without triggering full observer publish
     presentation = CameraSessionPresentation(
       phase: presentation.phase,
@@ -1081,13 +1301,13 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
       catalog: catalog
     )
     // Keep galleryItemsByHandle in sync so recordSavedHandle can find real filenames
-    for handle in handles {
+    for handle in delta.changedHandles {
       if let item = catalog.items.first(where: { $0.handle == Int(handle) }) {
         galleryItemsByHandle[UInt32(handle)] = item
       }
     }
     for observer in incrementalCatalogObservers.values {
-      observer(catalog, handles)
+      observer(catalog, delta)
     }
   }
 
@@ -1168,14 +1388,28 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     syncCatalogDownloadedHandles(including: [Int(handle)])
   }
 
-  func requestPreviewImage(for handle: Int) async throws -> Data {
+  func requestPreviewImageWithInfo(
+    for identity: CameraGalleryMediaIdentity
+  ) async throws -> CameraVendorGalleryPreview {
     try validateCatalogCommand()
-    return try await transport.fetchPreviewImage(for: handle)
-  }
-
-  func requestPreviewImageWithInfo(for handle: Int) async throws -> CameraVendorGalleryPreview {
+    guard identity.variant == .hdPreview,
+          galleryCatalogIdentity == identity.catalog,
+          gallerySession?.catalogIdentity == identity.catalog,
+          gallerySession?.presentation.items.contains(where: {
+            $0.handle == identity.handle
+          }) == true else {
+      throw CancellationError()
+    }
+    let preview = try await transport.fetchPreviewImageWithInfo(for: identity.handle)
     try validateCatalogCommand()
-    return try await transport.fetchPreviewImageWithInfo(for: handle)
+    guard galleryCatalogIdentity == identity.catalog,
+          gallerySession?.catalogIdentity == identity.catalog,
+          gallerySession?.presentation.items.contains(where: {
+            $0.handle == identity.handle
+          }) == true else {
+      throw CancellationError()
+    }
+    return preview
   }
 
   private var canSubmitCatalogCommand: Bool {
@@ -1230,22 +1464,21 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     guard ownsCurrentSession else { return }
     defer { publishPresentation() }
     guard presentation.phase != .cancelling else {
+      let completionPolicy = activeDownloadSubmission?.completionPolicy ?? .returnToGallery
       endActivity(reason: "user-cancelled-download")
       recoveryStore?.clear()
       queuedDownloads = []
       recoveredSnapshot = nil
       hasInterruptedRecoverably = false
+      hasRequestedRecoveredConnection = false
       activeDownloadSubmission = nil
-      presentation = CameraSessionPresentation(
-        phase: .interrupted,
-        queuedHandles: [],
-        inFlightHandle: nil,
-        catalog: presentation.catalog
+      applyDownloadCompletionRouting(
+        completionPolicy,
+        reason: "user-cancelled-download"
       )
       return
     }
     guard hasInterruptedRecoverably, isDownloadingPhase else { return }
-    activeDownloadSubmission = nil
     presentation = CameraSessionPresentation(
       phase: .recovering,
       queuedHandles: queuedDownloads.map(\.handle),
@@ -1270,6 +1503,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
       return false
     }
     hasInterruptedRecoverably = true
+    cancelPendingDownloadAdmission()
     logLifecycleTransition(event: "recovery-persisted", details: "reason=\(reason)")
     return true
   }
@@ -1279,7 +1513,6 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     releaseDownloadLease()
     releaseBackgroundExecution(reason: reason)
     backgroundMaintainer?.stop(reason: reason)
-    activeDownloadSubmission = nil
     presentation = CameraSessionPresentation(
       phase: .recovering,
       queuedHandles: queuedDownloads.map(\.handle),
@@ -1301,10 +1534,10 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
       return
     }
     hasInterruptedRecoverably = true
+    finishDownloadAdmission()
     releaseBackgroundExecution(reason: reason)
     releaseDownloadLease()
     backgroundMaintainer?.stop(reason: reason)
-    activeDownloadSubmission = nil
     presentation = CameraSessionPresentation(
       phase: .recovering,
       queuedHandles: queuedDownloads.map(\.handle),
@@ -1324,7 +1557,8 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     inFlightHandle: UInt32?,
     reason: String
   ) -> Bool {
-    guard let recoveryStore else { return false }
+    guard let recoveryStore,
+          let activeDownloadSubmission else { return false }
     do {
       try recoveryStore.persistInterruptedRecoverable(
         sessionID: activitySessionID ?? UUID(),
@@ -1333,6 +1567,8 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
         inFlightHandle: inFlightHandle,
         completedCount: completedCount,
         failedCount: failedCount,
+        origin: activeDownloadSubmission.origin,
+        completionPolicy: activeDownloadSubmission.completionPolicy,
         reason: reason
       )
       return true
@@ -1390,6 +1626,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   }
 
   private func finishUserCancelledDownload(reason: String) {
+    finishDownloadAdmission()
     releaseBackgroundExecution(reason: reason)
     releaseDownloadLease()
     backgroundMaintainer?.stop(reason: reason)
@@ -1398,7 +1635,9 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     queuedDownloads = []
     recoveredSnapshot = nil
     hasInterruptedRecoverably = false
-    finishDownloadSubmission(reason: reason)
+    let completionPolicy = activeDownloadSubmission?.completionPolicy ?? .returnToGallery
+    activeDownloadSubmission = nil
+    applyDownloadCompletionRouting(completionPolicy, reason: reason)
   }
 
   private func startNextDownload(phase: CameraSessionPhase) {
@@ -1521,69 +1760,91 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   }
 
   private func beginCatalogSessionTermination(reason: String) -> Task<Void, Never> {
+    discardDownloadAdmissionForTermination()
     if gallerySession == nil,
        catalogQueryEngine == nil,
+       catalogGenerationFence == nil,
+       activeTransportBinding == nil,
        let catalogLifecycleTask {
       return catalogLifecycleTask
     }
     let previousSession = gallerySession
     let previousQueryEngine = catalogQueryEngine
+    let previousGenerationFence = catalogGenerationFence
     let previousLifecycleTask = catalogLifecycleTask
     catalogSessionID = nil
     galleryCatalogIdentity = nil
     gallerySession = nil
     catalogQueryEngine = nil
-    let terminationTask = Task { @MainActor [weak self] in
-      await previousLifecycleTask?.value
-      await previousSession?.invalidate()
+    catalogGenerationFence = nil
+    previousGenerationFence?.invalidate()
+    transport.terminateCameraCommunication(reason: reason)
+    activeTransportBinding = nil
+    let terminationTask = Task { @MainActor in
       await previousQueryEngine?.invalidate()
-      guard let self else { return }
-      self.transport.terminateCameraCommunication(reason: reason)
-      self.activeTransportBinding = nil
+      await previousSession?.invalidate()
+      await previousLifecycleTask?.value
     }
     catalogLifecycleTask = terminationTask
     return terminationTask
   }
 
-  private func terminateCatalogSession(reason: String) async {
-    await beginCatalogSessionTermination(reason: reason).value
+  private func discardDownloadAdmissionForTermination() {
+    downloadAdmissionTask?.cancel()
+    downloadAdmissionTask = nil
+    suspendedGallerySessionForDownload = nil
+  }
+
+  private func cancelPendingDownloadAdmission() {
+    downloadAdmissionTask?.cancel()
+    downloadAdmissionTask = nil
+  }
+
+  private func terminateCatalogSession(reason: String) {
+    _ = beginCatalogSessionTermination(reason: reason)
   }
 
   private func finishDownloadSubmission(reason: String) {
     let completionPolicy = activeDownloadSubmission?.completionPolicy ?? .returnToGallery
+    finishDownloadAdmission()
     activeDownloadSubmission = nil
     queuedDownloads = []
     switch completionPolicy {
     case .returnToGallery:
       applyReturnToGalleryRouting()
     case .disconnectToHome:
-      Task { @MainActor [weak self] in
-        guard let self else { return }
-        await self.applyDownloadCompletionRouting(completionPolicy, reason: reason)
-        self.publishPresentation()
-      }
+      applyDownloadCompletionRouting(completionPolicy, reason: reason)
+      publishPresentation()
     }
   }
 
   private func applyDownloadCompletionRouting(
     _ completionPolicy: CameraDownloadCompletionPolicy,
     reason: String
-  ) async {
+  ) {
     switch completionPolicy {
     case .returnToGallery:
       applyReturnToGalleryRouting()
     case .disconnectToHome:
       identity = nil
       galleryPresentationPayload = nil
+      isQuickDownloadQuerySession = false
+      quickDownloadGalleryReadySession = nil
       pendingGalleryActivation = nil
+      recoveredSnapshot = nil
+      hasInterruptedRecoverably = false
       hasRequestedRecoveredConnection = false
       presentation = .idle
-      await terminateCatalogSession(reason: reason)
+      terminateCatalogSession(reason: reason)
       onPresentationDestinationReady?(.home)
     }
   }
 
   private func applyReturnToGalleryRouting() {
+    if isQuickDownloadQuerySession,
+       beginGalleryActivationAfterQuickDownload() {
+      return
+    }
     presentation = CameraSessionPresentation(
       phase: identity == nil ? .idle : .galleryReady,
       queuedHandles: [],
@@ -1593,16 +1854,59 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     routeDownloadCompletionToGalleryIfPossible()
   }
 
+  private func beginGalleryActivationAfterQuickDownload() -> Bool {
+    guard let payload = galleryPresentationPayload,
+          identity != nil,
+          let session = quickDownloadGalleryReadySession else {
+      return false
+    }
+    isQuickDownloadQuerySession = false
+    quickDownloadGalleryReadySession = nil
+    pendingGalleryActivation = PendingGalleryActivation(
+      resultState: .galleryReady(session),
+      destination: .gallery(payload),
+      completion: { _ in }
+    )
+    presentation = CameraSessionPresentation(
+      phase: .galleryLoading,
+      queuedHandles: [],
+      inFlightHandle: nil,
+      catalog: .unavailable
+    )
+    configureCatalogRuntime()
+    return true
+  }
+
   private func routeDownloadCompletionToGalleryIfPossible() {
     guard let galleryPresentationPayload else { return }
     onPresentationDestinationReady?(.gallery(galleryPresentationPayload))
   }
 
-  func exitGalleryAndDisconnect(reason: String) async {
-    await terminateCatalogSession(reason: reason)
+  func exitGalleryAndDisconnect(reason: String) {
+    terminateCatalogSession(reason: reason)
+    clearGallerySessionStateAfterDisconnect()
+  }
+
+  @discardableResult
+  func exitGalleryAndDisconnect(
+    reason: String,
+    expectedBinding: CameraSessionRuntimeBinding
+  ) -> Bool {
+    guard activeTransportBinding == expectedBinding else { return false }
+    exitGalleryAndDisconnect(reason: reason)
+    return true
+  }
+
+  private func clearGallerySessionStateAfterDisconnect() {
+    recoveryStore?.clear()
     identity = nil
     galleryPresentationPayload = nil
+    isQuickDownloadQuerySession = false
+    quickDownloadGalleryReadySession = nil
     activeDownloadSubmission = nil
+    recoveredSnapshot = nil
+    hasInterruptedRecoverably = false
+    hasRequestedRecoveredConnection = false
     queuedDownloads = []
     itemStates = [:]
     itemProgress = [:]

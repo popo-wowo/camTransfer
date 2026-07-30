@@ -44,6 +44,8 @@ struct CameraDownloadSessionSnapshot: Codable, Equatable {
   let state: CameraDownloadSessionState
   let recoveryIntent: String
   let presentationSurface: String
+  let origin: CameraDownloadOrigin
+  let completionPolicy: CameraDownloadCompletionPolicy
   let queue: [CameraDownloadSessionItem]
   let inFlightHandle: Int?
   let completedCount: Int
@@ -58,6 +60,8 @@ struct CameraDownloadSessionSnapshot: Codable, Equatable {
     state: CameraDownloadSessionState = .downloading,
     recoveryIntent: String = "download",
     presentationSurface: String = "gallery",
+    origin: CameraDownloadOrigin = .recovery,
+    completionPolicy: CameraDownloadCompletionPolicy = .returnToGallery,
     queue: [CameraDownloadSessionItem],
     inFlightHandle: Int?,
     completedCount: Int,
@@ -71,6 +75,8 @@ struct CameraDownloadSessionSnapshot: Codable, Equatable {
     self.state = state
     self.recoveryIntent = recoveryIntent
     self.presentationSurface = presentationSurface
+    self.origin = origin
+    self.completionPolicy = completionPolicy
     self.queue = queue
     self.inFlightHandle = inFlightHandle
     self.completedCount = completedCount
@@ -86,6 +92,8 @@ struct CameraDownloadSessionSnapshot: Codable, Equatable {
     case state
     case recoveryIntent
     case presentationSurface
+    case origin
+    case completionPolicy
     case queue
     case inFlightHandle
     case completedCount
@@ -105,6 +113,11 @@ struct CameraDownloadSessionSnapshot: Codable, Equatable {
       : CameraDownloadSessionState(rawValue: rawState) ?? .interruptedRecoverable
     recoveryIntent = try container.decodeIfPresent(String.self, forKey: .recoveryIntent) ?? "download"
     presentationSurface = try container.decodeIfPresent(String.self, forKey: .presentationSurface) ?? "downloadCenter"
+    let rawOrigin = try container.decodeIfPresent(String.self, forKey: .origin)
+    origin = rawOrigin.flatMap(CameraDownloadOrigin.init(rawValue:)) ?? .recovery
+    let rawCompletionPolicy = try container.decodeIfPresent(String.self, forKey: .completionPolicy)
+    completionPolicy = rawCompletionPolicy.flatMap(CameraDownloadCompletionPolicy.init(rawValue:))
+      ?? .returnToGallery
     queue = try container.decode([CameraDownloadSessionItem].self, forKey: .queue)
     inFlightHandle = try container.decodeIfPresent(Int.self, forKey: .inFlightHandle)
     completedCount = try container.decodeIfPresent(Int.self, forKey: .completedCount) ?? 0
@@ -128,6 +141,8 @@ struct CameraDownloadSessionSnapshot: Codable, Equatable {
       state: state,
       recoveryIntent: recoveryIntent,
       presentationSurface: presentationSurface,
+      origin: origin,
+      completionPolicy: completionPolicy,
       queue: queue ?? self.queue,
       inFlightHandle: nil,
       completedCount: completedCount ?? self.completedCount,

@@ -256,6 +256,29 @@ enum CameraVendorCatalogSnapshotValidationPolicy {
   }
 }
 
+enum CameraVendorSubtractBaselineValidationPolicy {
+  static func isolatedHandles(
+    baseline: CameraVendorSpecifiedObjectSnapshot,
+    format: CameraVendorSpecifiedObjectSnapshot
+  ) -> [UInt32]? {
+    guard CameraVendorCatalogSnapshotValidationPolicy.isPublishable(
+      declaredCount: baseline.declaredCount,
+      dateGroups: baseline.dateGroups,
+      orderedHandles: baseline.handles
+    ), CameraVendorCatalogSnapshotValidationPolicy.isPublishable(
+      declaredCount: format.declaredCount,
+      dateGroups: format.dateGroups,
+      orderedHandles: format.handles
+    ) else {
+      return nil
+    }
+    let baselineHandles = Set(baseline.handles)
+    let formatHandles = Set(format.handles)
+    guard baselineHandles.isSubset(of: formatHandles) else { return nil }
+    return format.handles.filter { !baselineHandles.contains($0) }
+  }
+}
+
 enum CameraVendorSearchModeDescRetryPolicy {
   static let maxAttempts = 3
   static let retryableResponseCode = 0x2019

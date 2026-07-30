@@ -81,6 +81,8 @@ protocol CameraSessionRuntimeRecoveryStoring: AnyObject {
     inFlightHandle: UInt32?,
     completedCount: Int,
     failedCount: Int,
+    origin: CameraDownloadOrigin,
+    completionPolicy: CameraDownloadCompletionPolicy,
     reason: String
   ) throws
   func loadInterruptedRecoverable() -> CameraDownloadSessionSnapshot?
@@ -138,6 +140,8 @@ final class CameraDownloadSessionRuntimeRecoveryStore: CameraSessionRuntimeRecov
     inFlightHandle: UInt32?,
     completedCount: Int,
     failedCount: Int,
+    origin: CameraDownloadOrigin,
+    completionPolicy: CameraDownloadCompletionPolicy,
     reason: String
   ) throws {
     guard let peripheralID = identity.peripheralID else {
@@ -151,6 +155,8 @@ final class CameraDownloadSessionRuntimeRecoveryStore: CameraSessionRuntimeRecov
       state: .interruptedRecoverable,
       recoveryIntent: reason,
       presentationSurface: "runtime",
+      origin: origin,
+      completionPolicy: completionPolicy,
       queue: downloads.map {
         CameraDownloadSessionItem(handle: Int($0.handle), mode: $0.mode)
       },
@@ -163,8 +169,15 @@ final class CameraDownloadSessionRuntimeRecoveryStore: CameraSessionRuntimeRecov
   }
 
   func loadInterruptedRecoverable() -> CameraDownloadSessionSnapshot? {
-    guard let snapshot = try? store.load(),
-          snapshot.state == .interruptedRecoverable,
+    let snapshot: CameraDownloadSessionSnapshot
+    do {
+      guard let loadedSnapshot = try store.load() else { return nil }
+      snapshot = loadedSnapshot
+    } catch {
+      try? store.clear()
+      return nil
+    }
+    guard snapshot.state == .interruptedRecoverable,
           !snapshot.queue.isEmpty else {
       return nil
     }

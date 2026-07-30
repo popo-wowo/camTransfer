@@ -3,37 +3,40 @@ import Foundation
 actor CameraGalleryThumbnailPipeline {
   enum Publication {
     case thumbnail(CameraGalleryMediaIdentity, CameraGalleryThumbnailResult)
+    case thumbnailState(CameraGalleryMediaIdentity, CameraGalleryThumbnailState)
     case details(CameraGalleryCatalogIdentity, CameraGalleryDetailsSourceResult)
   }
 
   typealias Publisher = @MainActor (Publication) async -> Void
 
-  private struct ActiveVisibleRequest {
-    let id: UInt64
-    let catalogIdentity: CameraGalleryCatalogIdentity
-    let handles: Set<Int>
-  }
-
   private let source: CameraGalleryThumbnailPipelineSource
+  private let retryDelaysNanoseconds: [UInt64]
   private let publish: Publisher
   private var catalogIdentity: CameraGalleryCatalogIdentity?
   private var membership: Set<Int> = []
   private var orderedMembership: [Int] = []
   private var thumbnailTask: Task<Void, Never>?
   private var detailsTask: Task<Void, Never>?
-  private var activeVisibleRequest: ActiveVisibleRequest?
-  private var nextVisibleRequestID: UInt64 = 0
+  private var latestVisibleHandles: [Int] = []
+  private var latestViewportSubmissionID: UInt64 = 0
+  private var latestViewportRevision: UInt64 = 0
   private var thumbnailDataCache: [CameraGalleryMediaCacheKey: Data] = [:]
   private var reusableObjectInfos: [CameraGalleryMediaCacheKey: CameraGalleryObjectInfoResult] = [:]
   private var thumbnailRetryCounts: [CameraGalleryMediaCacheKey: Int] = [:]
-  private var suspensionCount = 0
+  private var failedThumbnailKeys: Set<CameraGalleryMediaCacheKey> = []
+  private var completedDetailsHandles: Set<Int> = []
+  private var detailsCursor = 0
+  private var isCatalogSuspended = false
+  private var isExternalWorkSuspended = false
   private var isInvalidated = false
 
   init(
     source: CameraGalleryThumbnailPipelineSource,
+    retryDelaysNanoseconds: [UInt64] = [500_000_000, 2_000_000_000],
     publish: @escaping Publisher
   ) {
     self.source = source
+    self.retryDelaysNanoseconds = retryDelaysNanoseconds
     self.publish = publish
   }
 
@@ -42,16 +45,22 @@ actor CameraGalleryThumbnailPipeline {
     membership: [Int],
     reusableObjectInfos: [Int: CameraGalleryObjectInfoResult]
   ) async {
+    let startedAt = Date()
     let previousSessionEpoch = self.catalogIdentity?.sessionEpoch
+    isCatalogSuspended = true
+    await cancelTasksAndJoin()
     self.catalogIdentity = catalogIdentity
     orderedMembership = membership
     self.membership = Set(membership)
+    latestVisibleHandles = []
+    completedDetailsHandles = []
+    detailsCursor = 0
+    isCatalogSuspended = false
     isInvalidated = false
     if let previousSessionEpoch,
        previousSessionEpoch != catalogIdentity.sessionEpoch {
       clearSessionState()
     }
-    await cancelTasksAndJoin()
     for (handle, info) in reusableObjectInfos where info.handle == handle {
       let identity = mediaIdentity(
         catalogIdentity: catalogIdentity,
@@ -59,67 +68,127 @@ actor CameraGalleryThumbnailPipeline {
       )
       self.reusableObjectInfos[CameraGalleryMediaCacheKey(mediaIdentity: identity)] = info
     }
-    startDetailsIfPossible()
+    CameraVendorFileLogger.log(
+      "[OBS] THUMBNAIL_PIPELINE_INSTALL_END generation=\(catalogIdentity.generation.rawValue) " +
+      "membership=\(membership.count) thumbnailCache=\(thumbnailDataCache.count) " +
+      "objectInfoCache=\(self.reusableObjectInfos.count) externalSuspended=\(isExternalWorkSuspended) " +
+      "elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1000))"
+    )
   }
 
   func requestVisible(handles: [Int]) async {
-    guard suspensionCount == 0,
-          !isInvalidated,
+    let submissionID = latestViewportSubmissionID &+ 1
+    await requestVisible(handles: handles, submissionID: submissionID)
+  }
+
+  func requestVisible(handles: [Int], submissionID: UInt64) async {
+    let startedAt = Date()
+    guard !isInvalidated,
           let catalogIdentity else { return }
+    guard submissionID > latestViewportSubmissionID else { return }
+    latestViewportSubmissionID = submissionID
     let requestedHandles = handles.filter { membership.contains($0) }
+    if requestedHandles != latestVisibleHandles {
+      latestVisibleHandles = requestedHandles
+      latestViewportRevision &+= 1
+    }
     guard !requestedHandles.isEmpty else { return }
+    guard !isSuspended else { return }
+
+    let rearmedFailureCount = rearmFailedThumbnails(
+      handles: requestedHandles,
+      catalogIdentity: catalogIdentity
+    )
 
     var uncachedHandles: [Int] = []
+    var cachedPublications: [Publication] = []
+    var cacheHitCount = 0
+    var failedCount = 0
     for handle in requestedHandles {
       let identity = mediaIdentity(catalogIdentity: catalogIdentity, handle: handle)
       let cacheKey = CameraGalleryMediaCacheKey(mediaIdentity: identity)
       if let data = thumbnailDataCache[cacheKey] {
-        await publish(.thumbnail(
+        cacheHitCount += 1
+        cachedPublications.append(.thumbnail(
           identity,
           CameraGalleryThumbnailResult(data: data, resolvedMetadata: nil)
         ))
+      } else if failedThumbnailKeys.contains(cacheKey) {
+        failedCount += 1
+        cachedPublications.append(.thumbnailState(identity, .failed))
       } else {
         uncachedHandles.append(handle)
       }
     }
-    guard !uncachedHandles.isEmpty else { return }
-
-    let requestedHandleSet = Set(uncachedHandles)
-    if let activeVisibleRequest,
-       activeVisibleRequest.catalogIdentity == catalogIdentity,
-       requestedHandleSet.isSubset(of: activeVisibleRequest.handles) {
+    for publication in cachedPublications {
+      guard isCurrentViewport(
+        submissionID: submissionID,
+        catalogIdentity: catalogIdentity
+      ) else { return }
+      await publish(publication)
+      guard isCurrentViewport(
+        submissionID: submissionID,
+        catalogIdentity: catalogIdentity
+      ) else { return }
+    }
+    CameraVendorFileLogger.log(
+      "[OBS] THUMBNAIL_VIEWPORT_CLASSIFIED generation=\(catalogIdentity.generation.rawValue) " +
+      "submission=\(submissionID) requested=\(requestedHandles.count) cacheHits=\(cacheHitCount) " +
+      "camera=\(uncachedHandles.count) failed=\(failedCount) rearmed=\(rearmedFailureCount) " +
+      "elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1000))"
+    )
+    guard !uncachedHandles.isEmpty else {
+      startDetailsIfPossible()
       return
     }
 
-    await cancelVisibleTaskAndJoin()
-    nextVisibleRequestID &+= 1
-    let request = ActiveVisibleRequest(
-      id: nextVisibleRequestID,
-      catalogIdentity: catalogIdentity,
-      handles: requestedHandleSet
-    )
-    activeVisibleRequest = request
+    await cancelDetailsWorkAndJoin()
+    guard submissionID == latestViewportSubmissionID,
+          !isSuspended,
+          !isInvalidated else { return }
+    startThumbnailWorkerIfNeeded()
+  }
+
+  private func isCurrentViewport(
+    submissionID: UInt64,
+    catalogIdentity: CameraGalleryCatalogIdentity
+  ) -> Bool {
+    submissionID == latestViewportSubmissionID &&
+      self.catalogIdentity == catalogIdentity &&
+      !isSuspended &&
+      !isInvalidated
+  }
+
+  private func startThumbnailWorkerIfNeeded() {
+    guard thumbnailTask == nil,
+          !pendingVisibleThumbnailHandles().isEmpty else { return }
     thumbnailTask = Task { [weak self] in
       guard let self else { return }
-      await self.loadVisibleThumbnails(
-        handles: uncachedHandles,
-        catalogIdentity: catalogIdentity
-      )
-      await self.finishVisibleRequest(id: request.id)
+      await self.runThumbnailWorker()
     }
   }
 
-  func suspend() async {
-    suspensionCount += 1
-    guard suspensionCount == 1 else { return }
+  func suspendForCatalogChange() async {
+    guard !isCatalogSuspended else { return }
+    isCatalogSuspended = true
     await cancelTasksAndJoin()
   }
 
-  func resume() {
-    guard suspensionCount > 0 else { return }
-    suspensionCount -= 1
-    guard suspensionCount == 0 else { return }
-    startDetailsIfPossible()
+  func suspendForExternalWork() async {
+    guard !isExternalWorkSuspended else { return }
+    isExternalWorkSuspended = true
+    await cancelTasksAndJoin()
+  }
+
+  func resumeExternalWork() async {
+    guard isExternalWorkSuspended else { return }
+    isExternalWorkSuspended = false
+    guard !isSuspended else { return }
+    if !latestVisibleHandles.isEmpty {
+      await cancelDetailsWorkAndJoin()
+      guard !isSuspended, !isInvalidated else { return }
+      startThumbnailWorkerIfNeeded()
+    }
   }
 
   func cancelAndJoin() async {
@@ -128,8 +197,8 @@ actor CameraGalleryThumbnailPipeline {
 
   func waitUntilIdle() async {
     let thumbnailTask = thumbnailTask
-    let detailsTask = detailsTask
     await thumbnailTask?.value
+    let detailsTask = detailsTask
     await detailsTask?.value
   }
 
@@ -138,16 +207,22 @@ actor CameraGalleryThumbnailPipeline {
     catalogIdentity = nil
     membership = []
     orderedMembership = []
+    latestVisibleHandles = []
+    completedDetailsHandles = []
+    detailsCursor = 0
     await cancelTasksAndJoin()
     clearSessionState()
-    suspensionCount = 0
+    isCatalogSuspended = false
+    isExternalWorkSuspended = false
   }
 
   private func startDetailsIfPossible() {
-    guard suspensionCount == 0,
+    guard !isSuspended,
           !isInvalidated,
+          thumbnailTask == nil,
           let catalogIdentity else { return }
-    let handles = orderedMembership
+    let handles = pendingDetailsHandles()
+    guard !handles.isEmpty else { return }
     detailsTask?.cancel()
     detailsTask = Task { [weak self] in
       guard let self else { return }
@@ -155,26 +230,44 @@ actor CameraGalleryThumbnailPipeline {
     }
   }
 
-  private func loadVisibleThumbnails(
-    handles: [Int],
-    catalogIdentity: CameraGalleryCatalogIdentity
-  ) async {
-    await source.beginVisibleThumbnailBatch(handles: handles)
-    for handle in handles {
-      guard !Task.isCancelled else { break }
+  private func runThumbnailWorker() async {
+    var activeBatchRevision: UInt64?
+    var activeBatchHandles: [Int] = []
+
+    while !Task.isCancelled,
+          !isSuspended,
+          !isInvalidated,
+          let catalogIdentity {
+      let viewportRevision = latestViewportRevision
+      let pendingHandles = pendingVisibleThumbnailHandles()
+      guard let handle = pendingHandles.first else { break }
+
+      if activeBatchRevision != viewportRevision {
+        if !activeBatchHandles.isEmpty {
+          await source.finishVisibleThumbnailBatch(handles: activeBatchHandles)
+          activeBatchHandles = []
+        }
+        guard !Task.isCancelled, !isSuspended, !isInvalidated else { break }
+        activeBatchRevision = viewportRevision
+        activeBatchHandles = pendingHandles
+        await source.beginVisibleThumbnailBatch(handles: pendingHandles)
+      }
+
       let identity = mediaIdentity(catalogIdentity: catalogIdentity, handle: handle)
       let cacheKey = CameraGalleryMediaCacheKey(mediaIdentity: identity)
-      do {
-        let thumbnail = try await source.loadThumbnail(handle: handle)
-        thumbnailRetryCounts.removeValue(forKey: cacheKey)
-        await acceptThumbnail(thumbnail, identity: identity)
-      } catch is CancellationError {
-        break
-      } catch {
-        thumbnailRetryCounts[cacheKey, default: 0] += 1
-      }
+      let didFinish = await loadThumbnailWithRetry(
+        handle: handle,
+        identity: identity,
+        cacheKey: cacheKey
+      )
+      if !didFinish { break }
     }
-    await source.finishVisibleThumbnailBatch(handles: handles)
+
+    if !activeBatchHandles.isEmpty {
+      await source.finishVisibleThumbnailBatch(handles: activeBatchHandles)
+    }
+    thumbnailTask = nil
+    startDetailsIfPossible()
   }
 
   private func loadDetails(
@@ -193,6 +286,7 @@ actor CameraGalleryThumbnailPipeline {
           result = try await source.loadDetails(handle: handle)
         }
         await acceptDetails(result, catalogIdentity: catalogIdentity)
+        markDetailsCompleted(handle, catalogIdentity: catalogIdentity)
       } catch is CancellationError {
         return
       } catch {
@@ -209,6 +303,11 @@ actor CameraGalleryThumbnailPipeline {
           !isInvalidated else { return }
     let cacheKey = CameraGalleryMediaCacheKey(mediaIdentity: identity)
     thumbnailDataCache[cacheKey] = thumbnail.data
+    if let info = thumbnail.objectInfo,
+       info.handle == identity.handle,
+       isReusableEnrichment(info) {
+      reusableObjectInfos[cacheKey] = info
+    }
     guard isCurrent(identity.catalog, handle: identity.handle) else { return }
     await publish(.thumbnail(identity, thumbnail))
   }
@@ -233,18 +332,10 @@ actor CameraGalleryThumbnailPipeline {
     _ catalogIdentity: CameraGalleryCatalogIdentity,
     handle: Int
   ) -> Bool {
-    suspensionCount == 0 &&
+    !isSuspended &&
       !isInvalidated &&
       self.catalogIdentity == catalogIdentity &&
       membership.contains(handle)
-  }
-
-  private func cancelVisibleTaskAndJoin() async {
-    let task = thumbnailTask
-    thumbnailTask = nil
-    activeVisibleRequest = nil
-    task?.cancel()
-    await task?.value
   }
 
   private func cancelTasksAndJoin() async {
@@ -252,23 +343,110 @@ actor CameraGalleryThumbnailPipeline {
     let detailsTask = detailsTask
     self.thumbnailTask = nil
     self.detailsTask = nil
-    activeVisibleRequest = nil
     thumbnailTask?.cancel()
     detailsTask?.cancel()
     await thumbnailTask?.value
     await detailsTask?.value
   }
 
-  private func finishVisibleRequest(id: UInt64) {
-    guard activeVisibleRequest?.id == id else { return }
-    activeVisibleRequest = nil
-    thumbnailTask = nil
+  private func cancelDetailsWorkAndJoin() async {
+    let detailsTask = detailsTask
+    self.detailsTask = nil
+    detailsTask?.cancel()
+    await detailsTask?.value
   }
 
   private func clearSessionState() {
     thumbnailDataCache = [:]
     reusableObjectInfos = [:]
     thumbnailRetryCounts = [:]
+    failedThumbnailKeys = []
+  }
+
+  private func loadThumbnailWithRetry(
+    handle: Int,
+    identity: CameraGalleryMediaIdentity,
+    cacheKey: CameraGalleryMediaCacheKey
+  ) async -> Bool {
+    while !Task.isCancelled {
+      do {
+        let thumbnail = try await source.loadThumbnail(handle: handle)
+        try Task.checkCancellation()
+        thumbnailRetryCounts.removeValue(forKey: cacheKey)
+        failedThumbnailKeys.remove(cacheKey)
+        await acceptThumbnail(thumbnail, identity: identity)
+        return true
+      } catch is CancellationError {
+        return false
+      } catch {
+        let failureCount = thumbnailRetryCounts[cacheKey, default: 0] + 1
+        thumbnailRetryCounts[cacheKey] = failureCount
+        guard failureCount <= retryDelaysNanoseconds.count else {
+          failedThumbnailKeys.insert(cacheKey)
+          await publish(.thumbnailState(identity, .failed))
+          return true
+        }
+        do {
+          try await Task.sleep(nanoseconds: retryDelaysNanoseconds[failureCount - 1])
+        } catch {
+          return false
+        }
+      }
+    }
+    return false
+  }
+
+  private func rearmFailedThumbnails(
+    handles: [Int],
+    catalogIdentity: CameraGalleryCatalogIdentity
+  ) -> Int {
+    var count = 0
+    for handle in handles {
+      let identity = mediaIdentity(catalogIdentity: catalogIdentity, handle: handle)
+      let cacheKey = CameraGalleryMediaCacheKey(mediaIdentity: identity)
+      guard failedThumbnailKeys.remove(cacheKey) != nil else { continue }
+      thumbnailRetryCounts.removeValue(forKey: cacheKey)
+      count += 1
+    }
+    return count
+  }
+
+  private func pendingDetailsHandles() -> [Int] {
+    advanceDetailsCursor()
+    return orderedMembership.dropFirst(detailsCursor).filter {
+      !completedDetailsHandles.contains($0)
+    }
+  }
+
+  private func pendingVisibleThumbnailHandles() -> [Int] {
+    guard let catalogIdentity else { return [] }
+    return latestVisibleHandles.filter { handle in
+      guard membership.contains(handle) else { return false }
+      let identity = mediaIdentity(catalogIdentity: catalogIdentity, handle: handle)
+      let cacheKey = CameraGalleryMediaCacheKey(mediaIdentity: identity)
+      return thumbnailDataCache[cacheKey] == nil && !failedThumbnailKeys.contains(cacheKey)
+    }
+  }
+
+  private func markDetailsCompleted(
+    _ handle: Int,
+    catalogIdentity: CameraGalleryCatalogIdentity
+  ) {
+    guard self.catalogIdentity == catalogIdentity,
+          membership.contains(handle) else { return }
+    completedDetailsHandles.insert(handle)
+    advanceDetailsCursor()
+  }
+
+  private func advanceDetailsCursor() {
+    while detailsCursor < orderedMembership.count,
+          completedDetailsHandles.contains(orderedMembership[detailsCursor]) {
+      detailsCursor += 1
+    }
+  }
+
+  private var isSuspended: Bool {
+    isCatalogSuspended || isExternalWorkSuspended
   }
 
   private func mediaIdentity(

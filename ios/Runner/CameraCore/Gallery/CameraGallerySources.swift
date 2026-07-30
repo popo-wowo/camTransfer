@@ -23,6 +23,17 @@ struct CameraGalleryObjectInfoResult: Equatable, Sendable {
 struct CameraGalleryThumbnailResult: Equatable, Sendable {
   let data: Data
   let resolvedMetadata: CameraGalleryResolvedItemMetadata?
+  let objectInfo: CameraGalleryObjectInfoResult?
+
+  init(
+    data: Data,
+    resolvedMetadata: CameraGalleryResolvedItemMetadata?,
+    objectInfo: CameraGalleryObjectInfoResult? = nil
+  ) {
+    self.data = data
+    self.resolvedMetadata = resolvedMetadata
+    self.objectInfo = objectInfo
+  }
 }
 
 struct CameraGalleryPreviewResult: Equatable, Sendable {
@@ -73,7 +84,7 @@ struct CameraGalleryCatalogTransactionFailure: Error, Equatable, Sendable {
 protocol CameraCatalogQuerySource: AnyObject {
   func loadExpandedCatalog() async throws -> CameraGalleryCatalogSnapshot
   func loadExactCatalog(for format: CameraMediaFormat) async throws -> CameraGalleryCatalogSnapshot
-  func loadObjectInfo(handle: Int) async throws -> CameraGalleryObjectInfoResult
+  func loadSubtractBaselineCatalog(for format: CameraMediaFormat) async throws -> CameraGalleryCatalogSnapshot
 }
 
 @MainActor
@@ -85,7 +96,4 @@ protocol CameraGalleryThumbnailPipelineSource: AnyObject {
 }
 
 @MainActor
-protocol CameraGalleryCatalogRuntimeSource: CameraCatalogQuerySource, CameraGalleryThumbnailPipelineSource {
-  func loadInitialCatalog() async throws -> CameraGalleryCatalogSnapshot
-  func loadCatalog(for intent: CameraGalleryFilterIntent) async throws -> CameraGalleryCatalogSnapshot
-}
+protocol CameraGalleryCatalogRuntimeSource: CameraCatalogQuerySource, CameraGalleryThumbnailPipelineSource {}

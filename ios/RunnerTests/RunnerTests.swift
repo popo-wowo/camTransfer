@@ -346,6 +346,8 @@ final class RunnerTests: XCTestCase {
       state: .interruptedRecoverable,
       recoveryIntent: "background-expired",
       presentationSurface: "downloadCenter",
+      origin: .quickDownload,
+      completionPolicy: .disconnectToHome,
       queue: [CameraDownloadSessionItem(handle: 1845, mode: .original)],
       inFlightHandle: 1845,
       completedCount: 3,
@@ -356,6 +358,91 @@ final class RunnerTests: XCTestCase {
     try store.save(snapshot)
 
     XCTAssertEqual(try store.load(), snapshot)
+  }
+
+  func testDownloadSessionSnapshotLegacyPayloadDefaultsToGalleryCompletionAndReplacingPreservesRouting() throws {
+    let snapshot = CameraDownloadSessionSnapshot(
+      sessionID: UUID(),
+      peripheralID: UUID(),
+      cameraName: "X-T5",
+      state: .interruptedRecoverable,
+      recoveryIntent: "background-expired",
+      presentationSurface: "runtime",
+      origin: .quickDownload,
+      completionPolicy: .disconnectToHome,
+      queue: [CameraDownloadSessionItem(handle: 1845, mode: .original)],
+      inFlightHandle: 1845,
+      completedCount: 0,
+      failedCount: 0,
+      updatedAt: Date(timeIntervalSince1970: 1_800_000_000)
+    )
+    var legacyPayload = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: try JSONEncoder().encode(snapshot)) as? [String: Any]
+    )
+    legacyPayload.removeValue(forKey: "origin")
+    legacyPayload.removeValue(forKey: "completionPolicy")
+
+    let decoded = try JSONDecoder().decode(
+      CameraDownloadSessionSnapshot.self,
+      from: JSONSerialization.data(withJSONObject: legacyPayload)
+    )
+
+    XCTAssertEqual(decoded.origin, .recovery)
+    XCTAssertEqual(decoded.completionPolicy, .returnToGallery)
+    let replaced = snapshot.replacing(
+      state: .interruptedTerminal,
+      recoveryIntent: "manual-recovery"
+    )
+    XCTAssertEqual(replaced.origin, .quickDownload)
+    XCTAssertEqual(replaced.completionPolicy, .disconnectToHome)
+  }
+
+  func testDownloadSessionSnapshotUnknownRoutingValuesFallBackToRecoveryDefaults() throws {
+    let snapshot = CameraDownloadSessionSnapshot(
+      sessionID: UUID(),
+      peripheralID: UUID(),
+      cameraName: "X-T5",
+      state: .interruptedRecoverable,
+      recoveryIntent: "background-expired",
+      presentationSurface: "runtime",
+      origin: .quickDownload,
+      completionPolicy: .disconnectToHome,
+      queue: [CameraDownloadSessionItem(handle: 1845, mode: .original)],
+      inFlightHandle: 1845,
+      completedCount: 0,
+      failedCount: 0,
+      updatedAt: Date(timeIntervalSince1970: 1_800_000_000)
+    )
+    var payload = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: try JSONEncoder().encode(snapshot)) as? [String: Any]
+    )
+    payload["origin"] = "futureDownloadOrigin"
+    payload["completionPolicy"] = "futureCompletionPolicy"
+
+    let decoded = try JSONDecoder().decode(
+      CameraDownloadSessionSnapshot.self,
+      from: JSONSerialization.data(withJSONObject: payload)
+    )
+
+    XCTAssertEqual(decoded.origin, .recovery)
+    XCTAssertEqual(decoded.completionPolicy, .returnToGallery)
+  }
+
+  @MainActor
+  func testRuntimeRecoveryStoreClearsCorruptedSnapshotFile() throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("camtransfer-corrupted-recovery-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let fileURL = directory.appendingPathComponent("camera-download-recovery.json")
+    try Data("not-json".utf8).write(to: fileURL)
+    let runtimeStore = CameraDownloadSessionRuntimeRecoveryStore(
+      store: CameraDownloadSessionStore(fileURL: fileURL)
+    )
+
+    XCTAssertNil(runtimeStore.loadInterruptedRecoverable())
+    XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
   }
 
 
@@ -638,6 +725,16 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(
       CameraVendorFastDiagnosticLogPolicy.shouldWriteToDisk(
         "[OBS] GALLERY_BACKGROUND_READ_IMAGE_INFO_KEEP_ALIVE_OK op=0x9054 handle=0x00000001"
+      )
+    )
+    XCTAssertFalse(
+      CameraVendorFastDiagnosticLogPolicy.shouldWriteToDisk(
+        "[OBS] GALLERY_BACKGROUND_METADATA_REQUEST_BEGIN handle=0x00000001 active=1"
+      )
+    )
+    XCTAssertFalse(
+      CameraVendorFastDiagnosticLogPolicy.shouldWriteToDisk(
+        "图库: [OBS] GALLERY_BACKGROUND_METADATA_REQUEST_END handle=0x00000001 active=0"
       )
     )
     XCTAssertFalse(
@@ -1086,6 +1183,17 @@ final class RunnerTests: XCTestCase {
       item: CameraVendorGalleryItem(handle: 2, filename: "B.HEIC", formatLabel: "HEIF", captureDate: "", byteSizeText: ""),
       hasPreviewImage: false
     ))
+    XCTAssertTrue(NativeGalleryPreviewImageLoadPolicy.shouldRequestPreviewImage(
+      item: CameraVendorGalleryItem(
+        handle: 5,
+        filename: "0x00000005",
+        formatLabel: "",
+        captureDate: "",
+        byteSizeText: "",
+        formatHints: [.heif]
+      ),
+      hasPreviewImage: false
+    ))
     XCTAssertFalse(NativeGalleryPreviewImageLoadPolicy.shouldRequestPreviewImage(
       item: CameraVendorGalleryItem(handle: 3, filename: "C.RAF", formatLabel: "RAW", captureDate: "", byteSizeText: ""),
       hasPreviewImage: false
@@ -1115,39 +1223,6 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(controller.pendingHandles, [2, 1])
   }
 
-  func testNativeGalleryHDSessionChoosesNewestAvailableDateWhenCurrentDateHasNoPreview() throws {
-    let current = try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 7, day: 25)))
-    let older = CameraVendorGalleryItem(
-      handle: 10,
-      filename: "DSCF0010.JPG",
-      formatLabel: "JPG",
-      captureDate: "20260724T120000",
-      byteSizeText: ""
-    )
-
-    let selected = NativeGalleryHDPreviewSessionPolicy.preferredActiveDate(
-      items: [older],
-      currentDate: current
-    )
-
-    XCTAssertEqual(Calendar.current.component(.day, from: selected), 24)
-  }
-
-  func testNativeGalleryHDSessionAvailableDatesIncludeUnresolvedCatalogPlaceholders() throws {
-    let placeholder = CameraVendorGalleryItem(
-      handle: 10,
-      filename: "0x0000000A",
-      formatLabel: "",
-      captureDate: "20260711",
-      byteSizeText: ""
-    )
-
-    let dates = NativeGalleryHDPreviewSessionPolicy.availableDates(items: [placeholder])
-
-    XCTAssertEqual(dates.count, 1)
-    XCTAssertEqual(Calendar.current.component(.day, from: try XCTUnwrap(dates.first)), 11)
-  }
-
   func testInitialCatalogMarksExpandedOnlyHandlesAsAndroidExtendedStillCandidates() {
     let hints = CameraVendorCatalogPlaceholderPolicy.expandedStillFormatHints(
       baselineHandles: [100, 101, 102],
@@ -1159,8 +1234,115 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(hints[104], [.extendedStillCandidate])
   }
 
-  func testNativeGalleryHDSessionPairsAndroidExtendedStillPlaceholders() throws {
-    let date = try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 7, day: 11)))
+  func testNativeGalleryHDProjectionPreservesSharedSectionsAndRepresentsEveryHandle() throws {
+    let firstDay = try XCTUnwrap(Calendar.current.date(
+      from: DateComponents(year: 2026, month: 7, day: 24)
+    ))
+    let secondDay = try XCTUnwrap(Calendar.current.date(
+      from: DateComponents(year: 2026, month: 7, day: 23)
+    ))
+    let jpg = CameraVendorGalleryItem(
+      handle: 102,
+      filename: "DSCF0102.JPG",
+      formatLabel: "JPG",
+      captureDate: "20260724T120000",
+      byteSizeText: ""
+    )
+    let raw = CameraVendorGalleryItem(
+      handle: 101,
+      filename: "DSCF0102.RAF",
+      formatLabel: "RAW",
+      captureDate: "20260724T120000",
+      byteSizeText: ""
+    )
+    let rawOnly = CameraVendorGalleryItem(
+      handle: 90,
+      filename: "DSCF0090.RAF",
+      formatLabel: "RAW",
+      captureDate: "20260723T120000",
+      byteSizeText: ""
+    )
+    let sharedSections = [
+      NativeGalleryDaySection(day: firstDay, title: "7月24日 2 张", items: [jpg, raw]),
+      NativeGalleryDaySection(day: secondDay, title: "7月23日 1 张", items: [rawOnly]),
+    ]
+
+    let snapshot = NativeGalleryHDPreviewSessionPolicy.snapshot(sections: sharedSections)
+
+    XCTAssertEqual(snapshot.sections.map(\.title), sharedSections.map(\.title))
+    XCTAssertEqual(snapshot.sections.map(\.day), sharedSections.map(\.day))
+    XCTAssertEqual(snapshot.sections[0].items.map(\.displayItem.handle), [102])
+    XCTAssertEqual(snapshot.sections[0].items.first?.rawSidecar?.handle, 101)
+    XCTAssertEqual(snapshot.sections[1].items.map(\.displayItem.handle), [90])
+    XCTAssertEqual(snapshot.orderedRepresentedHandles, [102, 101, 90])
+    XCTAssertEqual(snapshot.allRepresentedHandles, Set([102, 101, 90]))
+    XCTAssertEqual(snapshot.loadableDisplayHandles, [102])
+  }
+
+  func testNativeGalleryHDProjectionNeverPairsRawAcrossDateSections() throws {
+    let firstDay = try XCTUnwrap(Calendar.current.date(
+      from: DateComponents(year: 2026, month: 7, day: 24)
+    ))
+    let secondDay = try XCTUnwrap(Calendar.current.date(
+      from: DateComponents(year: 2026, month: 7, day: 23)
+    ))
+    let jpg = CameraVendorGalleryItem(
+      handle: 102,
+      filename: "DSCF0102.JPG",
+      formatLabel: "JPG",
+      captureDate: "20260724T120000",
+      byteSizeText: ""
+    )
+    let sameStemRawOnAnotherDay = CameraVendorGalleryItem(
+      handle: 101,
+      filename: "DSCF0102.RAF",
+      formatLabel: "RAW",
+      captureDate: "20260723T120000",
+      byteSizeText: ""
+    )
+
+    let snapshot = NativeGalleryHDPreviewSessionPolicy.snapshot(sections: [
+      NativeGalleryDaySection(day: firstDay, title: "7月24日 1 张", items: [jpg]),
+      NativeGalleryDaySection(day: secondDay, title: "7月23日 1 张", items: [sameStemRawOnAnotherDay]),
+    ])
+
+    XCTAssertNil(snapshot.sections[0].items.first?.rawSidecar)
+    XCTAssertEqual(snapshot.sections[1].items.first?.displayItem.handle, 101)
+    XCTAssertEqual(snapshot.allRepresentedHandles, Set([102, 101]))
+  }
+
+  func testNativeGalleryHDProjectionDoesNotAttachUnmatchedRawInsideOneSection() throws {
+    let day = try XCTUnwrap(Calendar.current.date(
+      from: DateComponents(year: 2026, month: 7, day: 24)
+    ))
+    let jpg = CameraVendorGalleryItem(
+      handle: 102,
+      filename: "DSCF0102.JPG",
+      formatLabel: "JPG",
+      captureDate: "20260724T120000",
+      byteSizeText: ""
+    )
+    let unrelatedRaw = CameraVendorGalleryItem(
+      handle: 101,
+      filename: "DSCF9999.RAF",
+      formatLabel: "RAW",
+      captureDate: "20260724T120000",
+      byteSizeText: ""
+    )
+
+    let snapshot = NativeGalleryHDPreviewSessionPolicy.snapshot(sections: [
+      NativeGalleryDaySection(day: day, title: "7月24日 2 张", items: [jpg, unrelatedRaw]),
+    ])
+
+    XCTAssertNil(snapshot.sections[0].items[0].rawSidecar)
+    XCTAssertEqual(snapshot.sections[0].items[1].displayItem.handle, 101)
+    XCTAssertEqual(snapshot.orderedRepresentedHandles, [102, 101])
+  }
+
+  func testNativeGalleryHDProjectionPairsExtendedStillPlaceholdersInsideOneSection() throws {
+    let day = try XCTUnwrap(Calendar.current.date(
+      from: DateComponents(year: 2026, month: 7, day: 11)
+    ))
     let rawPlaceholder = CameraVendorGalleryItem(
       handle: 100,
       filename: "0x00000064",
@@ -1178,54 +1360,47 @@ final class RunnerTests: XCTestCase {
       formatHints: [.extendedStillCandidate]
     )
 
-    let snapshot = NativeGalleryHDPreviewSessionPolicy.snapshot(
-      items: [rawPlaceholder, previewPlaceholder],
-      activeDate: date
-    )
+    let snapshot = NativeGalleryHDPreviewSessionPolicy.snapshot(sections: [
+      NativeGalleryDaySection(
+        day: day,
+        title: "7月11日 2 张",
+        items: [previewPlaceholder, rawPlaceholder]
+      ),
+    ])
 
-    XCTAssertEqual(snapshot.items.map(\.displayItem.handle), [101])
-    XCTAssertEqual(snapshot.items.first?.displayItem.formatHints, [.heif])
-    XCTAssertEqual(snapshot.items.first?.rawSidecar?.handle, 100)
-    XCTAssertEqual(snapshot.items.first?.rawSidecar?.formatHints, [.raw])
+    XCTAssertEqual(snapshot.sections[0].items.map(\.displayItem.handle), [101])
+    XCTAssertEqual(snapshot.sections[0].items.first?.displayItem.formatHints, [.heif])
+    XCTAssertEqual(snapshot.sections[0].items.first?.rawSidecar?.handle, 100)
+    XCTAssertEqual(snapshot.sections[0].items.first?.rawSidecar?.formatHints, [.raw])
   }
 
-  func testNativeGalleryHDSessionPairsSameStemRawSidecarWithoutAddingRawToTimeline() throws {
-    let date = try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 7, day: 24)))
-    let jpg = CameraVendorGalleryItem(
-      handle: 102,
-      filename: "DSCF0102.JPG",
-      formatLabel: "JPG",
-      captureDate: "20260724T120000",
-      byteSizeText: ""
-    )
-    let raw = CameraVendorGalleryItem(
-      handle: 101,
-      filename: "DSCF0102.RAF",
-      formatLabel: "RAW",
-      captureDate: "20260724T120000",
-      byteSizeText: ""
+  func testNativeGalleryHDWindowIsVisibleThenBelowThenNearestAboveAndLimitedToThirty() {
+    let window = NativeGalleryHDPreviewSessionPolicy.priorityWindow(
+      orderedHandles: Array(1...40),
+      visibleHandles: [35, 36],
+      limit: 30
     )
 
-    let snapshot = NativeGalleryHDPreviewSessionPolicy.snapshot(items: [raw, jpg], activeDate: date)
-
-    XCTAssertEqual(snapshot.items.map(\.displayItem.handle), [102])
-    XCTAssertEqual(snapshot.items.first?.rawSidecar?.handle, 101)
+    XCTAssertEqual(Array(window.prefix(2)), [35, 36])
+    XCTAssertEqual(Array(window.dropFirst(2).prefix(4)), [37, 38, 39, 40])
+    XCTAssertEqual(Array(window.dropFirst(6).prefix(4)), [34, 33, 32, 31])
+    XCTAssertEqual(window.count, 30)
+    XCTAssertEqual(Set(window).count, 30)
   }
 
-  func testNativeGalleryHDWindowPrioritizesVisibleThenTwentyAfterThenFiveBefore() {
-    let ordered = Array(1...40)
+  func testNativeGalleryHDWindowCrossesDateSectionsWithoutResetting() {
+    let snapshot = NativeGalleryHDPreviewSnapshot.fixture(
+      sectionHandles: [[1, 2], [3, 4]]
+    )
 
     let window = NativeGalleryHDPreviewSessionPolicy.priorityWindow(
-      orderedHandles: ordered,
-      visibleHandles: [10, 11, 12],
-      loadedHandles: [],
-      loadingHandles: [],
-      failedHandles: []
+      orderedHandles: snapshot.loadableDisplayHandles,
+      visibleHandles: [2],
+      limit: 30
     )
 
-    XCTAssertEqual(Array(window.prefix(3)), [10, 11, 12])
-    XCTAssertEqual(Array(window.dropFirst(3).prefix(20)), Array(13...32))
-    XCTAssertEqual(Array(window.suffix(5)), [5, 6, 7, 8, 9])
+    XCTAssertEqual(snapshot.loadableDisplayHandles, [1, 2, 3, 4])
+    XCTAssertEqual(window, [2, 3, 4, 1])
   }
 
   func testNativeGalleryHDPreviewAdvancesPriorityWindowWhileScrolling() throws {
@@ -1246,22 +1421,30 @@ final class RunnerTests: XCTestCase {
     XCTAssertTrue(body.contains("runtime.updateGalleryHDPreviewVisibleHandles(visibleHandles)"))
   }
 
-  func testNativeGalleryHDCoordinatorCountsOnlyActiveDateLoadedHandles() throws {
-    let date = try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 7, day: 24)))
-    let items = [1, 2].map {
-      CameraVendorGalleryItem(
-        handle: $0,
-        filename: "DSCF000\($0).JPG",
-        formatLabel: "JPG",
-        captureDate: "20260724T120000",
-        byteSizeText: ""
-      )
-    }
-    let snapshot = NativeGalleryHDPreviewSessionPolicy.snapshot(items: items, activeDate: date)
+  func testNativeGalleryHDCoordinatorCountsOnlySnapshotLoadedHandles() {
+    let snapshot = NativeGalleryHDPreviewSnapshot.fixture(handles: [1, 2])
     let state = NativeGalleryHDPreviewState(snapshot: snapshot, loadedHandles: [1, 99])
 
     XCTAssertEqual(state.loadedCount, 1)
     XCTAssertEqual(state.totalCount, 2)
+  }
+
+  func testNativeGalleryHDCoordinatorCountsNonPreviewableRawAsSettled() {
+    let raw = CameraVendorGalleryItem(
+      handle: 90,
+      filename: "DSCF0090.RAF",
+      formatLabel: "RAW",
+      captureDate: "20260723T120000",
+      byteSizeText: "",
+      formatHints: [.raw]
+    )
+    let snapshot = NativeGalleryHDPreviewSessionPolicy.snapshot(sections: [
+      NativeGalleryDaySection(day: nil, title: "RAW", items: [raw]),
+    ])
+    let state = NativeGalleryHDPreviewState(snapshot: snapshot, loadedHandles: [])
+
+    XCTAssertEqual(state.loadedCount, 1)
+    XCTAssertEqual(state.totalCount, 1)
   }
 
   func testNativeGalleryHDCoordinatorCancellationDoesNotMarkHandleFailed() {
@@ -1275,10 +1458,8 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(cancelled.failedHandles.contains(7))
   }
 
-  func testNativeGalleryHDChromeKeepsGalleryBackgroundAndAndroidDateChipOrder() {
+  func testNativeGalleryHDChromeKeepsGalleryBackground() {
     XCTAssertTrue(NativeGalleryHDChromePolicy.usesGalleryBackground)
-    XCTAssertEqual(NativeGalleryHDChromePolicy.dateFormat, "yyyy-MM-dd")
-    XCTAssertTrue(NativeGalleryHDChromePolicy.showsLoadCountBeforeDate)
   }
 
   func testNativeGalleryHDPreviewFailureLogIncludesHandleAndError() {
@@ -1293,7 +1474,13 @@ final class RunnerTests: XCTestCase {
 
   func testCameraSessionRuntimeAcceptsMixedDisplayAndRawDownloadModes() {
     let requests = NativeGalleryHDDownloadRequestPolicy.requests(
-      displayHandles: [20],
+      displayItems: [CameraVendorGalleryItem(
+        handle: 20,
+        filename: "DSCF0020.JPG",
+        formatLabel: "JPG",
+        captureDate: "",
+        byteSizeText: ""
+      )],
       rawHandles: [19],
       preferCompressedDisplay: true
     )
@@ -1303,14 +1490,39 @@ final class RunnerTests: XCTestCase {
   }
 
   func testNativeGalleryHDDownloadRequestsDeduplicateHandles() {
+    let display = CameraVendorGalleryItem(
+      handle: 20,
+      filename: "DSCF0020.JPG",
+      formatLabel: "JPG",
+      captureDate: "",
+      byteSizeText: ""
+    )
     let requests = NativeGalleryHDDownloadRequestPolicy.requests(
-      displayHandles: [20, 20],
+      displayItems: [display, display],
       rawHandles: [19, 19],
       preferCompressedDisplay: false
     )
 
     XCTAssertEqual(requests.map(\.handle), [20, 19])
     XCTAssertEqual(requests.map(\.mode), [.original, .original])
+  }
+
+  func testNativeGalleryHDRawOnlyDisplayAlwaysDownloadsOriginal() {
+    let requests = NativeGalleryHDDownloadRequestPolicy.requests(
+      displayItems: [CameraVendorGalleryItem(
+        handle: 20,
+        filename: "DSCF0020.RAF",
+        formatLabel: "RAW",
+        captureDate: "",
+        byteSizeText: "",
+        formatHints: [.raw]
+      )],
+      rawHandles: [],
+      preferCompressedDisplay: true
+    )
+
+    XCTAssertEqual(requests.map(\.handle), [20])
+    XCTAssertEqual(requests.map(\.mode), [.original])
   }
 
   func testNativeGalleryAndroidParityChromeUsesOneToolRow() {
@@ -1363,9 +1575,155 @@ final class RunnerTests: XCTestCase {
     XCTAssertTrue(source.contains("sortButton.heightAnchor.constraint(equalToConstant: 30)"))
   }
 
-  func testNativeGalleryHDModeKeepsFilterSurfaceButDisablesExpansion() {
+  func testNativeGalleryFilterPanelCanExpandInBothBrowseModes() {
+    XCTAssertTrue(NativeGalleryAndroidParityChromePolicy.showsFilterSurface(mode: .thumbnail))
     XCTAssertTrue(NativeGalleryAndroidParityChromePolicy.showsFilterSurface(mode: .highDefinition))
-    XCTAssertFalse(NativeGalleryAndroidParityChromePolicy.canExpandFilters(mode: .highDefinition))
+    XCTAssertTrue(NativeGalleryAndroidParityChromePolicy.canExpandFilters(mode: .thumbnail))
+    XCTAssertTrue(NativeGalleryAndroidParityChromePolicy.canExpandFilters(mode: .highDefinition))
+  }
+
+  func testNativeGalleryHDModeHasNoIndependentDateOwnerOrPicker() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+    XCTAssertFalse(source.contains("hdActiveDate"))
+    XCTAssertFalse(source.contains("hdDateButton"))
+    XCTAssertFalse(source.contains("selectHDDateTapped"))
+    XCTAssertFalse(source.contains("preferredHDActiveDate"))
+    XCTAssertTrue(source.contains("NativeGalleryHDPreviewSessionPolicy.snapshot(\n      sections: gallerySections"))
+  }
+
+  func testNativeGalleryHDCollectionUsesSnapshotSectionsAndSharedHeaders() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+    XCTAssertTrue(source.contains("hdPresentationState?.snapshot.sections.count"))
+    XCTAssertTrue(source.contains("snapshot.item(at: indexPath)"))
+    XCTAssertTrue(source.contains("configureGalleryHeader(header, at: indexPath)"))
+    XCTAssertTrue(source.contains("guard catalogIdentity == self.runtime.galleryCatalogIdentity else { return }"))
+    XCTAssertTrue(source.contains("guard mediaIdentity.catalog == self.runtime.galleryCatalogIdentity else { return }"))
+    XCTAssertFalse(source.contains("if collectionView === hdCollectionView { return 1 }"))
+    XCTAssertFalse(source.contains("browseMode != .thumbnail || !NativeGalleryEmptyStatePolicy.shouldShow"))
+  }
+
+  func testNativeGalleryUsesOneFilterSubmissionIndependentOfBrowseMode() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let switchStart = try XCTUnwrap(
+      source.range(of: "private func switchBrowseMode(_ mode: NativeGalleryBrowseMode)")?.lowerBound
+    )
+    let switchEnd = try XCTUnwrap(
+      source.range(of: "private func startHDPreviewLoading()", range: switchStart..<source.endIndex)?.lowerBound
+    )
+    let switchBody = String(source[switchStart..<switchEnd])
+
+    XCTAssertEqual(source.components(separatedBy: "private var filterState").count - 1, 1)
+    XCTAssertFalse(switchBody.contains("submitGalleryIntent()"))
+    XCTAssertTrue(source.contains("rule: filterState.rule"))
+    XCTAssertTrue(source.contains("sort: filterState.sortIntent"))
+    XCTAssertTrue(source.contains("NativeGalleryHDPreviewSessionPolicy.snapshot(\n      sections: gallerySections"))
+  }
+
+  func testCameraGallerySessionFullScreenPreviewSuspendsBothContentLoaders() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/CameraCore/Gallery/CameraGallerySession.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+    XCTAssertTrue(source.contains("func suspendContentWorkForFullScreenPreview() async"))
+    XCTAssertTrue(source.contains("await hdPreviewPipeline.suspend()"))
+    XCTAssertTrue(source.contains("await catalogRuntime.suspendChildWorkForHighDefinitionPreview()"))
+    XCTAssertTrue(source.contains("func resumeContentWorkAfterFullScreenPreview() async"))
+    XCTAssertTrue(source.contains("await catalogRuntime.resumeChildWorkAfterHighDefinitionPreview()"))
+    XCTAssertTrue(source.contains("hdPreviewPipeline.resume()"))
+  }
+
+  func testNativePhotoPreviewOnlyLoadsHighDefinitionForDisplayedPage() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/NativePhotoPreviewViewController.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+    XCTAssertTrue(source.contains("private var isDisplayedPage = false"))
+    XCTAssertTrue(source.contains("func setDisplayedPage(_ isDisplayed: Bool)"))
+    XCTAssertTrue(source.contains("guard isDisplayedPage else { return }"))
+    XCTAssertTrue(source.contains("initialPage.setDisplayedPage(true)"))
+    XCTAssertTrue(source.contains("previousViewControllers.forEach"))
+    XCTAssertTrue(source.contains("page.setDisplayedPage(true)"))
+  }
+
+  func testFullScreenPreviewUsesCatalogIdentityBoundRequestAndBalancedAdmission() throws {
+    let runtimeURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/CameraSessionRuntime.swift")
+    let galleryURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
+    let runtimeSource = try String(contentsOf: runtimeURL, encoding: .utf8)
+    let gallerySource = try String(contentsOf: galleryURL, encoding: .utf8)
+
+    XCTAssertTrue(runtimeSource.contains("func requestPreviewImageWithInfo(\n    for identity: CameraGalleryMediaIdentity"))
+    XCTAssertTrue(runtimeSource.contains("guard identity.variant == .hdPreview"))
+    XCTAssertTrue(runtimeSource.contains("galleryCatalogIdentity == identity.catalog"))
+    XCTAssertTrue(gallerySource.contains("await self.runtime.suspendGalleryContentWorkForFullScreenPreview()"))
+    XCTAssertTrue(gallerySource.contains("await self.runtime.resumeGalleryContentWorkAfterFullScreenPreview()"))
+    XCTAssertTrue(gallerySource.contains("scheduleVisibleThumbnailRefresh(after: 0)"))
+  }
+
+  func testCameraGallerySessionStopsOldHDWorkBeforeSubmittingAnotherFilter() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/CameraCore/Gallery/CameraGallerySession.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let submitStart = try XCTUnwrap(
+      source.range(of: "func submitFilter(_ intent: CameraGalleryFilterIntent) async")?.lowerBound
+    )
+    let submitEnd = try XCTUnwrap(
+      source.range(of: "\n  }", range: submitStart..<source.endIndex)?.upperBound
+    )
+    let submitBody = String(source[submitStart..<submitEnd])
+
+    let hdCancel = try XCTUnwrap(submitBody.range(of: "await hdPreviewPipeline.prepareForCatalogChange()"))
+    let catalogSubmit = try XCTUnwrap(submitBody.range(of: "await catalogRuntime.submit("))
+    XCTAssertLessThan(hdCancel.lowerBound, catalogSubmit.lowerBound)
+    XCTAssertTrue(submitBody.contains("pendingCatalogSubmissionID = submissionID"))
+    XCTAssertTrue(source.contains("guard !isCatalogSubmissionPending else { return }"))
+    XCTAssertTrue(source.contains("submissionID == pendingCatalogSubmissionID"))
+    XCTAssertTrue(source.contains("publishSubmissionPresentation:"))
+    XCTAssertFalse(source.contains("if !presentation.isLoading {\n      isCatalogSubmissionPending = false"))
+  }
+
+  func testSwitchingBackToThumbnailClearsViewportIdentityAndResubmitsVisibleWindow() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let switchStart = try XCTUnwrap(
+      source.range(of: "private func switchBrowseMode(_ mode: NativeGalleryBrowseMode)")?.lowerBound
+    )
+    let switchEnd = try XCTUnwrap(
+      source.range(of: "private func startHDPreviewLoading()", range: switchStart..<source.endIndex)?.lowerBound
+    )
+    let switchBody = String(source[switchStart..<switchEnd])
+
+    XCTAssertTrue(switchBody.contains("await self?.runtime.switchGalleryPreviewMode(.thumbnail)"))
+    XCTAssertTrue(switchBody.contains("self?.lastSubmittedThumbnailViewportIdentity = nil"))
+    XCTAssertTrue(switchBody.contains("self?.scheduleVisibleThumbnailRefresh(after: 0)"))
   }
 
   func testNativeGalleryHDCardRequiresLoadedPreviewBeforeQueueing() {
@@ -1374,6 +1732,19 @@ final class RunnerTests: XCTestCase {
       "加载后加入"
     )
     XCTAssertFalse(NativeGalleryHDCardActionPolicy.canQueue(hasImage: false, state: .idle))
+    XCTAssertTrue(NativeGalleryHDCardActionPolicy.canQueue(
+      hasImage: false,
+      allowsQueueWithoutImage: true,
+      state: .idle
+    ))
+    XCTAssertEqual(
+      NativeGalleryHDCardActionPolicy.displayTitle(
+        hasImage: false,
+        allowsQueueWithoutImage: true,
+        state: .idle
+      ),
+      "加入原片"
+    )
     XCTAssertEqual(
       NativeGalleryHDCardActionPolicy.rawTitle(hasImage: true, state: .queued),
       "RAW 已加入"
@@ -1413,19 +1784,50 @@ final class RunnerTests: XCTestCase {
       )?.lowerBound
     )
     let observerBody = String(source[observerStart..<observerEnd])
+    let structuralStart = try XCTUnwrap(observerBody.range(of: "if delta.requiresStructuralRefresh")?.lowerBound)
+    let contentStart = try XCTUnwrap(observerBody.range(of: "// Decode new thumbnail data")?.lowerBound)
+    let structuralBody = String(observerBody[structuralStart..<contentStart])
+    let contentBody = String(observerBody[contentStart...])
 
-    XCTAssertFalse(observerBody.contains("collectionView.reloadData()"))
+    XCTAssertTrue(structuralBody.contains("collectionView.reloadData()"))
+    XCTAssertFalse(contentBody.contains("collectionView.reloadData()"))
     XCTAssertTrue(observerBody.contains("refreshVisibleCells"))
   }
 
-  func testNativeGalleryHighDefinitionPreviewCacheKeepsLoadedStateAfterMemoryEviction() throws {
+  func testNativeGalleryHighDefinitionPreviewCacheEvictsWholeLeastRecentlyUsedEntry() throws {
     let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent("hd-preview-cache-\(UUID().uuidString)", isDirectory: true)
+      .appendingPathComponent("hd-preview-lru-\(UUID().uuidString)", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: directory) }
     let cache = NativeGalleryHighDefinitionPreviewCache(
-      maxMemoryImages: 2,
+      maxEntries: 2,
       directory: directory
     )
+    let catalog = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let first = CameraGalleryMediaIdentity(catalog: catalog, handle: 1, variant: .hdPreview)
+    let second = CameraGalleryMediaIdentity(catalog: catalog, handle: 2, variant: .hdPreview)
+    let third = CameraGalleryMediaIdentity(catalog: catalog, handle: 3, variant: .hdPreview)
+
+    cache.store(Data([1]), for: first, objectOrientation: 2)
+    cache.store(Data([2]), for: second, objectOrientation: 4)
+    XCTAssertEqual(cache.restoreLoadedPreview(for: first)?.objectOrientation, 2)
+    cache.store(Data([3]), for: third, objectOrientation: 6)
+
+    XCTAssertEqual(cache.loadedHandles(for: catalog), Set([1, 3]))
+    XCTAssertNil(cache.memoryData(for: second))
+    XCTAssertNil(cache.restoreLoadedPreview(for: second))
+    XCTAssertEqual(cache.restoreLoadedPreview(for: first)?.data, Data([1]))
+    XCTAssertEqual(cache.restoreLoadedPreview(for: first)?.objectOrientation, 2)
+    XCTAssertEqual(
+      try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).count,
+      2
+    )
+  }
+
+  func testNativeGalleryHighDefinitionPreviewCacheTouchesVisibleLoadedHandlesInPriorityOrder() throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("hd-preview-touch-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let cache = NativeGalleryHighDefinitionPreviewCache(maxEntries: 2, directory: directory)
     let catalog = CameraGalleryCatalogIdentity.fixture(generation: 1)
     let identities = [1, 2, 3].map {
       CameraGalleryMediaIdentity(catalog: catalog, handle: $0, variant: .hdPreview)
@@ -1433,33 +1835,62 @@ final class RunnerTests: XCTestCase {
 
     cache.store(Data([1]), for: identities[0])
     cache.store(Data([2]), for: identities[1])
+    cache.touchLoadedHandles([2, 1], for: catalog)
     cache.store(Data([3]), for: identities[2])
 
-    XCTAssertEqual(cache.loadedHandles(for: catalog), [1, 2, 3])
-    XCTAssertNil(cache.memoryData(for: identities[0]))
-    XCTAssertEqual(cache.restoreLoadedData(for: identities[0]), Data([1]))
-    XCTAssertEqual(cache.memoryData(for: identities[0]), Data([1]))
-    XCTAssertEqual(cache.loadedHandles(for: catalog), [1, 2, 3])
+    XCTAssertEqual(cache.loadedHandles(for: catalog), Set([1, 3]))
+    XCTAssertNil(cache.restoreLoadedData(for: identities[1]))
   }
 
-  func testNativeGalleryHighDefinitionPreviewCacheKeepsObjectOrientationAfterMemoryEviction() throws {
+  func testNativeGalleryHighDefinitionPreviewCacheClearsUnusableFilesWhenRecreated() throws {
     let directory = FileManager.default.temporaryDirectory
-      .appendingPathComponent("hd-preview-orientation-cache-\(UUID().uuidString)", isDirectory: true)
+      .appendingPathComponent("hd-preview-recreated-\(UUID().uuidString)", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: directory) }
-    let cache = NativeGalleryHighDefinitionPreviewCache(
-      maxMemoryImages: 1,
-      directory: directory
+    let firstCatalog = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let firstCache = NativeGalleryHighDefinitionPreviewCache(maxEntries: 2, directory: directory)
+    firstCache.store(
+      Data([1]),
+      for: CameraGalleryMediaIdentity(catalog: firstCatalog, handle: 1, variant: .hdPreview)
     )
+    firstCache.store(
+      Data([2]),
+      for: CameraGalleryMediaIdentity(catalog: firstCatalog, handle: 2, variant: .hdPreview)
+    )
+
+    let nextCatalog = CameraGalleryCatalogIdentity.fixture(generation: 2)
+    let nextCache = NativeGalleryHighDefinitionPreviewCache(maxEntries: 2, directory: directory)
+    nextCache.store(
+      Data([3]),
+      for: CameraGalleryMediaIdentity(catalog: nextCatalog, handle: 3, variant: .hdPreview)
+    )
+    nextCache.store(
+      Data([4]),
+      for: CameraGalleryMediaIdentity(catalog: nextCatalog, handle: 4, variant: .hdPreview)
+    )
+
+    XCTAssertEqual(
+      try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).count,
+      2
+    )
+  }
+
+  func testNativeGalleryHighDefinitionPreviewCachePeekDoesNotChangeLRUOrder() throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("hd-preview-peek-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let cache = NativeGalleryHighDefinitionPreviewCache(maxEntries: 2, directory: directory)
     let catalog = CameraGalleryCatalogIdentity.fixture(generation: 1)
-    let firstIdentity = CameraGalleryMediaIdentity(catalog: catalog, handle: 1, variant: .hdPreview)
-    let secondIdentity = CameraGalleryMediaIdentity(catalog: catalog, handle: 2, variant: .hdPreview)
+    let identities = [1, 2, 3].map {
+      CameraGalleryMediaIdentity(catalog: catalog, handle: $0, variant: .hdPreview)
+    }
+    cache.store(Data([1]), for: identities[0])
+    cache.store(Data([2]), for: identities[1])
 
-    cache.store(Data([1]), for: firstIdentity, objectOrientation: 2)
-    cache.store(Data([2]), for: secondIdentity, objectOrientation: 4)
+    XCTAssertEqual(cache.peekLoadedPreview(for: identities[0])?.data, Data([1]))
+    cache.store(Data([3]), for: identities[2])
 
-    let restored = try XCTUnwrap(cache.restoreLoadedPreview(for: firstIdentity))
-    XCTAssertEqual(restored.data, Data([1]))
-    XCTAssertEqual(restored.objectOrientation, 2)
+    XCTAssertNil(cache.restoreLoadedPreview(for: identities[0]))
+    XCTAssertEqual(cache.loadedHandles(for: catalog), Set([2, 3]))
   }
 
   func testHDPreviewCacheUsesSessionEpochHandleAndVariantIdentity() throws {
@@ -1507,6 +1938,47 @@ final class RunnerTests: XCTestCase {
       CameraGalleryMediaCacheKey(mediaIdentity: hdIdentity),
       CameraGalleryMediaCacheKey(mediaIdentity: thumbnailIdentity)
     )
+  }
+
+  @MainActor
+  func testHDPreviewRetryInvalidatesLoadedCacheEntryAndRefetches() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("hd-preview-retry-bad-cache-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let cache = NativeGalleryHighDefinitionPreviewCache(directory: directory)
+    let catalog = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let identity = CameraGalleryMediaIdentity(
+      catalog: catalog,
+      handle: 7,
+      variant: .hdPreview
+    )
+    cache.store(Data([0]), for: identity)
+    var fetchedHandles: [Int] = []
+    let pipeline = CameraGalleryHDPreviewPipeline(
+      cache: cache,
+      suspendThumbnailPipeline: {},
+      resumeThumbnailPipeline: {},
+      fetchPreview: { identity in
+        fetchedHandles.append(identity.handle)
+        return CameraGalleryPreviewResult(data: Data([7]), objectOrientation: 2)
+      },
+      publish: { _ in }
+    )
+
+    await pipeline.activate(
+      catalogIdentity: catalog,
+      snapshot: .fixture(handles: [7]),
+      visibleHandles: [7]
+    )
+    await pipeline.waitUntilIdle()
+    XCTAssertTrue(fetchedHandles.isEmpty)
+
+    pipeline.retry(handle: 7)
+    await pipeline.waitUntilIdle()
+
+    XCTAssertEqual(fetchedHandles, [7])
+    XCTAssertEqual(cache.restoreLoadedPreview(for: identity)?.data, Data([7]))
+    XCTAssertEqual(cache.restoreLoadedPreview(for: identity)?.objectOrientation, 2)
   }
 
   @MainActor
@@ -1567,6 +2039,163 @@ final class RunnerTests: XCTestCase {
   }
 
   @MainActor
+  func testHDPreviewPipelineFinishesInflightRequestThenUsesLatestViewport() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("hd-preview-latest-viewport-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let cache = NativeGalleryHighDefinitionPreviewCache(directory: directory)
+    let catalog = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    var fetchedHandles: [Int] = []
+    var firstFetchContinuation: CheckedContinuation<Void, Never>?
+    let pipeline = CameraGalleryHDPreviewPipeline(
+      cache: cache,
+      suspendThumbnailPipeline: {},
+      resumeThumbnailPipeline: {},
+      fetchPreview: { identity in
+        fetchedHandles.append(identity.handle)
+        if fetchedHandles.count == 1 {
+          await withCheckedContinuation { continuation in
+            firstFetchContinuation = continuation
+          }
+        }
+        return CameraGalleryPreviewResult(
+          data: Data([UInt8(identity.handle)]),
+          objectOrientation: nil
+        )
+      },
+      publish: { _ in }
+    )
+
+    await pipeline.activate(
+      catalogIdentity: catalog,
+      snapshot: .fixture(handles: [1, 2, 3, 4]),
+      visibleHandles: [1]
+    )
+    for _ in 0..<100 where firstFetchContinuation == nil { await Task.yield() }
+
+    pipeline.updateVisibleHandles([4])
+    firstFetchContinuation?.resume()
+    for _ in 0..<100 where fetchedHandles.count < 2 { await Task.yield() }
+    await pipeline.suspend()
+
+    XCTAssertEqual(Array(fetchedHandles.prefix(2)), [1, 4])
+  }
+
+  @MainActor
+  func testHDPreviewPipelineDoesNotStartReplacementWorkerWhileCancellingAndJoining() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("hd-preview-cancel-join-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let cache = NativeGalleryHighDefinitionPreviewCache(directory: directory)
+    let catalog = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    var fetchedHandles: [Int] = []
+    var firstFetchContinuation: CheckedContinuation<Void, Never>?
+    let pipeline = CameraGalleryHDPreviewPipeline(
+      cache: cache,
+      suspendThumbnailPipeline: {},
+      resumeThumbnailPipeline: {},
+      fetchPreview: { identity in
+        fetchedHandles.append(identity.handle)
+        if fetchedHandles.count == 1 {
+          await withCheckedContinuation { continuation in
+            firstFetchContinuation = continuation
+          }
+        }
+        return CameraGalleryPreviewResult(
+          data: Data([UInt8(identity.handle)]),
+          objectOrientation: nil
+        )
+      },
+      publish: { _ in }
+    )
+
+    await pipeline.activate(
+      catalogIdentity: catalog,
+      snapshot: .fixture(handles: [1, 2]),
+      visibleHandles: [1]
+    )
+    for _ in 0..<100 where firstFetchContinuation == nil { await Task.yield() }
+
+    let prepare = Task { @MainActor in
+      await pipeline.prepareForCatalogChange()
+    }
+    for _ in 0..<20 { await Task.yield() }
+    pipeline.updateVisibleHandles([2])
+    for _ in 0..<20 { await Task.yield() }
+
+    XCTAssertEqual(fetchedHandles, [1])
+    firstFetchContinuation?.resume()
+    await prepare.value
+    XCTAssertEqual(fetchedHandles, [1])
+  }
+
+  @MainActor
+  func testHDPreviewPipelineSerializesCatalogPreparationBeforeNextActivation() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("hd-preview-lifecycle-order-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let cache = NativeGalleryHighDefinitionPreviewCache(directory: directory)
+    let oldCatalog = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let nextCatalog = CameraGalleryCatalogIdentity.fixture(
+      sessionEpoch: oldCatalog.sessionEpoch,
+      generation: 2
+    )
+    var fetchedHandles: [Int] = []
+    var firstFetchContinuation: CheckedContinuation<Void, Never>?
+    var publications: [(CameraGalleryCatalogIdentity, Bool)] = []
+    let pipeline = CameraGalleryHDPreviewPipeline(
+      cache: cache,
+      suspendThumbnailPipeline: {},
+      resumeThumbnailPipeline: {},
+      fetchPreview: { identity in
+        fetchedHandles.append(identity.handle)
+        if fetchedHandles.count == 1 {
+          await withCheckedContinuation { continuation in
+            firstFetchContinuation = continuation
+          }
+        }
+        return CameraGalleryPreviewResult(
+          data: Data([UInt8(identity.handle)]),
+          objectOrientation: nil
+        )
+      },
+      publish: { publication in
+        if case .state(let catalogIdentity, let state) = publication {
+          publications.append((catalogIdentity, state != nil))
+        }
+      }
+    )
+
+    await pipeline.activate(
+      catalogIdentity: oldCatalog,
+      snapshot: .fixture(handles: [1]),
+      visibleHandles: [1]
+    )
+    for _ in 0..<100 where firstFetchContinuation == nil { await Task.yield() }
+
+    let prepare = Task { @MainActor in
+      await pipeline.prepareForCatalogChange()
+    }
+    for _ in 0..<20 { await Task.yield() }
+    let activateNext = Task { @MainActor in
+      await pipeline.activate(
+        catalogIdentity: nextCatalog,
+        snapshot: .fixture(handles: [2]),
+        visibleHandles: [2]
+      )
+    }
+    firstFetchContinuation?.resume()
+    await prepare.value
+    await activateNext.value
+    await pipeline.waitUntilIdle()
+
+    XCTAssertEqual(fetchedHandles, [1, 2])
+    XCTAssertEqual(pipeline.state?.snapshot.displayHandles, [2])
+    XCTAssertEqual(publications.last?.0, nextCatalog)
+    XCTAssertEqual(publications.last?.1, true)
+  }
+
+  @MainActor
   func testHDPreviewPipelineKeepsCacheWhenReturningToThumbnailMode() async throws {
     let directory = FileManager.default.temporaryDirectory
       .appendingPathComponent("hd-preview-mode-cache-\(UUID().uuidString)", isDirectory: true)
@@ -1591,6 +2220,79 @@ final class RunnerTests: XCTestCase {
     await pipeline.deactivate(resumeThumbnailPipeline: true)
 
     XCTAssertEqual(cache.restoreLoadedData(for: identity), Data([8]))
+  }
+
+  @MainActor
+  func testHDPreviewPipelineRepeatedActivationBalancesThumbnailSuspensionOnce() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("hd-preview-balanced-suspension-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let cache = NativeGalleryHighDefinitionPreviewCache(directory: directory)
+    let catalog = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    var suspendCount = 0
+    var resumeCount = 0
+    let pipeline = CameraGalleryHDPreviewPipeline(
+      cache: cache,
+      suspendThumbnailPipeline: { suspendCount += 1 },
+      resumeThumbnailPipeline: { resumeCount += 1 },
+      fetchPreview: { _ in throw CancellationError() },
+      publish: { _ in }
+    )
+
+    await pipeline.activate(
+      catalogIdentity: catalog,
+      snapshot: .fixture(handles: [8]),
+      visibleHandles: [8]
+    )
+    await pipeline.activate(
+      catalogIdentity: catalog,
+      snapshot: .fixture(handles: [8]),
+      visibleHandles: [8]
+    )
+    await pipeline.deactivate(resumeThumbnailPipeline: true)
+
+    XCTAssertEqual(suspendCount, 1)
+    XCTAssertEqual(resumeCount, 1)
+  }
+
+  @MainActor
+  func testHDPreviewPipelineRepeatedActivationStaysPausedDuringDownload() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("hd-preview-download-suspension-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let cache = NativeGalleryHighDefinitionPreviewCache(directory: directory)
+    let catalog = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    var fetchedHandles: [Int] = []
+    let pipeline = CameraGalleryHDPreviewPipeline(
+      cache: cache,
+      suspendThumbnailPipeline: {},
+      resumeThumbnailPipeline: {},
+      fetchPreview: { identity in
+        fetchedHandles.append(identity.handle)
+        return CameraGalleryPreviewResult(data: Data([UInt8(identity.handle)]), objectOrientation: nil)
+      },
+      publish: { _ in }
+    )
+
+    await pipeline.activate(
+      catalogIdentity: catalog,
+      snapshot: .fixture(handles: [8]),
+      visibleHandles: [8]
+    )
+    await pipeline.waitUntilIdle()
+    await pipeline.pauseForDownload()
+    await pipeline.activate(
+      catalogIdentity: catalog,
+      snapshot: .fixture(handles: [9]),
+      visibleHandles: [9]
+    )
+    for _ in 0..<20 { await Task.yield() }
+
+    XCTAssertEqual(fetchedHandles, [8])
+
+    await pipeline.resumeAfterDownload()
+    await pipeline.waitUntilIdle()
+    XCTAssertEqual(fetchedHandles, [8, 9])
   }
 
   @MainActor
@@ -7355,15 +8057,45 @@ final class RunnerTests: XCTestCase {
     )
   }
 
-  func testFilterPlannerUsesFallbackWheneverHeifIsSelected() {
+  func testFilterPlannerUsesSubtractBaselineWheneverHeifIsSelected() {
     XCTAssertEqual(
       CameraFilterEngine.plan(for: .selected([.heif])),
-      .objectInfoFallback(requestedFormats: [.heif])
+      .subtractBaseline([.heif])
     )
     XCTAssertEqual(
       CameraFilterEngine.plan(for: .selected([.jpg, .heif])),
-      .objectInfoFallback(requestedFormats: [.jpg, .heif])
+      .subtractBaseline([.jpg, .heif])
     )
+  }
+
+  func testGalleryFilterCameraMembershipOnlyDependsOnFormats() {
+    let base = CameraGalleryFilterIntent(
+      rule: CameraMediaFilterRule(
+        formats: .selected([.jpg]),
+        date: .all,
+        downloadScope: .all
+      ),
+      sort: .newest
+    )
+    let localProjection = CameraGalleryFilterIntent(
+      rule: CameraMediaFilterRule(
+        formats: .selected([.jpg]),
+        date: .today,
+        downloadScope: .notDownloaded
+      ),
+      sort: .oldest
+    )
+    let differentFormat = CameraGalleryFilterIntent(
+      rule: CameraMediaFilterRule(
+        formats: .selected([.raw]),
+        date: .today,
+        downloadScope: .notDownloaded
+      ),
+      sort: .oldest
+    )
+
+    XCTAssertTrue(base.hasSameCameraMembership(as: localProjection))
+    XCTAssertFalse(base.hasSameCameraMembership(as: differentFormat))
   }
 
   func testFilterProjectionAppliesDateAndDownloadScopeOnce() {
@@ -7415,14 +8147,14 @@ final class RunnerTests: XCTestCase {
     )
   }
 
-  func testCatalogAccessGateAllowsOnlyOneLogicalOwnerUntilRelease() async {
+  func testCatalogAccessGateAllowsOnlyOneLogicalOwnerUntilRelease() async throws {
     let gate = CameraCatalogAccessGate()
     let firstOwner = CameraCatalogAccessOwner.gallery(UUID())
     let secondOwner = CameraCatalogAccessOwner.quickDownload(UUID())
-    let firstLease = await gate.acquire(owner: firstOwner)
+    let firstLease = try await gate.acquire(owner: firstOwner)
     let secondDidAcquire = CatalogLeaseAcquisitionFlag()
     let secondTask = Task {
-      let lease = await gate.acquire(owner: secondOwner)
+      let lease = try await gate.acquire(owner: secondOwner)
       await secondDidAcquire.markAcquired()
       return lease
     }
@@ -7433,10 +8165,32 @@ final class RunnerTests: XCTestCase {
 
     await firstLease.release()
     await firstLease.release()
-    let secondLease = await secondTask.value
+    let secondLease = try await secondTask.value
     let acquiredAfterRelease = await secondDidAcquire.value
     XCTAssertTrue(acquiredAfterRelease)
     await secondLease.release()
+  }
+
+  func testCatalogAccessGateCancelsAQueuedOwnerWithoutWaitingForTheActiveLease() async throws {
+    let gate = CameraCatalogAccessGate()
+    let firstLease = try await gate.acquire(owner: .gallery(UUID()))
+    let cancelled = expectation(description: "queued catalog owner cancelled")
+    let secondTask = Task {
+      do {
+        let lease = try await gate.acquire(owner: .quickDownload(UUID()))
+        await lease.release()
+        XCTFail("A cancelled catalog owner must not acquire the lease")
+      } catch is CancellationError {
+        cancelled.fulfill()
+      } catch {
+        XCTFail("Unexpected catalog gate error: \(error)")
+      }
+    }
+
+    secondTask.cancel()
+    await fulfillment(of: [cancelled], timeout: 1)
+    await firstLease.release()
+    await secondTask.value
   }
 
   @MainActor
@@ -7462,20 +8216,136 @@ final class RunnerTests: XCTestCase {
 
     XCTAssertEqual(source.exactRequests, [.jpg, .raw])
     XCTAssertEqual(source.expandedRequestCount, 0)
-    XCTAssertEqual(resolution.snapshot.items.map(\.handle), [5, 3, 4])
+    XCTAssertEqual(resolution.snapshot.items.map(\.handle), [5, 4, 3])
     XCTAssertNil(repository.generation)
     XCTAssertNil(repository.snapshotID)
   }
 
   @MainActor
-  func testCatalogQueryEngineUsesAllCatalogAndObjectInfoWhenHeifIsSelected() async throws {
+  func testCatalogQueryEngineReusesSameSessionMembershipBeforeCatalogGate() async throws {
     let source = CameraCatalogQuerySourceSpy(
-      expandedSnapshot: .fixture(handles: [3, 2, 1]),
-      objectInfos: [
-        3: .fixture(handle: 3, formatCode: 0x3812),
-        2: .fixture(handle: 2, formatCode: 0x3801),
-        1: .fixture(handle: 1, formatCode: 0x300D),
+      expandedSnapshot: .fixture(handles: [3, 2, 1])
+    )
+    let engine = CameraCatalogQueryEngine(source: source)
+
+    let initial = try await engine.resolve(
+      rule: CameraMediaFilterRule(
+        formats: .all,
+        date: .all,
+        downloadScope: .all
+      ),
+      owner: .gallery(UUID()),
+      downloadedHandles: []
+    )
+    var cachedProgress: [CameraCatalogQueryProgress] = []
+    let projected = try await engine.resolve(
+      rule: CameraMediaFilterRule(
+        formats: .all,
+        date: .all,
+        downloadScope: .notDownloaded
+      ),
+      owner: .quickDownload(UUID()),
+      downloadedHandles: [2],
+      onProgress: { cachedProgress.append($0) }
+    )
+
+    XCTAssertEqual(initial.snapshot.items.map(\.handle), [3, 2, 1])
+    XCTAssertEqual(projected.snapshot.items.map(\.handle), [3, 1])
+    XCTAssertEqual(source.expandedRequestCount, 1)
+    XCTAssertEqual(cachedProgress, [])
+  }
+
+  @MainActor
+  func testCatalogQueryEngineDoesNotReuseMembershipAcrossFormatPlans() async throws {
+    let source = CameraCatalogQuerySourceSpy(
+      exactSnapshots: [
+        .jpg: .fixture(handles: [5, 3]),
+        .raw: .fixture(handles: [4, 2]),
       ]
+    )
+    let engine = CameraCatalogQueryEngine(source: source)
+
+    _ = try await engine.resolve(
+      rule: CameraMediaFilterRule(
+        formats: .selected([.jpg]),
+        date: .all,
+        downloadScope: .all
+      ),
+      owner: .gallery(UUID()),
+      downloadedHandles: []
+    )
+    let raw = try await engine.resolve(
+      rule: CameraMediaFilterRule(
+        formats: .selected([.raw]),
+        date: .all,
+        downloadScope: .all
+      ),
+      owner: .quickDownload(UUID()),
+      downloadedHandles: []
+    )
+
+    XCTAssertEqual(source.exactRequests, [.jpg, .raw])
+    XCTAssertEqual(raw.snapshot.items.map(\.handle), [4, 2])
+  }
+
+  @MainActor
+  func testCatalogQueryEngineFallsBackToHandleOrderWhenAnyUnionItemHasNoCaptureDate() async throws {
+    func snapshot(_ items: [CameraGalleryCatalogItem]) -> CameraGalleryCatalogSnapshot {
+      CameraGalleryCatalogSnapshot(
+        snapshotID: CameraGallerySnapshotID(),
+        dateGroups: [],
+        orderedHandles: items.map { UInt32($0.handle) },
+        items: items
+      )
+    }
+    let source = CameraCatalogQuerySourceSpy(
+      exactSnapshots: [
+        .jpg: snapshot([
+          CameraGalleryCatalogItem(
+            handle: 3,
+            filename: "DSCF0003.JPG",
+            formatLabel: "JPG",
+            captureDate: "20260726T120000",
+            byteSizeText: ""
+          ),
+          CameraGalleryCatalogItem(
+            handle: 1,
+            filename: "DSCF0001.JPG",
+            formatLabel: "JPG",
+            captureDate: "20260728T120000",
+            byteSizeText: ""
+          ),
+        ]),
+        .raw: snapshot([
+          CameraGalleryCatalogItem(
+            handle: 2,
+            filename: "DSCF0002.RAF",
+            formatLabel: "RAW",
+            captureDate: "",
+            byteSizeText: ""
+          ),
+        ]),
+      ]
+    )
+    let engine = CameraCatalogQueryEngine(source: source)
+
+    let resolution = try await engine.resolve(
+      rule: CameraMediaFilterRule(
+        formats: .selected([.jpg, .raw]),
+        date: .all,
+        downloadScope: .all
+      ),
+      owner: .gallery(UUID()),
+      downloadedHandles: []
+    )
+
+    XCTAssertEqual(resolution.snapshot.items.map(\.handle), [3, 2, 1])
+  }
+
+  @MainActor
+  func testCatalogQueryEngineUsesSubtractBaselineWhenHeifIsSelected() async throws {
+    let source = CameraCatalogQuerySourceSpy(
+      subtractBaselineSnapshots: [.heif: .fixture(handles: [3])]
     )
     let engine = CameraCatalogQueryEngine(source: source)
 
@@ -7489,17 +8359,115 @@ final class RunnerTests: XCTestCase {
       downloadedHandles: []
     )
 
-    XCTAssertEqual(source.expandedRequestCount, 1)
+    XCTAssertEqual(source.expandedRequestCount, 0)
     XCTAssertEqual(source.exactRequests, [])
-    XCTAssertEqual(source.objectInfoRequests, [3, 2, 1])
+    XCTAssertEqual(source.subtractBaselineRequests, [.heif])
     XCTAssertEqual(resolution.snapshot.items.map(\.handle), [3])
   }
 
   @MainActor
-  func testCatalogQueryEngineFailsWholeResolutionWhenFallbackObjectInfoIsIncomplete() async {
+  func testCatalogQueryEnginePublishesHeifCatalogProgress() async throws {
     let source = CameraCatalogQuerySourceSpy(
-      expandedSnapshot: .fixture(handles: [3, 2]),
-      objectInfos: [3: .fixture(handle: 3, formatCode: 0x3812)]
+      subtractBaselineSnapshots: [.heif: .fixture(handles: [3])]
+    )
+    let engine = CameraCatalogQueryEngine(source: source)
+    var progress: [CameraCatalogQueryProgress] = []
+
+    _ = try await engine.resolve(
+      rule: CameraMediaFilterRule(
+        formats: .selected([.heif]),
+        date: .all,
+        downloadScope: .all
+      ),
+      owner: .quickDownload(UUID()),
+      downloadedHandles: [],
+      onProgress: { progress.append($0) }
+    )
+
+    XCTAssertEqual(progress, [.queryingCatalog])
+  }
+
+  @MainActor
+  func testCatalogQueryEngineInvalidationRejectsLateHeifSubtractBaselineResult() async {
+    let source = CameraCatalogQuerySourceSpy(
+      subtractBaselineSnapshots: [.heif: .fixture(handles: [3])]
+    )
+    source.suspendsSubtractBaselineRequests = true
+    let engine = CameraCatalogQueryEngine(source: source)
+    let resolutionTask = Task {
+      try await engine.resolve(
+        rule: CameraMediaFilterRule(
+          formats: .selected([.heif]),
+          date: .all,
+          downloadScope: .all
+        ),
+        owner: .quickDownload(UUID()),
+        downloadedHandles: []
+      )
+    }
+
+    await source.waitForSubtractBaselineRequestCount(1)
+    await engine.invalidate()
+    source.releaseSubtractBaselineRequests()
+
+    do {
+      _ = try await resolutionTask.value
+      XCTFail("Invalidated HEIF query must reject its late result")
+    } catch is CancellationError {
+      XCTAssertEqual(source.subtractBaselineRequests, [.heif])
+    } catch {
+      XCTFail("Expected CancellationError, got \(error)")
+    }
+  }
+
+  func testQuickDownloadHeifSubtractBaselineExposesProgressToConnectingOverlay() throws {
+    let runner = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner")
+    let queryEngine = try String(
+      contentsOf: runner.appendingPathComponent("CameraCore/Gallery/CameraCatalogQueryEngine.swift")
+    )
+    let quickDownload = try String(
+      contentsOf: runner.appendingPathComponent("QuickDownloadUseCase.swift")
+    )
+    let home = try String(
+      contentsOf: runner.appendingPathComponent("NativeConnectViewController.swift")
+    )
+
+    XCTAssertTrue(queryEngine.contains("enum CameraCatalogQueryProgress"))
+    XCTAssertTrue(queryEngine.contains("loadSubtractBaselineCatalog(for: .heif)"))
+    XCTAssertFalse(queryEngine.contains("loadObjectInfo(handle:"))
+    XCTAssertTrue(quickDownload.contains("onProgress: @escaping"))
+    XCTAssertTrue(home.contains("正在筛选相机照片"))
+  }
+
+  func testConnectingOverlayCancellationDisconnectsAnActiveCameraSession() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Runner/NativeConnectViewController.swift")
+    )
+    let overlayStart = try XCTUnwrap(source.range(of: "overlay.onCancel =")?.lowerBound)
+    let hideStart = try XCTUnwrap(
+      source.range(of: "private func hideConnectingOverlay", range: overlayStart..<source.endIndex)?.lowerBound
+    )
+    let cancellationBody = String(source[overlayStart..<hideStart])
+
+    XCTAssertTrue(cancellationBody.contains("cancelConnectFlow("))
+    XCTAssertTrue(cancellationBody.contains("cameraSessionRuntime.exitGalleryAndDisconnect("))
+    XCTAssertTrue(cancellationBody.contains("overlay?.onCancel = nil"))
+    XCTAssertTrue(cancellationBody.contains("expectedBinding:"))
+    XCTAssertFalse(cancellationBody.contains("Task { @MainActor"))
+  }
+
+  @MainActor
+  func testCatalogQueryEngineFailsWholeResolutionWhenHeifSubtractBaselineFails() async {
+    let source = CameraCatalogQuerySourceSpy(
+      subtractBaselineErrors: [
+        .heif: NSError(domain: "CameraCatalogQuerySourceSpy", code: 2),
+      ]
     )
     let engine = CameraCatalogQueryEngine(source: source)
 
@@ -7513,9 +8481,9 @@ final class RunnerTests: XCTestCase {
         owner: .gallery(UUID()),
         downloadedHandles: []
       )
-      XCTFail("Incomplete ObjectInfo classification must fail the whole resolution")
+      XCTFail("Failed HEIF subtraction must fail the whole resolution")
     } catch {
-      XCTAssertEqual(source.objectInfoRequests, [3, 2])
+      XCTAssertEqual(source.subtractBaselineRequests, [.heif])
     }
   }
 
@@ -7600,7 +8568,7 @@ final class RunnerTests: XCTestCase {
     )
   }
 
-  func testCatalogRuntimeIsTheOnlyConsumerApplyingFilterProjection() throws {
+  func testCatalogProjectionStaysInsideQueryEngineAndGalleryRuntime() throws {
     let runner = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
@@ -7618,7 +8586,7 @@ final class RunnerTests: XCTestCase {
     )
 
     XCTAssertTrue(queryEngine.contains("CameraFilterEngine.project("))
-    XCTAssertFalse(runtime.contains("CameraFilterEngine.project("))
+    XCTAssertTrue(runtime.contains("CameraFilterEngine.project("))
     XCTAssertFalse(galleryPolicy.contains("CameraFilterEngine.project("))
     XCTAssertFalse(quick.contains("CameraFilterEngine.project("))
   }
@@ -7667,6 +8635,30 @@ final class RunnerTests: XCTestCase {
     XCTAssertTrue(source.contains("formatChips.exclusiveSelectionID = \"all\""))
     XCTAssertFalse(source.contains(".init(id: \"video\", title: \"视频\")"))
     XCTAssertFalse(source.contains("sort: filterState.sort"))
+  }
+
+  func testGalleryDatePickerOnlyOpensFromTheDateControl() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Runner/NativeGalleryViewController.swift")
+    )
+
+    XCTAssertTrue(source.contains("dateChips.onSelected = { [weak self] selectedID in self?.dateChipSelected(selectedID) }"))
+    XCTAssertTrue(source.contains("sortChips.onSelected = { [weak self] _ in self?.chipFilterChanged() }"))
+    XCTAssertTrue(source.contains("formatChips.onSelectionChanged = { [weak self] _ in self?.chipFilterChanged() }"))
+    XCTAssertTrue(source.contains("downloadScopeChips.onSelected = { [weak self] _ in self?.chipFilterChanged() }"))
+
+    let sharedStart = try XCTUnwrap(
+      source.range(of: "@objc private func chipFilterChanged()")?.lowerBound
+    )
+    let sharedEnd = try XCTUnwrap(
+      source.range(of: "private func configureGalleryToolsMenu()", range: sharedStart..<source.endIndex)?.lowerBound
+    )
+    let sharedBody = String(source[sharedStart..<sharedEnd])
+    XCTAssertFalse(sharedBody.contains("presentDatePicker()"))
+    XCTAssertFalse(sharedBody.contains("switch dateChips.selectedID"))
   }
 
   func testNativePairedCameraCardShowsQuickDownloadAndGalleryAsEqualPrimaryActions() throws {
@@ -7736,8 +8728,8 @@ final class RunnerTests: XCTestCase {
     XCTAssertTrue(homeSource.contains("NativeHomeQuickDownloadEntryPolicy.action(ruleIsEnabled: autoDownloadRule.isEnabled)"))
     XCTAssertTrue(homeSource.contains("saveButtonTitle: \"开始下载\""))
     XCTAssertTrue(homeSource.contains("forcesEnabledOnSave: true"))
-    XCTAssertTrue(homeSource.contains("self.isAutoDownloadPending = true"))
-    XCTAssertTrue(homeSource.contains("self.connectRememberedCamera(record)"))
+    XCTAssertTrue(homeSource.contains("connectRememberedCamera(record, purpose: .quickDownload)"))
+    XCTAssertFalse(homeSource.contains("isAutoDownloadPending"))
     XCTAssertTrue(settingsSource.contains("saveButtonTitle: String = \"保存\""))
     XCTAssertTrue(settingsSource.contains("forcesEnabledOnSave: Bool = false"))
     XCTAssertTrue(
@@ -7816,7 +8808,7 @@ final class RunnerTests: XCTestCase {
     )
     let applyBody = String(source[applyStart..<applyEnd])
 
-    XCTAssertTrue(applyBody.contains("catalogPresentation = presentation"))
+    XCTAssertTrue(applyBody.contains("galleryRenderState.replacingPresentation(presentation)"))
     XCTAssertFalse(applyBody.contains("galleryState.replaceItems(presentation.items)"))
     XCTAssertTrue(applyBody.contains("selectedHandles.formIntersection(presentation.items.map(\\.handle))"))
     XCTAssertFalse(source.contains("completeGalleryCatalogTask"))
@@ -7824,11 +8816,11 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(source.contains("runtime.requestCameraCatalog(query:"))
   }
 
-  func testNativeGalleryApplyCatalogPresentationUsesIncrementalRefreshDuringThumbnailLoading() throws {
+  func testNativeGalleryApplyCatalogPresentationInstallsAtomicRenderStateWithoutLegacyCopies() throws {
     let sourceURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
-      .appendingPathComponent("Runner/NativeConnectViewController.swift")
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
     let applyStart = try XCTUnwrap(
       source.range(of: "private func applyCatalogPresentation(_ presentation: CameraGalleryPresentation)")?.lowerBound
@@ -7838,13 +8830,168 @@ final class RunnerTests: XCTestCase {
     )
     let applyBody = String(source[applyStart..<applyEnd])
 
-    XCTAssertTrue(applyBody.contains("NativeGalleryPresentationRefreshPolicy.decision("))
-    XCTAssertTrue(applyBody.contains("if refreshDecision.requiresCollectionReload"))
-    XCTAssertTrue(applyBody.contains("refreshVisibleCells(forHandles: refreshDecision.changedHandles)"))
-    XCTAssertFalse(
-      applyBody.contains("refreshStatusText()\n    collectionView.reloadData()"),
-      "thumbnail/details publications must not reload the entire collection and cancel selection touches"
+    XCTAssertTrue(applyBody.contains("galleryRenderState.replacingPresentation(presentation)"))
+    XCTAssertTrue(applyBody.contains("galleryRenderState = nextRenderState"))
+    XCTAssertFalse(applyBody.contains("catalogPresentation = presentation"))
+    XCTAssertFalse(applyBody.contains("refreshGallerySections()"))
+  }
+
+  func testNativeGalleryViewDidAppearResubmitsTheCurrentVisibleThumbnailWindow() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let appearStart = try XCTUnwrap(
+      source.range(of: "override func viewDidAppear(_ animated: Bool)")?.lowerBound
     )
+    let disappearStart = try XCTUnwrap(
+      source.range(of: "override func viewWillDisappear(_ animated: Bool)", range: appearStart..<source.endIndex)?.lowerBound
+    )
+    let body = String(source[appearStart..<disappearStart])
+
+    XCTAssertTrue(body.contains("scheduleVisibleThumbnailRefresh(after: 0)"))
+  }
+
+  func testNativeGalleryViewWillDisappearAllowsTheSameViewportToBeResubmitted() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let disappearStart = try XCTUnwrap(
+      source.range(of: "override func viewWillDisappear(_ animated: Bool)")?.lowerBound
+    )
+    let preferredStyleStart = try XCTUnwrap(
+      source.range(of: "override var preferredStatusBarStyle", range: disappearStart..<source.endIndex)?.lowerBound
+    )
+    let body = String(source[disappearStart..<preferredStyleStart])
+
+    XCTAssertTrue(body.contains("visibleThumbnailRefreshWorkItem?.cancel()"))
+    XCTAssertTrue(body.contains("lastSubmittedThumbnailViewportIdentity = nil"))
+  }
+
+  func testNativeGalleryCatalogReplacementSettlesAtTheTopBeforeSchedulingThumbnails() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let applyStart = try XCTUnwrap(
+      source.range(of: "private func applyCatalogPresentation(_ presentation: CameraGalleryPresentation)")?.lowerBound
+    )
+    let applyEnd = try XCTUnwrap(
+      source.range(of: "private func invalidateThumbnailDecodes", range: applyStart..<source.endIndex)?.lowerBound
+    )
+    let body = String(source[applyStart..<applyEnd])
+
+    XCTAssertTrue(body.contains("lastSubmittedThumbnailViewportIdentity = nil"))
+    XCTAssertTrue(body.contains("collectionView.setContentOffset"))
+    XCTAssertTrue(body.contains("scheduleVisibleThumbnailRefresh(after: 0)"))
+    XCTAssertFalse(body.contains("loadVisibleThumbnails()"))
+  }
+
+  func testNativeGalleryOrientationRefreshKeepsThePreviousDecodedImageUntilReplacementIsReady() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let invalidateStart = try XCTUnwrap(
+      source.range(of: "private func invalidateThumbnailDecodes(forHandles handles: Set<Int>)")?.lowerBound
+    )
+    let cacheKeyStart = try XCTUnwrap(
+      source.range(of: "private func decodedThumbnailCacheKey", range: invalidateStart..<source.endIndex)?.lowerBound
+    )
+    let body = String(source[invalidateStart..<cacheKeyStart])
+
+    XCTAssertFalse(body.contains("thumbnailImageCache.removeObject"))
+    XCTAssertFalse(body.contains("thumbnailCacheKeysByHandle.removeValue"))
+  }
+
+  func testCameraSessionRuntimeStampsViewportRequestsBeforeAsyncSubmission() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/CameraSessionRuntime.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let requestStart = try XCTUnwrap(
+      source.range(of: "func requestVisibleGalleryThumbnails(handles: [Int])")?.lowerBound
+    )
+    let requestEnd = try XCTUnwrap(
+      source.range(of: "func cancelActiveThumbnailWork", range: requestStart..<source.endIndex)?.lowerBound
+    )
+    let body = String(source[requestStart..<requestEnd])
+
+    XCTAssertTrue(body.contains("galleryThumbnailViewportRevision &+= 1"))
+    XCTAssertTrue(body.contains("submissionID:"))
+    XCTAssertTrue(body.contains("expectedCatalogIdentity:"))
+  }
+
+  func testNativeGalleryVisibleThumbnailLoaderSubmitsOnlyChangedViewportIdentity() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let loadStart = try XCTUnwrap(
+      source.range(of: "private func loadVisibleThumbnails()")?.lowerBound
+    )
+    let loadEnd = try XCTUnwrap(
+      source.range(of: "private func rehydrateCachedThumbnailImages", range: loadStart..<source.endIndex)?.lowerBound
+    )
+    let body = String(source[loadStart..<loadEnd])
+
+    XCTAssertTrue(body.contains("NativeGalleryThumbnailViewportSubmissionPolicy.shouldSubmit("))
+    XCTAssertTrue(body.contains("orderedHandles: requestedHandles"))
+    XCTAssertTrue(body.contains("retryableFailedHandles:"))
+    XCTAssertTrue(body.contains("lastSubmittedThumbnailViewportIdentity = nextViewportIdentity"))
+    XCTAssertTrue(body.contains("expectedCatalogIdentity: nextViewportIdentity.catalogIdentity"))
+
+    let duplicateGuard = try XCTUnwrap(
+      body.range(of: "NativeGalleryThumbnailViewportSubmissionPolicy.shouldSubmit(")
+    )
+    let submittedLog = try XCTUnwrap(body.range(of: "THUMBNAIL_VIEWPORT_SUBMIT"))
+    XCTAssertLessThan(
+      duplicateGuard.lowerBound,
+      submittedLog.lowerBound,
+      "A SUBMIT event must only be emitted after the duplicate viewport guard accepts the handoff"
+    )
+  }
+
+  func testNativeGalleryIncrementalUpdateResubmitsRetryableThumbnailFailureOnce() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let observerStart = try XCTUnwrap(
+      source.range(of: "incrementalCatalogObserverID = runtime.observeIncrementalCatalogUpdates")?.lowerBound
+    )
+    let observerEnd = try XCTUnwrap(
+      source.range(of: "galleryPreviewObserverID = runtime.observeGalleryPreview", range: observerStart..<source.endIndex)?.lowerBound
+    )
+    let body = String(source[observerStart..<observerEnd])
+
+    XCTAssertTrue(body.contains("retryableFailedHandles"))
+    XCTAssertTrue(body.contains("scheduleVisibleThumbnailRefresh(after:"))
+  }
+
+  func testThumbnailOrientationDiagnosticIncludesCameraObjectInfoForUIKitOrientedImages() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let branchStart = try XCTUnwrap(
+      source.range(of: "if cropped.imageOrientation != .up")?.lowerBound
+    )
+    let branchEnd = try XCTUnwrap(
+      source.range(of: "let decision = NativePhotoPreviewRotationPolicy.rotationDecision(", range: branchStart..<source.endIndex)?.lowerBound
+    )
+    let branch = String(source[branchStart..<branchEnd])
+
+    XCTAssertTrue(branch.contains("object=\\(objectOrientation.map(String.init) ?? \"unknown\")"))
   }
 
   func testNativeGallerySelectionButtonKeepsVisualSizeAndExpandsHitTarget() throws {
@@ -7861,21 +9008,23 @@ final class RunnerTests: XCTestCase {
     XCTAssertTrue(source.contains("selectionButton.heightAnchor.constraint(equalToConstant: 26)"))
   }
 
-  func testNativeGalleryContentEventHasNoCameraRequestOrCollectionReload() throws {
+  func testNativeGalleryIncrementalObserverReloadsOnlyForStructuralDeltaAndDoesNotStartCameraWork() throws {
     let sourceURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
-      .appendingPathComponent("Runner/NativeConnectViewController.swift")
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
     let applyStart = try XCTUnwrap(
-      source.range(of: "private func applyGalleryContentUpdate")?.lowerBound
+      source.range(of: "incrementalCatalogObserverID = runtime.observeIncrementalCatalogUpdates")?.lowerBound
     )
     let applyEnd = try XCTUnwrap(
-      source.range(of: "private func applyGallerySessionControls", range: applyStart..<source.endIndex)?.lowerBound
+      source.range(of: "galleryPreviewObserverID = runtime.observeGalleryPreview", range: applyStart..<source.endIndex)?.lowerBound
     )
     let applyBody = String(source[applyStart..<applyEnd])
 
-    XCTAssertFalse(applyBody.contains("collectionView.reloadData()"))
+    XCTAssertTrue(applyBody.contains("galleryRenderState.applyingIncremental("))
+    XCTAssertTrue(applyBody.contains("if delta.requiresStructuralRefresh"))
+    XCTAssertTrue(applyBody.contains("collectionView.reloadData()"))
     XCTAssertFalse(applyBody.contains("loadVisibleThumbnails()"))
     XCTAssertFalse(applyBody.contains("requestVisibleGalleryThumbnails"))
   }
@@ -7913,7 +9062,8 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(gallerySource.contains("catalogSubmission"))
     XCTAssertTrue(gallerySource.contains("runtime.submitGalleryFilter("))
     XCTAssertTrue(gallerySource.contains("rule: filterState.rule"))
-    XCTAssertTrue(gallerySource.contains("sort: filterState.sortIntent"))
+    XCTAssertTrue(gallerySource.contains("let sortIntent = filterState.sortIntent"))
+    XCTAssertTrue(gallerySource.contains("sort: sortIntent"))
     XCTAssertFalse(gallerySource.contains("submitUnsupportedGalleryFilter"))
     XCTAssertTrue(gallerySource.contains("private func applyCatalogPresentation(_ presentation: CameraGalleryPresentation)"))
     XCTAssertFalse(gallerySource.contains("runtime.requestCameraCatalog(query:"))
@@ -8133,6 +9283,55 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(state.sort, .newest)
   }
 
+  func testNativeGalleryRenderStateUpdatesSectionContentWithoutStructuralRebuild() throws {
+    let generation = CameraGalleryGenerationID(rawValue: 1)
+    let snapshotID = CameraGallerySnapshotID()
+    let initialItem = CameraGalleryCatalogItem(
+      handle: 7,
+      filename: "DSCF0007.JPG",
+      formatLabel: "JPG",
+      captureDate: "2026:07:29 10:30:00",
+      byteSizeText: "1 MB"
+    )
+    let initialPresentation = CameraGalleryPresentation(
+      state: .ready(generation: generation, snapshotID: snapshotID),
+      intent: .all,
+      items: [initialItem],
+      entries: []
+    )
+    let state = NativeGalleryRenderState(presentation: initialPresentation)
+    var updatedItem = initialItem
+    updatedItem.thumbnailData = Data([7, 7, 7])
+    let updatedPresentation = CameraGalleryPresentation(
+      state: .ready(generation: generation, snapshotID: snapshotID),
+      intent: .all,
+      items: [updatedItem],
+      entries: []
+    )
+    let delta = CameraGalleryIncrementalDelta(
+      changedHandles: [7],
+      orientationChangedHandles: [],
+      requiresStructuralRefresh: false
+    )
+
+    let updatedState = state.applyingIncremental(
+      presentation: updatedPresentation,
+      delta: delta
+    )
+
+    XCTAssertEqual(updatedState.sections.map(\.title), state.sections.map(\.title))
+    XCTAssertEqual(updatedState.sections.map(\.day), state.sections.map(\.day))
+    XCTAssertEqual(try XCTUnwrap(updatedState.sections.first?.items.first).thumbnailData, Data([7, 7, 7]))
+    XCTAssertEqual(updatedState.presentation, updatedPresentation)
+  }
+
+  func testNativeGalleryRenderStateSkipsIdenticalFullPresentation() {
+    let presentation = CameraGalleryPresentation.unavailable
+    let state = NativeGalleryRenderState(presentation: presentation)
+
+    XCTAssertNil(state.replacingPresentation(presentation))
+  }
+
   func testNativeGalleryFilterPolicySortsNewestAndOldestLikeAndroid() {
     let items = [
       CameraVendorGalleryItem(handle: 1, filename: "A.JPG", formatLabel: "JPG", captureDate: "2026:05:04 10:30:00", byteSizeText: "1 MB"),
@@ -8198,7 +9397,7 @@ final class RunnerTests: XCTestCase {
     )
 
     XCTAssertEqual(Array(request.prefix(3)), [10, 11, 12])
-    XCTAssertEqual(request, [10, 11, 12, 7, 8, 9, 13, 14, 15, 16, 17, 18])
+    XCTAssertEqual(request, [10, 11, 12, 13, 14, 15, 16, 17, 18, 7, 8, 9])
   }
 
   func testNativeGalleryThumbnailRequestWindowSortsUnorderedVisibleHandlesByGalleryOrder() {
@@ -8211,7 +9410,7 @@ final class RunnerTests: XCTestCase {
     )
 
     XCTAssertEqual(Array(request.prefix(3)), [10, 11, 12])
-    XCTAssertEqual(request, [10, 11, 12, 7, 8, 9, 13, 14, 15, 16, 17, 18])
+    XCTAssertEqual(request, [10, 11, 12, 13, 14, 15, 16, 17, 18, 7, 8, 9])
   }
 
   func testNativeGalleryThumbnailRequestWindowDoesNotBridgeSparseVisibleHandles() {
@@ -8226,6 +9425,67 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(Array(request.prefix(3)), [10, 1_498, 1_499])
     XCTAssertLessThanOrEqual(request.count, 18)
     XCTAssertFalse(request.contains(800))
+  }
+
+  func testNativeGalleryThumbnailViewportSubmissionOnlyChangesForCatalogOrOrderedWindow() {
+    let firstCatalog = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let secondCatalog = CameraGalleryCatalogIdentity.fixture(
+      sessionEpoch: firstCatalog.sessionEpoch,
+      generation: 2
+    )
+    let first = NativeGalleryThumbnailViewportIdentity(
+      catalogIdentity: firstCatalog,
+      orderedHandles: [10, 11, 12]
+    )
+
+    XCTAssertTrue(
+      NativeGalleryThumbnailViewportSubmissionPolicy.shouldSubmit(
+        previous: nil,
+        next: first
+      )
+    )
+    XCTAssertFalse(
+      NativeGalleryThumbnailViewportSubmissionPolicy.shouldSubmit(
+        previous: first,
+        next: first
+      )
+    )
+    XCTAssertTrue(
+      NativeGalleryThumbnailViewportSubmissionPolicy.shouldSubmit(
+        previous: first,
+        next: NativeGalleryThumbnailViewportIdentity(
+          catalogIdentity: firstCatalog,
+          orderedHandles: [11, 12, 13]
+        )
+      )
+    )
+    XCTAssertTrue(
+      NativeGalleryThumbnailViewportSubmissionPolicy.shouldSubmit(
+        previous: first,
+        next: NativeGalleryThumbnailViewportIdentity(
+          catalogIdentity: secondCatalog,
+          orderedHandles: [10, 11, 12]
+        )
+      )
+    )
+
+    let retryableFailure = NativeGalleryThumbnailViewportIdentity(
+      catalogIdentity: firstCatalog,
+      orderedHandles: [10, 11, 12],
+      retryableFailedHandles: [10]
+    )
+    XCTAssertTrue(
+      NativeGalleryThumbnailViewportSubmissionPolicy.shouldSubmit(
+        previous: first,
+        next: retryableFailure
+      )
+    )
+    XCTAssertFalse(
+      NativeGalleryThumbnailViewportSubmissionPolicy.shouldSubmit(
+        previous: retryableFailure,
+        next: retryableFailure
+      )
+    )
   }
 
   func testNativeGalleryFilterPolicyOnlySortsRuntimeProjectedItems() {
@@ -9254,7 +10514,32 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(CameraVendorThumbnailFetchPolicy.shouldUsePartialPreviewFallback)
   }
 
-  func testThumbnailResultCarriesPrimedObjectInfoOrientationToGallery() {
+  func testCameraVendorThumbnailPathRecoversObjectInfoAfterGetThumbBeforeReturningResult() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/CameraVendorPtpSession.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let fetchStart = try XCTUnwrap(
+      source.range(of: "private func readStandardThumbnailObjectWithInfo")?.lowerBound
+    )
+    let fetchEnd = try XCTUnwrap(
+      source.range(of: "private func readPreviewObject", range: fetchStart..<source.endIndex)?.lowerBound
+    )
+    let body = String(source[fetchStart..<fetchEnd])
+
+    XCTAssertTrue(
+      body.contains("readTimeout: CameraVendorThumbnailFetchPolicy.objectInfoReadTimeoutSeconds")
+    )
+    XCTAssertTrue(
+      body.contains("primedObjectInfo ?? recoverThumbnailObjectInfoAfterGetThumb(handle: handle)")
+    )
+    XCTAssertTrue(
+      body.contains("readTimeout: CameraVendorThumbnailFetchPolicy.postGetThumbObjectInfoReadTimeoutSeconds")
+    )
+  }
+
+  func testThumbnailResultCarriesPrimedObjectInfoOrientationToGallery() throws {
     let primedInfo = CameraVendorCameraObjectInfo(
       handle: 0x10000001,
       storageID: 0x10000001,
@@ -9266,13 +10551,46 @@ final class RunnerTests: XCTestCase {
       orientation: 2
     )
 
-    let result = CameraVendorThumbnailResultPolicy.result(
+    let result = try CameraVendorThumbnailResultPolicy.result(
       data: Data([0xFF, 0xD8]),
       primedObjectInfo: primedInfo
     )
 
     XCTAssertEqual(result.objectInfo?.handle, primedInfo.handle)
     XCTAssertEqual(result.objectInfo?.orientation, 2)
+  }
+
+  func testThumbnailResultRejectsPublicationWithoutObjectInfo() {
+    XCTAssertThrowsError(
+      try CameraVendorThumbnailResultPolicy.result(
+        data: Data([0xFF, 0xD8, 0xFF, 0xD9]),
+        primedObjectInfo: nil
+      )
+    )
+  }
+
+  func testGalleryThumbnailAdapterPreservesExactPrimedObjectInfo() {
+    let primedInfo = CameraVendorCameraObjectInfo(
+      handle: 0x10000001,
+      storageID: 0x10000001,
+      formatCode: 0x3812,
+      compressedSize: 1024,
+      thumbCompressedSize: 128,
+      filename: "DSCF0001.HEIF",
+      captureDate: "20260712T220000",
+      orientation: 4
+    )
+    let thumbnail = CameraVendorGalleryThumbnail(
+      data: Data([0xFF, 0xD8]),
+      item: nil,
+      objectInfo: primedInfo
+    )
+
+    let result = CameraGalleryRepositoryAdapter.thumbnailResult(from: thumbnail)
+
+    XCTAssertEqual(result.objectInfo?.formatCode, 0x3812)
+    XCTAssertEqual(result.objectInfo?.metadata.orientation, 4)
+    XCTAssertTrue(result.objectInfo?.hasResolvedFormat == true)
   }
 
   func testGalleryPreviewResultCarriesObjectInfoOrientationToRenderer() {
@@ -9439,6 +10757,234 @@ final class RunnerTests: XCTestCase {
     XCTAssertTrue(repository.applyDetails(details, identity: identity))
     XCTAssertEqual(repository.items[0].filename, "DSCF0007.HEIC")
     XCTAssertEqual(repository.items[0].orientation, 4)
+  }
+
+  func testGalleryRepositoryPreservesEnrichedContentForSharedHandlesAcrossInstall() {
+    var repository = CameraGalleryRepository()
+    let firstSnapshot = CameraGalleryCatalogSnapshot(
+      snapshotID: CameraGallerySnapshotID(),
+      dateGroups: [],
+      orderedHandles: [7],
+      items: [CameraVendorGalleryItem(
+        handle: 7,
+        filename: "0x00000007",
+        formatLabel: "",
+        captureDate: "20260730",
+        byteSizeText: ""
+      )]
+    )
+    let firstGeneration = CameraGalleryGenerationID(rawValue: 1)
+    repository.install(firstSnapshot, generation: firstGeneration)
+    let firstIdentity = CameraGalleryChildIdentity(
+      generation: firstGeneration,
+      snapshotID: firstSnapshot.snapshotID,
+      handle: 7
+    )
+    XCTAssertTrue(repository.applyThumbnail(
+      CameraGalleryThumbnailResult(
+        data: Data([1, 2, 3]),
+        resolvedMetadata: CameraGalleryResolvedItemMetadata(
+          handle: 7,
+          filename: "DSCF0007.HEIC",
+          formatLabel: "HEIF",
+          captureDate: "20260730T120000",
+          byteSizeText: "8 MB",
+          compressedSize: 8_000_000,
+          orientation: 4,
+          formatHints: []
+        )
+      ),
+      identity: firstIdentity
+    ))
+
+    let nextSnapshot = CameraGalleryCatalogSnapshot(
+      snapshotID: CameraGallerySnapshotID(),
+      dateGroups: [],
+      orderedHandles: [7, 8],
+      items: [
+        CameraVendorGalleryItem(
+          handle: 7,
+          filename: "0x00000007",
+          formatLabel: "",
+          captureDate: "20260730",
+          byteSizeText: ""
+        ),
+        CameraVendorGalleryItem(
+          handle: 8,
+          filename: "0x00000008",
+          formatLabel: "",
+          captureDate: "20260730",
+          byteSizeText: ""
+        ),
+      ]
+    )
+    repository.install(nextSnapshot, generation: CameraGalleryGenerationID(rawValue: 2))
+
+    XCTAssertEqual(repository.items.map(\.handle), [7, 8])
+    XCTAssertEqual(repository.items[0].thumbnailData, Data([1, 2, 3]))
+    XCTAssertEqual(repository.items[0].filename, "DSCF0007.HEIC")
+    XCTAssertEqual(repository.items[0].formatLabel, "HEIF")
+    XCTAssertEqual(repository.items[0].orientation, 4)
+    XCTAssertEqual(repository.entries[0].thumbnail.state, .loaded)
+    XCTAssertEqual(repository.entries[0].thumbnail.imageData, Data([1, 2, 3]))
+    XCTAssertNil(repository.items[1].thumbnailData)
+  }
+
+  func testGalleryLiveDiagnosticsCoverCatalogViewportHDAndOrientationBoundaries() throws {
+    let runnerDirectory = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner")
+    let catalogRuntime = try String(
+      contentsOf: runnerDirectory.appendingPathComponent(
+        "CameraCore/Gallery/CameraGalleryCatalogRuntime.swift"
+      ),
+      encoding: .utf8
+    )
+    let thumbnailPipeline = try String(
+      contentsOf: runnerDirectory.appendingPathComponent(
+        "CameraCore/Gallery/CameraGalleryThumbnailPipeline.swift"
+      ),
+      encoding: .utf8
+    )
+    let hdPipeline = try String(
+      contentsOf: runnerDirectory.appendingPathComponent(
+        "CameraCore/Gallery/CameraGalleryHDPreviewPipeline.swift"
+      ),
+      encoding: .utf8
+    )
+    let galleryController = try String(
+      contentsOf: runnerDirectory.appendingPathComponent("NativeGalleryViewController.swift"),
+      encoding: .utf8
+    )
+
+    XCTAssertTrue(catalogRuntime.contains("CATALOG_QUERY_RESOLVED"))
+    XCTAssertTrue(catalogRuntime.contains("CATALOG_REPOSITORY_INSTALL_END"))
+    XCTAssertTrue(catalogRuntime.contains("CATALOG_PRESENTATION_PUBLISH_END"))
+    XCTAssertTrue(thumbnailPipeline.contains("THUMBNAIL_PIPELINE_INSTALL_END"))
+    XCTAssertTrue(thumbnailPipeline.contains("THUMBNAIL_VIEWPORT_CLASSIFIED"))
+    XCTAssertTrue(galleryController.contains("THUMBNAIL_VIEWPORT_SUBMIT"))
+    XCTAssertTrue(galleryController.contains("HD_PREVIEW_DECODE_FAILED"))
+    XCTAssertTrue(hdPipeline.contains("HD_PREVIEW_PRIORITY_PLAN"))
+    XCTAssertTrue(hdPipeline.contains("HD_PREVIEW_REQUEST_END"))
+    XCTAssertTrue(hdPipeline.contains("HD_PREVIEW_REQUEST_FAILED"))
+    XCTAssertTrue(galleryController.contains("ORIENTATION_DECISION"))
+  }
+
+  func testGalleryIncrementalDeltaTreatsSameDayObjectInfoRefinementAsContentOnly() {
+    let previous = CameraGalleryPresentation(
+      state: .ready(
+        generation: CameraGalleryGenerationID(rawValue: 1),
+        snapshotID: CameraGallerySnapshotID()
+      ),
+      intent: .all,
+      items: [CameraVendorGalleryItem(
+        handle: 7,
+        filename: "0x00000007",
+        formatLabel: "",
+        captureDate: "20260729",
+        byteSizeText: ""
+      )],
+      entries: []
+    )
+    let current = CameraGalleryPresentation(
+      state: previous.state,
+      intent: .all,
+      items: [CameraVendorGalleryItem(
+        handle: 7,
+        filename: "DSCF0007.JPG",
+        formatLabel: "JPG",
+        captureDate: "20260729T120000",
+        byteSizeText: "1 KB",
+        orientation: 4,
+        thumbnailData: Data([1, 2, 3])
+      )],
+      entries: []
+    )
+
+    let delta = CameraGalleryIncrementalDelta.between(
+      previous: previous,
+      current: current,
+      changedHandles: [7]
+    )
+
+    XCTAssertEqual(delta.changedHandles, [7])
+    XCTAssertEqual(delta.orientationChangedHandles, [])
+    XCTAssertFalse(delta.requiresStructuralRefresh)
+  }
+
+  func testGalleryIncrementalDeltaMarksDifferentDayAndLateOrientationAsStructuralEffects() {
+    let thumbnailData = Data([1, 2, 3])
+    let previous = CameraGalleryPresentation(
+      state: .ready(
+        generation: CameraGalleryGenerationID(rawValue: 1),
+        snapshotID: CameraGallerySnapshotID()
+      ),
+      intent: .all,
+      items: [CameraVendorGalleryItem(
+        handle: 7,
+        filename: "DSCF0007.JPG",
+        formatLabel: "JPG",
+        captureDate: "20260728T120000",
+        byteSizeText: "1 KB",
+        orientation: 1,
+        thumbnailData: thumbnailData
+      )],
+      entries: []
+    )
+    let current = CameraGalleryPresentation(
+      state: previous.state,
+      intent: .all,
+      items: [CameraVendorGalleryItem(
+        handle: 7,
+        filename: "DSCF0007.JPG",
+        formatLabel: "JPG",
+        captureDate: "20260729T120000",
+        byteSizeText: "1 KB",
+        orientation: 4,
+        thumbnailData: thumbnailData
+      )],
+      entries: []
+    )
+
+    let delta = CameraGalleryIncrementalDelta.between(
+      previous: previous,
+      current: current,
+      changedHandles: [7]
+    )
+
+    XCTAssertEqual(delta.orientationChangedHandles, [7])
+    XCTAssertTrue(delta.requiresStructuralRefresh)
+  }
+
+  func testDecodedThumbnailCacheKeySeparatesSessionAndOrientation() {
+    let firstSession = UUID()
+    let secondSession = UUID()
+
+    XCTAssertNotEqual(
+      NativeGalleryDecodedThumbnailCacheKey(
+        sessionEpoch: firstSession,
+        handle: 7,
+        orientation: 1
+      ),
+      NativeGalleryDecodedThumbnailCacheKey(
+        sessionEpoch: secondSession,
+        handle: 7,
+        orientation: 1
+      )
+    )
+    XCTAssertNotEqual(
+      NativeGalleryDecodedThumbnailCacheKey(
+        sessionEpoch: firstSession,
+        handle: 7,
+        orientation: 1
+      ),
+      NativeGalleryDecodedThumbnailCacheKey(
+        sessionEpoch: firstSession,
+        handle: 7,
+        orientation: 4
+      )
+    )
   }
 
   func testRepositoryAllowsDetailsToFillUnknownFormatWithoutReorderingSummary() {
@@ -9914,7 +11460,7 @@ final class RunnerTests: XCTestCase {
         cachedImage: nil,
         hasFailedThumbnailRequest: true
       ),
-      .none
+      .fetchFromCamera
     )
   }
 
@@ -11993,7 +13539,8 @@ final class RunnerTests: XCTestCase {
 
     XCTAssertTrue(requestBody.contains("runtime.submitGalleryFilter("))
     XCTAssertTrue(requestBody.contains("rule: filterState.rule"))
-    XCTAssertTrue(requestBody.contains("sort: filterState.sortIntent"))
+    XCTAssertTrue(requestBody.contains("let sortIntent = filterState.sortIntent"))
+    XCTAssertTrue(requestBody.contains("sort: sortIntent"))
     XCTAssertFalse(requestBody.contains("submitUnsupportedGalleryFilter"))
     XCTAssertFalse(requestBody.contains("runtime.requestCameraCatalog(query:"))
     XCTAssertFalse(requestBody.contains("runtime.requestCompleteGalleryCatalog()"))
@@ -12070,7 +13617,52 @@ final class RunnerTests: XCTestCase {
     await installCurrent.value
     await pipeline.waitUntilIdle()
 
-    XCTAssertEqual(publications.count, 0)
+    let loadedThumbnailPublications = publications.filter {
+      if case .thumbnail = $0 { return true }
+      return false
+    }
+    XCTAssertEqual(loadedThumbnailPublications.count, 0)
+    await pipeline.cancelAndJoin()
+  }
+
+  @MainActor
+  func testThumbnailPipelineInstallCannotStartNewCatalogDetailsFromOldWorkerCleanup() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    source.suspendsThumbnailBatchFinishUntilReleased = true
+    source.suspendsDetailsRequestsUntilReleased = true
+    let firstIdentity = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let secondIdentity = CameraGalleryCatalogIdentity.fixture(
+      sessionEpoch: firstIdentity.sessionEpoch,
+      generation: 2
+    )
+    let pipeline = CameraGalleryThumbnailPipeline(source: source) { _ in }
+
+    await pipeline.install(
+      catalogIdentity: firstIdentity,
+      membership: [1],
+      reusableObjectInfos: [:]
+    )
+    await pipeline.requestVisible(handles: [1])
+    await source.waitForThumbnailBatchFinishStartCount(1)
+
+    let installTask = Task {
+      await pipeline.install(
+        catalogIdentity: secondIdentity,
+        membership: [9],
+        reusableObjectInfos: [:]
+      )
+    }
+    for _ in 0..<20 { await Task.yield() }
+    source.releaseThumbnailBatchFinishes()
+    await installTask.value
+    for _ in 0..<20 { await Task.yield() }
+
+    XCTAssertEqual(
+      source.requestedDetailsHandles,
+      [],
+      "Cleanup from the old thumbnail worker must not start Details against the newly installed catalog"
+    )
+    source.releaseDetailsRequests()
     await pipeline.cancelAndJoin()
   }
 
@@ -12151,12 +13743,342 @@ final class RunnerTests: XCTestCase {
     )
     await pipeline.requestVisible(handles: [7, 8])
     await pipeline.waitUntilIdle()
-    await pipeline.suspend()
-    await pipeline.resume()
+    await pipeline.suspendForExternalWork()
+    await pipeline.resumeExternalWork()
     await pipeline.requestVisible(handles: [7, 8])
     await pipeline.waitUntilIdle()
 
     XCTAssertEqual(source.requestedThumbnailHandles, [7, 8, 8])
+    await pipeline.cancelAndJoin()
+  }
+
+  @MainActor
+  func testThumbnailPipelineResumeReplaysCancelledVisibleWindowWithoutNewUIRequest() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    source.suspendsChildRequests = true
+    let identity = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let pipeline = CameraGalleryThumbnailPipeline(source: source) { _ in }
+
+    await pipeline.install(
+      catalogIdentity: identity,
+      membership: [7, 8],
+      reusableObjectInfos: [:]
+    )
+    await pipeline.requestVisible(handles: [7, 8])
+    await source.waitForThumbnailRequestCount(1)
+
+    await pipeline.suspendForExternalWork()
+    source.suspendsChildRequests = false
+    await pipeline.resumeExternalWork()
+    await pipeline.waitUntilIdle()
+
+    XCTAssertEqual(source.requestedThumbnailHandles, [7, 7, 8])
+    await pipeline.cancelAndJoin()
+  }
+
+  @MainActor
+  func testThumbnailPipelineOlderViewportCannotReplaceNewerViewportAfterDetailsJoin() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    source.suspendsDetailsRequestsUntilReleased = true
+    source.delaysDetailsCancellationUntilReleased = true
+    let detailsCancelled = expectation(description: "older viewport waits for details cancellation")
+    detailsCancelled.assertForOverFulfill = false
+    source.onDetailsRequestCancelled = {
+      detailsCancelled.fulfill()
+    }
+    let identity = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let pipeline = CameraGalleryThumbnailPipeline(source: source) { _ in }
+
+    await pipeline.install(
+      catalogIdentity: identity,
+      membership: [1, 2, 3],
+      reusableObjectInfos: [:]
+    )
+    await pipeline.requestVisible(handles: [1])
+    await source.waitForDetailsRequestCount(1)
+
+    let olderViewport = Task {
+      await pipeline.requestVisible(handles: [2])
+    }
+    await fulfillment(of: [detailsCancelled], timeout: 1)
+
+    let newerViewport = Task {
+      await pipeline.requestVisible(handles: [3])
+    }
+    await source.waitForThumbnailRequestCount(2)
+    source.releaseDetailsRequests()
+    await olderViewport.value
+    await newerViewport.value
+    for _ in 0..<100 { await Task.yield() }
+
+    XCTAssertEqual(
+      source.requestedThumbnailHandles,
+      [1, 3],
+      "An older actor invocation must not restart its stale viewport after a newer request has entered"
+    )
+    let cleanup = Task {
+      await pipeline.cancelAndJoin()
+    }
+    source.releaseDetailsRequests()
+    await cleanup.value
+  }
+
+  @MainActor
+  func testThumbnailPipelineReprioritizesWithoutJoiningTheInFlightViewportBatch() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    source.suspendsThumbnailResultsUntilReleased = true
+    let identity = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let pipeline = CameraGalleryThumbnailPipeline(source: source) { _ in }
+
+    await pipeline.install(
+      catalogIdentity: identity,
+      membership: [1, 2, 3, 9, 8],
+      reusableObjectInfos: [:]
+    )
+    await pipeline.requestVisible(handles: [1, 2, 3])
+    await source.waitForThumbnailRequestCount(1)
+
+    let reprioritized = expectation(description: "latest viewport accepted without joining the in-flight PTP request")
+    Task {
+      await pipeline.requestVisible(handles: [9, 8])
+      reprioritized.fulfill()
+    }
+
+    await fulfillment(of: [reprioritized], timeout: 0.2)
+    source.suspendsThumbnailResultsUntilReleased = false
+    source.releaseThumbnailResults()
+    await pipeline.waitUntilIdle()
+
+    XCTAssertEqual(source.requestedThumbnailHandles, [1, 9, 8])
+    await pipeline.cancelAndJoin()
+  }
+
+  @MainActor
+  func testThumbnailPipelineDoesNotRestartBatchForIdenticalOrderedViewport() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    source.suspendsThumbnailResultsUntilReleased = true
+    let identity = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let pipeline = CameraGalleryThumbnailPipeline(source: source) { _ in }
+
+    await pipeline.install(
+      catalogIdentity: identity,
+      membership: [1, 2, 3],
+      reusableObjectInfos: [:]
+    )
+    await pipeline.requestVisible(handles: [1, 2, 3], submissionID: 1)
+    await source.waitForThumbnailRequestCount(1)
+    await pipeline.requestVisible(handles: [1, 2, 3], submissionID: 2)
+    source.releaseThumbnailResults()
+    await pipeline.waitUntilIdle()
+
+    XCTAssertEqual(source.requestedThumbnailHandles, [1, 2, 3])
+    XCTAssertEqual(source.begunThumbnailBatchHandles, [[1, 2, 3]])
+    XCTAssertEqual(source.finishedThumbnailBatchHandles, [[1, 2, 3]])
+    await pipeline.cancelAndJoin()
+  }
+
+  @MainActor
+  func testThumbnailPipelineStopsStaleCacheReplayWhenANewerViewportArrives() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    let identity = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    var publishedHandles: [Int] = []
+    var shouldSuspendFirstCachedPublication = false
+    var suspendedPublication: CheckedContinuation<Void, Never>?
+    let pipeline = CameraGalleryThumbnailPipeline(source: source) { publication in
+      guard case .thumbnail(let mediaIdentity, _) = publication else { return }
+      publishedHandles.append(mediaIdentity.handle)
+      if shouldSuspendFirstCachedPublication,
+         mediaIdentity.handle == 1,
+         suspendedPublication == nil {
+        await withCheckedContinuation { continuation in
+          suspendedPublication = continuation
+        }
+      }
+    }
+
+    await pipeline.install(
+      catalogIdentity: identity,
+      membership: [1, 2, 3],
+      reusableObjectInfos: [:]
+    )
+    await pipeline.requestVisible(handles: [1, 2, 3], submissionID: 1)
+    await pipeline.waitUntilIdle()
+
+    publishedHandles = []
+    shouldSuspendFirstCachedPublication = true
+    let staleViewport = Task {
+      await pipeline.requestVisible(handles: [1, 2, 3], submissionID: 2)
+    }
+    for _ in 0..<100 where suspendedPublication == nil {
+      await Task.yield()
+    }
+    XCTAssertNotNil(suspendedPublication)
+
+    let latestViewport = Task {
+      await pipeline.requestVisible(handles: [3], submissionID: 3)
+    }
+    await latestViewport.value
+    suspendedPublication?.resume()
+    suspendedPublication = nil
+    await staleViewport.value
+
+    XCTAssertEqual(
+      publishedHandles,
+      [1, 3],
+      "The stale viewport may finish its in-flight publication, but must not replay the rest of its cache batch"
+    )
+    await pipeline.cancelAndJoin()
+  }
+
+  @MainActor
+  func testThumbnailPipelineMetadataWithoutExactObjectInfoStillLoadsDetails() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    source.returnsResolvedDetails = true
+    source.thumbnailResolvedMetadataByHandle[7] = CameraGalleryResolvedItemMetadata(
+      handle: 7,
+      filename: "DSCF0007.JPG",
+      formatLabel: "JPG",
+      captureDate: "",
+      byteSizeText: "",
+      compressedSize: nil,
+      orientation: nil,
+      formatHints: []
+    )
+    let identity = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let pipeline = CameraGalleryThumbnailPipeline(source: source) { _ in }
+
+    await pipeline.install(
+      catalogIdentity: identity,
+      membership: [7],
+      reusableObjectInfos: [:]
+    )
+    await pipeline.requestVisible(handles: [7])
+    await pipeline.waitUntilIdle()
+
+    XCTAssertEqual(
+      source.requestedDetailsHandles,
+      [7],
+      "Metadata labels without exact ObjectInfo must not suppress the authoritative Details request"
+    )
+    await pipeline.cancelAndJoin()
+  }
+
+  @MainActor
+  func testThumbnailPipelineDetailsResumeFromFirstIncompleteHandleAfterViewportInterruption() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    source.returnsResolvedDetails = true
+    source.detailsHandlesToSuspend = [2]
+    let identity = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    let pipeline = CameraGalleryThumbnailPipeline(source: source) { _ in }
+
+    await pipeline.install(
+      catalogIdentity: identity,
+      membership: [1, 2, 3],
+      reusableObjectInfos: [:]
+    )
+    await pipeline.requestVisible(handles: [1])
+    await source.waitForDetailsRequestCount(2)
+
+    await pipeline.requestVisible(handles: [3])
+    await source.waitForDetailsRequestCount(3)
+
+    XCTAssertEqual(
+      Array(source.requestedDetailsHandles.prefix(3)),
+      [1, 2, 2],
+      "Completed Details handles must not be republished from the catalog head after viewport cancellation"
+    )
+    source.detailsHandlesToSuspend = []
+    source.releaseDetailsRequests()
+    await pipeline.waitUntilIdle()
+    await pipeline.cancelAndJoin()
+  }
+
+  @MainActor
+  func testThumbnailPipelinePublishesTerminalFailureAfterBoundedRetries() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    source.thumbnailFailuresRemaining[8] = 4
+    let identity = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    var states: [CameraGalleryThumbnailState] = []
+    let pipeline = CameraGalleryThumbnailPipeline(
+      source: source,
+      retryDelaysNanoseconds: [0, 0]
+    ) { publication in
+      if case .thumbnailState(_, let state) = publication {
+        states.append(state)
+      }
+    }
+
+    await pipeline.install(
+      catalogIdentity: identity,
+      membership: [8],
+      reusableObjectInfos: [:]
+    )
+    await pipeline.requestVisible(handles: [8])
+    await pipeline.waitUntilIdle()
+
+    XCTAssertEqual(source.requestedThumbnailHandles, [8, 8, 8])
+    XCTAssertFalse(states.contains(.loading))
+    XCTAssertEqual(states.last, .failed)
+    await pipeline.cancelAndJoin()
+  }
+
+  @MainActor
+  func testThumbnailPipelineRetriesTerminalFailureOnNextExplicitViewportSubmission() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    source.thumbnailFailuresRemaining[8] = 3
+    let identity = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    var loadedHandles: [Int] = []
+    let pipeline = CameraGalleryThumbnailPipeline(
+      source: source,
+      retryDelaysNanoseconds: [0, 0]
+    ) { publication in
+      if case .thumbnail(let mediaIdentity, _) = publication {
+        loadedHandles.append(mediaIdentity.handle)
+      }
+    }
+
+    await pipeline.install(
+      catalogIdentity: identity,
+      membership: [8],
+      reusableObjectInfos: [:]
+    )
+    await pipeline.requestVisible(handles: [8], submissionID: 1)
+    await pipeline.waitUntilIdle()
+    await pipeline.requestVisible(handles: [8], submissionID: 2)
+    await pipeline.waitUntilIdle()
+
+    XCTAssertEqual(source.requestedThumbnailHandles, [8, 8, 8, 8])
+    XCTAssertEqual(loadedHandles, [8])
+    await pipeline.cancelAndJoin()
+  }
+
+  @MainActor
+  func testThumbnailPipelineDoesNotPublishLoadingStateForPlaceholderCells() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    let identity = CameraGalleryCatalogIdentity.fixture(generation: 1)
+    var states: [CameraGalleryThumbnailState] = []
+    var loadedHandles: [Int] = []
+    let pipeline = CameraGalleryThumbnailPipeline(source: source) { publication in
+      switch publication {
+      case .thumbnail(let identity, _):
+        loadedHandles.append(identity.handle)
+      case .thumbnailState(_, let state):
+        states.append(state)
+      case .details:
+        break
+      }
+    }
+
+    await pipeline.install(
+      catalogIdentity: identity,
+      membership: [7],
+      reusableObjectInfos: [:]
+    )
+    await pipeline.requestVisible(handles: [7])
+    await pipeline.waitUntilIdle()
+
+    XCTAssertEqual(loadedHandles, [7])
+    XCTAssertFalse(states.contains(.loading))
     await pipeline.cancelAndJoin()
   }
 
@@ -12189,6 +14111,78 @@ final class RunnerTests: XCTestCase {
     guard case .failed = lastPresentation.state else {
       return XCTFail("Transport failure must remain a failed presentation, not an empty ready catalog")
     }
+  }
+
+  @MainActor
+  func testCatalogRuntimeDoesNotPublishLoadingWhenSwitchingBackToCachedFormatMembership() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    var presentations: [CameraGalleryPresentation] = []
+    var isRecordingCachedSwitch = false
+    let initialReady = expectation(description: "initial catalog ready")
+    let jpgReady = expectation(description: "jpg catalog ready")
+    let allReady = expectation(description: "all catalog restored from cache")
+    let cachedJPGReady = expectation(description: "jpg catalog restored from cache")
+    var readyStage = 0
+    let runtime = CameraGalleryCatalogRuntime(
+      source: source,
+      publishPresentation: { presentation in
+        if isRecordingCachedSwitch {
+          presentations.append(presentation)
+        }
+        guard case .ready = presentation.state else { return }
+        switch readyStage {
+        case 0 where presentation.intent.format == .all:
+          readyStage = 1
+          initialReady.fulfill()
+        case 1 where presentation.intent.format == .jpg:
+          readyStage = 2
+          jpgReady.fulfill()
+        case 2 where presentation.intent.format == .all:
+          readyStage = 3
+          allReady.fulfill()
+        case 3 where presentation.intent.format == .jpg:
+          readyStage = 4
+          cachedJPGReady.fulfill()
+        default:
+          break
+        }
+      },
+      reportTransportEvidence: { _ in }
+    )
+    let jpg = CameraGalleryFilterIntent(
+      date: .all,
+      format: .jpg,
+      sort: .newest,
+      downloadStatus: .all
+    )
+
+    await runtime.start(initial: .all)
+    await fulfillment(of: [initialReady], timeout: 1)
+    await runtime.submit(
+      jpg,
+      submissionID: CameraGalleryIntentSubmissionID(rawValue: 1),
+      downloadedHandles: []
+    )
+    await fulfillment(of: [jpgReady], timeout: 1)
+    await runtime.submit(
+      .all,
+      submissionID: CameraGalleryIntentSubmissionID(rawValue: 2),
+      downloadedHandles: []
+    )
+    await fulfillment(of: [allReady], timeout: 1)
+
+    presentations = []
+    isRecordingCachedSwitch = true
+    await runtime.submit(
+      jpg,
+      submissionID: CameraGalleryIntentSubmissionID(rawValue: 3),
+      downloadedHandles: []
+    )
+    await fulfillment(of: [cachedJPGReady], timeout: 1)
+
+    XCTAssertFalse(presentations.contains(where: { $0.isLoading }))
+    XCTAssertEqual(source.catalogIntents.map(\.format), [.jpg])
+    await runtime.cancelAllChildren()
   }
 
   @MainActor
@@ -12322,18 +14316,27 @@ final class RunnerTests: XCTestCase {
   func testCatalogRuntimeRejectsVisibleThumbnailsWhileMembershipTransitionJoinsOldDetails() async {
     let source = CameraGalleryCatalogRuntimeSourceSpy()
     source.suspendsDetailsRequestsUntilReleased = true
+    let ready = expectation(description: "initial catalog ready")
+    var didObserveReady = false
     let detailsCancelled = expectation(description: "old details task cancelled")
     source.onDetailsRequestCancelled = {
       detailsCancelled.fulfill()
     }
     let runtime = CameraGalleryCatalogRuntime(
       source: source,
-      publishPresentation: { _ in },
+      publishPresentation: { presentation in
+        guard !didObserveReady, case .ready = presentation.state else { return }
+        didObserveReady = true
+        ready.fulfill()
+      },
       reportTransportEvidence: { _ in }
     )
 
     await runtime.start(initial: .all)
+    await fulfillment(of: [ready], timeout: 1)
+    await runtime.requestVisibleThumbnails(handles: [3, 2])
     await source.waitForDetailsRequestCount(1)
+    let thumbnailRequestsBeforeTransition = source.requestedThumbnailHandles
 
     let submitTask = Task {
       await runtime.submit(CameraGalleryFilterIntent(
@@ -12350,10 +14353,69 @@ final class RunnerTests: XCTestCase {
       await Task.yield()
     }
 
-    XCTAssertEqual(source.requestedThumbnailHandles, [])
+    XCTAssertEqual(
+      source.requestedThumbnailHandles,
+      thumbnailRequestsBeforeTransition,
+      "The membership transition must reject additional visible-thumbnail work"
+    )
     source.suspendsDetailsRequestsUntilReleased = false
     source.releaseDetailsRequests()
     await submitTask.value
+    await runtime.cancelAllChildren()
+  }
+
+  @MainActor
+  func testCatalogRuntimeRejectsViewportFromAnotherCatalogIdentity() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    let sessionEpoch = UUID()
+    let queryEngine = CameraCatalogQueryEngine(
+      source: source,
+      sessionEpoch: sessionEpoch
+    )
+    let ready = expectation(description: "catalog ready")
+    var readyIdentity: CameraGalleryCatalogIdentity?
+    let runtime = CameraGalleryCatalogRuntime(
+      source: source,
+      queryEngine: queryEngine,
+      cameraID: "camera",
+      publishPresentation: { presentation in
+        guard case .ready(let generation, let snapshotID) = presentation.state else { return }
+        readyIdentity = CameraGalleryCatalogIdentity(
+          cameraID: "camera",
+          sessionEpoch: sessionEpoch,
+          generation: generation,
+          snapshotID: snapshotID
+        )
+        ready.fulfill()
+      },
+      reportTransportEvidence: { _ in }
+    )
+
+    await runtime.start(initial: .all)
+    await fulfillment(of: [ready], timeout: 1)
+    let currentIdentity = try! XCTUnwrap(readyIdentity)
+    let staleIdentity = CameraGalleryCatalogIdentity(
+      cameraID: currentIdentity.cameraID,
+      sessionEpoch: currentIdentity.sessionEpoch,
+      generation: CameraGalleryGenerationID(rawValue: currentIdentity.generation.rawValue &+ 1),
+      snapshotID: currentIdentity.snapshotID
+    )
+
+    await runtime.requestVisibleThumbnails(
+      handles: [3],
+      submissionID: 1,
+      expectedCatalogIdentity: staleIdentity
+    )
+    for _ in 0..<20 { await Task.yield() }
+    XCTAssertEqual(source.requestedThumbnailHandles, [])
+
+    await runtime.requestVisibleThumbnails(
+      handles: [3],
+      submissionID: 2,
+      expectedCatalogIdentity: currentIdentity
+    )
+    await runtime.waitUntilIdle()
+    XCTAssertEqual(source.requestedThumbnailHandles, [3])
     await runtime.cancelAllChildren()
   }
 
@@ -12401,6 +14463,7 @@ final class RunnerTests: XCTestCase {
 
     source.releaseThumbnailBatchFinishes()
     await submitTask.value
+    await source.waitForCatalogRequestCount(1)
 
     XCTAssertEqual(source.finishedThumbnailBatchHandles, [[3, 2]])
     XCTAssertEqual(source.catalogIntents.map(\.format), [.raw])
@@ -12447,7 +14510,7 @@ final class RunnerTests: XCTestCase {
   }
 
   @MainActor
-  func testCatalogRuntimeRejectsVisibleThumbnailsAfterUnsupportedIntent() async {
+  func testCatalogRuntimeKeepsVisibleThumbnailsAvailableAfterLocalDateProjection() async {
     let source = CameraGalleryCatalogRuntimeSourceSpy()
     let initialReady = expectation(description: "initial catalog ready")
     var didObserveInitialReady = false
@@ -12463,19 +14526,73 @@ final class RunnerTests: XCTestCase {
 
     await runtime.start(initial: .all)
     await fulfillment(of: [initialReady], timeout: 1)
+    let selectedDay = Calendar(identifier: .gregorian).date(
+      from: DateComponents(year: 2026, month: 7, day: 14)
+    )!
     await runtime.submit(CameraGalleryFilterIntent(
-      date: .today,
+      date: .specificDay(selectedDay),
       format: .all,
       sort: .newest,
       downloadStatus: .all
     ), submissionID: CameraGalleryIntentSubmissionID(rawValue: 1), downloadedHandles: [])
 
     await runtime.requestVisibleThumbnails(handles: [3, 2])
-    for _ in 0..<20 {
-      await Task.yield()
-    }
+    await runtime.waitUntilIdle()
 
-    XCTAssertEqual(source.requestedThumbnailHandles, [])
+    XCTAssertEqual(source.initialCatalogRequestCount, 1)
+    XCTAssertEqual(source.requestedThumbnailHandles, [3, 2])
+    await runtime.cancelAllChildren()
+  }
+
+  @MainActor
+  func testCatalogRuntimeProjectsDateAndDownloadScopeWithoutAnotherCameraCatalog() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    let initialReady = expectation(description: "initial catalog ready")
+    let locallyProjected = expectation(description: "date and download scope projected locally")
+    var initialGeneration: CameraGalleryGenerationID?
+    var lastPresentation = CameraGalleryPresentation.unavailable
+    var didFulfillLocalProjection = false
+    let selectedDay = Calendar(identifier: .gregorian).date(
+      from: DateComponents(year: 2026, month: 7, day: 14)
+    )!
+    let runtime = CameraGalleryCatalogRuntime(
+      source: source,
+      publishPresentation: { presentation in
+        lastPresentation = presentation
+        if initialGeneration == nil,
+           case .ready(let generation, _) = presentation.state {
+          initialGeneration = generation
+          initialReady.fulfill()
+        }
+        if !didFulfillLocalProjection,
+           presentation.intent.date == .specificDay(selectedDay),
+           presentation.intent.downloadStatus == .notDownloaded,
+           presentation.items.map(\.handle) == [3, 1] {
+          didFulfillLocalProjection = true
+          locallyProjected.fulfill()
+        }
+      },
+      reportTransportEvidence: { _ in }
+    )
+
+    await runtime.start(initial: .all)
+    await fulfillment(of: [initialReady], timeout: 1)
+    await runtime.submit(
+      CameraGalleryFilterIntent(
+        date: .specificDay(selectedDay),
+        format: .all,
+        sort: .newest,
+        downloadStatus: .notDownloaded
+      ),
+      submissionID: CameraGalleryIntentSubmissionID(rawValue: 1),
+      downloadedHandles: [2]
+    )
+    await fulfillment(of: [locallyProjected], timeout: 1)
+
+    XCTAssertEqual(source.initialCatalogRequestCount, 1)
+    XCTAssertEqual(source.catalogIntents, [])
+    XCTAssertEqual(lastPresentation.generation, initialGeneration)
+    XCTAssertEqual(lastPresentation.items.map(\.handle), [3, 1])
     await runtime.cancelAllChildren()
   }
 
@@ -12581,6 +14698,40 @@ final class RunnerTests: XCTestCase {
   }
 
   @MainActor
+  func testCatalogRuntimeDoesNotStartDetailsBeforeFirstVisibleWindow() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    source.suspendsDetailsRequestsUntilReleased = true
+    let ready = expectation(description: "catalog ready before first visible window")
+    var didObserveReady = false
+    let runtime = CameraGalleryCatalogRuntime(
+      source: source,
+      publishPresentation: { presentation in
+        guard !didObserveReady, case .ready = presentation.state else { return }
+        didObserveReady = true
+        ready.fulfill()
+      },
+      reportTransportEvidence: { _ in }
+    )
+
+    await runtime.start(initial: .all)
+    await fulfillment(of: [ready], timeout: 1)
+    try? await Task.sleep(nanoseconds: 100_000_000)
+
+    XCTAssertEqual(
+      source.requestedDetailsHandles,
+      [],
+      "Details must not occupy PTP before the UI has completed its first visible thumbnail window"
+    )
+
+    await runtime.requestVisibleThumbnails(handles: [3])
+    await source.waitForDetailsRequestCount(1)
+    XCTAssertEqual(source.requestedThumbnailHandles, [3])
+    XCTAssertEqual(source.requestedDetailsHandles, [3])
+    source.releaseDetailsRequests()
+    await runtime.cancelAllChildren()
+  }
+
+  @MainActor
   func testCatalogRuntimeRunsDetailsAfterThumbnailBurstWithoutStarvation() async {
     let source = CameraGalleryCatalogRuntimeSourceSpy()
     source.initialSnapshotHandles = Array(stride(from: 10, through: 1, by: -1))
@@ -12602,7 +14753,7 @@ final class RunnerTests: XCTestCase {
     await runtime.requestVisibleThumbnails(handles: source.initialSnapshotHandles)
     await source.waitForDetailsRequestCount(1)
 
-    XCTAssertEqual(source.requestedThumbnailHandles, Array(stride(from: 10, through: 5, by: -1)))
+    XCTAssertEqual(source.requestedThumbnailHandles, source.initialSnapshotHandles)
     XCTAssertEqual(source.requestedDetailsHandles, [10])
     source.releaseDetailsRequests()
     await runtime.cancelAllChildren()
@@ -12661,6 +14812,71 @@ final class RunnerTests: XCTestCase {
     }
 
     XCTAssertEqual(source.requestedThumbnailHandles, [1])
+    await runtime.cancelAllChildren()
+  }
+
+  @MainActor
+  func testCatalogRuntimeDownloadSuspensionSurvivesCatalogInstallation() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    let initialReady = expectation(description: "initial catalog ready")
+    let filteredReady = expectation(description: "filtered catalog installed while download is pending")
+    var didObserveInitialReady = false
+    var didObserveFilteredReady = false
+    let runtime = CameraGalleryCatalogRuntime(
+      source: source,
+      publishPresentation: { presentation in
+        if !didObserveInitialReady,
+           case .ready = presentation.state,
+           presentation.intent.format == .all {
+          didObserveInitialReady = true
+          initialReady.fulfill()
+        }
+        if !didObserveFilteredReady,
+           case .ready = presentation.state,
+           presentation.intent.format == .raw {
+          didObserveFilteredReady = true
+          filteredReady.fulfill()
+        }
+      },
+      reportTransportEvidence: { _ in }
+    )
+
+    await runtime.start(initial: .all)
+    await fulfillment(of: [initialReady], timeout: 1)
+    source.suspendsCatalogRequests = true
+    await runtime.submit(
+      CameraGalleryFilterIntent(
+        date: .all,
+        format: .raw,
+        sort: .newest,
+        downloadStatus: .all
+      ),
+      submissionID: CameraGalleryIntentSubmissionID(rawValue: 1),
+      downloadedHandles: []
+    )
+    await source.waitForCatalogRequestCount(1)
+    await runtime.suspendChildWorkForDownload()
+    source.resolveCatalogRequest(
+      at: 0,
+      snapshot: CameraGalleryCatalogRuntimeSourceSpy.snapshot(handles: [9])
+    )
+    await fulfillment(of: [filteredReady], timeout: 1)
+
+    await runtime.requestVisibleThumbnails(handles: [9])
+    for _ in 0..<100 {
+      await Task.yield()
+    }
+
+    XCTAssertEqual(
+      source.requestedThumbnailHandles,
+      [],
+      "Installing a catalog must not reopen child PTP work while download admission owns suspension"
+    )
+    await runtime.resumeChildWorkAfterDownload()
+    for _ in 0..<100 where source.requestedThumbnailHandles.isEmpty {
+      await Task.yield()
+    }
+    XCTAssertEqual(source.requestedThumbnailHandles, [9])
     await runtime.cancelAllChildren()
   }
 
@@ -12730,6 +14946,50 @@ final class RunnerTests: XCTestCase {
 
     await fulfillment(of: [reprojected], timeout: 1)
     XCTAssertEqual(lastPresentation.items.map(\.handle), [2, 1, 3])
+    await runtime.cancelAllChildren()
+  }
+
+  @MainActor
+  func testCatalogRuntimePublishesDeferredDownloadProjectionWhenDownloadSuspensionEnds() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    let initialReady = expectation(description: "initial catalog ready")
+    let reprojected = expectation(description: "deferred download projection published")
+    var didObserveInitialReady = false
+    var isWaitingForDeferredProjection = false
+    var lastPresentation = CameraGalleryPresentation.unavailable
+    let runtime = CameraGalleryCatalogRuntime(
+      source: source,
+      publishPresentation: { presentation in
+        lastPresentation = presentation
+        if !didObserveInitialReady, case .ready = presentation.state {
+          didObserveInitialReady = true
+          initialReady.fulfill()
+        }
+        if isWaitingForDeferredProjection,
+           presentation.items.map(\.handle) == [2, 1] {
+          isWaitingForDeferredProjection = false
+          reprojected.fulfill()
+        }
+      },
+      reportTransportEvidence: { _ in }
+    )
+
+    await runtime.start(initial: CameraGalleryFilterIntent(
+      date: .all,
+      format: .all,
+      sort: .newest,
+      downloadStatus: .notDownloaded
+    ))
+    await fulfillment(of: [initialReady], timeout: 1)
+    await runtime.suspendChildWorkForDownload()
+    isWaitingForDeferredProjection = true
+    await runtime.updateDownloadedHandles([3])
+
+    XCTAssertEqual(lastPresentation.items.map(\.handle), [3, 2, 1])
+
+    await runtime.resumeChildWorkAfterDownload()
+    await fulfillment(of: [reprojected], timeout: 1)
+    XCTAssertEqual(lastPresentation.items.map(\.handle), [2, 1])
     await runtime.cancelAllChildren()
   }
 
@@ -12968,6 +15228,34 @@ final class RunnerTests: XCTestCase {
     }
   }
 
+  func testGalleryControllerLeavesDownloadAdmissionToRuntimeAndPreservesSelectionOnRejection() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Runner/NativeGalleryViewController.swift")
+    let source = try String(contentsOf: sourceURL)
+    let start = try XCTUnwrap(
+      source.range(of: "let startDownload = { [weak self] in")?.lowerBound
+    )
+    let end = try XCTUnwrap(
+      source.range(
+        of: "private func finishOpeningDownloadCenter",
+        range: start..<source.endIndex
+      )?.lowerBound
+    )
+    let body = String(source[start..<end])
+
+    XCTAssertFalse(body.contains("pauseGalleryHDPreviewForDownload"))
+    XCTAssertFalse(source.contains("resumeGalleryHDPreviewAfterDownload"))
+    let submissionGuard = try XCTUnwrap(
+      body.range(of: "guard self.runtime.submitDownload(")?.lowerBound
+    )
+    let selectionClear = try XCTUnwrap(
+      body.range(of: "self.selectedHandles = NativeGalleryPostDownloadSelectionPolicy")?.lowerBound
+    )
+    XCTAssertLessThan(submissionGuard, selectionClear)
+  }
+
   func testHomeControllerOwnsNoCatalogObserverOrDownloadDisconnectPolicy() throws {
     let sourceURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
@@ -13100,6 +15388,39 @@ final class RunnerTests: XCTestCase {
     )
   }
 
+  func testSubtractBaselineValidationRequiresCompleteSupersetRelationship() {
+    let baseline = CameraVendorSpecifiedObjectSnapshot(
+      declaredCount: 2,
+      dateGroups: [CameraVendorSpecifiedObjectDateGroup(dateText: "20260729", objectCount: 2)],
+      handles: [1, 2]
+    )
+    let validFormat = CameraVendorSpecifiedObjectSnapshot(
+      declaredCount: 3,
+      dateGroups: [CameraVendorSpecifiedObjectDateGroup(dateText: "20260729", objectCount: 3)],
+      handles: [1, 2, 3]
+    )
+    let ambiguousFormat = CameraVendorSpecifiedObjectSnapshot(
+      declaredCount: 2,
+      dateGroups: [CameraVendorSpecifiedObjectDateGroup(dateText: "20260729", objectCount: 2)],
+      handles: [2, 3]
+    )
+
+    XCTAssertEqual(
+      CameraVendorSubtractBaselineValidationPolicy.isolatedHandles(
+        baseline: baseline,
+        format: validFormat
+      ),
+      [3]
+    )
+    XCTAssertNil(
+      CameraVendorSubtractBaselineValidationPolicy.isolatedHandles(
+        baseline: baseline,
+        format: ambiguousFormat
+      ),
+      "The format response cannot prove subtraction membership when it drops a baseline handle"
+    )
+  }
+
   @MainActor
   func testRuntimeCatalogSourceProvidesExpandedCatalogWithoutSendingExactHEIFQuery() async throws {
     let transport = CameraSessionRuntimeSpy()
@@ -13195,7 +15516,7 @@ final class RunnerTests: XCTestCase {
     let transport = CameraSessionRuntimeSpy()
     let source = CameraSessionGalleryCatalogRuntimeSource(transport: transport)
 
-    _ = try await source.loadInitialCatalog()
+    _ = try await source.loadExpandedCatalog()
 
     XCTAssertEqual(transport.requestedCatalogLabels, [])
     XCTAssertEqual(transport.initialCatalogRequestCount, 1)
@@ -13205,13 +15526,13 @@ final class RunnerTests: XCTestCase {
   func testRuntimeCatalogSourceAllFormatsTodayUsesExpandedInitialCatalog() async throws {
     let transport = CameraSessionRuntimeSpy()
     let source = CameraSessionGalleryCatalogRuntimeSource(transport: transport)
+    let engine = CameraCatalogQueryEngine(source: source)
 
-    _ = try await source.loadCatalog(for: CameraGalleryFilterIntent(
-      date: .today,
-      format: .all,
-      sort: .newest,
-      downloadStatus: .all
-    ))
+    _ = try await engine.resolve(
+      rule: CameraMediaFilterRule(formats: .all, date: .today, downloadScope: .all),
+      owner: .gallery(UUID()),
+      downloadedHandles: []
+    )
 
     XCTAssertEqual(transport.initialCatalogRequestCount, 1)
     XCTAssertEqual(transport.requestedCatalogLabels.count, 0)
@@ -13221,13 +15542,17 @@ final class RunnerTests: XCTestCase {
   func testRuntimeCatalogSourceAllFormatsSpecificDayUsesExpandedInitialCatalog() async throws {
     let transport = CameraSessionRuntimeSpy()
     let source = CameraSessionGalleryCatalogRuntimeSource(transport: transport)
+    let engine = CameraCatalogQueryEngine(source: source)
 
-    _ = try await source.loadCatalog(for: CameraGalleryFilterIntent(
-      date: .specificDay(Date(timeIntervalSince1970: 1_800_000_000)),
-      format: .all,
-      sort: .newest,
-      downloadStatus: .all
-    ))
+    _ = try await engine.resolve(
+      rule: CameraMediaFilterRule(
+        formats: .all,
+        date: .specificDay(Date(timeIntervalSince1970: 1_800_000_000)),
+        downloadScope: .all
+      ),
+      owner: .gallery(UUID()),
+      downloadedHandles: []
+    )
 
     XCTAssertEqual(transport.initialCatalogRequestCount, 1)
     XCTAssertEqual(transport.requestedCatalogLabels.count, 0)
@@ -15527,6 +17852,85 @@ final class RunnerTests: XCTestCase {
     XCTAssertNil(NativeGalleryChromeCopy.loadingText(activeDownloadCount: 0, isLoading: false, isTransferring: false))
   }
 
+  func testNativeGalleryFilteredEmptyStateOffersShowAllRecovery() throws {
+    let testsDirectory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    let runnerDirectory = testsDirectory.deletingLastPathComponent().appendingPathComponent("Runner")
+    let controllerSource = try String(
+      contentsOf: runnerDirectory.appendingPathComponent("NativeGalleryViewController.swift"),
+      encoding: .utf8
+    )
+    let policySource = try String(
+      contentsOf: runnerDirectory.appendingPathComponent("NativeGalleryPolicies.swift"),
+      encoding: .utf8
+    )
+
+    XCTAssertTrue(policySource.contains("NativeGalleryEmptyStatePolicy"))
+    XCTAssertTrue(policySource.contains("当前筛选没有照片"))
+    XCTAssertTrue(policySource.contains("显示全部"))
+    XCTAssertTrue(controllerSource.contains("filteredEmptyContainer"))
+    XCTAssertTrue(controllerSource.contains("refreshGalleryEmptyState()"))
+    XCTAssertTrue(controllerSource.contains("showAllPhotosTapped"))
+    XCTAssertTrue(controllerSource.contains("filterState = NativeGalleryFilterState(sort: filterState.sort)"))
+    XCTAssertTrue(controllerSource.contains("submitGalleryIntent()"))
+  }
+
+  func testNativeGalleryFilteredEmptyStateOnlyAppearsForEffectiveFilter() {
+    XCTAssertTrue(
+      NativeGalleryEmptyStatePolicy.shouldShow(
+        itemCount: 0,
+        isLoading: false,
+        errorMessage: nil,
+        filterState: NativeGalleryFilterState(date: .today)
+      )
+    )
+    XCTAssertFalse(
+      NativeGalleryEmptyStatePolicy.shouldShow(
+        itemCount: 0,
+        isLoading: false,
+        errorMessage: nil,
+        filterState: NativeGalleryFilterState()
+      )
+    )
+    XCTAssertFalse(
+      NativeGalleryEmptyStatePolicy.shouldShow(
+        itemCount: 0,
+        isLoading: true,
+        errorMessage: nil,
+        filterState: NativeGalleryFilterState(date: .today)
+      )
+    )
+    XCTAssertFalse(
+      NativeGalleryEmptyStatePolicy.shouldShow(
+        itemCount: 0,
+        isLoading: false,
+        errorMessage: "catalog failed",
+        filterState: NativeGalleryFilterState(date: .today)
+      )
+    )
+    XCTAssertFalse(
+      NativeGalleryEmptyStatePolicy.shouldShow(
+        itemCount: 1,
+        isLoading: false,
+        errorMessage: nil,
+        filterState: NativeGalleryFilterState(date: .today)
+      )
+    )
+  }
+
+  func testNativeGalleryShowAllRecoveryClearsRuleAndPreservesSort() {
+    let filteredState = NativeGalleryFilterState(
+      formats: .selected([.heif]),
+      date: .today,
+      downloadScope: .notDownloaded,
+      sort: .oldest
+    )
+
+    let recoveredState = NativeGalleryFilterState(sort: filteredState.sort)
+
+    XCTAssertEqual(recoveredState.rule, .galleryDefault)
+    XCTAssertEqual(recoveredState.sort, .oldest)
+  }
+
   func testNativeGalleryTopChromeKeepsActionsInTopHeaderLikeAndroid() {
     XCTAssertTrue(NativeGalleryTopChromePolicy.shouldHideSystemNavigationBar)
     XCTAssertEqual(NativeGalleryTopChromePolicy.horizontalInset, 18)
@@ -15940,6 +18344,38 @@ final class RunnerTests: XCTestCase {
     await session.invalidate()
   }
 
+  @MainActor
+  func testGallerySessionExplicitReloadClearsSessionMembershipCache() async throws {
+    let suiteName = "RunnerTests.CameraGallerySession.Reload.\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+    defaults.removePersistentDomain(forName: suiteName)
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    let sessionEpoch = UUID()
+    let session = CameraGallerySession(
+      identity: CameraSessionIdentity(cameraName: "X-T5", historyKey: "reload-serial"),
+      source: source,
+      sessionEpoch: sessionEpoch,
+      queryEngine: CameraCatalogQueryEngine(source: source, sessionEpoch: sessionEpoch),
+      filterStore: CameraGalleryFilterStateStore(defaults: defaults),
+      downloadedHandles: { [] },
+      fetchPreview: { _ in throw CancellationError() }
+    )
+
+    await session.enter()
+    for _ in 0..<1_000 where session.presentation.items.isEmpty {
+      await Task.yield()
+    }
+    XCTAssertEqual(source.initialCatalogRequestCount, 1)
+    await session.reload()
+    for _ in 0..<1_000 where source.initialCatalogRequestCount < 2 {
+      await Task.yield()
+    }
+
+    XCTAssertEqual(source.initialCatalogRequestCount, 2)
+    await session.invalidate()
+  }
+
   func testGallerySessionOwnsGalleryCatalogWithoutReadingQuickDownloadState() throws {
     let runner = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
@@ -15948,12 +18384,15 @@ final class RunnerTests: XCTestCase {
     let sessionSource = try String(
       contentsOf: runner.appendingPathComponent("CameraCore/Gallery/CameraGallerySession.swift")
     )
+    let catalogRuntimeSource = try String(
+      contentsOf: runner.appendingPathComponent("CameraCore/Gallery/CameraGalleryCatalogRuntime.swift")
+    )
     let controllerSource = try String(
       contentsOf: runner.appendingPathComponent("NativeGalleryViewController.swift")
     )
 
     XCTAssertTrue(sessionSource.contains("private let catalogRuntime: CameraGalleryCatalogRuntime"))
-    XCTAssertTrue(sessionSource.contains("private let thumbnailPipeline: CameraGalleryThumbnailPipeline"))
+    XCTAssertTrue(catalogRuntimeSource.contains("private let thumbnailPipeline: CameraGalleryThumbnailPipeline"))
     XCTAssertTrue(sessionSource.contains("private let hdPreviewPipeline: CameraGalleryHDPreviewPipeline"))
     XCTAssertFalse(sessionSource.contains("QuickDownload"))
     XCTAssertFalse(controllerSource.contains("CameraGalleryCatalogRuntime("))
@@ -15975,7 +18414,7 @@ final class RunnerTests: XCTestCase {
     XCTAssertTrue(runtimeSource.contains("private var catalogQueryEngine: CameraCatalogQueryEngine?"))
     XCTAssertTrue(runtimeSource.contains("CameraCatalogQueryEngine(source: source, sessionEpoch: sessionEpoch)"))
     XCTAssertTrue(runtimeSource.contains("queryEngine: queryEngine"))
-    XCTAssertTrue(runtimeSource.contains("return try await queryEngine.resolve("))
+    XCTAssertTrue(runtimeSource.contains("let resolution = try await queryEngine.resolve("))
     XCTAssertTrue(sessionSource.contains("queryEngine: CameraCatalogQueryEngine"))
     XCTAssertFalse(sessionSource.contains("CameraCatalogQueryEngine(source:"))
     XCTAssertFalse(sessionSource.contains("await queryEngine.invalidate()"))
@@ -16040,20 +18479,46 @@ final class RunnerTests: XCTestCase {
     let invalidateBody = String(sessionSource[invalidateStart...])
 
     XCTAssertTrue(invalidateBody.contains("await catalogRuntime.cancelAllChildren()"))
-    XCTAssertTrue(invalidateBody.contains("await thumbnailPipeline.invalidateSession()"))
+    XCTAssertFalse(invalidateBody.contains("thumbnailPipeline"))
     XCTAssertTrue(invalidateBody.contains("await hdPreviewPipeline.invalidateSession()"))
-    let exitStart = try XCTUnwrap(runtimeSource.range(of: "func exitGalleryAndDisconnect(reason: String) async")?.lowerBound)
+    let exitStart = try XCTUnwrap(runtimeSource.range(of: "func exitGalleryAndDisconnect(reason: String)")?.lowerBound)
     let exitBody = String(runtimeSource[exitStart...])
-    XCTAssertTrue(exitBody.contains("await terminateCatalogSession(reason: reason)"))
+    XCTAssertTrue(exitBody.contains("terminateCatalogSession(reason: reason)"))
     let terminationStart = try XCTUnwrap(
       runtimeSource.range(of: "private func beginCatalogSessionTermination(reason: String)")?.lowerBound
     )
     let terminationBody = String(runtimeSource[terminationStart..<exitStart])
+    let fenceCall = try XCTUnwrap(terminationBody.range(of: "previousGenerationFence?.invalidate()"))
     let invalidateCall = try XCTUnwrap(terminationBody.range(of: "await previousSession?.invalidate()"))
+    let lifecycleJoin = try XCTUnwrap(terminationBody.range(of: "await previousLifecycleTask?.value"))
     let terminateCall = try XCTUnwrap(
       terminationBody.range(of: "transport.terminateCameraCommunication(reason: reason)")
     )
-    XCTAssertLessThan(invalidateCall.lowerBound, terminateCall.lowerBound)
+    XCTAssertLessThan(fenceCall.lowerBound, terminateCall.lowerBound)
+    XCTAssertLessThan(terminateCall.lowerBound, invalidateCall.lowerBound)
+    XCTAssertLessThan(terminateCall.lowerBound, lifecycleJoin.lowerBound)
+  }
+
+  @MainActor
+  func testInvalidatedGalleryGenerationFenceRejectsFurtherPhysicalCommands() async {
+    let transport = CameraSessionRuntimeSpy()
+    let fence = CameraSessionGenerationFence()
+    let source = CameraSessionGalleryCatalogRuntimeSource(
+      transport: transport,
+      generationFence: fence
+    )
+
+    fence.invalidate()
+
+    do {
+      _ = try await source.loadThumbnail(handle: 101)
+      XCTFail("An invalidated gallery generation must reject physical camera work")
+    } catch is CancellationError {
+      // Expected: the old generation is fenced before it can touch the transport.
+    } catch {
+      XCTFail("Expected CancellationError, got \(error)")
+    }
+    XCTAssertEqual(transport.thumbnailHandles, [])
   }
 
   private func fixedDate() -> Date {
@@ -16248,13 +18713,57 @@ final class RunnerTests: XCTestCase {
     }
     for _ in 0..<20 { await Task.yield() }
 
-    XCTAssertEqual(terminalEvents, [])
-    XCTAssertEqual(transport.terminateCount, 0)
+    XCTAssertEqual(terminalEvents, ["terminate", "home"])
+    XCTAssertEqual(transport.terminateCount, 1)
 
     transport.releaseThumbnailRequests()
     let didRoute = await routingTask.value
     XCTAssertTrue(didRoute)
     XCTAssertEqual(terminalEvents, ["terminate", "home"])
+  }
+
+  @MainActor
+  func testGalleryExitStillTerminatesAReplacementTransportBeforeCatalogInstallation() async {
+    let transport = CameraSessionRuntimeSpy()
+    let runtime = CameraSessionRuntime(transport: transport)
+    runtime.send(.enterGallery(CameraSessionIdentity(cameraName: "old-session")))
+    await waitForRuntimeGalleryReady(runtime)
+
+    runtime.exitGalleryAndDisconnect(reason: "old-session-exit")
+    XCTAssertEqual(transport.terminateCount, 1)
+
+    _ = runtime.beginTransportBinding(identity: CameraSessionIdentity(cameraName: "replacement"))
+    runtime.exitGalleryAndDisconnect(reason: "replacement-exit-before-catalog")
+
+    XCTAssertEqual(transport.terminateCount, 2)
+  }
+
+  @MainActor
+  func testStaleGuardedGalleryExitCannotTerminateReplacementTransport() async {
+    let transport = CameraSessionRuntimeSpy()
+    let runtime = CameraSessionRuntime(transport: transport)
+    let oldBinding = runtime.beginTransportBinding(
+      identity: CameraSessionIdentity(cameraName: "old-session")
+    )
+    runtime.send(.enterGallery(CameraSessionIdentity(cameraName: "old-session")))
+    await waitForRuntimeGalleryReady(runtime)
+
+    let replacementBinding = runtime.beginTransportBinding(
+      identity: CameraSessionIdentity(cameraName: "replacement")
+    )
+
+    XCTAssertFalse(runtime.exitGalleryAndDisconnect(
+      reason: "stale-overlay-cancel",
+      expectedBinding: oldBinding
+    ))
+    XCTAssertEqual(transport.terminateCount, 0)
+    XCTAssertTrue(runtime.acceptsTransportCallback(replacementBinding))
+
+    XCTAssertTrue(runtime.exitGalleryAndDisconnect(
+      reason: "current-overlay-cancel",
+      expectedBinding: replacementBinding
+    ))
+    XCTAssertEqual(transport.terminateCount, 1)
   }
 
   @MainActor
@@ -16281,6 +18790,7 @@ final class RunnerTests: XCTestCase {
       completionPolicy: .disconnectToHome
     )))
 
+    await waitForStartedHandleCount(1, transport: transport)
     XCTAssertEqual(runtime.presentation.queuedHandles, [101, 102])
     XCTAssertEqual(transport.startedHandles, [101])
   }
@@ -16303,6 +18813,7 @@ final class RunnerTests: XCTestCase {
       completionPolicy: .returnToGallery
     )))
 
+    await waitForStartedHandleCount(1, transport: transport)
     XCTAssertEqual(transport.startedHandles, [101])
     XCTAssertEqual(runtime.downloadState(for: 101), .downloading)
   }
@@ -16320,6 +18831,7 @@ final class RunnerTests: XCTestCase {
       completionPolicy: .returnToGallery
     ))
 
+    await waitForStartedHandleCount(1, transport: transport)
     runtime.send(.transferFinished(handle: 101))
 
     XCTAssertEqual(runtime.presentation.phase, .galleryReady)
@@ -16338,6 +18850,7 @@ final class RunnerTests: XCTestCase {
       origin: .quickDownload,
       completionPolicy: .returnToGallery
     ))
+    await waitForStartedHandleCount(1, transport: keepTransport)
     keepRuntime.send(.transferFinished(handle: 101))
 
     XCTAssertEqual(keepRuntime.presentation.phase, .galleryReady)
@@ -16357,6 +18870,7 @@ final class RunnerTests: XCTestCase {
       origin: .quickDownload,
       completionPolicy: .disconnectToHome
     ))
+    await waitForStartedHandleCount(1, transport: disconnectTransport)
     disconnectRuntime.send(.transferFinished(handle: 201))
     for _ in 0..<1_000 where !routedHome { await Task.yield() }
 
@@ -16935,7 +19449,42 @@ final class RunnerTests: XCTestCase {
   }
 
   @MainActor
-  func testCameraSessionRuntimeTransportFailureJoinsCatalogChildrenBeforeReleasingDownloadLease() async throws {
+  func testCameraSessionRuntimeQuickCancellationDuringTransportFailureCleanupDisconnectsToHome() async throws {
+    let transport = CameraSessionRuntimeSpy()
+    let runtime = CameraSessionRuntime(
+      transport: transport,
+      recoveryStore: CameraSessionRuntimeRecoveryStoreSpy()
+    )
+    var routedHome = false
+    runtime.onPresentationDestinationReady = { destination in
+      if case .home = destination {
+        routedHome = true
+      }
+    }
+
+    runtime.send(.enterGallery(CameraSessionIdentity(cameraName: "X-T5", peripheralID: UUID())))
+    await waitForRuntimeGalleryReady(runtime)
+    XCTAssertTrue(runtime.submitDownload(CameraDownloadSubmission(
+      id: UUID(),
+      requests: [CameraSessionQueuedDownload(handle: 101, mode: .original)],
+      origin: .quickDownload,
+      completionPolicy: .disconnectToHome
+    )))
+    await waitForStartedHandleCount(1, transport: transport)
+
+    runtime.send(.transportFailed(CameraSessionRuntimeTestError.socketClosed))
+    runtime.send(.cancelDownloadByUser)
+    for _ in 0..<1_000 where runtime.presentation.phase == .cancelling {
+      await Task.yield()
+    }
+
+    XCTAssertEqual(runtime.presentation.phase, .idle)
+    XCTAssertTrue(routedHome)
+    XCTAssertEqual(transport.terminateCount, 1)
+  }
+
+  @MainActor
+  func testCameraSessionRuntimeTransportFailureDuringAdmissionNeverMintsDownloadLease() async throws {
     let childCancelled = expectation(description: "catalog child cancellation observed")
     let transport = CameraSessionRuntimeSpy()
     transport.catalogItems = [3, 2, 1].map {
@@ -16955,7 +19504,7 @@ final class RunnerTests: XCTestCase {
     runtime.requestVisibleGalleryThumbnails(handles: [3, 2, 1])
     await transport.waitForThumbnailRequestCount(1)
     runtime.send(.startDownload(handles: [101], mode: .original))
-    XCTAssertEqual(transport.beginDownloadLeaseCount, 1)
+    XCTAssertEqual(transport.beginDownloadLeaseCount, 0)
 
     runtime.send(.transportFailed(NSError(
       domain: "PTPTransport",
@@ -16964,24 +19513,22 @@ final class RunnerTests: XCTestCase {
     )))
 
     await fulfillment(of: [childCancelled], timeout: 1)
-    XCTAssertEqual(
-      transport.endDownloadLeaseCount,
-      0,
-      "The download barrier must remain closed until cancelled catalog children have fully joined"
-    )
+    XCTAssertEqual(transport.beginDownloadLeaseCount, 0)
+    XCTAssertEqual(transport.endDownloadLeaseCount, 0)
+    XCTAssertEqual(runtime.presentation.phase, .recovering)
 
     transport.releaseThumbnailRequests()
-    for _ in 0..<100 where transport.endDownloadLeaseCount == 0 {
-      await Task.yield()
-    }
+    for _ in 0..<100 { await Task.yield() }
 
     XCTAssertEqual(transport.cancelActiveTransferCount, 1)
-    XCTAssertEqual(transport.endDownloadLeaseCount, 1)
+    XCTAssertEqual(transport.beginDownloadLeaseCount, 0)
+    XCTAssertEqual(transport.endDownloadLeaseCount, 0)
+    XCTAssertEqual(transport.startedHandles, [])
     XCTAssertEqual(runtime.presentation.phase, .recovering)
   }
 
   @MainActor
-  func testCameraSessionRuntimeTransportFailureCleanupSurvivesUserCancellationDuringCatalogJoin() async throws {
+  func testCameraSessionRuntimeUserCancellationAfterAdmissionFailureDoesNotReleaseUnownedLease() async throws {
     let childCancelled = expectation(description: "catalog child cancellation observed")
     let transport = CameraSessionRuntimeSpy()
     transport.catalogItems = [3].map { galleryItem(handle: $0, formatLabel: "JPG") }
@@ -17003,14 +19550,16 @@ final class RunnerTests: XCTestCase {
     runtime.send(.cancelDownloadByUser)
     XCTAssertEqual(transport.endDownloadLeaseCount, 0)
     transport.releaseThumbnailRequests()
-    for _ in 0..<100 where transport.endDownloadLeaseCount == 0 { await Task.yield() }
+    for _ in 0..<100 { await Task.yield() }
 
-    XCTAssertEqual(transport.endDownloadLeaseCount, 1)
-    XCTAssertEqual(runtime.presentation.phase, .interrupted)
+    XCTAssertEqual(transport.beginDownloadLeaseCount, 0)
+    XCTAssertEqual(transport.endDownloadLeaseCount, 0)
+    XCTAssertEqual(transport.startedHandles, [])
+    XCTAssertEqual(runtime.presentation.phase, .galleryReady)
   }
 
   @MainActor
-  func testCameraSessionRuntimeStopDownloadAndWaitCompletesAfterTransportFailureCleanup() async throws {
+  func testCameraSessionRuntimeStopDownloadAndWaitReturnsAfterAdmissionFailure() async throws {
     let childCancelled = expectation(description: "catalog child cancellation observed")
     let transport = CameraSessionRuntimeSpy()
     transport.catalogItems = [3].map { galleryItem(handle: $0, formatLabel: "JPG") }
@@ -17034,21 +19583,18 @@ final class RunnerTests: XCTestCase {
       await runtime.stopDownloadAndWait()
       didReturn = true
     }
-    for _ in 0..<100 where runtime.presentation.phase != .cancelling { await Task.yield() }
-    XCTAssertEqual(runtime.presentation.phase, .cancelling)
-
-    transport.releaseThumbnailRequests()
-    for _ in 0..<100 where runtime.presentation.phase != .interrupted { await Task.yield() }
-    XCTAssertEqual(runtime.presentation.phase, .interrupted)
     for _ in 0..<100 where !didReturn { await Task.yield() }
     XCTAssertTrue(didReturn)
+    XCTAssertEqual(runtime.presentation.phase, .galleryReady)
 
-    runtime.send(.applicationBecameActive)
+    transport.releaseThumbnailRequests()
+    XCTAssertEqual(transport.beginDownloadLeaseCount, 0)
+    XCTAssertEqual(transport.endDownloadLeaseCount, 0)
     await stopTask.value
   }
 
   @MainActor
-  func testCameraSessionRuntimeTransportFailureCleanupReleasesOldLeaseAfterSessionSupersession() async throws {
+  func testCameraSessionRuntimeSessionSupersessionDuringAdmissionCannotMintOldLease() async throws {
     let childCancelled = expectation(description: "catalog child cancellation observed")
     let transport = CameraSessionRuntimeSpy()
     transport.catalogItems = [3].map { galleryItem(handle: $0, formatLabel: "JPG") }
@@ -17068,11 +19614,14 @@ final class RunnerTests: XCTestCase {
     await fulfillment(of: [childCancelled], timeout: 1)
 
     runtime.send(.enterGallery(CameraSessionIdentity(cameraName: "X-T5-new")))
+    XCTAssertEqual(transport.beginDownloadLeaseCount, 0)
     XCTAssertEqual(transport.endDownloadLeaseCount, 0)
     transport.releaseThumbnailRequests()
-    for _ in 0..<100 where transport.endDownloadLeaseCount == 0 { await Task.yield() }
+    for _ in 0..<100 { await Task.yield() }
 
-    XCTAssertEqual(transport.endDownloadLeaseCount, 1)
+    XCTAssertEqual(transport.beginDownloadLeaseCount, 0)
+    XCTAssertEqual(transport.endDownloadLeaseCount, 0)
+    XCTAssertEqual(transport.startedHandles, [])
   }
 
   @MainActor
@@ -17183,8 +19732,8 @@ final class RunnerTests: XCTestCase {
     let runtime = CameraSessionRuntime(transport: CameraSessionRuntimeSpy())
     var updatedHandles: [Set<Int>] = []
 
-    let observerID = runtime.observeIncrementalCatalogUpdates { _, handles in
-      updatedHandles.append(handles)
+    let observerID = runtime.observeIncrementalCatalogUpdates { _, delta in
+      updatedHandles.append(delta.changedHandles)
     }
     defer { runtime.removeObserver(observerID) }
 
@@ -17513,6 +20062,8 @@ final class RunnerTests: XCTestCase {
       inFlightHandle: 101,
       completedCount: 4,
       failedCount: 1,
+      origin: .quickDownload,
+      completionPolicy: .disconnectToHome,
       reason: "background-execution-expired"
     )
 
@@ -17522,6 +20073,8 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(snapshot.inFlightHandle, 101)
     XCTAssertEqual(snapshot.completedCount, 4)
     XCTAssertEqual(snapshot.failedCount, 1)
+    XCTAssertEqual(snapshot.origin, .quickDownload)
+    XCTAssertEqual(snapshot.completionPolicy, .disconnectToHome)
     XCTAssertEqual(
       snapshot.queue,
       [
@@ -17533,10 +20086,11 @@ final class RunnerTests: XCTestCase {
 
   @MainActor
   func testCameraSessionRuntimeRestoresPersistedQueueWithoutGivingThePageAWorker() async throws {
+    let peripheralID = UUID()
     let recoveryStore = CameraSessionRuntimeRecoveryStoreSpy(
       snapshot: CameraDownloadSessionSnapshot(
         sessionID: UUID(),
-        peripheralID: UUID(),
+        peripheralID: peripheralID,
         cameraName: "X-T5",
         state: .interruptedRecoverable,
         recoveryIntent: "background-execution-expired",
@@ -17561,7 +20115,7 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(runtime.presentation.inFlightHandle, nil)
     XCTAssertEqual(transport.startedHandles, [])
 
-    runtime.send(.enterGallery(CameraSessionIdentity(cameraName: "X-T5")))
+    runtime.send(.enterGallery(CameraSessionIdentity(cameraName: "X-T5", peripheralID: peripheralID)))
     runtime.send(.resumeRecoveredDownload(availableHandles: [101, 102]))
     await waitForStartedHandleCount(1, transport: transport)
 
@@ -17705,6 +20259,259 @@ final class RunnerTests: XCTestCase {
     runtime.send(.restorePersistedDownload)
 
     XCTAssertEqual(recoveryStore.clearCount, 1)
+    XCTAssertEqual(runtime.presentation.phase, .galleryReady)
+    XCTAssertEqual(runtime.presentation.queuedHandles, [])
+  }
+
+  @MainActor
+  func testCameraSessionRuntimeRestartedQuickRecoveryCancellationDisconnectsToHome() throws {
+    let recoveryStore = CameraSessionRuntimeRecoveryStoreSpy(
+      snapshot: CameraDownloadSessionSnapshot(
+        sessionID: UUID(),
+        peripheralID: UUID(),
+        cameraName: "X-T5",
+        state: .interruptedRecoverable,
+        recoveryIntent: "background-execution-expired",
+        presentationSurface: "runtime",
+        origin: .quickDownload,
+        completionPolicy: .disconnectToHome,
+        queue: [CameraDownloadSessionItem(handle: 101, mode: .original)],
+        inFlightHandle: 101,
+        completedCount: 0,
+        failedCount: 0,
+        updatedAt: Date()
+      )
+    )
+    let transport = CameraSessionRuntimeSpy()
+    let runtime = CameraSessionRuntime(
+      transport: transport,
+      recoveryStore: recoveryStore
+    )
+    var routedHome = false
+    runtime.onPresentationDestinationReady = { destination in
+      if case .home = destination {
+        routedHome = true
+      }
+    }
+
+    runtime.send(.restorePersistedDownload)
+    runtime.send(.cancelDownloadByUser)
+
+    XCTAssertEqual(runtime.presentation.phase, .idle)
+    XCTAssertTrue(routedHome)
+    XCTAssertEqual(transport.terminateCount, 1)
+    XCTAssertEqual(recoveryStore.clearCount, 1)
+  }
+
+  @MainActor
+  func testCameraSessionRuntimeFreshSessionClearsRecoveredQuickRouting() async throws {
+    let recoveryStore = CameraSessionRuntimeRecoveryStoreSpy(
+      snapshot: CameraDownloadSessionSnapshot(
+        sessionID: UUID(),
+        peripheralID: UUID(),
+        cameraName: "X-T5-old",
+        state: .interruptedRecoverable,
+        recoveryIntent: "background-execution-expired",
+        presentationSurface: "runtime",
+        origin: .quickDownload,
+        completionPolicy: .disconnectToHome,
+        queue: [CameraDownloadSessionItem(handle: 101, mode: .original)],
+        inFlightHandle: 101,
+        completedCount: 0,
+        failedCount: 0,
+        updatedAt: Date()
+      )
+    )
+    let runtime = CameraSessionRuntime(
+      transport: CameraSessionRuntimeSpy(),
+      recoveryStore: recoveryStore
+    )
+
+    runtime.send(.restorePersistedDownload)
+    runtime.send(.enterGallery(CameraSessionIdentity(
+      cameraName: "X-T5-new",
+      peripheralID: UUID()
+    )))
+    await waitForRuntimeGalleryReady(runtime)
+
+    XCTAssertEqual(recoveryStore.clearCount, 1)
+    runtime.send(.restorePersistedDownload)
+    XCTAssertEqual(runtime.presentation.phase, .galleryReady)
+  }
+
+  @MainActor
+  func testCameraSessionRuntimeFreshSessionCancelsOutstandingRecoveryConnection() async throws {
+    let oldPeripheralID = UUID()
+    let newIdentity = CameraSessionIdentity(cameraName: "X-T5-new", peripheralID: UUID())
+    let recoveryStore = CameraSessionRuntimeRecoveryStoreSpy(
+      snapshot: CameraDownloadSessionSnapshot(
+        sessionID: UUID(),
+        peripheralID: oldPeripheralID,
+        cameraName: "X-T5-old",
+        state: .interruptedRecoverable,
+        recoveryIntent: "background-execution-expired",
+        presentationSurface: "runtime",
+        origin: .quickDownload,
+        completionPolicy: .disconnectToHome,
+        queue: [CameraDownloadSessionItem(handle: 101, mode: .original)],
+        inFlightHandle: 101,
+        completedCount: 0,
+        failedCount: 0,
+        updatedAt: Date()
+      )
+    )
+    let connector = CameraSessionRuntimeDeferredRecoveryConnector()
+    var requestedIdentities: [CameraSessionIdentity] = []
+    var pendingCompletions: [(Bool) -> Void] = []
+    var cancellationReasons: [String] = []
+    connector.attach(
+      { identity, completion in
+        requestedIdentities.append(identity)
+        pendingCompletions.append(completion)
+      },
+      cancellationHandler: { cancellationReasons.append($0) }
+    )
+    let runtime = CameraSessionRuntime(
+      transport: CameraSessionRuntimeSpy(),
+      recoveryStore: recoveryStore,
+      recoveryConnector: connector
+    )
+
+    runtime.send(.restorePersistedDownload)
+    XCTAssertEqual(requestedIdentities, [
+      CameraSessionIdentity(cameraName: "X-T5-old", peripheralID: oldPeripheralID)
+    ])
+
+    runtime.send(.enterGallery(newIdentity))
+    await waitForRuntimeGalleryReady(runtime)
+
+    XCTAssertEqual(cancellationReasons, ["fresh-session-superseded-download-recovery"])
+    XCTAssertEqual(recoveryStore.clearCount, 1)
+    var replacementResults: [Bool] = []
+    connector.requestRecoveredConnection(identity: newIdentity) {
+      replacementResults.append($0)
+    }
+    XCTAssertEqual(requestedIdentities, [
+      CameraSessionIdentity(cameraName: "X-T5-old", peripheralID: oldPeripheralID),
+      newIdentity,
+    ])
+    XCTAssertEqual(replacementResults, [])
+
+    pendingCompletions.first?(false)
+    XCTAssertEqual(runtime.presentation.phase, .galleryReady)
+    XCTAssertEqual(runtime.presentation.queuedHandles, [])
+    XCTAssertEqual(replacementResults, [])
+    pendingCompletions.last?(true)
+    XCTAssertEqual(replacementResults, [true])
+  }
+
+  @MainActor
+  func testCameraSessionRuntimeNilPeripheralCannotInheritConcreteRecovery() throws {
+    let recoveryStore = CameraSessionRuntimeRecoveryStoreSpy(
+      snapshot: CameraDownloadSessionSnapshot(
+        sessionID: UUID(),
+        peripheralID: UUID(),
+        cameraName: "X-T5-old",
+        state: .interruptedRecoverable,
+        recoveryIntent: "background-execution-expired",
+        presentationSurface: "runtime",
+        origin: .quickDownload,
+        completionPolicy: .disconnectToHome,
+        queue: [CameraDownloadSessionItem(handle: 101, mode: .original)],
+        inFlightHandle: 101,
+        completedCount: 0,
+        failedCount: 0,
+        updatedAt: Date()
+      )
+    )
+    let runtime = CameraSessionRuntime(
+      transport: CameraSessionRuntimeSpy(),
+      recoveryStore: recoveryStore
+    )
+
+    runtime.send(.restorePersistedDownload)
+    runtime.send(.enterGallery(CameraSessionIdentity(cameraName: "X-T5-new", peripheralID: nil)))
+
+    XCTAssertEqual(recoveryStore.clearCount, 1)
+    XCTAssertEqual(runtime.presentation.phase, .galleryLoading)
+    XCTAssertEqual(runtime.presentation.queuedHandles, [])
+  }
+
+  @MainActor
+  func testCameraSessionRuntimeSameProcessQuickRecoveryReconnectPreservesDisconnectRouting() async throws {
+    let peripheralID = UUID()
+    let identity = CameraSessionIdentity(cameraName: "X-T5", peripheralID: peripheralID)
+    let recoveryStore = CameraSessionRuntimeRecoveryStoreSpy()
+    let transport = CameraSessionRuntimeSpy()
+    transport.catalogItems = [galleryItem(handle: 101, formatLabel: "JPG")]
+    let runtime = CameraSessionRuntime(
+      transport: transport,
+      recoveryStore: recoveryStore,
+      executionAuthority: CameraSessionRuntimeExecutionAuthoritySpy(grantsAuthority: false)
+    )
+    var routedHome = false
+    runtime.onPresentationDestinationReady = { destination in
+      if case .home = destination {
+        routedHome = true
+      }
+    }
+
+    runtime.send(.enterGallery(identity))
+    await waitForRuntimeGalleryReady(runtime)
+    runtime.send(.applicationEnteredBackground)
+    XCTAssertTrue(runtime.submitDownload(CameraDownloadSubmission(
+      id: UUID(),
+      requests: [CameraSessionQueuedDownload(handle: 101, mode: .original)],
+      origin: .quickDownload,
+      completionPolicy: .disconnectToHome
+    )))
+    await waitForRuntimePhase(runtime, .recovering)
+
+    runtime.send(.applicationBecameActive)
+    runtime.send(.enterGallery(identity))
+
+    XCTAssertEqual(runtime.presentation.phase, .recovering)
+    XCTAssertEqual(runtime.presentation.queuedHandles, [101])
+    XCTAssertEqual(recoveryStore.clearCount, 0)
+
+    runtime.send(.resumeRecoveredDownload(availableHandles: [101]))
+    await waitForStartedHandleCount(1, transport: transport)
+    runtime.send(.transferFinished(handle: 101))
+
+    XCTAssertEqual(runtime.presentation.phase, .idle)
+    XCTAssertTrue(routedHome)
+    XCTAssertEqual(transport.terminateCount, 1)
+  }
+
+  @MainActor
+  func testCameraSessionRuntimeTerminalGalleryExitClearsDurableQuickRecovery() throws {
+    let recoveryStore = CameraSessionRuntimeRecoveryStoreSpy(
+      snapshot: CameraDownloadSessionSnapshot(
+        sessionID: UUID(),
+        peripheralID: UUID(),
+        cameraName: "X-T5",
+        state: .interruptedRecoverable,
+        recoveryIntent: "background-execution-expired",
+        presentationSurface: "runtime",
+        origin: .quickDownload,
+        completionPolicy: .disconnectToHome,
+        queue: [CameraDownloadSessionItem(handle: 101, mode: .original)],
+        inFlightHandle: 101,
+        completedCount: 0,
+        failedCount: 0,
+        updatedAt: Date()
+      )
+    )
+    let runtime = CameraSessionRuntime(
+      transport: CameraSessionRuntimeSpy(),
+      recoveryStore: recoveryStore
+    )
+
+    runtime.send(.restorePersistedDownload)
+    runtime.exitGalleryAndDisconnect(reason: "terminal-gallery-exit")
+
+    XCTAssertEqual(recoveryStore.clearCount, 1)
+    runtime.send(.restorePersistedDownload)
     XCTAssertEqual(runtime.presentation.phase, .idle)
     XCTAssertEqual(runtime.presentation.queuedHandles, [])
   }
@@ -17738,7 +20545,7 @@ final class RunnerTests: XCTestCase {
     XCTAssertTrue(runtime.cancelRecoveredDownloadFromConnectionOverlay())
     XCTAssertEqual(recoveryStore.clearCount, 1)
     XCTAssertEqual(connector.cancelledReasons, ["user-cancelled-download-recovery"])
-    XCTAssertEqual(runtime.presentation.phase, .idle)
+    XCTAssertEqual(runtime.presentation.phase, .galleryReady)
   }
 
   @MainActor
@@ -17859,6 +20666,138 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(activator.activatedCameraIDs, ["X-T5"])
     XCTAssertEqual(payload.rememberedPeripheralID, CameraSessionRuntimeConnectionFlowSpy.record.peripheralID)
     XCTAssertEqual(payload.summary.deviceName, "X-T5")
+    XCTAssertEqual(runtime.presentation.phase, .galleryReady)
+  }
+
+  @MainActor
+  func testRuntimeQuickDownloadConnectionDoesNotStartGalleryCatalogBeforeItsOwnQuery() async throws {
+    let flow = CameraSessionRuntimeConnectionFlowSpy()
+    let worker = CameraSessionRuntimeConnectionWorker(flow: flow)
+    let activator = CameraSessionRuntimeGallerySessionActivatorSpy()
+    let transport = CameraSessionRuntimeSpy()
+    let runtime = CameraSessionRuntime(
+      transport: transport,
+      connectionWorker: worker,
+      gallerySessionActivator: activator
+    )
+    let completion = expectation(description: "quick download transport connected")
+
+    runtime.startRememberedQuickDownloadConnection(
+      record: CameraSessionRuntimeConnectionFlowSpy.record
+    ) { state in
+      guard case .galleryReady = state else {
+        XCTFail("Expected transport-ready state, got \(state)")
+        return
+      }
+      completion.fulfill()
+    }
+    await flow.waitUntilRememberedGalleryStarts()
+    flow.finishRememberedGallery()
+    await fulfillment(of: [completion], timeout: 1)
+
+    XCTAssertEqual(activator.activatedCameraIDs, ["X-T5"])
+    XCTAssertEqual(transport.initialCatalogRequestCount, 0)
+    XCTAssertEqual(runtime.presentation.phase, .galleryReady)
+    XCTAssertEqual(runtime.presentation.catalog, .unavailable)
+
+    _ = try await runtime.resolveCatalog(
+      rule: CameraMediaFilterRule(
+        formats: .selected([.jpg]),
+        date: .all,
+        downloadScope: .all
+      ),
+      owner: .quickDownload(UUID())
+    )
+
+    XCTAssertEqual(transport.initialCatalogRequestCount, 0)
+    XCTAssertEqual(transport.requestedCatalogLabels, ["format-jpg"])
+  }
+
+  @MainActor
+  func testRuntimeQuickDownloadCatalogResolutionRetainsMetadataForDownloadHistory() async throws {
+    let flow = CameraSessionRuntimeConnectionFlowSpy()
+    let worker = CameraSessionRuntimeConnectionWorker(flow: flow)
+    let activator = CameraSessionRuntimeGallerySessionActivatorSpy()
+    let transport = CameraSessionRuntimeSpy()
+    let item = galleryItem(handle: 101, formatLabel: "JPG")
+    transport.catalogItems = [item]
+    let savedHandleStore = CameraSessionRuntimeSavedHandleStoreSpy(savedHandles: [])
+    let runtime = CameraSessionRuntime(
+      transport: transport,
+      savedHandleStore: savedHandleStore,
+      connectionWorker: worker,
+      gallerySessionActivator: activator
+    )
+    let completion = expectation(description: "quick download transport connected")
+
+    runtime.startRememberedQuickDownloadConnection(
+      record: CameraSessionRuntimeConnectionFlowSpy.record
+    ) { state in
+      guard case .galleryReady = state else {
+        XCTFail("Expected transport-ready state, got \(state)")
+        return
+      }
+      completion.fulfill()
+    }
+    await flow.waitUntilRememberedGalleryStarts()
+    flow.finishRememberedGallery()
+    await fulfillment(of: [completion], timeout: 1)
+
+    _ = try await runtime.resolveCatalog(
+      rule: CameraMediaFilterRule(
+        formats: .selected([.jpg]),
+        date: .all,
+        downloadScope: .all
+      ),
+      owner: .quickDownload(UUID())
+    )
+    runtime.recordSavedHandle(101)
+
+    XCTAssertEqual(savedHandleStore.recordedItemsByHandle[101], item)
+    XCTAssertEqual(runtime.presentation.catalog, .unavailable)
+  }
+
+  @MainActor
+  func testRuntimeQuickDownloadReturnToGalleryStartsCatalogOnlyAtTerminalRoute() async throws {
+    let flow = CameraSessionRuntimeConnectionFlowSpy()
+    let worker = CameraSessionRuntimeConnectionWorker(flow: flow)
+    let activator = CameraSessionRuntimeGallerySessionActivatorSpy()
+    let transport = CameraSessionRuntimeSpy()
+    transport.suspendsCatalogRequests = true
+    let runtime = CameraSessionRuntime(
+      transport: transport,
+      connectionWorker: worker,
+      gallerySessionActivator: activator
+    )
+    let connectionCompleted = expectation(description: "quick connection completed")
+    let galleryRouted = expectation(description: "gallery routed after its catalog is ready")
+    runtime.onPresentationDestinationReady = { destination in
+      guard case .gallery = destination else { return }
+      galleryRouted.fulfill()
+    }
+
+    runtime.startRememberedQuickDownloadConnection(
+      record: CameraSessionRuntimeConnectionFlowSpy.record
+    ) { _ in
+      connectionCompleted.fulfill()
+    }
+    await flow.waitUntilRememberedGalleryStarts()
+    flow.finishRememberedGallery()
+    await fulfillment(of: [connectionCompleted], timeout: 1)
+    XCTAssertEqual(transport.initialCatalogRequestCount, 0)
+    flow.resetStateAfterConnectionCompletion()
+
+    let didRoute = await runtime.routeQuickDownloadNoMatch(completionPolicy: .returnToGallery)
+    XCTAssertTrue(didRoute)
+    guard didRoute else { return }
+    await transport.waitForInitialCatalogRequestCount(1)
+    XCTAssertEqual(runtime.presentation.phase, .galleryLoading)
+
+    transport.resolveInitialCatalogRequest(
+      at: 0,
+      items: [galleryItem(handle: 101, formatLabel: "JPG")]
+    )
+    await fulfillment(of: [galleryRouted], timeout: 1)
     XCTAssertEqual(runtime.presentation.phase, .galleryReady)
   }
 
@@ -18070,6 +21009,98 @@ final class RunnerTests: XCTestCase {
       return XCTFail("Unavailable recovery item must remain visible as failed")
     }
     XCTAssertEqual(runtime.presentation.phase, .galleryReady)
+  }
+
+  @MainActor
+  func testCameraSessionRuntimeRestartedQuickRecoveryCompletionDisconnectsToHome() async throws {
+    let peripheralID = UUID()
+    let recoveryStore = CameraSessionRuntimeRecoveryStoreSpy(
+      snapshot: CameraDownloadSessionSnapshot(
+        sessionID: UUID(),
+        peripheralID: peripheralID,
+        cameraName: "X-T5",
+        state: .interruptedRecoverable,
+        recoveryIntent: "background-execution-expired",
+        presentationSurface: "runtime",
+        origin: .quickDownload,
+        completionPolicy: .disconnectToHome,
+        queue: [CameraDownloadSessionItem(handle: 101, mode: .original)],
+        inFlightHandle: 101,
+        completedCount: 0,
+        failedCount: 0,
+        updatedAt: Date()
+      )
+    )
+    let transport = CameraSessionRuntimeSpy()
+    transport.catalogItems = [galleryItem(handle: 101, formatLabel: "JPG")]
+    let runtime = CameraSessionRuntime(
+      transport: transport,
+      recoveryStore: recoveryStore
+    )
+    var routedHome = false
+    runtime.onPresentationDestinationReady = { destination in
+      if case .home = destination {
+        routedHome = true
+      }
+    }
+
+    runtime.send(.restorePersistedDownload)
+    runtime.send(.enterGallery(CameraSessionIdentity(
+      cameraName: "X-T5",
+      peripheralID: peripheralID
+    )))
+    await waitForStartedHandleCount(1, transport: transport)
+    runtime.send(.transferFinished(handle: 101))
+
+    XCTAssertEqual(runtime.presentation.phase, .idle)
+    XCTAssertTrue(routedHome)
+    XCTAssertEqual(transport.terminateCount, 1)
+  }
+
+  @MainActor
+  func testCameraSessionRuntimeRestartedQuickRecoveryReconciledQueueDisconnectsToHome() async throws {
+    let peripheralID = UUID()
+    let recoveryStore = CameraSessionRuntimeRecoveryStoreSpy(
+      snapshot: CameraDownloadSessionSnapshot(
+        sessionID: UUID(),
+        peripheralID: peripheralID,
+        cameraName: "X-T5",
+        state: .interruptedRecoverable,
+        recoveryIntent: "background-execution-expired",
+        presentationSurface: "runtime",
+        origin: .quickDownload,
+        completionPolicy: .disconnectToHome,
+        queue: [CameraDownloadSessionItem(handle: 101, mode: .original)],
+        inFlightHandle: 101,
+        completedCount: 0,
+        failedCount: 0,
+        updatedAt: Date()
+      )
+    )
+    let transport = CameraSessionRuntimeSpy()
+    transport.catalogItems = [galleryItem(handle: 101, formatLabel: "JPG")]
+    let runtime = CameraSessionRuntime(
+      transport: transport,
+      recoveryStore: recoveryStore,
+      savedHandleStore: CameraSessionRuntimeSavedHandleStoreSpy(savedHandles: [101])
+    )
+    let routedHome = expectation(description: "reconciled Quick recovery routed home")
+    runtime.onPresentationDestinationReady = { destination in
+      if case .home = destination {
+        routedHome.fulfill()
+      }
+    }
+
+    runtime.send(.restorePersistedDownload)
+    runtime.send(.enterGallery(CameraSessionIdentity(
+      cameraName: "X-T5",
+      peripheralID: peripheralID
+    )))
+
+    await fulfillment(of: [routedHome], timeout: 1)
+    XCTAssertEqual(runtime.presentation.phase, .idle)
+    XCTAssertEqual(transport.startedHandles, [])
+    XCTAssertEqual(transport.terminateCount, 1)
   }
 
   @MainActor
@@ -18286,6 +21317,7 @@ final class RunnerTests: XCTestCase {
     runtime.send(.applicationEnteredBackground)
     runtime.send(.startDownload(handles: [101], mode: .original))
 
+    await waitForStartedHandleCount(1, transport: transport)
     XCTAssertEqual(backgroundMaintainer.ptpKeepAliveModes, [true, false])
     XCTAssertEqual(runtime.presentation.phase, .downloadingBackground)
   }
@@ -18306,9 +21338,74 @@ final class RunnerTests: XCTestCase {
     runtime.send(.applicationEnteredBackground)
     runtime.send(.startDownload(handles: [101], mode: .original))
 
+    await waitForRuntimePhase(runtime, .recovering)
     XCTAssertEqual(transport.startedHandles, [])
     XCTAssertEqual(recoveryStore.records.first?.handles, [101])
     XCTAssertEqual(runtime.presentation.phase, .recovering)
+  }
+
+  @MainActor
+  func testCancellingInterruptedAdmissionResumesGalleryThumbnailWork() async throws {
+    let transport = CameraSessionRuntimeSpy()
+    transport.catalogItems = [galleryItem(handle: 3, formatLabel: "JPG")]
+    let runtime = CameraSessionRuntime(
+      transport: transport,
+      recoveryStore: CameraSessionRuntimeNonPersistingRecoveryStore(),
+      executionAuthority: CameraSessionRuntimeExecutionAuthoritySpy(grantsAuthority: false)
+    )
+
+    runtime.send(.enterGallery(CameraSessionIdentity(cameraName: "X-T5", peripheralID: UUID())))
+    await waitForRuntimeGalleryReady(runtime)
+    runtime.send(.applicationEnteredBackground)
+    runtime.send(.startDownload(handles: [101], mode: .original))
+    await waitForRuntimePhase(runtime, .interrupted)
+
+    runtime.send(.cancelDownloadByUser)
+    runtime.send(.applicationBecameActive)
+    runtime.requestVisibleGalleryThumbnails(handles: [3])
+    for _ in 0..<1_000 where transport.thumbnailHandles.isEmpty {
+      await Task.yield()
+    }
+
+    XCTAssertEqual(runtime.presentation.phase, .galleryReady)
+    XCTAssertEqual(transport.thumbnailHandles, [3])
+  }
+
+  @MainActor
+  func testCancellingRecoveringQuickDownloadHonorsDisconnectPolicy() async throws {
+    let transport = CameraSessionRuntimeSpy()
+    let recoveryStore = CameraSessionRuntimeRecoveryStoreSpy()
+    let runtime = CameraSessionRuntime(
+      transport: transport,
+      recoveryStore: recoveryStore,
+      executionAuthority: CameraSessionRuntimeExecutionAuthoritySpy(grantsAuthority: false)
+    )
+    var routedHome = false
+    runtime.onPresentationDestinationReady = { destination in
+      if case .home = destination {
+        routedHome = true
+      }
+    }
+
+    runtime.send(.enterGallery(CameraSessionIdentity(cameraName: "X-T5", peripheralID: UUID())))
+    await waitForRuntimeGalleryReady(runtime)
+    runtime.send(.applicationEnteredBackground)
+    XCTAssertTrue(runtime.submitDownload(CameraDownloadSubmission(
+      id: UUID(),
+      requests: [CameraSessionQueuedDownload(handle: 101, mode: .original)],
+      origin: .quickDownload,
+      completionPolicy: .disconnectToHome
+    )))
+    await waitForRuntimePhase(runtime, .recovering)
+    XCTAssertEqual(recoveryStore.records.first?.origin, .quickDownload)
+    XCTAssertEqual(recoveryStore.records.first?.completionPolicy, .disconnectToHome)
+
+    runtime.send(.applicationBecameActive)
+    runtime.send(.cancelDownloadByUser)
+
+    XCTAssertEqual(runtime.presentation.phase, .idle)
+    XCTAssertTrue(routedHome)
+    XCTAssertEqual(transport.terminateCount, 1)
   }
 
   @MainActor
@@ -18448,10 +21545,10 @@ final class RunnerTests: XCTestCase {
   }
 
   @MainActor
-  func testCameraSessionRuntimeWaitsForCatalogTransactionBeforeTerminatingTransport() async {
+  func testCameraSessionRuntimeTerminatesTransportBeforeCatalogTransactionFinishes() async {
     let transport = CameraSessionRuntimeSpy()
     transport.suspendsCatalogRequests = true
-    let terminated = expectation(description: "transport terminated after catalog restore boundary")
+    let terminated = expectation(description: "transport terminated before catalog cleanup")
     transport.onTerminate = {
       terminated.fulfill()
     }
@@ -18461,20 +21558,13 @@ final class RunnerTests: XCTestCase {
     await transport.waitForInitialCatalogRequestCount(1)
 
     runtime.send(.disconnectCamera(reason: "gallery-back"))
-    for _ in 0..<20 {
-      await Task.yield()
-    }
-
-    XCTAssertEqual(
-      transport.terminateCount,
-      0,
-      "PTP transport must remain open until the active catalog transaction reaches restore completion"
-    )
-
-    transport.resolveInitialCatalogRequest(at: 0, items: [galleryItem(handle: 1, formatLabel: "JPG")])
     await fulfillment(of: [terminated], timeout: 1)
     XCTAssertEqual(transport.terminateCount, 1)
     XCTAssertEqual(runtime.presentation.phase, .idle)
+
+    transport.resolveInitialCatalogRequest(at: 0, items: [galleryItem(handle: 1, formatLabel: "JPG")])
+    for _ in 0..<20 { await Task.yield() }
+    XCTAssertEqual(transport.terminateCount, 1)
   }
 
   @MainActor
@@ -19162,6 +22252,8 @@ private final class CameraSessionRuntimeRecoveryStoreSpy: CameraSessionRuntimeRe
     let inFlightHandle: UInt32?
     let completedCount: Int
     let failedCount: Int
+    let origin: CameraDownloadOrigin
+    let completionPolicy: CameraDownloadCompletionPolicy
     let reason: String
   }
 
@@ -19180,6 +22272,8 @@ private final class CameraSessionRuntimeRecoveryStoreSpy: CameraSessionRuntimeRe
     inFlightHandle: UInt32?,
     completedCount: Int,
     failedCount: Int,
+    origin: CameraDownloadOrigin,
+    completionPolicy: CameraDownloadCompletionPolicy,
     reason: String
   ) {
     records.append(
@@ -19189,6 +22283,8 @@ private final class CameraSessionRuntimeRecoveryStoreSpy: CameraSessionRuntimeRe
         inFlightHandle: inFlightHandle,
         completedCount: completedCount,
         failedCount: failedCount,
+        origin: origin,
+        completionPolicy: completionPolicy,
         reason: reason
       )
     )
@@ -19215,6 +22311,8 @@ private final class CameraSessionRuntimeNonPersistingRecoveryStore: CameraSessio
     inFlightHandle _: UInt32?,
     completedCount _: Int,
     failedCount _: Int,
+    origin _: CameraDownloadOrigin,
+    completionPolicy _: CameraDownloadCompletionPolicy,
     reason _: String
   ) throws {
     persistAttempts += 1
@@ -19254,6 +22352,8 @@ private final class CameraSessionRuntimeSavedHandleStoreSpy: CameraSessionRuntim
   private let onRecord: (() -> Void)?
   private(set) var removedHandles: [Int] = []
   private(set) var clearCount = 0
+  private(set) var recordedItemsByHandle: [Int: CameraVendorGalleryItem] = [:]
+  private(set) var recordedHandleOnly: [Int] = []
 
   init(onRecord: @escaping () -> Void) {
     self.onRecord = onRecord
@@ -19273,8 +22373,13 @@ private final class CameraSessionRuntimeSavedHandleStoreSpy: CameraSessionRuntim
     []
   }
 
-  func recordSaved(handle: Int, item _: CameraVendorGalleryItem?, identity _: CameraSessionIdentity) {
+  func recordSaved(handle: Int, item: CameraVendorGalleryItem?, identity _: CameraSessionIdentity) {
     handles.insert(handle)
+    if let item {
+      recordedItemsByHandle[handle] = item
+    } else {
+      recordedHandleOnly.append(handle)
+    }
     onRecord?()
   }
 
@@ -19389,6 +22494,11 @@ private final class CameraSessionRuntimeConnectionFlowSpy: CameraSessionRuntimeC
     rememberedContinuation?.resume()
     rememberedContinuation = nil
   }
+
+  func resetStateAfterConnectionCompletion() {
+    state = .idle
+    navigationEvent = nil
+  }
 }
 
 @MainActor
@@ -19445,21 +22555,78 @@ private final class CameraSessionRuntimeGallerySessionActivatorSpy: CameraSessio
 
 @MainActor
 private final class CameraGalleryCatalogRuntimeSourceSpy: CameraGalleryCatalogRuntimeSource {
+  private final class DetailsRequestContinuationRegistry: @unchecked Sendable {
+    private enum State {
+      case waitingForContinuation
+      case suspended(CheckedContinuation<Void, Never>)
+    }
+
+    private let lock = NSLock()
+    private var states: [UUID: State] = [:]
+
+    func begin(_ requestID: UUID) {
+      lock.lock()
+      states[requestID] = .waitingForContinuation
+      lock.unlock()
+    }
+
+    func suspend(
+      _ requestID: UUID,
+      continuation: CheckedContinuation<Void, Never>
+    ) {
+      var shouldResume = false
+      lock.lock()
+      if case .waitingForContinuation? = states[requestID] {
+        states[requestID] = .suspended(continuation)
+      } else {
+        shouldResume = true
+      }
+      lock.unlock()
+      if shouldResume {
+        continuation.resume()
+      }
+    }
+
+    func cancel(_ requestID: UUID) {
+      var continuation: CheckedContinuation<Void, Never>?
+      lock.lock()
+      if case let .suspended(pending)? = states.removeValue(forKey: requestID) {
+        continuation = pending
+      }
+      lock.unlock()
+      continuation?.resume()
+    }
+
+    func releaseAll() {
+      lock.lock()
+      let continuations = states.values.compactMap { state -> CheckedContinuation<Void, Never>? in
+        guard case let .suspended(continuation) = state else { return nil }
+        return continuation
+      }
+      states.removeAll()
+      lock.unlock()
+      continuations.forEach { $0.resume() }
+    }
+  }
+
   private var catalogContinuations: [CheckedContinuation<CameraGalleryCatalogSnapshot, Error>?] = []
   private var catalogCountWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
   private var thumbnailCountWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
   private var detailsCountWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
   private var thumbnailBatchFinishStartWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
-  private var detailsRequestContinuations: [CheckedContinuation<Void, Never>] = []
+  private let detailsRequestContinuations = DetailsRequestContinuationRegistry()
   private var thumbnailBatchFinishContinuations: [CheckedContinuation<Void, Never>] = []
   private var thumbnailResultContinuations: [CheckedContinuation<Void, Never>] = []
   var catalogError: Error?
   var suspendsCatalogRequests = false
   var suspendsChildRequests = false
   var suspendsDetailsRequestsUntilReleased = false
+  var detailsHandlesToSuspend: Set<Int> = []
+  var delaysDetailsCancellationUntilReleased = false
   var suspendsThumbnailBatchFinishUntilReleased = false
   var suspendsThumbnailResultsUntilReleased = false
   var thumbnailFailuresRemaining: [Int: Int] = [:]
+  var thumbnailResolvedMetadataByHandle: [Int: CameraGalleryResolvedItemMetadata] = [:]
   var onDetailsRequestCancelled: (@Sendable () -> Void)?
   var initialSnapshotHandles: [Int] = [3, 2, 1]
   var initialSnapshotHasDateGroups = true
@@ -19491,10 +22658,8 @@ private final class CameraGalleryCatalogRuntimeSourceSpy: CameraGalleryCatalogRu
     ))
   }
 
-  func loadObjectInfo(handle: Int) async throws -> CameraGalleryObjectInfoResult {
-    CameraGalleryRepositoryAdapter.objectInfoResult(
-      from: CameraVendorCameraObjectInfo.placeholder(handle: UInt32(handle), captureDate: "20260714")
-    )
+  func loadSubtractBaselineCatalog(for format: CameraMediaFormat) async throws -> CameraGalleryCatalogSnapshot {
+    try await loadExactCatalog(for: format)
   }
 
   func loadInitialCatalog() async throws -> CameraGalleryCatalogSnapshot {
@@ -19539,21 +22704,28 @@ private final class CameraGalleryCatalogRuntimeSourceSpy: CameraGalleryCatalogRu
     }
     return CameraGalleryThumbnailResult(
       data: Data([UInt8(truncatingIfNeeded: handle)]),
-      resolvedMetadata: nil
+      resolvedMetadata: thumbnailResolvedMetadataByHandle[handle]
     )
   }
 
   func loadDetails(handle: Int) async throws -> CameraGalleryDetailsSourceResult {
     requestedDetailsHandles.append(handle)
     resumeDetailsCountWaitersIfNeeded()
-    if suspendsDetailsRequestsUntilReleased {
+    if suspendsDetailsRequestsUntilReleased || detailsHandlesToSuspend.contains(handle) {
+      let requestID = UUID()
+      detailsRequestContinuations.begin(requestID)
+      let continuationRegistry = detailsRequestContinuations
       let cancellationHandler = onDetailsRequestCancelled
+      let delaysCancellation = delaysDetailsCancellationUntilReleased
       await withTaskCancellationHandler {
         await withCheckedContinuation { continuation in
-          detailsRequestContinuations.append(continuation)
+          continuationRegistry.suspend(requestID, continuation: continuation)
         }
       } onCancel: {
         cancellationHandler?()
+        if !delaysCancellation {
+          continuationRegistry.cancel(requestID)
+        }
       }
       try Task.checkCancellation()
     }
@@ -19629,9 +22801,7 @@ private final class CameraGalleryCatalogRuntimeSourceSpy: CameraGalleryCatalogRu
   }
 
   func releaseDetailsRequests() {
-    let continuations = detailsRequestContinuations
-    detailsRequestContinuations = []
-    continuations.forEach { $0.resume() }
+    detailsRequestContinuations.releaseAll()
   }
 
   func releaseThumbnailBatchFinishes() {
@@ -19719,19 +22889,25 @@ private actor CatalogLeaseAcquisitionFlag {
 private final class CameraCatalogQuerySourceSpy: CameraCatalogQuerySource {
   private let expandedSnapshot: CameraGalleryCatalogSnapshot
   private let exactSnapshots: [CameraMediaFormat: CameraGalleryCatalogSnapshot]
-  private let objectInfos: [Int: CameraVendorCameraObjectInfo]
+  private let subtractBaselineSnapshots: [CameraMediaFormat: CameraGalleryCatalogSnapshot]
+  private let subtractBaselineErrors: [CameraMediaFormat: Error]
   private(set) var expandedRequestCount = 0
   private(set) var exactRequests: [CameraMediaFormat] = []
-  private(set) var objectInfoRequests: [Int] = []
+  private(set) var subtractBaselineRequests: [CameraMediaFormat] = []
+  var suspendsSubtractBaselineRequests = false
+  private var subtractBaselineRequestContinuations: [CheckedContinuation<Void, Never>] = []
+  private var subtractBaselineCountWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
 
   init(
     expandedSnapshot: CameraGalleryCatalogSnapshot? = nil,
     exactSnapshots: [CameraMediaFormat: CameraGalleryCatalogSnapshot] = [:],
-    objectInfos: [Int: CameraVendorCameraObjectInfo] = [:]
+    subtractBaselineSnapshots: [CameraMediaFormat: CameraGalleryCatalogSnapshot] = [:],
+    subtractBaselineErrors: [CameraMediaFormat: Error] = [:]
   ) {
     self.expandedSnapshot = expandedSnapshot ?? .fixture(handles: [])
     self.exactSnapshots = exactSnapshots
-    self.objectInfos = objectInfos
+    self.subtractBaselineSnapshots = subtractBaselineSnapshots
+    self.subtractBaselineErrors = subtractBaselineErrors
   }
 
   func loadExpandedCatalog() async throws -> CameraGalleryCatalogSnapshot {
@@ -19747,12 +22923,42 @@ private final class CameraCatalogQuerySourceSpy: CameraCatalogQuerySource {
     return snapshot
   }
 
-  func loadObjectInfo(handle: Int) async throws -> CameraGalleryObjectInfoResult {
-    objectInfoRequests.append(handle)
-    guard let info = objectInfos[handle] else {
+  func loadSubtractBaselineCatalog(for format: CameraMediaFormat) async throws -> CameraGalleryCatalogSnapshot {
+    subtractBaselineRequests.append(format)
+    resumeSubtractBaselineCountWaitersIfNeeded()
+    if suspendsSubtractBaselineRequests {
+      await withCheckedContinuation { continuation in
+        subtractBaselineRequestContinuations.append(continuation)
+      }
+    }
+    try Task.checkCancellation()
+    if let error = subtractBaselineErrors[format] {
+      throw error
+    }
+    guard let snapshot = subtractBaselineSnapshots[format] else {
       throw NSError(domain: "CameraCatalogQuerySourceSpy", code: 2)
     }
-    return CameraGalleryRepositoryAdapter.objectInfoResult(from: info)
+    return snapshot
+  }
+
+  func waitForSubtractBaselineRequestCount(_ count: Int) async {
+    if subtractBaselineRequests.count >= count { return }
+    await withCheckedContinuation { continuation in
+      subtractBaselineCountWaiters.append((count: count, continuation: continuation))
+    }
+  }
+
+  func releaseSubtractBaselineRequests() {
+    suspendsSubtractBaselineRequests = false
+    let continuations = subtractBaselineRequestContinuations
+    subtractBaselineRequestContinuations = []
+    continuations.forEach { $0.resume() }
+  }
+
+  private func resumeSubtractBaselineCountWaitersIfNeeded() {
+    let ready = subtractBaselineCountWaiters.filter { subtractBaselineRequests.count >= $0.count }
+    subtractBaselineCountWaiters.removeAll { subtractBaselineRequests.count >= $0.count }
+    ready.forEach { $0.continuation.resume() }
   }
 }
 
@@ -19793,22 +22999,38 @@ private extension CameraGalleryCatalogIdentity {
 }
 
 private extension NativeGalleryHDPreviewSnapshot {
-  static func fixture(handles: [Int]) -> NativeGalleryHDPreviewSnapshot {
-    let date = Date(timeIntervalSince1970: 1_721_779_200)
-    return NativeGalleryHDPreviewSnapshot(
-      activeDate: date,
-      items: handles.map { handle in
-        NativeGalleryHDPreviewItem(
-          displayItem: CameraVendorGalleryItem(
-            handle: handle,
-            filename: "DSCF\(handle).JPG",
-            formatLabel: "JPG",
-            captureDate: "20260724T120000",
-            byteSizeText: ""
+  static func fixture(
+    sectionHandles: [[Int]],
+    sessionDate: Date = Date(timeIntervalSince1970: 1_721_779_200)
+  ) -> NativeGalleryHDPreviewSnapshot {
+    NativeGalleryHDPreviewSnapshot(
+      sections: sectionHandles.enumerated().map { sectionIndex, handles in
+        NativeGalleryHDPreviewSection(
+          day: Calendar.current.date(
+            byAdding: .day,
+            value: -sectionIndex,
+            to: sessionDate
           ),
-          rawSidecar: nil
+          title: "section-\(sectionIndex)",
+          orderedRepresentedHandles: handles,
+          items: handles.map { handle in
+            NativeGalleryHDPreviewItem(
+              displayItem: CameraVendorGalleryItem(
+                handle: handle,
+                filename: "DSCF\(handle).JPG",
+                formatLabel: "JPG",
+                captureDate: "20260724T120000",
+                byteSizeText: ""
+              ),
+              rawSidecar: nil
+            )
+          }
         )
       }
     )
+  }
+
+  static func fixture(handles: [Int]) -> NativeGalleryHDPreviewSnapshot {
+    fixture(sectionHandles: [handles])
   }
 }

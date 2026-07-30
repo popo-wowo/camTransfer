@@ -46,13 +46,17 @@ enum CameraGalleryRepositoryAdapter {
     let normalizedFilename = item.filename.trimmingCharacters(in: .whitespacesAndNewlines)
     let filename: CameraGalleryConfirmedValue<String> =
       normalizedFilename.hasPrefix("0x") ? .unknown : .confirmed(normalizedFilename)
+    let captureDate = CameraFilterEngine.parseCaptureDate(item.captureDate)
+      .map(CameraGalleryConfirmedValue<Date>.confirmed) ?? .unknown
+    let size = item.compressedSize
+      .map { CameraGalleryConfirmedValue<Int64>.confirmed(Int64($0)) } ?? .unknown
 
     return CameraGalleryEntrySummary(
       handle: item.handle,
       filename: filename,
       format: format(from: item.formatLabel, filename: normalizedFilename),
-      captureDate: .unknown,
-      size: .unknown,
+      captureDate: captureDate,
+      size: size,
       sortKey: .handleDescending(item.handle)
     )
   }
@@ -89,6 +93,18 @@ enum CameraGalleryRepositoryAdapter {
     )
   }
 
+  static func detailsResult(
+    fromResolvedMetadata metadata: CameraGalleryResolvedItemMetadata
+  ) -> CameraGalleryDetailsSourceResult {
+    CameraGalleryDetailsSourceResult(
+      handle: metadata.handle,
+      orientation: metadata.orientation.map(CameraGalleryConfirmedValue.confirmed) ?? .unknown,
+      refinedFormat: format(from: metadata.formatLabel, filename: metadata.filename),
+      notes: [],
+      resolvedMetadata: metadata
+    )
+  }
+
   static func refinedFormat(
     from metadata: CameraGalleryResolvedItemMetadata,
     hasResolvedFormat: Bool
@@ -117,9 +133,11 @@ enum CameraGalleryRepositoryAdapter {
   }
 
   static func thumbnailResult(from thumbnail: CameraVendorGalleryThumbnail) -> CameraGalleryThumbnailResult {
-    CameraGalleryThumbnailResult(
+    let objectInfo = thumbnail.objectInfo.map(objectInfoResult(from:))
+    return CameraGalleryThumbnailResult(
       data: thumbnail.data,
-      resolvedMetadata: thumbnail.item.map(resolvedMetadata(from:))
+      resolvedMetadata: objectInfo?.metadata ?? thumbnail.item.map(resolvedMetadata(from:)),
+      objectInfo: objectInfo
     )
   }
 

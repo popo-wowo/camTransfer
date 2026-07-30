@@ -58,8 +58,17 @@ enum CameraVendorThumbnailResultPolicy {
   static func result(
     data: Data,
     primedObjectInfo: CameraVendorCameraObjectInfo?
-  ) -> CameraVendorThumbnailFetchResult {
-    CameraVendorThumbnailFetchResult(data: data, objectInfo: primedObjectInfo)
+  ) throws -> CameraVendorThumbnailFetchResult {
+    guard let primedObjectInfo else {
+      throw NSError(
+        domain: "CameraVendorPtpSession",
+        code: NSURLErrorCannotParseResponse,
+        userInfo: [
+          NSLocalizedDescriptionKey: "GetThumb completed without matching ObjectInfo context"
+        ]
+      )
+    }
+    return CameraVendorThumbnailFetchResult(data: data, objectInfo: primedObjectInfo)
   }
 }
 
@@ -1048,7 +1057,6 @@ final class CameraVendorPtpSession {
         try restoreCameraVendorSearchModeAll(saved, stage: "subtract-all-restore-\(query.label)")
       }
     )
-    let baselineHandleSet = Set(baselineSnapshot.handles)
     report("[OBS] PTP_SUBTRACT_BASELINE_ALL handles=\(baselineSnapshot.handles.count)")
 
     // Step 2: Read format-filtered directory (D604=X, returns broad result)
@@ -1074,8 +1082,18 @@ final class CameraVendorPtpSession {
     )
     report("[OBS] PTP_SUBTRACT_FORMAT_RAW handles=\(formatSnapshot.handles.count)")
 
-    // Step 3: Subtract — handles in format result but NOT in baseline = format-only
-    let isolatedHandles = formatSnapshot.handles.filter { !baselineHandleSet.contains($0) }
+    // Step 3: Validate both snapshots and require the format response to be a
+    // complete superset before treating the difference as format membership.
+    guard let isolatedHandles = CameraVendorSubtractBaselineValidationPolicy.isolatedHandles(
+      baseline: baselineSnapshot,
+      format: formatSnapshot
+    ) else {
+      throw NSError(
+        domain: "CameraVendorPtpSession",
+        code: NSURLErrorCannotParseResponse,
+        userInfo: [NSLocalizedDescriptionKey: "相机返回的格式目录无法证明 subtract-baseline 成员关系"]
+      )
+    }
     report(
       "[OBS] PTP_SUBTRACT_BASELINE_END label=\(query.label) " +
       "all=\(baselineSnapshot.handles.count) " +
@@ -2123,18 +2141,47 @@ final class CameraVendorPtpSession {
         ]
       )
     }
-    // The catalog merge keeps its confirmed identity fields. Carry the primed
-    // ObjectInfo with this thumbnail so its orientation reaches the renderer.
-    return CameraVendorThumbnailResultPolicy.result(
+    let resolvedObjectInfo = primedObjectInfo ?? recoverThumbnailObjectInfoAfterGetThumb(handle: handle)
+    // The catalog merge keeps its confirmed identity fields. Carry ObjectInfo
+    // with this thumbnail so format and orientation reach the renderer together.
+    return try CameraVendorThumbnailResultPolicy.result(
       data: data,
-      primedObjectInfo: primedObjectInfo
+      primedObjectInfo: resolvedObjectInfo
     )
+  }
+
+  private func recoverThumbnailObjectInfoAfterGetThumb(
+    handle: UInt32
+  ) -> CameraVendorCameraObjectInfo? {
+    let startedAt = Date()
+    do {
+      let info = try objectInfo(
+        handle: handle,
+        readTimeout: CameraVendorThumbnailFetchPolicy.postGetThumbObjectInfoReadTimeoutSeconds
+      )
+      report(
+        "[OBS] PTP_GET_THUMB_CONTEXT_RECOVERED handle=0x\(String(format: "%08X", handle)) " +
+        "format=0x\(String(format: "%04X", info.formatCode)) " +
+        "orientation=\(info.orientation.map(String.init) ?? "unknown") " +
+        "elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1000))"
+      )
+      return info
+    } catch {
+      report(
+        "[OBS] PTP_GET_THUMB_CONTEXT_RECOVERY_FAILED handle=0x\(String(format: "%08X", handle)) " +
+        "elapsedMs=\(Int(Date().timeIntervalSince(startedAt) * 1000)) error=\(error.localizedDescription)"
+      )
+      return nil
+    }
   }
 
   private func primeThumbnailObjectContext(handle: UInt32) -> CameraVendorCameraObjectInfo? {
     let startedAt = Date()
     do {
-      let info = try cameraVendorLatestObjectInfo(preferredHandle: handle)
+      let info = try cameraVendorLatestObjectInfo(
+        preferredHandle: handle,
+        readTimeout: CameraVendorThumbnailFetchPolicy.objectInfoReadTimeoutSeconds
+      )
       report(
         "[OBS] PTP_GET_THUMB_CONTEXT_PRIMED handle=0x\(String(format: "%08X", handle)) " +
         "format=0x\(String(format: "%04X", info.formatCode)) thumbBytes=\(info.thumbCompressedSize) " +
@@ -2149,7 +2196,10 @@ final class CameraVendorPtpSession {
       )
       do {
         let fallbackStartedAt = Date()
-        let info = try objectInfo(handle: handle)
+        let info = try objectInfo(
+          handle: handle,
+          readTimeout: CameraVendorThumbnailFetchPolicy.objectInfoReadTimeoutSeconds
+        )
         report(
           "[OBS] PTP_GET_THUMB_CONTEXT_PRIMED_STANDARD handle=0x\(String(format: "%08X", handle)) " +
           "format=0x\(String(format: "%04X", info.formatCode)) thumbBytes=\(info.thumbCompressedSize) " +

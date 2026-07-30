@@ -196,7 +196,7 @@ struct CameraGalleryFilterIntent: Equatable, Codable, Sendable {
   }
 
   func hasSameCameraMembership(as other: CameraGalleryFilterIntent) -> Bool {
-    rule == other.rule
+    rule.formats == other.rule.formats
   }
 }
 
@@ -295,6 +295,41 @@ struct CameraGalleryPresentation: Equatable, @unchecked Sendable {
   var isLoading: Bool {
     if case .loading = state { return true }
     return false
+  }
+}
+
+struct CameraGalleryIncrementalDelta: Equatable, Sendable {
+  let changedHandles: Set<Int>
+  let orientationChangedHandles: Set<Int>
+  let requiresStructuralRefresh: Bool
+
+  static func between(
+    previous: CameraGalleryPresentation,
+    current: CameraGalleryPresentation,
+    changedHandles: Set<Int>
+  ) -> CameraGalleryIncrementalDelta {
+    let previousByHandle = Dictionary(uniqueKeysWithValues: previous.items.map { ($0.handle, $0) })
+    let currentByHandle = Dictionary(uniqueKeysWithValues: current.items.map { ($0.handle, $0) })
+    let orientationChangedHandles = Set(changedHandles.filter {
+      previousByHandle[$0]?.thumbnailData != nil &&
+        previousByHandle[$0]?.orientation != currentByHandle[$0]?.orientation
+    })
+    let didChangeSectionIdentity = changedHandles.contains {
+      sectionIdentity(for: previousByHandle[$0]?.captureDate) !=
+        sectionIdentity(for: currentByHandle[$0]?.captureDate)
+    }
+    let didChangeMembershipOrOrder = previous.items.map(\.handle) != current.items.map(\.handle)
+    return CameraGalleryIncrementalDelta(
+      changedHandles: changedHandles,
+      orientationChangedHandles: orientationChangedHandles,
+      requiresStructuralRefresh: didChangeSectionIdentity || didChangeMembershipOrOrder
+    )
+  }
+
+  private static func sectionIdentity(for captureDate: String?) -> DateComponents? {
+    guard let captureDate,
+          let date = CameraFilterEngine.parseCaptureDate(captureDate) else { return nil }
+    return Calendar(identifier: .gregorian).dateComponents([.year, .month, .day], from: date)
   }
 }
 

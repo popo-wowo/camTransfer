@@ -5,10 +5,6 @@ private final class CameraGallerySessionCallbacks {
   weak var owner: CameraGallerySession?
 }
 
-private final class CameraGalleryThumbnailPipelineBox {
-  var value: CameraGalleryThumbnailPipeline?
-}
-
 @MainActor
 final class CameraGallerySession {
   typealias PreviewPublisher = (CameraGalleryHDPreviewPipeline.Publication) -> Void
@@ -17,14 +13,16 @@ final class CameraGallerySession {
   let sessionEpoch: UUID
   private let filterStore: CameraGalleryFilterStateStore
   private let downloadedHandles: () -> Set<Int>
+  private let queryEngine: CameraCatalogQueryEngine
   private let catalogRuntime: CameraGalleryCatalogRuntime
-  private let thumbnailPipeline: CameraGalleryThumbnailPipeline
   private let hdPreviewPipeline: CameraGalleryHDPreviewPipeline
   let previewCache: NativeGalleryHighDefinitionPreviewCache
   private var nextSubmissionRawValue: UInt64 = 0
   private var isInvalidated = false
+  private var isCatalogSubmissionPending = false
+  private var pendingCatalogSubmissionID: CameraGalleryIntentSubmissionID?
   private var presentationObservers: [UUID: (CameraGalleryPresentation) -> Void] = [:]
-  private var incrementalObservers: [UUID: (CameraGalleryPresentation, Set<Int>) -> Void] = [:]
+  private var incrementalObservers: [UUID: (CameraGalleryPresentation, CameraGalleryIncrementalDelta) -> Void] = [:]
   private var previewObservers: [UUID: PreviewPublisher] = [:]
   private(set) var filterIntent: CameraGalleryFilterIntent
   private(set) var presentation = CameraGalleryPresentation.unavailable
@@ -42,30 +40,22 @@ final class CameraGallerySession {
     fetchPreview: @escaping CameraGalleryHDPreviewPipeline.FetchPreview
   ) {
     let callbacks = CameraGallerySessionCallbacks()
-    let thumbnailBox = CameraGalleryThumbnailPipelineBox()
     let catalogRuntime = CameraGalleryCatalogRuntime(
       source: source,
       queryEngine: queryEngine,
       queryOwner: .gallery(sessionEpoch),
       cameraID: identity.historyKey,
-      makeThumbnailPipeline: { publisher in
-        let pipeline = CameraGalleryThumbnailPipeline(source: source, publish: publisher)
-        thumbnailBox.value = pipeline
-        return pipeline
+      publishPresentation: { _ in },
+      publishSubmissionPresentation: { presentation, submissionID in
+        callbacks.owner?.install(presentation, submissionID: submissionID)
       },
-      publishPresentation: { presentation in
-        callbacks.owner?.install(presentation)
-      },
-      publishIncrementalUpdate: { presentation, handles in
-        callbacks.owner?.installIncremental(presentation, handles: handles)
+      publishIncrementalUpdate: { presentation, delta in
+        callbacks.owner?.installIncremental(presentation, delta: delta)
       },
       reportTransportEvidence: { failure in
         callbacks.owner?.onTransportFailure?(failure)
       }
     )
-    guard let thumbnailPipeline = thumbnailBox.value else {
-      preconditionFailure("CameraGalleryCatalogRuntime must create its thumbnail pipeline")
-    }
     let hdPreviewPipeline = CameraGalleryHDPreviewPipeline(
       cache: previewCache,
       suspendThumbnailPipeline: {
@@ -84,8 +74,8 @@ final class CameraGallerySession {
     self.sessionEpoch = sessionEpoch
     self.filterStore = filterStore
     self.downloadedHandles = downloadedHandles
+    self.queryEngine = queryEngine
     self.catalogRuntime = catalogRuntime
-    self.thumbnailPipeline = thumbnailPipeline
     self.hdPreviewPipeline = hdPreviewPipeline
     self.previewCache = previewCache
     filterIntent = filterStore.load(for: identity)
@@ -96,17 +86,20 @@ final class CameraGallerySession {
     guard !isInvalidated else { return }
     await catalogRuntime.updateDownloadedHandles(downloadedHandles())
     await catalogRuntime.start(initial: filterIntent)
-    await catalogRuntime.waitUntilIdle()
   }
 
   func submitFilter(_ intent: CameraGalleryFilterIntent) async {
     guard !isInvalidated else { return }
+    isCatalogSubmissionPending = true
     filterIntent = intent
     filterStore.save(intent, for: identity)
     nextSubmissionRawValue &+= 1
+    let submissionID = CameraGalleryIntentSubmissionID(rawValue: nextSubmissionRawValue)
+    pendingCatalogSubmissionID = submissionID
+    await hdPreviewPipeline.prepareForCatalogChange()
     await catalogRuntime.submit(
       intent,
-      submissionID: CameraGalleryIntentSubmissionID(rawValue: nextSubmissionRawValue),
+      submissionID: submissionID,
       downloadedHandles: downloadedHandles()
     )
   }
@@ -115,20 +108,40 @@ final class CameraGallerySession {
     await catalogRuntime.updateDownloadedHandles(handles)
   }
 
-  func requestVisibleThumbnails(handles: [Int]) async {
-    await catalogRuntime.requestVisibleThumbnails(handles: handles)
+  func requestVisibleThumbnails(
+    handles: [Int],
+    submissionID: UInt64,
+    expectedCatalogIdentity: CameraGalleryCatalogIdentity
+  ) async {
+    await catalogRuntime.requestVisibleThumbnails(
+      handles: handles,
+      submissionID: submissionID,
+      expectedCatalogIdentity: expectedCatalogIdentity
+    )
   }
 
   func cancelActiveThumbnailWork() async {
     await catalogRuntime.cancelActiveThumbnailWork()
   }
 
-  func suspendThumbnailWorkForHDPreview() async {
+  func suspendContentWorkForFullScreenPreview() async {
+    await hdPreviewPipeline.suspend()
     await catalogRuntime.suspendChildWorkForHighDefinitionPreview()
   }
 
-  func resumeThumbnailWorkAfterHDPreview() async {
+  func resumeContentWorkAfterFullScreenPreview() async {
     await catalogRuntime.resumeChildWorkAfterHighDefinitionPreview()
+    await hdPreviewPipeline.resume()
+  }
+
+  func suspendChildWorkForDownload() async {
+    await hdPreviewPipeline.pauseForDownload()
+    await catalogRuntime.suspendChildWorkForDownload()
+  }
+
+  func resumeChildWorkAfterDownload() async {
+    await catalogRuntime.resumeChildWorkAfterDownload()
+    await hdPreviewPipeline.resumeAfterDownload()
   }
 
   func switchPreviewMode(
@@ -140,6 +153,7 @@ final class CameraGallerySession {
     case .thumbnail:
       await hdPreviewPipeline.deactivate(resumeThumbnailPipeline: true)
     case .highDefinition:
+      guard !isCatalogSubmissionPending else { return }
       guard let catalogIdentity, let snapshot else { return }
       await hdPreviewPipeline.activate(
         catalogIdentity: catalogIdentity,
@@ -157,25 +171,30 @@ final class CameraGallerySession {
     hdPreviewPipeline.retry(handle: handle)
   }
 
-  func pauseHDPreviewForDownload() async {
-    await hdPreviewPipeline.pauseForDownload()
-  }
-
-  func resumeHDPreviewAfterDownload() {
-    hdPreviewPipeline.resumeAfterDownload()
-  }
-
   func cachedPreview(for handle: Int) -> NativeGalleryCachedPreview? {
     hdPreviewPipeline.cachedPreview(for: handle)
   }
 
+  func peekCachedPreview(for handle: Int) -> NativeGalleryCachedPreview? {
+    hdPreviewPipeline.peekCachedPreview(for: handle)
+  }
+
   func markTransportLost(_ message: String) async {
+    isCatalogSubmissionPending = true
+    pendingCatalogSubmissionID = nil
+    await hdPreviewPipeline.prepareForCatalogChange()
     await catalogRuntime.markTransportLost(message)
   }
 
   func reload() async {
     guard !isInvalidated else { return }
-    await catalogRuntime.start(initial: filterIntent)
+    isCatalogSubmissionPending = true
+    nextSubmissionRawValue &+= 1
+    let submissionID = CameraGalleryIntentSubmissionID(rawValue: nextSubmissionRawValue)
+    pendingCatalogSubmissionID = submissionID
+    await hdPreviewPipeline.prepareForCatalogChange()
+    await queryEngine.clearMembershipCache()
+    await catalogRuntime.start(initial: filterIntent, submissionID: submissionID)
   }
 
   @discardableResult
@@ -188,7 +207,7 @@ final class CameraGallerySession {
 
   @discardableResult
   func observeIncrementalUpdates(
-    _ observer: @escaping (CameraGalleryPresentation, Set<Int>) -> Void
+    _ observer: @escaping (CameraGalleryPresentation, CameraGalleryIncrementalDelta) -> Void
   ) -> UUID {
     let id = UUID()
     incrementalObservers[id] = observer
@@ -215,15 +234,23 @@ final class CameraGallerySession {
     incrementalObservers.removeAll()
     previewObservers.removeAll()
     await catalogRuntime.cancelAllChildren()
-    await thumbnailPipeline.invalidateSession()
     await hdPreviewPipeline.invalidateSession()
+    pendingCatalogSubmissionID = nil
     catalogIdentity = nil
     presentation = .unavailable
   }
 
-  private func install(_ presentation: CameraGalleryPresentation) {
+  private func install(
+    _ presentation: CameraGalleryPresentation,
+    submissionID: CameraGalleryIntentSubmissionID
+  ) {
     guard !isInvalidated else { return }
     self.presentation = presentation
+    if !presentation.isLoading,
+       submissionID == pendingCatalogSubmissionID {
+      isCatalogSubmissionPending = false
+      pendingCatalogSubmissionID = nil
+    }
     if case .ready(let generation, let snapshotID) = presentation.state {
       catalogIdentity = CameraGalleryCatalogIdentity(
         cameraID: identity.historyKey,
@@ -239,11 +266,11 @@ final class CameraGallerySession {
 
   private func installIncremental(
     _ presentation: CameraGalleryPresentation,
-    handles: Set<Int>
+    delta: CameraGalleryIncrementalDelta
   ) {
     guard !isInvalidated else { return }
     self.presentation = presentation
-    incrementalObservers.values.forEach { $0(presentation, handles) }
+    incrementalObservers.values.forEach { $0(presentation, delta) }
   }
 
   private func publishPreview(_ publication: CameraGalleryHDPreviewPipeline.Publication) {

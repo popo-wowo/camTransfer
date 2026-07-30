@@ -421,7 +421,7 @@ final class CameraVendorPtpSessionRuntime {
         )
       }
       return (
-        CameraVendorGalleryThumbnail(data: result.data, item: item),
+        CameraVendorGalleryThumbnail(data: result.data, item: item, objectInfo: result.objectInfo),
         result.objectInfo
       )
     }

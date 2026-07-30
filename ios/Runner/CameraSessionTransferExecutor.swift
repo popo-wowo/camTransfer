@@ -157,22 +157,50 @@ final class CameraSessionRuntimeDeferredTransport: CameraSessionRuntimeTransport
 }
 
 @MainActor
+final class CameraSessionGenerationFence {
+  private(set) var isActive = true
+
+  func invalidate() {
+    isActive = false
+  }
+
+  func checkActive() throws {
+    try Task.checkCancellation()
+    guard isActive else { throw CancellationError() }
+  }
+}
+
+@MainActor
 final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntimeSource {
   private let transport: CameraSessionRuntimeTransport
+  private let generationFence: CameraSessionGenerationFence
 
   init(transport: CameraSessionRuntimeTransport) {
     self.transport = transport
+    generationFence = CameraSessionGenerationFence()
+  }
+
+  init(
+    transport: CameraSessionRuntimeTransport,
+    generationFence: CameraSessionGenerationFence
+  ) {
+    self.transport = transport
+    self.generationFence = generationFence
   }
 
   func loadExpandedCatalog() async throws -> CameraGalleryCatalogSnapshot {
+    try generationFence.checkActive()
     do {
       let snapshot = try await transport.fetchInitialCameraCatalog()
+      try generationFence.checkActive()
       return CameraGalleryCatalogSnapshot(
         snapshotID: CameraGallerySnapshotID(),
         dateGroups: snapshot.dateGroups,
         orderedHandles: snapshot.orderedHandles,
         items: snapshot.items
       )
+    } catch is CancellationError {
+      throw CancellationError()
     } catch let failure as CameraGalleryCatalogTransactionFailure {
       throw failure
     } catch {
@@ -185,15 +213,19 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
   }
 
   func loadExactCatalog(for format: CameraMediaFormat) async throws -> CameraGalleryCatalogSnapshot {
+    try generationFence.checkActive()
     let query = cameraCatalogQuery(for: format)
     do {
       let snapshot = try await transport.fetchCameraCatalog(query: query)
+      try generationFence.checkActive()
       return CameraGalleryCatalogSnapshot(
         snapshotID: CameraGallerySnapshotID(),
         dateGroups: snapshot.dateGroups,
         orderedHandles: snapshot.orderedHandles,
         items: snapshot.items
       )
+    } catch is CancellationError {
+      throw CancellationError()
     } catch let failure as CameraGalleryCatalogTransactionFailure {
       throw failure
     } catch {
@@ -205,25 +237,25 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
     }
   }
 
-  func loadObjectInfo(handle: Int) async throws -> CameraGalleryObjectInfoResult {
-    CameraGalleryRepositoryAdapter.objectInfoResult(
-      from: try await transport.fetchObjectInfo(for: handle)
-    )
-  }
-
-  func loadInitialCatalog() async throws -> CameraGalleryCatalogSnapshot {
-    try await loadExpandedCatalog()
-  }
-
-  func loadCatalog(for intent: CameraGalleryFilterIntent) async throws -> CameraGalleryCatalogSnapshot {
-    switch CameraFilterEngine.plan(for: intent.rule.formats) {
-    case .allCatalog:
-      return try await loadExpandedCatalog()
-    case .exactFormats(let formats) where formats.count == 1:
-      return try await loadExactCatalog(for: formats.first!)
-    case .exactFormats, .objectInfoFallback:
+  func loadSubtractBaselineCatalog(for format: CameraMediaFormat) async throws -> CameraGalleryCatalogSnapshot {
+    try generationFence.checkActive()
+    let query = subtractBaselineCatalogQuery(for: format)
+    do {
+      let snapshot = try await transport.fetchCameraCatalog(query: query)
+      try generationFence.checkActive()
+      return CameraGalleryCatalogSnapshot(
+        snapshotID: CameraGallerySnapshotID(),
+        dateGroups: snapshot.dateGroups,
+        orderedHandles: snapshot.orderedHandles,
+        items: snapshot.items
+      )
+    } catch is CancellationError {
+      throw CancellationError()
+    } catch let failure as CameraGalleryCatalogTransactionFailure {
+      throw failure
+    } catch {
       throw CameraGalleryCatalogTransactionFailure(
-        primaryMessage: "目录组合必须通过共享相机查询引擎解析",
+        primaryMessage: error.localizedDescription,
         restorationMessage: nil,
         provesTransportLost: false
       )
@@ -231,21 +263,26 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
   }
 
   func loadThumbnail(handle: Int) async throws -> CameraGalleryThumbnailResult {
-    CameraGalleryRepositoryAdapter.thumbnailResult(
-      from: try await transport.fetchThumbnailWithInfo(for: handle)
-    )
+    try generationFence.checkActive()
+    let thumbnail = try await transport.fetchThumbnailWithInfo(for: handle)
+    try generationFence.checkActive()
+    return CameraGalleryRepositoryAdapter.thumbnailResult(from: thumbnail)
   }
 
   func loadDetails(handle: Int) async throws -> CameraGalleryDetailsSourceResult {
+    try generationFence.checkActive()
     let info = try await transport.fetchObjectInfo(for: handle)
+    try generationFence.checkActive()
     return CameraGalleryRepositoryAdapter.detailsResult(from: info)
   }
 
   func beginVisibleThumbnailBatch(handles: [Int]) {
+    guard generationFence.isActive else { return }
     transport.beginVisibleThumbnailBatch(handles: handles)
   }
 
   func finishVisibleThumbnailBatch(handles: [Int]) async {
+    guard generationFence.isActive else { return }
     transport.finishVisibleThumbnailBatch(handles: handles)
   }
 
@@ -272,7 +309,34 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
         label: "format-raw"
       )
     case .heif:
-      preconditionFailure("HEIF must resolve from expanded catalog plus authoritative ObjectInfo")
+      return CameraVendorCatalogQuery(
+        conditions: [
+          .uint16(
+            propertyCode: CameraVendorSearchModeAllPayload.objectFormatPropertyCode,
+            value: CameraVendorSearchModeAllPayload.heifObjectFormatMask
+          ),
+        ],
+        label: "format-heif",
+        membershipPolicy: .subtractBaseline
+      )
+    }
+  }
+
+  private func subtractBaselineCatalogQuery(for format: CameraMediaFormat) -> CameraVendorCatalogQuery {
+    switch format {
+    case .heif:
+      return CameraVendorCatalogQuery(
+        conditions: [
+          .uint16(
+            propertyCode: CameraVendorSearchModeAllPayload.objectFormatPropertyCode,
+            value: CameraVendorSearchModeAllPayload.heifObjectFormatMask
+          ),
+        ],
+        label: "format-heif",
+        membershipPolicy: .subtractBaseline
+      )
+    case .jpg, .raw:
+      return cameraCatalogQuery(for: format)
     }
   }
 }

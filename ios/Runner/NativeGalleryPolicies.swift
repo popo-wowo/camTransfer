@@ -10,8 +10,8 @@ enum NativeGalleryAndroidParityChromePolicy {
     true
   }
 
-  static func canExpandFilters(mode: NativeGalleryBrowseMode) -> Bool {
-    mode == .thumbnail
+  static func canExpandFilters(mode _: NativeGalleryBrowseMode) -> Bool {
+    true
   }
 }
 
@@ -24,9 +24,15 @@ enum NativeGalleryHDCardQueueState: Equatable {
 }
 
 enum NativeGalleryHDCardActionPolicy {
-  static func displayTitle(hasImage: Bool, state: NativeGalleryHDCardQueueState) -> String {
+  static func displayTitle(
+    hasImage: Bool,
+    allowsQueueWithoutImage: Bool = false,
+    state: NativeGalleryHDCardQueueState
+  ) -> String {
     switch state {
-    case .idle: return hasImage ? "加入" : "加载后加入"
+    case .idle:
+      if hasImage { return "加入" }
+      return allowsQueueWithoutImage ? "加入原片" : "加载后加入"
     case .queued: return "已加入"
     case .downloading: return "下载中"
     case .saved: return "已下载"
@@ -44,10 +50,14 @@ enum NativeGalleryHDCardActionPolicy {
     }
   }
 
-  static func canQueue(hasImage: Bool, state: NativeGalleryHDCardQueueState) -> Bool {
+  static func canQueue(
+    hasImage: Bool,
+    allowsQueueWithoutImage: Bool = false,
+    state: NativeGalleryHDCardQueueState
+  ) -> Bool {
     switch state {
     case .idle, .queued:
-      return hasImage
+      return hasImage || allowsQueueWithoutImage
     case .failed:
       return true
     case .downloading, .saved:
@@ -77,6 +87,13 @@ enum NativeGalleryHDBottomBarPolicy {
   }
 }
 
+struct NativePhotoPreviewRotationDecision: Equatable {
+  let degrees: Int
+  let source: String
+  let metadataDegrees: Int?
+  let rotationAlreadyApplied: Bool
+}
+
 enum NativePhotoPreviewRotationPolicy {
   static func nextManualRotationDegrees(_ currentDegrees: Int) -> Int {
     normalizedDegrees(currentDegrees + 90)
@@ -96,22 +113,55 @@ enum NativePhotoPreviewRotationPolicy {
     decodedHeight: Int,
     imageData: Data?
   ) -> Int {
+    rotationDecision(
+      objectOrientation: objectOrientation,
+      decodedWidth: decodedWidth,
+      decodedHeight: decodedHeight,
+      imageData: imageData
+    ).degrees
+  }
+
+  static func rotationDecision(
+    objectOrientation: Int?,
+    decodedWidth: Int,
+    decodedHeight: Int,
+    imageData: Data?
+  ) -> NativePhotoPreviewRotationDecision {
     if let imageData,
        let exifDegrees = exifRotationDegrees(imageData) {
-      if rotationAlreadyApplied(exifDegrees, decodedWidth: decodedWidth, decodedHeight: decodedHeight) {
-        return 0
-      }
-      return exifDegrees
+      let alreadyApplied = rotationAlreadyApplied(
+        exifDegrees,
+        decodedWidth: decodedWidth,
+        decodedHeight: decodedHeight
+      )
+      return NativePhotoPreviewRotationDecision(
+        degrees: alreadyApplied ? 0 : exifDegrees,
+        source: "exif",
+        metadataDegrees: exifDegrees,
+        rotationAlreadyApplied: alreadyApplied
+      )
     }
     if let objectOrientation {
       if let metadataDegrees = cameraVendorOrientationRotationDegrees(objectOrientation) {
-        if rotationAlreadyApplied(metadataDegrees, decodedWidth: decodedWidth, decodedHeight: decodedHeight) {
-          return 0
-        }
-        return metadataDegrees
+        let alreadyApplied = rotationAlreadyApplied(
+          metadataDegrees,
+          decodedWidth: decodedWidth,
+          decodedHeight: decodedHeight
+        )
+        return NativePhotoPreviewRotationDecision(
+          degrees: alreadyApplied ? 0 : metadataDegrees,
+          source: "object-info",
+          metadataDegrees: metadataDegrees,
+          rotationAlreadyApplied: alreadyApplied
+        )
       }
     }
-    return 0
+    return NativePhotoPreviewRotationDecision(
+      degrees: 0,
+      source: "none",
+      metadataDegrees: nil,
+      rotationAlreadyApplied: false
+    )
   }
 
   private static func rotationAlreadyApplied(_ degrees: Int, decodedWidth: Int, decodedHeight: Int) -> Bool {
@@ -190,7 +240,8 @@ enum NativeGalleryPreviewImageLoadPolicy {
     if hasPreviewImage { return false }
     let label = item.formatLabel.uppercased()
     let filename = item.filename.uppercased()
-    return label == "JPG" ||
+    return !item.formatHints.isDisjoint(with: [.jpg, .heif]) ||
+      label == "JPG" ||
       label == "JPEG" ||
       label == "HEIF" ||
       filename.hasSuffix(".JPG") ||
@@ -217,7 +268,11 @@ enum NativePhotoPreviewImageSourcePolicy {
 enum NativePhotoPreviewInitialImagePolicy {
   static func initialImage(item: CameraVendorGalleryItem, cachedThumbnailImage: UIImage?) -> UIImage? {
     if let data = item.thumbnailData,
-       let image = CameraVendorGalleryThumbnailRenderer.decoded(from: data, objectOrientation: item.orientation) {
+       let image = CameraVendorGalleryThumbnailRenderer.decoded(
+        from: data,
+        objectOrientation: item.orientation,
+        diagnosticHandle: item.handle
+       ) {
       return image
     }
     return cachedThumbnailImage
@@ -337,6 +392,24 @@ enum NativeGalleryChromeCopy {
     if isTransferring { return "正在下载" }
     if isLoading { return "正在读取相机照片" }
     return nil
+  }
+}
+
+enum NativeGalleryEmptyStatePolicy {
+  static let title = "当前筛选没有照片"
+  static let message = "相机照片已经读取完成，请调整筛选条件。"
+  static let actionTitle = "显示全部"
+
+  static func shouldShow(
+    itemCount: Int,
+    isLoading: Bool,
+    errorMessage: String?,
+    filterState: NativeGalleryFilterState
+  ) -> Bool {
+    itemCount == 0 &&
+      !isLoading &&
+      errorMessage == nil &&
+      filterState.rule != .galleryDefault
   }
 }
 
@@ -702,6 +775,55 @@ struct NativeGalleryDaySection: Equatable {
   let items: [CameraVendorGalleryItem]
 }
 
+struct NativeGalleryRenderState: Equatable {
+  let presentation: CameraGalleryPresentation
+  let sections: [NativeGalleryDaySection]
+
+  init(presentation: CameraGalleryPresentation) {
+    self.presentation = presentation
+    sections = NativeGallerySectionPolicy.sections(from: presentation.items)
+  }
+
+  private init(
+    presentation: CameraGalleryPresentation,
+    sections: [NativeGalleryDaySection]
+  ) {
+    self.presentation = presentation
+    self.sections = sections
+  }
+
+  func replacingPresentation(
+    _ presentation: CameraGalleryPresentation
+  ) -> NativeGalleryRenderState? {
+    guard presentation != self.presentation else { return nil }
+    return NativeGalleryRenderState(presentation: presentation)
+  }
+
+  func applyingIncremental(
+    presentation: CameraGalleryPresentation,
+    delta: CameraGalleryIncrementalDelta
+  ) -> NativeGalleryRenderState {
+    guard !delta.requiresStructuralRefresh else {
+      return NativeGalleryRenderState(presentation: presentation)
+    }
+
+    let itemsByHandle = Dictionary(
+      uniqueKeysWithValues: presentation.items.map { ($0.handle, $0) }
+    )
+    let updatedSections = sections.map { section in
+      NativeGalleryDaySection(
+        day: section.day,
+        title: section.title,
+        items: section.items.compactMap { itemsByHandle[$0.handle] }
+      )
+    }
+    return NativeGalleryRenderState(
+      presentation: presentation,
+      sections: updatedSections
+    )
+  }
+}
+
 enum NativeGallerySectionPolicy {
   static func dateTitle(
     for day: Date?,
@@ -798,13 +920,49 @@ enum NativeGalleryThumbnailRequestWindowPolicy {
         nearbyIndexes.formUnion(localStart...localEnd)
       }
       let nearby = nearbyIndexes
-        .sorted()
+        .filter { !visibleIndexes.contains($0) }
+        .sorted { lhs, rhs in
+          let lhsIsBelow = lhs > maxIndex
+          let rhsIsBelow = rhs > maxIndex
+          if lhsIsBelow != rhsIsBelow { return lhsIsBelow }
+          return lhs < rhs
+        }
         .map { orderedHandles[$0] }
-        .filter { !visibleSet.contains($0) }
       return visibleOrdered + Array(nearby.prefix(contiguousWindowLimit - visibleOrdered.count))
     }
-    let nearby = orderedHandles[start...end].filter { !visibleSet.contains($0) }
-    return visibleOrdered + nearby
+    let below = maxIndex < end
+      ? Array(orderedHandles[(maxIndex + 1)...end]).filter { !visibleSet.contains($0) }
+      : []
+    let above = start < minIndex
+      ? Array(orderedHandles[start..<minIndex]).filter { !visibleSet.contains($0) }
+      : []
+    let gaps = Array(orderedHandles[minIndex...maxIndex]).filter { !visibleSet.contains($0) }
+    return visibleOrdered + gaps + below + above
+  }
+}
+
+struct NativeGalleryThumbnailViewportIdentity: Equatable {
+  let catalogIdentity: CameraGalleryCatalogIdentity
+  let orderedHandles: [Int]
+  let retryableFailedHandles: [Int]
+
+  init(
+    catalogIdentity: CameraGalleryCatalogIdentity,
+    orderedHandles: [Int],
+    retryableFailedHandles: [Int] = []
+  ) {
+    self.catalogIdentity = catalogIdentity
+    self.orderedHandles = orderedHandles
+    self.retryableFailedHandles = retryableFailedHandles
+  }
+}
+
+enum NativeGalleryThumbnailViewportSubmissionPolicy {
+  static func shouldSubmit(
+    previous: NativeGalleryThumbnailViewportIdentity?,
+    next: NativeGalleryThumbnailViewportIdentity
+  ) -> Bool {
+    previous != next
   }
 }
 
@@ -820,6 +978,16 @@ enum NativeGalleryThumbnailDecodeCachePolicy {
     cachedImage: UIImage?
   ) -> Bool {
     thumbnailData != nil && cachedImage != nil
+  }
+}
+
+struct NativeGalleryDecodedThumbnailCacheKey: Hashable, Sendable {
+  let sessionEpoch: UUID
+  let handle: Int
+  let orientation: Int?
+
+  var storageKey: NSString {
+    "\(sessionEpoch.uuidString):\(handle):\(orientation ?? -1)" as NSString
   }
 }
 
@@ -854,7 +1022,7 @@ enum NativeGalleryVisibleThumbnailPolicy {
   static func action(
     thumbnailData: Data?,
     cachedImage: UIImage?,
-    hasFailedThumbnailRequest: Bool
+    hasFailedThumbnailRequest _: Bool
   ) -> NativeGalleryVisibleThumbnailAction {
     if NativeGalleryThumbnailDecodeCachePolicy.shouldUseCachedImage(
       thumbnailData: thumbnailData,
@@ -865,7 +1033,7 @@ enum NativeGalleryVisibleThumbnailPolicy {
     if thumbnailData != nil {
       return .decodeCachedData
     }
-    return hasFailedThumbnailRequest ? .none : .fetchFromCamera
+    return .fetchFromCamera
   }
 }
 
@@ -930,9 +1098,17 @@ enum NativeGalleryThumbnailResultMergePolicy {
 }
 
 enum NativeGalleryThumbnailDecodePipeline {
-  static func decodedImage(from data: Data, objectOrientation: Int? = nil) async -> UIImage? {
+  static func decodedImage(
+    from data: Data,
+    objectOrientation: Int? = nil,
+    diagnosticHandle: Int? = nil
+  ) async -> UIImage? {
     await Task.detached(priority: .userInitiated) {
-      CameraVendorGalleryThumbnailRenderer.decoded(from: data, objectOrientation: objectOrientation)
+      CameraVendorGalleryThumbnailRenderer.decoded(
+        from: data,
+        objectOrientation: objectOrientation,
+        diagnosticHandle: diagnosticHandle
+      )
     }.value
   }
 }

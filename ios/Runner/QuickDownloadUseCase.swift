@@ -1,7 +1,7 @@
 import Foundation
 
 enum QuickDownloadResult: Equatable {
-  case started(matchedCount: Int, handles: [UInt32])
+  case started(matchedCount: Int, handles: [UInt32], items: [CameraVendorGalleryItem])
   case noMatch(ruleSummary: String)
   case failed(reason: String)
 }
@@ -14,7 +14,10 @@ final class QuickDownloadUseCase {
     self.runtime = runtime
   }
 
-  func execute(rule: CameraAutoDownloadRule) async -> QuickDownloadResult {
+  func execute(
+    rule: CameraAutoDownloadRule,
+    onProgress: @escaping @MainActor @Sendable (CameraCatalogQueryProgress) -> Void = { _ in }
+  ) async -> QuickDownloadResult {
     guard runtime.activeCameraIdentity != nil else {
       return .failed(reason: "自动下载失败：连接异常")
     }
@@ -22,10 +25,12 @@ final class QuickDownloadUseCase {
     do {
       let resolution = try await runtime.resolveCatalog(
         rule: rule.filter,
-        owner: .quickDownload(UUID())
+        owner: .quickDownload(UUID()),
+        onProgress: onProgress
       )
       try Task.checkCancellation()
-      let handles = resolution.snapshot.items.map { UInt32($0.handle) }
+      let items = resolution.snapshot.items
+      let handles = items.map { UInt32($0.handle) }
 
       CameraVendorFileLogger.log(
         "[QUICK_DOWNLOAD] rule=\(rule.summaryText) matched=\(handles.count)"
@@ -53,7 +58,7 @@ final class QuickDownloadUseCase {
         )
         return .failed(reason: "自动下载失败：已有下载任务正在执行")
       }
-      return .started(matchedCount: handles.count, handles: handles)
+      return .started(matchedCount: handles.count, handles: handles, items: items)
     } catch is CancellationError {
       return .failed(reason: "自动下载已取消")
     } catch {

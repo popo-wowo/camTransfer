@@ -1,22 +1,36 @@
 import Foundation
 
 struct CameraCatalogResolution: Equatable, @unchecked Sendable {
+  let membershipSnapshot: CameraGalleryCatalogSnapshot
   let snapshot: CameraGalleryCatalogSnapshot
   let authoritativeObjectInfos: [Int: CameraGalleryObjectInfoResult]
 }
 
-enum CameraCatalogResolutionFailure: Error, Equatable, Sendable {
-  case incompleteCatalog
-  case incompleteObjectInfo(handle: Int)
-  case unsupportedFormatCode(handle: Int, formatCode: UInt16)
+enum CameraCatalogQueryProgress: Equatable, Sendable {
+  case queryingCatalog
 }
 
 actor CameraCatalogQueryEngine {
+  private enum MembershipCacheKey: Hashable {
+    case all
+    case selected(Set<CameraMediaFormat>)
+
+    init(_ selection: CameraMediaFormatSelection) {
+      switch selection {
+      case .all:
+        self = .all
+      case .selected(let formats):
+        self = .selected(formats)
+      }
+    }
+  }
+
   nonisolated let sessionEpoch: UUID
 
   private let source: CameraCatalogQuerySource
   private let accessGate: CameraCatalogAccessGate
   private var isInvalidated = false
+  private var membershipItemsByCacheKey: [MembershipCacheKey: [CameraGalleryCatalogItem]] = [:]
 
   init(
     source: CameraCatalogQuerySource,
@@ -30,17 +44,40 @@ actor CameraCatalogQueryEngine {
 
   func invalidate() {
     isInvalidated = true
+    membershipItemsByCacheKey.removeAll(keepingCapacity: false)
+  }
+
+  func clearMembershipCache() {
+    membershipItemsByCacheKey.removeAll(keepingCapacity: false)
   }
 
   func resolve(
     rule: CameraMediaFilterRule,
     owner: CameraCatalogAccessOwner,
-    downloadedHandles: Set<Int>
+    downloadedHandles: Set<Int>,
+    onProgress: (@MainActor @Sendable (CameraCatalogQueryProgress) -> Void)? = nil
   ) async throws -> CameraCatalogResolution {
     try checkActive()
-    let lease = await accessGate.acquire(owner: owner)
+    let cacheKey = MembershipCacheKey(rule.formats)
+    if let membershipItems = membershipItemsByCacheKey[cacheKey] {
+      return makeResolution(
+        membershipItems: membershipItems,
+        rule: rule,
+        downloadedHandles: downloadedHandles
+      )
+    }
+    let lease = try await accessGate.acquire(owner: owner)
     do {
       try checkActive()
+      if let membershipItems = membershipItemsByCacheKey[cacheKey] {
+        await lease.release()
+        return makeResolution(
+          membershipItems: membershipItems,
+          rule: rule,
+          downloadedHandles: downloadedHandles
+        )
+      }
+      await onProgress?(.queryingCatalog)
       let resolution: CameraCatalogResolution
       switch CameraFilterEngine.plan(for: rule.formats) {
       case .allCatalog:
@@ -54,14 +91,15 @@ actor CameraCatalogQueryEngine {
           rule: rule,
           downloadedHandles: downloadedHandles
         )
-      case .objectInfoFallback(let requestedFormats):
-        resolution = try await resolveObjectInfoFallback(
+      case .subtractBaseline(let requestedFormats):
+        resolution = try await resolveSubtractBaseline(
           requestedFormats: requestedFormats,
           rule: rule,
           downloadedHandles: downloadedHandles
         )
       }
       try checkActive()
+      membershipItemsByCacheKey[cacheKey] = resolution.membershipSnapshot.items
       await lease.release()
       return resolution
     } catch {
@@ -76,14 +114,10 @@ actor CameraCatalogQueryEngine {
   ) async throws -> CameraCatalogResolution {
     let snapshot = try await source.loadExpandedCatalog()
     try checkActive()
-    let items = project(
-      snapshot.items,
+    return makeResolution(
+      membershipItems: snapshot.items,
       rule: rule,
       downloadedHandles: downloadedHandles
-    )
-    return CameraCatalogResolution(
-      snapshot: makeSnapshot(items: items),
-      authoritativeObjectInfos: [:]
     )
   }
 
@@ -101,96 +135,86 @@ actor CameraCatalogQueryEngine {
         orderedItems.append(item)
       }
     }
-    let items = project(
-      orderedItems,
+    return makeResolution(
+      membershipItems: globallyNewestFirst(orderedItems),
       rule: rule,
       downloadedHandles: downloadedHandles
     )
-    return CameraCatalogResolution(
-      snapshot: makeSnapshot(items: items),
-      authoritativeObjectInfos: [:]
-    )
   }
 
-  private func resolveObjectInfoFallback(
+  private func resolveSubtractBaseline(
     requestedFormats: Set<CameraMediaFormat>,
     rule: CameraMediaFilterRule,
     downloadedHandles: Set<Int>
   ) async throws -> CameraCatalogResolution {
-    let snapshot = try await source.loadExpandedCatalog()
-    try checkActive()
-    guard Set(snapshot.orderedHandles.map(Int.init)) == Set(snapshot.items.map(\.handle)),
-          Set(snapshot.orderedHandles).count == snapshot.orderedHandles.count else {
-      throw CameraCatalogResolutionFailure.incompleteCatalog
-    }
+    // For HEIF (and video), the camera supports a fast PTP set-difference query:
+    // (D604=format result) minus (ALL baseline) = format-only handles.
+    // This avoids per-handle ObjectInfo and completes in one PTP round-trip.
+    var orderedItems: [CameraGalleryCatalogItem] = []
+    var seenHandles: Set<Int> = []
 
-    let dateOnlyRule = CameraMediaFilterRule(
-      formats: .all,
-      date: rule.date,
-      downloadScope: .all
-    )
-    let dateCandidates = project(snapshot.items, rule: dateOnlyRule, downloadedHandles: [])
-    var classifiedItems: [CameraGalleryCatalogItem] = []
-    var authoritativeObjectInfos: [Int: CameraGalleryObjectInfoResult] = [:]
-    for item in dateCandidates {
+    // Collect exact-format handles for JPG/RAW if also requested
+    for format in [CameraMediaFormat.jpg, .raw] where requestedFormats.contains(format) {
+      let snapshot = try await source.loadExactCatalog(for: format)
       try checkActive()
-      let info = try await source.loadObjectInfo(handle: item.handle)
-      try checkActive()
-      guard info.handle == item.handle else {
-        throw CameraCatalogResolutionFailure.incompleteObjectInfo(handle: item.handle)
-      }
-      switch try authoritativeFormat(handle: item.handle, formatCode: info.formatCode) {
-      case .still(let format) where requestedFormats.contains(format):
-        classifiedItems.append(item)
-        authoritativeObjectInfos[item.handle] = info
-      case .still, .video:
-        break
+      for item in snapshot.items where seenHandles.insert(item.handle).inserted {
+        orderedItems.append(item)
       }
     }
 
-    let downloadRule = CameraMediaFilterRule(
-      formats: .all,
-      date: .all,
-      downloadScope: rule.downloadScope
-    )
-    let items = project(
-      classifiedItems,
-      rule: downloadRule,
+    // Collect HEIF handles via subtractBaseline
+    if requestedFormats.contains(.heif) {
+      let snapshot = try await source.loadSubtractBaselineCatalog(for: .heif)
+      try checkActive()
+      for item in snapshot.items where seenHandles.insert(item.handle).inserted {
+        orderedItems.append(item)
+      }
+    }
+
+    return makeResolution(
+      membershipItems: globallyNewestFirst(orderedItems),
+      rule: rule,
       downloadedHandles: downloadedHandles
     )
-    let includedHandles = Set(items.map(\.handle))
-    return CameraCatalogResolution(
-      snapshot: makeSnapshot(items: items),
-      authoritativeObjectInfos: authoritativeObjectInfos.filter {
-        includedHandles.contains($0.key)
-      }
-    )
   }
 
-  private enum AuthoritativeFormat {
-    case still(CameraMediaFormat)
-    case video
-  }
-
-  private func authoritativeFormat(
-    handle: Int,
-    formatCode: UInt16
-  ) throws -> AuthoritativeFormat {
-    switch formatCode {
-    case 0x3801:
-      return .still(.jpg)
-    case 0x3812:
-      return .still(.heif)
-    case 0xB101, 0xB103:
-      return .still(.raw)
-    case 0x300B, 0x300D:
-      return .video
-    default:
-      throw CameraCatalogResolutionFailure.unsupportedFormatCode(
-        handle: handle,
-        formatCode: formatCode
-      )
+  private func globallyNewestFirst(
+    _ items: [CameraGalleryCatalogItem]
+  ) -> [CameraGalleryCatalogItem] {
+    let datedItems = items.compactMap { item -> (item: CameraGalleryCatalogItem, date: Date)? in
+      guard let date = CameraFilterEngine.parseCaptureDate(item.captureDate) else { return nil }
+      return (item, date)
     }
+    guard datedItems.count == items.count else {
+      return items.sorted { $0.handle > $1.handle }
+    }
+    return datedItems.sorted { lhs, rhs in
+      if lhs.date != rhs.date {
+        return lhs.date > rhs.date
+      }
+      return lhs.item.handle > rhs.item.handle
+    }.map(\.item)
+  }
+
+  private func makeResolution(
+    membershipItems: [CameraGalleryCatalogItem],
+    rule: CameraMediaFilterRule,
+    downloadedHandles: Set<Int>
+  ) -> CameraCatalogResolution {
+    let membershipSnapshot = makeSnapshot(items: membershipItems)
+    let projectedItems = project(
+      membershipItems,
+      rule: rule,
+      downloadedHandles: downloadedHandles
+    )
+    let snapshot = projectedItems.map(\.handle) == membershipItems.map(\.handle)
+      ? membershipSnapshot
+      : makeSnapshot(items: projectedItems)
+    return CameraCatalogResolution(
+      membershipSnapshot: membershipSnapshot,
+      snapshot: snapshot,
+      authoritativeObjectInfos: [:]
+    )
   }
 
   private func project(

@@ -10,10 +10,27 @@ struct CameraGalleryRepository {
     _ snapshot: CameraGalleryCatalogSnapshot,
     generation: CameraGalleryGenerationID
   ) {
+    let existingItemsByHandle = Dictionary(uniqueKeysWithValues: items.map { ($0.handle, $0) })
     self.generation = generation
     snapshotID = snapshot.snapshotID
-    items = snapshot.items
-    replaceSummaryPage(snapshot.items.map(CameraGalleryRepositoryAdapter.summary(from:)))
+    items = snapshot.items.map { incomingItem in
+      guard let existingItem = existingItemsByHandle[incomingItem.handle] else {
+        return incomingItem
+      }
+      let mergedItem = CameraGalleryRepositoryAdapter.mergedItem(
+        existingItem: incomingItem,
+        resolvedMetadata: CameraGalleryRepositoryAdapter.resolvedMetadata(from: existingItem)
+      )
+      guard let thumbnailData = incomingItem.thumbnailData ?? existingItem.thumbnailData else {
+        return mergedItem
+      }
+      return CameraGalleryRepositoryAdapter.item(
+        existingItem: mergedItem,
+        thumbnailData: thumbnailData,
+        resolvedMetadata: nil
+      )
+    }
+    replaceSummaryPage(items.map(CameraGalleryRepositoryAdapter.summary(from:)))
   }
 
   func contains(_ identity: CameraGalleryChildIdentity) -> Bool {
@@ -49,6 +66,7 @@ struct CameraGalleryRepository {
     return true
   }
 
+  @discardableResult
   mutating func applyDetails(
     _ result: CameraGalleryDetailsSourceResult,
     identity: CameraGalleryChildIdentity
@@ -99,11 +117,33 @@ struct CameraGalleryRepository {
     entries[index].thumbnail = thumbnail
   }
 
+  @discardableResult
+  mutating func applyThumbnailState(
+    _ state: CameraGalleryThumbnailState,
+    identity: CameraGalleryChildIdentity
+  ) -> Bool {
+    guard contains(identity),
+          let index = entries.firstIndex(where: { $0.summary.handle == identity.handle }) else {
+      return false
+    }
+    entries[index].thumbnail.state = state
+    if state == .failed {
+      entries[index].thumbnail.imageData = nil
+    }
+    return true
+  }
+
   mutating func applyDetailsUpdate(handle: Int, details: CameraGalleryEntryDetails) {
     guard let index = entries.firstIndex(where: { $0.summary.handle == handle }) else { return }
-    entries[index].details = details
+    let existing = entries[index].details
+    entries[index].details = CameraGalleryEntryDetails(
+      handle: handle,
+      orientation: existing.orientation.confirmedOr(details.orientation),
+      refinedFormat: existing.refinedFormat.confirmedOr(details.refinedFormat),
+      notes: existing.notes.isEmpty ? details.notes : existing.notes
+    )
     if case .unknown = entries[index].summary.format,
-       case let .confirmed(format) = details.refinedFormat {
+       case let .confirmed(format) = entries[index].details.refinedFormat {
       entries[index].summary.format = .confirmed(format)
     }
   }
@@ -115,4 +155,15 @@ struct CameraGalleryRepository {
     )
   }
 
+}
+
+private extension CameraGalleryConfirmedValue {
+  func confirmedOr(_ fallback: Self) -> Self {
+    switch self {
+    case .confirmed:
+      return self
+    case .unknown:
+      return fallback
+    }
+  }
 }
