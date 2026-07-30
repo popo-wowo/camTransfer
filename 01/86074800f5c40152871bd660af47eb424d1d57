@@ -1,0 +1,50 @@
+ios/Runner/CameraSessionRuntime.swift
+  5a3893da983ba365 837,842-845,850-854,856,859-861,894-896,917-919,927-931,1007-1012,1056-1058,1062-1064,1066-1069,1077,1082,1106-1107,1110-1111,1113-1114,1122,1167-1191,1195,1205,1211-1232,1264,1284-1286,1292-1295,1304,1310,1391-1393,1395-1403,1405-1412,1467,1473,1475-1477,1506,1537,1560-1561,1570-1571,1629,1638-1640
+ios/Runner/CameraCore/Gallery/CameraGalleryHDPreviewPipeline.swift
+  5a3893da983ba365 65,73,77-79
+ios/Runner/NativeGalleryViewController.swift
+  5a3893da983ba365 1954-1958
+ios/Runner/CameraCore/Gallery/CameraFilterEngine.swift
+  5a3893da983ba365 6,25-27
+ios/Runner/CameraCore/Gallery/CameraCatalogQueryEngine.swift
+  5a3893da983ba365 94-95,102,117-118,138-139,145,150-154,156-158,160-161,163-170,174-176,181-196,199-216
+ios/Runner/CameraVendorBluetoothService.swift
+  5a3893da983ba365 2467,2479-2483,2493,2495,2503,2508
+ios/Runner/CameraCore/Gallery/CameraGalleryThumbnailPipeline.swift
+  5a3893da983ba365 56-57,306-310,335,352-356,363-386
+ios/Runner/QuickDownloadUseCase.swift
+  5a3893da983ba365 4,17-20,28-29,32-33,61
+ios/Runner/CameraCore/Gallery/CameraGalleryRepositoryAdapters.swift
+  5a3893da983ba365 96-107
+ios/Runner/CameraCore/Gallery/CameraGalleryRepository.swift
+  5a3893da983ba365 69
+ios/Runner/CameraCore/Gallery/CameraGalleryCatalogRuntime.swift
+  5a3893da983ba365 169-170,177-191,206-233,286,290,301,305-306,308-310,334,340-345,351,353-356,360,371-372,439,441-449
+ios/Runner/CameraSessionTransferExecutor.swift
+  5a3893da983ba365 240-256,258,266-269,273,275,280,285,312-339
+ios/Runner/CameraCore/Gallery/CameraGallerySources.swift
+  5a3893da983ba365 87
+ios/Runner/NativeConnectViewController.swift
+  5a3893da983ba365 1986,1991,2018,2025-2034
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "0186074800f5c40152871bd660af47eb424d1d57",
+  "prompts": {
+    "5a3893da983ba365": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ecddea44-f2dc-42d7-9666-856f59f602ee",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 173,
+      "overriden_lines": 2,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/6a13021aee1daeb0a37d1adfadef36395d456084cb8f175507124c599dc1e735"
+    }
+  }
+}
