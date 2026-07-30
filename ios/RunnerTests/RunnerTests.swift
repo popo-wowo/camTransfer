@@ -8634,7 +8634,9 @@ final class RunnerTests: XCTestCase {
     XCTAssertTrue(source.contains("formatChips.allowsMultipleSelection = true"))
     XCTAssertTrue(source.contains("formatChips.exclusiveSelectionID = \"all\""))
     XCTAssertFalse(source.contains(".init(id: \"video\", title: \"视频\")"))
-    XCTAssertFalse(source.contains("sort: filterState.sort"))
+    XCTAssertTrue(source.contains("rule: filterState.rule"))
+    XCTAssertTrue(source.contains("sort: filterState.sortIntent"))
+    XCTAssertTrue(source.contains("NativeGalleryFilterState(sort: filterState.sort)"))
   }
 
   func testGalleryDatePickerOnlyOpensFromTheDateControl() throws {
