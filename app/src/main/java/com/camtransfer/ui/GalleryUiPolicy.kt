@@ -321,9 +321,11 @@ object GallerySortPolicy {
 
     private fun newestFirstComparator(): Comparator<CameraFile> =
         compareByDescending<CameraFile> { captureDateSortKey(it) }
+            .thenByDescending { it.info.handle }
 
     private fun oldestFirstComparator(): Comparator<CameraFile> =
         compareBy<CameraFile> { captureDateSortKey(it) }
+            .thenBy { it.info.handle }
 
     private fun captureDateSortKey(file: CameraFile): String {
         val captureDate = file.info.captureDate
@@ -365,13 +367,28 @@ object GalleryThumbnailRequestWindowPolicy {
             return orderedHandles.take(initialWindowSize)
         }
 
-        val start = (visibleIndexes.minOrNull()!! - normalizedColumnCount * PREFETCH_ROWS_BEFORE).coerceAtLeast(0)
-        val end = (visibleIndexes.maxOrNull()!! + normalizedColumnCount * PREFETCH_ROWS_AFTER)
+        val firstVisibleIndex = visibleIndexes.minOrNull()!!
+        val lastVisibleIndex = visibleIndexes.maxOrNull()!!
+        val beforeStart = (firstVisibleIndex - normalizedColumnCount * PREFETCH_ROWS_BEFORE).coerceAtLeast(0)
+        val afterEnd = (lastVisibleIndex + normalizedColumnCount * PREFETCH_ROWS_AFTER)
             .coerceAtMost(orderedHandles.lastIndex)
         val visibleSet = visibleHandles.toSet()
         val visibleOrdered = visibleHandles.filter { it in indexByHandle }.distinct()
-        val nearby = orderedHandles
-            .subList(start, end + 1)
+        val afterVisible = if (lastVisibleIndex < afterEnd) {
+            orderedHandles
+                .subList(lastVisibleIndex + 1, afterEnd + 1)
+                .filterNot { it in visibleSet }
+        } else {
+            emptyList()
+        }
+        val beforeVisible = if (beforeStart < firstVisibleIndex) {
+            orderedHandles
+                .subList(beforeStart, firstVisibleIndex)
+                .filterNot { it in visibleSet }
+        } else {
+            emptyList()
+        }
+        val nearby = (afterVisible + beforeVisible)
             .filterNot { it in visibleSet }
         return visibleOrdered + nearby
     }
@@ -492,7 +509,21 @@ enum class GalleryTileDownloadBadge {
 
 object GalleryTileBadgePolicy {
     fun formatLabel(file: CameraFile): String? =
-        file.info.formatLabel.takeIf { file.info.format != PtpObjectFormat.UNDEFINED }
+        if (file.info.format != PtpObjectFormat.UNDEFINED) {
+            file.info.formatLabel
+        } else {
+            formatHintLabel(file)
+        }
+
+    private fun formatHintLabel(file: CameraFile): String? =
+        when {
+            CameraFileFormatHint.VIDEO in file.formatHints -> "Video"
+            CameraFileFormatHint.RAW in file.formatHints -> "RAW"
+            CameraFileFormatHint.HEIF in file.formatHints -> "HEIF"
+            CameraFileFormatHint.JPG in file.formatHints -> "JPG"
+            CameraFileFormatHint.EXTENDED_STILL_CANDIDATE in file.formatHints -> "IMG"
+            else -> null
+        }
 
     fun downloadBadge(state: TransferState?): GalleryTileDownloadBadge? =
         when (state) {

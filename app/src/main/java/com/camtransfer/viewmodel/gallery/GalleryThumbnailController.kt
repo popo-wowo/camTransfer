@@ -21,7 +21,6 @@ class GalleryThumbnailController(
     private val sessionActor: GallerySessionActor,
     private val filesController: GalleryFilesController,
     private val thumbnailStore: GalleryThumbnailStore,
-    private val metadataStore: GalleryMetadataStore,
 ) {
     private val thumbnailQueue = ThumbnailLoadQueue()
     private val thumbnailWorkers = mutableSetOf<Job>()
@@ -66,8 +65,7 @@ class GalleryThumbnailController(
     fun loadVisibleThumbnails(cameraSource: CameraFileSource, handles: List<Int>) {
         if (thumbnailLoadingPaused) return
         if (handles.isEmpty()) return
-        val visibleHandles = handles.toSet()
-        thumbnailQueue.retain(visibleHandles)
+        thumbnailQueue.retainInOrder(handles)
         handles.forEach { handle ->
             loadThumbnail(cameraSource, handle, isExplicitVisibleWindow = true)
         }
@@ -204,7 +202,6 @@ class GalleryThumbnailController(
             )
             Log.d(TAG, thumbnailSummary)
             DiagnosticLog.append(cameraSource.context, TAG, thumbnailSummary)
-            thumbnail.file?.let(metadataStore::put)
             thumbnailStore.put(handle, thumb)
             writeThumbnailToDisk(cameraSource, handle, thumb, file)
         } catch (e: Exception) {
@@ -358,6 +355,22 @@ internal class ThumbnailLoadQueue {
         val retainedHandles = handles.filter { it in retainedAllowedHandles }
         handles.clear()
         retainedHandles.forEach { handles.addLast(it) }
+        pendingHandles.retainAll(retainedAllowedHandles)
+        protectedHandles.retainAll(pendingHandles)
+    }
+
+    @Synchronized
+    fun retainInOrder(orderedAllowedHandles: List<Int>) {
+        if (orderedAllowedHandles.isEmpty()) return
+        val allowedHandles = orderedAllowedHandles.toSet()
+        val retainedAllowedHandles = allowedHandles + protectedHandles
+        val retainedVisibleHandles = orderedAllowedHandles
+            .distinct()
+            .filter { it in pendingHandles }
+        val retainedProtectedHandles = handles
+            .filter { it in protectedHandles && it !in allowedHandles }
+        handles.clear()
+        (retainedVisibleHandles + retainedProtectedHandles).forEach { handles.addLast(it) }
         pendingHandles.retainAll(retainedAllowedHandles)
         protectedHandles.retainAll(pendingHandles)
     }

@@ -400,6 +400,24 @@ class GalleryUiPolicyTest {
     }
 
     @Test
+    fun sortModesUseHandleTieBreakerWhenOnlyDayIsKnown() {
+        val dateOnlyPlaceholders = listOf(
+            file(11, PtpObjectFormat.UNDEFINED, "20260624"),
+            file(10, PtpObjectFormat.UNDEFINED, "20260624"),
+            file(12, PtpObjectFormat.UNDEFINED, "20260624"),
+        )
+
+        assertEquals(
+            listOf(12, 11, 10),
+            GallerySortPolicy.sortedFiles(dateOnlyPlaceholders, GallerySortMode.NewestFirst, emptyMap()).map { it.info.handle },
+        )
+        assertEquals(
+            listOf(10, 11, 12),
+            GallerySortPolicy.sortedFiles(dateOnlyPlaceholders, GallerySortMode.OldestFirst, emptyMap()).map { it.info.handle },
+        )
+    }
+
+    @Test
     fun oldestSortUsesFullCaptureTimeWhenAvailableAfterFormatFiltering() {
         val jpgFiles = listOf(
             file(1, PtpObjectFormat.JPEG, "20260624T081500"),
@@ -429,7 +447,7 @@ class GalleryUiPolicyTest {
         val allHandles = listOf(10, 9, 8, 7, 6, 5, 4, 3)
 
         assertEquals(
-            listOf(8, 7, 9, 6, 5),
+            listOf(8, 7, 6, 5, 9),
             GalleryThumbnailRequestWindowPolicy.handlesToRequest(
                 orderedHandles = allHandles,
                 visibleHandles = listOf(8, 7),
@@ -443,7 +461,7 @@ class GalleryUiPolicyTest {
         val allHandles = listOf(12, 11, 10, 9, 8, 7, 6, 5, 4, 3)
 
         assertEquals(
-            listOf(9, 8, 11, 10, 7, 6, 5, 4),
+            listOf(9, 8, 7, 6, 5, 4, 11, 10),
             GalleryThumbnailRequestWindowPolicy.handlesToRequest(
                 orderedHandles = allHandles,
                 visibleHandles = listOf(9, 8),
@@ -717,6 +735,20 @@ class GalleryUiPolicyTest {
         assertEquals(
             null,
             GalleryTileBadgePolicy.formatLabel(file(3, PtpObjectFormat.UNDEFINED, "20260529")),
+        )
+        assertEquals(
+            "JPG",
+            GalleryTileBadgePolicy.formatLabel(
+                file(4, PtpObjectFormat.UNDEFINED, "20260529").copy(formatHints = setOf(CameraFileFormatHint.JPG)),
+            ),
+        )
+        assertEquals(
+            "IMG",
+            GalleryTileBadgePolicy.formatLabel(
+                file(5, PtpObjectFormat.UNDEFINED, "20260529").copy(
+                    formatHints = setOf(CameraFileFormatHint.EXTENDED_STILL_CANDIDATE),
+                ),
+            ),
         )
         assertEquals(GalleryTileDownloadBadge.DownloadedIcon, GalleryTileBadgePolicy.downloadBadge(TransferState.DONE))
         assertEquals(GalleryTileDownloadBadge.Progress, GalleryTileBadgePolicy.downloadBadge(TransferState.DOWNLOADING))

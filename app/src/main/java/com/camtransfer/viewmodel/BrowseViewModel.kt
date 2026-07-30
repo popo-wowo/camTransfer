@@ -46,7 +46,6 @@ class BrowseViewModel : ViewModel() {
         sessionActor = sessionActor,
         filesController = filesController,
         thumbnailStore = thumbnailStore,
-        metadataStore = metadataStore,
     )
     private val previewController = GalleryPreviewController(
         scope = viewModelScope,

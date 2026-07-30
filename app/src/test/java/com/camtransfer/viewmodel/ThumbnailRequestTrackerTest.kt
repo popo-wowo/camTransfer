@@ -66,6 +66,20 @@ class ThumbnailRequestTrackerTest {
     }
 
     @Test
+    fun reordersPendingHandlesToMatchVisibleWindowOrder() {
+        val queue = ThumbnailLoadQueue()
+
+        queue.offer(42)
+        queue.offer(43)
+        queue.offer(44)
+        queue.retainInOrder(listOf(44, 43))
+
+        assertEquals(2, queue.trackedCount)
+        assertTrue(queue.poll() == 44)
+        assertTrue(queue.poll() == 43)
+    }
+
+    @Test
     fun keepsProtectedPreviewHandlesWhenVisibleWindowChanges() {
         val queue = ThumbnailLoadQueue()
 
@@ -176,6 +190,21 @@ class ThumbnailRequestTrackerTest {
         assertTrue(diskWriteBlock.contains("writeBytes(thumbnail)"))
         assertTrue(trimBlock.contains("scope.launch(Dispatchers.IO)"))
         assertTrue(trimBlock.contains("AppCacheUsagePolicy.trimToLimit"))
+    }
+
+    @Test
+    fun thumbnailLoadDoesNotPublishMetadataThatCanResortTheGallery() {
+        val source = listOf(
+            File("src/main/java/com/camtransfer/viewmodel/gallery/GalleryThumbnailController.kt"),
+            File("app/src/main/java/com/camtransfer/viewmodel/gallery/GalleryThumbnailController.kt"),
+        ).first { it.exists() }.readText()
+        val loadBlock = source.substring(
+            source.indexOf("private suspend fun loadThumbnailNow"),
+            source.indexOf("private fun readThumbnailFromDisk"),
+        )
+
+        assertFalse(loadBlock.contains("metadataStore::put"))
+        assertFalse(loadBlock.contains("metadataStore.put"))
     }
 
     @Test
