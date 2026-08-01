@@ -1,0 +1,145 @@
+ios/Runner/NativeGalleryViewController.swift
+  7ba42731cc1e7686 1944-1951,3512-3514,3602-3639,3723-3730
+ios/Runner/NativeGalleryPolicies.swift
+  7ba42731cc1e7686 1610
+ios/Runner/CameraCore/Gallery/CameraGalleryHDPreviewPipeline.swift
+  7ba42731cc1e7686 20,38-39,46,318-321,323-327,329-346
+  ba42980eb98d878a 30,68,90,114,198,220,322
+ios/Runner/CameraSessionRuntime.swift
+  7ba42731cc1e7686 831-834,1324-1334,1481-1483,1654-1655,1865-1867,1869,1872
+ios/Runner/CameraCore/Gallery/CameraGalleryThumbnailPipeline.swift
+  7ba42731cc1e7686 15,37-38,43,385-387,391-393,395-411
+  ba42980eb98d878a 390
+ios/Runner.xcodeproj/project.pbxproj
+  7ba42731cc1e7686 64,200,238,621
+ios/Runner/CameraCommandLane.swift
+  7ba42731cc1e7686 105
+  724fb9663e20225e 12-15,102,104,106-108,279,304,309,321-322,421-438
+ios/Runner/CameraCore/Gallery/CameraGalleryRepository.swift
+  724fb9663e20225e 8-9,35,42,50,86,91,116,120,130,141,162-173
+ios/Runner/CameraVendorPtpSession.swift
+  c94128bdd3189810 422-430,3453-3454,3841-3842,3852,3854,3860-3863,3877-3880,3887-3889
+  7ba42731cc1e7686 614-617,2949-2952,3064-3067,3147-3150
+ios/Runner/CameraCore/Gallery/CameraGalleryCatalogRuntime.swift
+  ba42980eb98d878a 401-408,417
+  7ba42731cc1e7686 25,76,79-87
+ios/Runner/CameraTransportFailureDisposition.swift
+  ba42980eb98d878a 1,22-30,36-42,47,49-52,55-61,63-70,72-101,104-112,114-115,117-121,124-130,132-192
+  7ba42731cc1e7686 2-21,31-35,43-46,48,53-54,62,71,102-103,113,116,122-123,131,193-194
+ios/Runner/CameraVendorWifiPolicy.swift
+  7ba42731cc1e7686 218-225
+ios/Runner/CameraCore/Gallery/CameraGallerySession.swift
+  7ba42731cc1e7686 70-77
+ios/Runner/CameraVendorBluetoothService.swift
+  7ba42731cc1e7686 2028
+ios/RunnerTests/RunnerTests.swift
+  1434c28ea210e74b 660-662,677,1538,1546-1547,1566-1569,1762,3418,3522-3525,3557-3561,3602,3610-3611,3711,3719-3720,3758,3776,3805,3832-3837,3842,3847-3850,3852,3859,3861-3864,3866,3879,3969,4124-4127,4927,4984,4986,5295,5601,5618,5673,5745,5756,5994,6039-6040,6048-6049,6056,6061,6064-6070,6081,6084,6086,6089,6182,6336-6338,6349,6623,6625,7733,7769,7771-7772,7778,7791,8582-8594,8727-8728,9027,9030-9031,9090,10411-10412,10420-10421,10570,10584,13045,13049-13050,13621,13623,13662,14441,15473,15593,15600,15620,15622-15624,15628-15629,15631-15632,15805,15883,15886,15890,16003,16096,17038,17172,18056,18064
+  7ba42731cc1e7686 3815,3868,19015,19017-19019,19568,19592,19594-19596,20410,20443-20445,21518,21549-21551,23197-23288,23416-23417,23447-23506,23619-23664,23675-23696,23837-23960
+  ba42980eb98d878a 22784,22852-22854,23289-23415,23418-23446,23507-23618,23665-23674,23697-23836
+  c94128bdd3189810 3155-3158,3160-3163,5640-5660,7147,7155-7156,7184,10427-10525,20051-20079,22284,22288,22328-22332,22351-22356
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "24fb9964300ea36b44d9ad959aac10d703fdfc36",
+  "prompts": {
+    "1434c28ea210e74b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fb6a9-80fd-7e43-b6fb-c9a8611e0dd0",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 193,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/0d59c60c15002e84e63239c0de76452bb28562becd1feb41b4f1bc6c20db3340"
+    },
+    "577686c23ad34af1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fb5ff-a943-73c0-8f10-63ae94c9dc81",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 634,
+      "overriden_lines": 1,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/681062d5d75bd7928e7400c732d0b549bccbd94085d95e2e4662d5ff1d6c24a0"
+    },
+    "724fb9663e20225e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5df54e3e-fbff-4b0d-ad39-4b54192447d3",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 2192,
+      "overriden_lines": 4,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/b18cbdedac768faa940171619dfdd7873237dbf236d3d2b06a673de085bab909"
+    },
+    "7ba42731cc1e7686": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3e2fb603-f5ff-4191-8e4d-66104dfdd939",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 784,
+      "total_deletions": 154,
+      "accepted_lines": 676,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/2a824bc48138244f6dd706a9ed3ab6eff9f89fd8d6152ec47effb18fd6e228cc"
+    },
+    "ba42980eb98d878a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fbba1-7bf9-71d2-8eda-ee95fe611aca",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 640,
+      "total_deletions": 104,
+      "accepted_lines": 590,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/b767893883ba9c0c3779de7f4fb099270627b08bd33394d4ffc3de6f97bb9121"
+    },
+    "c94128bdd3189810": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fbbfb-dbec-7d40-b75c-9f42971d8659",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 202,
+      "total_deletions": 22,
+      "accepted_lines": 202,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/168909f61d96abcb5e75f1dae4230266609ef2a2dd04fe24fbdae5c4c926fd40"
+    },
+    "e00067c5ee0a7345": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fabc8-287c-7792-931e-5af408610dd6",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 603,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/5557e01894020a5724edfa4f1f273d3af573194c6af9a37bb7326d91fdf60650"
+    }
+  }
+}
