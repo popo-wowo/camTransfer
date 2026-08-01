@@ -9,6 +9,10 @@ enum CameraCommandPriority: Int, Sendable {
   case keepAlive = 4
 }
 
+enum CameraCommandLaneError: Error {
+  case waitTimeout
+}
+
 final class CameraCommandLease: @unchecked Sendable {
   private let lock = NSLock()
   private var releaseHandler: (((() -> Void)?) -> Void)?
@@ -95,8 +99,13 @@ final class CameraCommandLane {
   private var idleWaiters: [IdleWaiter] = []
   private var nextIdleWaiterID = 0
   private let onWaiterQueued: ((CameraCommandPriority) -> Void)?
+  private let waitTimeout: TimeInterval?
 
-  init(onWaiterQueued: ((CameraCommandPriority) -> Void)? = nil) {
+  init(
+    waitTimeout: TimeInterval? = nil,
+    onWaiterQueued: ((CameraCommandPriority) -> Void)? = nil
+  ) {
+    self.waitTimeout = waitTimeout
     self.onWaiterQueued = onWaiterQueued
   }
 
@@ -267,6 +276,7 @@ final class CameraCommandLane {
         var shouldAcquireImmediately = false
         var shouldResumeCancelled = false
         var queuedPriority: CameraCommandPriority?
+        var registeredWaiterID: Int?
         lock.lock()
         if Task.isCancelled {
           shouldResumeCancelled = true
@@ -291,10 +301,12 @@ final class CameraCommandLane {
           )
           nextSequence += 1
           queuedPriority = priority
+          registeredWaiterID = waiterID
           if token.register(waiterID: waiterID) {
             waiters.removeAll { $0.id == waiterID }
             shouldResumeCancelled = true
             queuedPriority = nil
+            registeredWaiterID = nil
           }
         }
         lock.unlock()
@@ -306,6 +318,8 @@ final class CameraCommandLane {
           continuation.resume()
         } else if shouldResumeCancelled {
           continuation.resume(throwing: CancellationError())
+        } else if let waiterID = registeredWaiterID, let timeout = waitTimeout {
+          scheduleWaitTimeout(waiterID: waiterID, timeout: timeout)
         }
       }
     } onCancel: { [weak self] in
@@ -402,6 +416,24 @@ final class CameraCommandLane {
     }
     lock.unlock()
     continuation?.resume(throwing: CancellationError())
+  }
+
+  private func scheduleWaitTimeout(waiterID: Int, timeout: TimeInterval) {
+    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) { [weak self] in
+      self?.expireWaiter(id: waiterID)
+    }
+  }
+
+  private func expireWaiter(id: Int) {
+    let continuation: CheckedContinuation<Void, Error>?
+    lock.lock()
+    if let index = waiters.firstIndex(where: { $0.id == id }) {
+      continuation = waiters.remove(at: index).continuation
+    } else {
+      continuation = nil
+    }
+    lock.unlock()
+    continuation?.resume(throwing: CameraCommandLaneError.waitTimeout)
   }
 
   private func cancelIdleWaiter(id: Int) {

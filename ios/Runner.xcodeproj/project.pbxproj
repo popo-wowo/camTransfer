@@ -61,6 +61,7 @@
 		A1B2C3D4E5F60006A0000001 /* CameraVendorTransferPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60006A0000000 /* CameraVendorTransferPolicy.swift */; };
 		A1B2C3D4E5F60007A0000001 /* CameraVendorSecureHandshake.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60007A0000000 /* CameraVendorSecureHandshake.swift */; };
 		A1B2C3D4E5F60008A0000001 /* CameraVendorCatalogPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60008A0000000 /* CameraVendorCatalogPolicy.swift */; };
+		A1B2C3D4E5F60020A0000001 /* CameraTransportFailureDisposition.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60020A0000000 /* CameraTransportFailureDisposition.swift */; };
 		A1B2C3D4E5F60009A0000001 /* CameraVendorWifiPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60009A0000000 /* CameraVendorWifiPolicy.swift */; };
 		A1B2C3D4E5F6000AA0000001 /* CameraVendorOriginalTransferWorker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000AA0000000 /* CameraVendorOriginalTransferWorker.swift */; };
 		A1B2C3D4E5F6000BA0000001 /* CameraVendorRealtimeGalleryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000BA0000000 /* CameraVendorRealtimeGalleryService.swift */; };
@@ -196,6 +197,7 @@
 		A1B2C3D4E5F60006A0000000 /* CameraVendorTransferPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorTransferPolicy.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60007A0000000 /* CameraVendorSecureHandshake.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorSecureHandshake.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60008A0000000 /* CameraVendorCatalogPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorCatalogPolicy.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60020A0000000 /* CameraTransportFailureDisposition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraTransportFailureDisposition.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60009A0000000 /* CameraVendorWifiPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorWifiPolicy.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F60015A0000000 /* CameraVendorPairingProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorPairingProbe.swift; sourceTree = "<group>"; };
 		A1B2C3D4E5F6000AA0000000 /* CameraVendorOriginalTransferWorker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorOriginalTransferWorker.swift; sourceTree = "<group>"; };
@@ -233,6 +235,7 @@
 				A1B2C3D4E5F60006A0000000 /* CameraVendorTransferPolicy.swift */,
 				A1B2C3D4E5F60007A0000000 /* CameraVendorSecureHandshake.swift */,
 				A1B2C3D4E5F60008A0000000 /* CameraVendorCatalogPolicy.swift */,
+				A1B2C3D4E5F60020A0000000 /* CameraTransportFailureDisposition.swift */,
 				A1B2C3D4E5F60009A0000000 /* CameraVendorWifiPolicy.swift */,
 				A1B2C3D4E5F60015A0000000 /* CameraVendorPairingProbe.swift */,
 				A1B2C3D4E5F6000AA0000000 /* CameraVendorOriginalTransferWorker.swift */,
@@ -615,6 +618,7 @@
 				A1B2C3D4E5F60006A0000001 /* CameraVendorTransferPolicy.swift in Sources */,
 				A1B2C3D4E5F60007A0000001 /* CameraVendorSecureHandshake.swift in Sources */,
 				A1B2C3D4E5F60008A0000001 /* CameraVendorCatalogPolicy.swift in Sources */,
+				A1B2C3D4E5F60020A0000001 /* CameraTransportFailureDisposition.swift in Sources */,
 				A1B2C3D4E5F60009A0000001 /* CameraVendorWifiPolicy.swift in Sources */,
 				A1B2C3D4E5F60015A0000001 /* CameraVendorPairingProbe.swift in Sources */,
 				A1B2C3D4E5F6000AA0000001 /* CameraVendorOriginalTransferWorker.swift in Sources */,

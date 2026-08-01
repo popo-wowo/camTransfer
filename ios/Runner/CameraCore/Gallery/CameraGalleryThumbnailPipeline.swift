@@ -12,6 +12,7 @@ actor CameraGalleryThumbnailPipeline {
   private let source: CameraGalleryThumbnailPipelineSource
   private let retryDelaysNanoseconds: [UInt64]
   private let publish: Publisher
+  private let reportTransportFailure: TransportFailureReporter?
   private var catalogIdentity: CameraGalleryCatalogIdentity?
   private var membership: Set<Int> = []
   private var orderedMembership: [Int] = []
@@ -33,11 +34,13 @@ actor CameraGalleryThumbnailPipeline {
   init(
     source: CameraGalleryThumbnailPipelineSource,
     retryDelaysNanoseconds: [UInt64] = [500_000_000, 2_000_000_000],
-    publish: @escaping Publisher
+    publish: @escaping Publisher,
+    reportTransportFailure: TransportFailureReporter? = nil
   ) {
     self.source = source
     self.retryDelaysNanoseconds = retryDelaysNanoseconds
     self.publish = publish
+    self.reportTransportFailure = reportTransportFailure
   }
 
   func install(
@@ -379,17 +382,33 @@ actor CameraGalleryThumbnailPipeline {
       } catch is CancellationError {
         return false
       } catch {
-        let failureCount = thumbnailRetryCounts[cacheKey, default: 0] + 1
-        thumbnailRetryCounts[cacheKey] = failureCount
-        guard failureCount <= retryDelaysNanoseconds.count else {
+        let disposition = CameraTransportFailureDispositionPolicy.disposition(for: error)
+        switch disposition {
+        case .sessionTerminal:
+          failedThumbnailKeys.insert(cacheKey)
+          await publish(.thumbnailState(identity, .failed))
+          isInvalidated = true
+          await reportTransportFailure?(error)
+          return false
+        case .cancelled:
+          return false
+        case .retryableOperation:
+          let failureCount = thumbnailRetryCounts[cacheKey, default: 0] + 1
+          thumbnailRetryCounts[cacheKey] = failureCount
+          guard failureCount <= retryDelaysNanoseconds.count else {
+            failedThumbnailKeys.insert(cacheKey)
+            await publish(.thumbnailState(identity, .failed))
+            return true
+          }
+          do {
+            try await Task.sleep(nanoseconds: retryDelaysNanoseconds[failureCount - 1])
+          } catch {
+            return false
+          }
+        case .contentFailure:
           failedThumbnailKeys.insert(cacheKey)
           await publish(.thumbnailState(identity, .failed))
           return true
-        }
-        do {
-          try await Task.sleep(nanoseconds: retryDelaysNanoseconds[failureCount - 1])
-        } catch {
-          return false
         }
       }
     }

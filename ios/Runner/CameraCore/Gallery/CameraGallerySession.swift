@@ -67,6 +67,14 @@ final class CameraGallerySession {
       fetchPreview: fetchPreview,
       publish: { publication in
         callbacks.owner?.publishPreview(publication)
+      },
+      reportTransportFailure: { error in
+        let failure = CameraGalleryCatalogFailure(
+          message: error.localizedDescription,
+          restorationMessage: nil,
+          provesTransportLost: true
+        )
+        callbacks.owner?.onTransportFailure?(failure)
       }
     )
 

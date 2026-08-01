@@ -1941,12 +1941,14 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
         animated: false
       )
       collectionView.layoutIfNeeded()
-      hdCollectionView.layoutIfNeeded()
-      hdCollectionView.setContentOffset(
-        CGPoint(x: 0, y: -hdCollectionView.adjustedContentInset.top),
-        animated: false
-      )
-      hdCollectionView.layoutIfNeeded()
+      if browseMode == .highDefinition {
+        hdCollectionView.layoutIfNeeded()
+        hdCollectionView.setContentOffset(
+          CGPoint(x: 0, y: -hdCollectionView.adjustedContentInset.top),
+          animated: false
+        )
+        hdCollectionView.layoutIfNeeded()
+      }
     }
     refreshGalleryEmptyState()
 
@@ -3507,7 +3509,9 @@ extension NativeDownloadListViewController: UICollectionViewDataSource, UICollec
     ) as? NativeGalleryGridCell else {
       return UICollectionViewCell()
     }
-    let item = itemsProvider()[indexPath.item]
+    let items = itemsProvider()
+    guard items.indices.contains(indexPath.item) else { return cell }
+    let item = items[indexPath.item]
     configure(cell, with: item)
     cell.onClearCacheTapped = { [weak self, weak collectionView, weak cell] in
       guard let self,
@@ -3595,16 +3599,44 @@ extension NativeGalleryViewController: UICollectionViewDataSource {
     viewForSupplementaryElementOfKind kind: String,
     at indexPath: IndexPath
   ) -> UICollectionReusableView {
-    guard kind == UICollectionView.elementKindSectionHeader,
-          let header = collectionView.dequeueReusableSupplementaryView(
-            ofKind: kind,
-            withReuseIdentifier: NativeGallerySectionHeaderView.reuseIdentifier,
-            for: indexPath
-          ) as? NativeGallerySectionHeaderView,
-          gallerySections.indices.contains(indexPath.section) else {
-      return UICollectionReusableView()
+    guard kind == UICollectionView.elementKindSectionHeader else {
+      return collectionView.dequeueReusableSupplementaryView(
+        ofKind: kind,
+        withReuseIdentifier: NativeGallerySectionHeaderView.reuseIdentifier,
+        for: indexPath
+      )
     }
-    configureGalleryHeader(header, at: indexPath)
+    let header = collectionView.dequeueReusableSupplementaryView(
+      ofKind: kind,
+      withReuseIdentifier: NativeGallerySectionHeaderView.reuseIdentifier,
+      for: indexPath
+    ) as! NativeGallerySectionHeaderView
+
+    if collectionView === hdCollectionView {
+      guard let snapshot = hdPresentationState?.snapshot,
+            snapshot.sections.indices.contains(indexPath.section) else {
+        header.configure(dateTitle: "", countTitle: "", selectionTitle: "", sortTitle: "")
+        return header
+      }
+      let hdSection = snapshot.sections[indexPath.section]
+      let isCollapsed = collapsedSections.contains(indexPath.section)
+      header.configure(
+        dateTitle: NativeGallerySectionPolicy.dateTitle(for: hdSection.day),
+        countTitle: "\(hdSection.items.count) 张",
+        selectionTitle: "",
+        sortTitle: isCollapsed ? "▲" : "▼"
+      )
+      header.onSelectionTapped = nil
+      header.onSortTapped = { [weak self] in
+        self?.toggleSectionCollapse(at: indexPath.section)
+      }
+    } else {
+      guard gallerySections.indices.contains(indexPath.section) else {
+        header.configure(dateTitle: "", countTitle: "", selectionTitle: "", sortTitle: "")
+        return header
+      }
+      configureGalleryHeader(header, at: indexPath)
+    }
     return header
   }
 }
@@ -3688,6 +3720,14 @@ extension NativeGalleryViewController: UICollectionViewDelegateFlowLayout {
     layout collectionViewLayout: UICollectionViewLayout,
     referenceSizeForHeaderInSection section: Int
   ) -> CGSize {
+    if collectionView === hdCollectionView {
+      guard let snapshot = hdPresentationState?.snapshot,
+            snapshot.sections.indices.contains(section) else { return .zero }
+      return CGSize(
+        width: collectionView.bounds.width,
+        height: NativeGalleryAndroidParityGridPolicy.sectionHeaderHeight
+      )
+    }
     guard gallerySections.indices.contains(section) else { return .zero }
     return CGSize(
       width: collectionView.bounds.width,

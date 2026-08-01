@@ -17,6 +17,7 @@ final class CameraGalleryHDPreviewPipeline {
   private let resumeThumbnailPipeline: ResumeThumbnailPipeline
   private let fetchPreview: FetchPreview
   private let publish: Publisher
+  private let reportTransportFailure: TransportFailureReporter?
   private var catalogIdentity: CameraGalleryCatalogIdentity?
   private var lifecycleTask: Task<Void, Never>?
   private var loadTask: Task<Void, Never>?
@@ -26,6 +27,7 @@ final class CameraGalleryHDPreviewPipeline {
   private var lastLoggedPriorityHandles: [Int] = []
   private var suspensionCount = 0
   private var isActive = false
+  private var hasTerminalTransportFailure = false
   private(set) var state: NativeGalleryHDPreviewState?
 
   init(
@@ -33,13 +35,15 @@ final class CameraGalleryHDPreviewPipeline {
     suspendThumbnailPipeline: @escaping SuspendThumbnailPipeline,
     resumeThumbnailPipeline: @escaping ResumeThumbnailPipeline,
     fetchPreview: @escaping FetchPreview,
-    publish: @escaping Publisher
+    publish: @escaping Publisher,
+    reportTransportFailure: TransportFailureReporter? = nil
   ) {
     self.cache = cache
     self.suspendThumbnailPipeline = suspendThumbnailPipeline
     self.resumeThumbnailPipeline = resumeThumbnailPipeline
     self.fetchPreview = fetchPreview
     self.publish = publish
+    self.reportTransportFailure = reportTransportFailure
   }
 
   func activate(
@@ -61,6 +65,7 @@ final class CameraGalleryHDPreviewPipeline {
     snapshot: NativeGalleryHDPreviewSnapshot,
     visibleHandles: [Int]
   ) async {
+    guard !hasTerminalTransportFailure else { return }
     await cancelLoading()
     let wasActive = isActive
     let previousSessionEpoch = self.catalogIdentity?.sessionEpoch
@@ -82,6 +87,7 @@ final class CameraGalleryHDPreviewPipeline {
   }
 
   func updateVisibleHandles(_ handles: [Int]) {
+    guard !hasTerminalTransportFailure else { return }
     guard handles != visibleHandles else { return }
     visibleHandles = handles
     startLoadingIfNeeded()
@@ -105,6 +111,7 @@ final class CameraGalleryHDPreviewPipeline {
   }
 
   func retry(handle: Int) {
+    guard !hasTerminalTransportFailure else { return }
     guard let snapshot = state?.snapshot,
           snapshot.displayHandles.contains(handle),
           let identity = mediaIdentity(for: handle) else { return }
@@ -188,6 +195,7 @@ final class CameraGalleryHDPreviewPipeline {
       guard let self else { return }
       await self.performDeactivate(resumeThumbnailPipeline: false)
       self.cache.reset()
+      self.hasTerminalTransportFailure = false
     }
   }
 
@@ -209,6 +217,7 @@ final class CameraGalleryHDPreviewPipeline {
   private func startLoadingIfNeeded() {
     guard loadTask == nil,
           !isJoiningLoadTask,
+          !hasTerminalTransportFailure,
           isActive,
           suspensionCount == 0,
           state != nil else { return }
@@ -306,17 +315,35 @@ final class CameraGalleryHDPreviewPipeline {
           apply(.cancelled(handle: handle), snapshot: snapshot, catalogIdentity: catalogIdentity)
           return
         }
-        apply(.failed(handle: handle), snapshot: snapshot, catalogIdentity: catalogIdentity)
-        CameraVendorFileLogger.log(
-          NativeGalleryHDPreviewFailureLogPolicy.message(
-            handle: handle,
-            errorDescription: error.localizedDescription
+
+        let disposition = CameraTransportFailureDispositionPolicy.disposition(for: error)
+        switch disposition {
+        case .sessionTerminal:
+          hasTerminalTransportFailure = true
+          apply(.failed(handle: handle), snapshot: snapshot, catalogIdentity: catalogIdentity)
+          CameraVendorFileLogger.log(
+            "[OBS] HD_PREVIEW_TRANSPORT_LOST handle=0x\(String(format: "%08X", handle)) " +
+            "error=\(error.localizedDescription) " +
+            "elapsedMs=\(Int(Date().timeIntervalSince(requestStartedAt) * 1000))"
           )
-        )
-        CameraVendorFileLogger.log(
-          "[OBS] HD_PREVIEW_REQUEST_FAILED handle=0x\(String(format: "%08X", handle)) " +
-          "elapsedMs=\(Int(Date().timeIntervalSince(requestStartedAt) * 1000))"
-        )
+          reportTransportFailure?(error)
+          return
+        case .cancelled:
+          apply(.cancelled(handle: handle), snapshot: snapshot, catalogIdentity: catalogIdentity)
+          return
+        case .retryableOperation, .contentFailure:
+          apply(.failed(handle: handle), snapshot: snapshot, catalogIdentity: catalogIdentity)
+          CameraVendorFileLogger.log(
+            NativeGalleryHDPreviewFailureLogPolicy.message(
+              handle: handle,
+              errorDescription: error.localizedDescription
+            )
+          )
+          CameraVendorFileLogger.log(
+            "[OBS] HD_PREVIEW_REQUEST_FAILED handle=0x\(String(format: "%08X", handle)) " +
+            "elapsedMs=\(Int(Date().timeIntervalSince(requestStartedAt) * 1000))"
+          )
+        }
       }
     }
   }

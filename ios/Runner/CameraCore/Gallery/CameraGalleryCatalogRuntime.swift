@@ -22,6 +22,7 @@ actor CameraGalleryCatalogRuntime {
 
   private final class ThumbnailPublicationRelay: @unchecked Sendable {
     weak var runtime: CameraGalleryCatalogRuntime?
+    var transportEvidenceReporter: TransportEvidenceReporter?
 
     func publish(_ publication: CameraGalleryThumbnailPipeline.Publication) async {
       await runtime?.applyPipelinePublication(publication)
@@ -72,9 +73,18 @@ actor CameraGalleryCatalogRuntime {
     let publisher: CameraGalleryThumbnailPipeline.Publisher = { publication in
       await relay.publish(publication)
     }
+    relay.transportEvidenceReporter = reportTransportEvidence
     thumbnailPipeline = CameraGalleryThumbnailPipeline(
       source: source,
-      publish: publisher
+      publish: publisher,
+      reportTransportFailure: { error in
+        let failure = CameraGalleryCatalogFailure(
+          message: error.localizedDescription,
+          restorationMessage: nil,
+          provesTransportLost: true
+        )
+        relay.transportEvidenceReporter?(failure)
+      }
     )
     relay.runtime = self
   }
@@ -388,6 +398,14 @@ actor CameraGalleryCatalogRuntime {
       await publishCurrentPresentation()
       await reportTransportEvidence(failure.catalogFailure)
     } catch {
+      let disposition = CameraTransportFailureDispositionPolicy.disposition(
+        for: error,
+        context: .catalog
+      )
+      if disposition == .cancelled {
+        await finishTransactionAndStartPendingIfNeeded()
+        return
+      }
       guard !isShuttingDown,
             transaction.generation == currentPresentation.generation else {
         await finishTransactionAndStartPendingIfNeeded()
@@ -396,7 +414,7 @@ actor CameraGalleryCatalogRuntime {
       let failure = CameraGalleryCatalogFailure(
         message: error.localizedDescription,
         restorationMessage: nil,
-        provesTransportLost: false
+        provesTransportLost: disposition == .sessionTerminal
       )
       currentPresentation = CameraGalleryPresentation(
         state: .failed(generation: transaction.generation, failure: failure),
