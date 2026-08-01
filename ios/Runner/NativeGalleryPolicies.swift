@@ -1607,30 +1607,7 @@ enum NativeGalleryDownloadFailurePolicy {
   static let connectionLostQueueStopMessage = "相机连接已断开，请重新进入相册后重试"
 
   static func shouldStopQueueAfterFailure(_ error: Error) -> Bool {
-    let nsError = error as NSError
-    if nsError.domain == NSPOSIXErrorDomain {
-      return true
-    }
-    if nsError.domain == "CameraVendorPtpSocket", nsError.code == 9 {
-      return true
-    }
-    return errorChainMessages(error).contains { message in
-      message.range(of: "Not connected to camera", options: .caseInsensitive) != nil ||
-        message.range(of: "Socket is closed", options: .caseInsensitive) != nil ||
-        message.range(of: "Broken pipe", options: .caseInsensitive) != nil ||
-        message.range(of: "Connection reset", options: .caseInsensitive) != nil ||
-        message.range(of: "等待相机返回数据超时", options: .caseInsensitive) != nil
-    }
-  }
-
-  private static func errorChainMessages(_ error: Error) -> [String] {
-    var messages: [String] = []
-    var current: NSError? = error as NSError
-    while let nsError = current {
-      messages.append(nsError.localizedDescription)
-      current = nsError.userInfo[NSUnderlyingErrorKey] as? NSError
-    }
-    return messages
+    CameraTransportFailureDispositionPolicy.disposition(for: error, context: .download) == .sessionTerminal
   }
 }
 

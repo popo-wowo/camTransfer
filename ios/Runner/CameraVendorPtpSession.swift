@@ -419,7 +419,15 @@ final class CameraVendorPtpSession {
 
   func requestActiveDownloadCancellation(reason: String) {
     activeDownloadCancellation.request()
-    report("[OBS] PTP_ACTIVE_DOWNLOAD_SOFT_CANCEL_REQUESTED reason=\(reason)")
+    let commandInterrupted = commandSocket.interrupt(reason: reason)
+    let eventInterrupted = eventSocket.interrupt(reason: reason)
+    if commandInterrupted || eventInterrupted {
+      isConnected = false
+    }
+    report(
+      "[OBS] PTP_ACTIVE_DOWNLOAD_IO_INTERRUPT_REQUESTED reason=\(reason) " +
+      "command=\(commandInterrupted) event=\(eventInterrupted)"
+    )
   }
 
   private func throwIfActiveDownloadCancelled(since generation: UInt64) throws {
@@ -603,6 +611,10 @@ final class CameraVendorPtpSession {
       data: modeData
     )
     report("图库浏览模式已设置")
+
+    // Reset D226/D227 from any previous abnormal exit (crash, user kill, etc.)
+    // so the camera doesn't remain in forced-compression transfer mode.
+    try resetCameraVendorCompressionMode()
   }
 
   private func confirmCameraVendorLegacyReferenceAppGalleryMode() throws {
@@ -2934,7 +2946,10 @@ final class CameraVendorPtpSession {
         report("[OBS] PTP_DOWNLOAD_SKIP_REAL_INFO_ONE reason=reference-app-fast-start")
       }
 
-      let freshInfo = try objectInfo(handle: handle)
+      let freshInfo = try objectInfo(
+        handle: handle,
+        readTimeout: CameraVendorPartialObjectRequestPolicy.fileDownloadReadTimeoutSeconds
+      )
       if CameraVendorOriginalDownloadPolicy.shouldReadCompressionCutOffAfterFreshFileInfo(
         formatLabel: freshInfo.formatLabel,
         cachedExpectedSize: cachedExpectedSize
@@ -3046,7 +3061,10 @@ final class CameraVendorPtpSession {
         sizeSource = "cached-object-info"
       } else {
         let freshInfoStartedAt = Date()
-        let freshInfo = try objectInfo(handle: handle)
+        let freshInfo = try objectInfo(
+          handle: handle,
+          readTimeout: CameraVendorPartialObjectRequestPolicy.fileDownloadReadTimeoutSeconds
+        )
         freshInfoMs = Int(Date().timeIntervalSince(freshInfoStartedAt) * 1000)
         info = freshInfo
         let sizeResolution = CameraVendorDownloadSizeSourcePolicy.resolution(
@@ -3126,7 +3144,10 @@ final class CameraVendorPtpSession {
         "handle=0x\(String(format: "%08X", handle)) mode=\(downloadMode) " +
         "prepared=\(didPrepareBatchMode)"
       )
-      let freshInfo = try objectInfo(handle: handle)
+      let freshInfo = try objectInfo(
+        handle: handle,
+        readTimeout: CameraVendorPartialObjectRequestPolicy.fileDownloadReadTimeoutSeconds
+      )
       let info = freshInfo.mergingMissingDownloadMetadata(from: matchingCachedInfo)
       let downloadFormatLabel = info.formatLabel
       let downloadFilename = info.filename
@@ -3429,7 +3450,8 @@ final class CameraVendorPtpSession {
           from: commandSocket,
           fileHandle: fileHandle,
           timeout: readTimeout,
-          prefixByteCount: max(0, 64 - prefix.count)
+          prefixByteCount: max(0, 64 - prefix.count),
+          transactionID: transactionID
         )
         totalBytes += packet.byteCount
         if packet.byteCount > 0 {
@@ -3816,7 +3838,8 @@ final class CameraVendorPtpSession {
     from socket: CameraVendorPtpSocket,
     fileHandle: FileHandle,
     timeout: TimeInterval,
-    prefixByteCount: Int
+    prefixByteCount: Int,
+    transactionID: UInt32? = nil
   ) throws -> (
     controlPacket: CameraVendorPtpPacket?,
     byteCount: Int,
@@ -3826,12 +3849,18 @@ final class CameraVendorPtpSession {
     fileWriteMs: Int,
     receiveCadence: CameraVendorPtpReceiveCadenceSummary
   ) {
+    let transactionLabel = transactionID.map(String.init) ?? "none"
     let requestWaitStartedAt = Date()
+    report("[OBS] PTP_ORIGINAL_LEGACY_HEADER_WAIT transaction=\(transactionLabel)")
     let header = try socket.readExactly(4, timeout: timeout)
     guard header.count == 4 else {
       throw NSError(domain: "CameraVendorPtpSession", code: 5, userInfo: [NSLocalizedDescriptionKey: "CameraVendor legacy PTP 包头读取失败"])
     }
     let length = header.withUnsafeBytes { $0.load(as: UInt32.self).littleEndian }
+    report(
+      "[OBS] PTP_ORIGINAL_LEGACY_HEADER_RECEIVED " +
+      "transaction=\(transactionLabel) length=\(length)"
+    )
     guard length >= 6 else {
       throw NSError(domain: "CameraVendorPtpSession", code: 5, userInfo: [NSLocalizedDescriptionKey: "CameraVendor legacy PTP 包长度异常 \(length)"])
     }
@@ -3845,11 +3874,19 @@ final class CameraVendorPtpSession {
       }
       _ = try socket.readExactly(6, timeout: timeout)
       let requestToFirstByteMs = Int(Date().timeIntervalSince(requestWaitStartedAt) * 1000)
+      report(
+        "[OBS] PTP_ORIGINAL_LEGACY_PAYLOAD_BEGIN " +
+        "transaction=\(transactionLabel) bytes=\(payloadLength - 8)"
+      )
       let result = try socket.readExactlyToFile(
         payloadLength - 8,
         fileHandle: fileHandle,
         timeout: timeout,
         prefixByteCount: prefixByteCount
+      )
+      report(
+        "[OBS] PTP_ORIGINAL_LEGACY_PAYLOAD_END " +
+        "transaction=\(transactionLabel) bytes=\(result.byteCount)"
       )
       return (
         nil,

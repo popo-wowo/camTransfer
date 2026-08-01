@@ -828,7 +828,10 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
         (recoveryConnector as? CameraSessionRuntimeRecoveryCancelling)?
           .cancelRecoveryConnection(reason: "user-cancelled-download-recovery")
       }
-      let completionPolicy = activeDownloadSubmission?.completionPolicy ?? .returnToGallery
+      // User explicitly cancelled — always return to gallery regardless of the
+      // original submission's completionPolicy. The user wants to stay and operate,
+      // not disconnect.
+      let completionPolicy: CameraDownloadCompletionPolicy = .returnToGallery
       finishDownloadAdmission()
       releaseBackgroundExecution(reason: "user-cancelled-download")
       backgroundMaintainer?.stop(reason: "user-cancelled-download")
@@ -1318,6 +1321,17 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   }
 
   func stopDownloadAndWait() async {
+    // Override completion policy before cancelling — once the user requests stop,
+    // we must return to gallery regardless of whether the transfer finishes
+    // normally (race) or gets cancelled.
+    activeDownloadSubmission = activeDownloadSubmission.map {
+      CameraDownloadSubmission(
+        id: $0.id,
+        requests: $0.requests,
+        origin: $0.origin,
+        completionPolicy: .returnToGallery
+      )
+    }
     send(.cancelDownloadByUser)
     guard presentation.phase == .cancelling else { return }
     await withCheckedContinuation { continuation in
@@ -1464,7 +1478,9 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     guard ownsCurrentSession else { return }
     defer { publishPresentation() }
     guard presentation.phase != .cancelling else {
-      let completionPolicy = activeDownloadSubmission?.completionPolicy ?? .returnToGallery
+      // User explicitly cancelled during transport failure cleanup —
+      // always return to gallery, not home.
+      let completionPolicy: CameraDownloadCompletionPolicy = .returnToGallery
       endActivity(reason: "user-cancelled-download")
       recoveryStore?.clear()
       queuedDownloads = []
@@ -1635,7 +1651,8 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     queuedDownloads = []
     recoveredSnapshot = nil
     hasInterruptedRecoverably = false
-    let completionPolicy = activeDownloadSubmission?.completionPolicy ?? .returnToGallery
+    // User explicitly cancelled — always return to gallery.
+    let completionPolicy: CameraDownloadCompletionPolicy = .returnToGallery
     activeDownloadSubmission = nil
     applyDownloadCompletionRouting(completionPolicy, reason: reason)
   }
@@ -1845,11 +1862,14 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
        beginGalleryActivationAfterQuickDownload() {
       return
     }
+    // After user-cancelled download, keep galleryReady even if identity was
+    // cleared by transport failure — the gallery UI should remain visible and
+    // allow the user to continue browsing cached content or reconnect.
     presentation = CameraSessionPresentation(
-      phase: identity == nil ? .idle : .galleryReady,
+      phase: .galleryReady,
       queuedHandles: [],
       inFlightHandle: nil,
-      catalog: identity == nil ? .unavailable : presentation.catalog
+      catalog: presentation.catalog
     )
     routeDownloadCompletionToGalleryIfPossible()
   }

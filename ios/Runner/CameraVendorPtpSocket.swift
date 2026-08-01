@@ -123,8 +123,51 @@ enum CameraVendorDebugPtpTcpNoDelayPolicy {
   }
 }
 
+typealias CameraVendorPtpReceiveFunction = (
+  Int32,
+  UnsafeMutableRawPointer?,
+  Int,
+  Int32
+) -> Int
+
 final class CameraVendorPtpSocket {
-  private var fd: Int32 = -1
+  private let stateLock = NSLock()
+  private var fd: Int32
+  private var interruptionReason: String?
+  private let receiveFunction: CameraVendorPtpReceiveFunction
+
+  init(
+    connectedFileDescriptor: Int32 = -1,
+    receiveFunction: @escaping CameraVendorPtpReceiveFunction = { descriptor, buffer, length, flags in
+      Darwin.recv(descriptor, buffer, length, flags)
+    }
+  ) {
+    fd = connectedFileDescriptor
+    self.receiveFunction = receiveFunction
+  }
+
+  private func currentDescriptor() -> Int32 {
+    stateLock.lock()
+    defer { stateLock.unlock() }
+    return fd
+  }
+
+  private func cancellationErrorIfInterrupted() -> NSError? {
+    stateLock.lock()
+    defer { stateLock.unlock() }
+    guard let interruptionReason else { return nil }
+    return NSError(
+      domain: NSURLErrorDomain,
+      code: NSURLErrorCancelled,
+      userInfo: [NSLocalizedDescriptionKey: "PTP socket 已中断: \(interruptionReason)"]
+    )
+  }
+
+  private func throwIfInterrupted() throws {
+    if let error = cancellationErrorIfInterrupted() {
+      throw error
+    }
+  }
 
   func connect(
     host: String,
@@ -263,7 +306,16 @@ final class CameraVendorPtpSocket {
       )
     }
 
+    let previousDescriptor: Int32
+    stateLock.lock()
+    previousDescriptor = fd
     fd = sock
+    interruptionReason = nil
+    stateLock.unlock()
+    if previousDescriptor >= 0, previousDescriptor != sock {
+      _ = Darwin.shutdown(previousDescriptor, SHUT_RDWR)
+      Darwin.close(previousDescriptor)
+    }
     CameraVendorFileLogger.log("CameraVendorPtpSocket: 连接成功 \(host):\(port) fd=\(sock)")
     diagnosticHandler?("PTP socket 已连接 \(host):\(port)")
   }
@@ -325,15 +377,18 @@ final class CameraVendorPtpSocket {
   }
 
   func write(_ data: Data) throws {
-    guard fd >= 0 else {
+    try throwIfInterrupted()
+    let descriptor = currentDescriptor()
+    guard descriptor >= 0 else {
       throw NSError(domain: "CameraVendorPtpSocket", code: 4, userInfo: [NSLocalizedDescriptionKey: "socket 未建立"])
     }
     try data.withUnsafeBytes { rawBuffer in
       guard let baseAddress = rawBuffer.bindMemory(to: UInt8.self).baseAddress else { return }
       var written = 0
       while written < data.count {
-        let count = Darwin.send(fd, baseAddress.advanced(by: written), data.count - written, 0)
+        let count = Darwin.send(descriptor, baseAddress.advanced(by: written), data.count - written, 0)
         if count <= 0 {
+          if let error = cancellationErrorIfInterrupted() { throw error }
           let err = String(cString: strerror(errno))
           throw NSError(domain: "CameraVendorPtpSocket", code: 5, userInfo: [NSLocalizedDescriptionKey: "写入失败: \(err)"])
         }
@@ -349,7 +404,9 @@ final class CameraVendorPtpSocket {
     firstByteHandler: (() -> Void)? = nil,
     progressHandler: ((Int, Int, Int) -> Void)? = nil
   ) throws -> Data {
-    guard fd >= 0 else {
+    try throwIfInterrupted()
+    let descriptor = currentDescriptor()
+    guard descriptor >= 0 else {
       throw NSError(domain: "CameraVendorPtpSocket", code: 6, userInfo: [NSLocalizedDescriptionKey: "socket 未建立"])
     }
     guard length > 0 else { return Data() }
@@ -368,30 +425,41 @@ final class CameraVendorPtpSocket {
         }
 
         // Use poll() to wait for data with timeout.
-        var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+        var pfd = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
         let pollMs = Int32(min(remaining * 1000, Double(Int32.max)))
         let pollResult = poll(&pfd, 1, pollMs)
 
         if pollResult < 0 {
+          if let error = cancellationErrorIfInterrupted() { throw error }
           let err = String(cString: strerror(errno))
           throw NSError(domain: "CameraVendorPtpSocket", code: 7, userInfo: [NSLocalizedDescriptionKey: "读取失败: \(err)"])
         }
         if pollResult == 0 {
+          if let error = cancellationErrorIfInterrupted() { throw error }
           throw NSError(domain: "CameraVendorPtpSocket", code: 9, userInfo: [NSLocalizedDescriptionKey: "等待相机返回数据超时"])
         }
 
         // Check for errors, but allow reading if POLLIN is also set (data may arrive with HUP).
         if Int16(pfd.revents) & Int16(POLLERR | POLLNVAL) != 0 {
+          if let error = cancellationErrorIfInterrupted() { throw error }
           throw NSError(domain: "CameraVendorPtpSocket", code: 8, userInfo: [NSLocalizedDescriptionKey: "相机断开连接"])
         }
 
-        let count = Darwin.recv(fd, baseAddress.advanced(by: offset), length - offset, 0)
+        let count = receiveFunction(
+          descriptor,
+          baseAddress.advanced(by: offset),
+          length - offset,
+          MSG_DONTWAIT
+        )
         if count < 0 {
+          if let error = cancellationErrorIfInterrupted() { throw error }
           if errno == EINTR { continue }
+          if errno == EAGAIN || errno == EWOULDBLOCK { continue }
           let err = String(cString: strerror(errno))
           throw NSError(domain: "CameraVendorPtpSocket", code: 7, userInfo: [NSLocalizedDescriptionKey: "读取失败: \(err)"])
         }
         if count == 0 {
+          if let error = cancellationErrorIfInterrupted() { throw error }
           throw NSError(domain: "CameraVendorPtpSocket", code: 8, userInfo: [NSLocalizedDescriptionKey: "相机提前断开连接 (已读 \(offset)/\(length) 字节)"])
         }
         offset += count
@@ -429,7 +497,9 @@ final class CameraVendorPtpSocket {
     fileWriteMs: Int,
     receiveCadence: CameraVendorPtpReceiveCadenceSummary
   ) {
-    guard fd >= 0 else {
+    try throwIfInterrupted()
+    let descriptor = currentDescriptor()
+    guard descriptor >= 0 else {
       throw NSError(domain: "CameraVendorPtpSocket", code: 6, userInfo: [NSLocalizedDescriptionKey: "socket 未建立"])
     }
     guard length > 0 else { return (0, Data(), 0, 0, CameraVendorPtpReceiveCadenceSummary()) }
@@ -467,31 +537,42 @@ final class CameraVendorPtpSocket {
           throw NSError(domain: "CameraVendorPtpSocket", code: 9, userInfo: [NSLocalizedDescriptionKey: "等待相机返回数据超时"])
         }
 
-        var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+        var pfd = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
         let remainingMs = Int32(min(
           Int64(deadlineNanos - mach_absolute_time()) * Int64(timebaseInfo.numer) / Int64(timebaseInfo.denom) / 1_000_000,
           Int64(Int32.max)
         ))
         let pollResult = poll(&pfd, 1, max(remainingMs, 1))
         if pollResult < 0 {
+          if let error = cancellationErrorIfInterrupted() { throw error }
           let err = String(cString: strerror(errno))
           throw NSError(domain: "CameraVendorPtpSocket", code: 7, userInfo: [NSLocalizedDescriptionKey: "读取失败: \(err)"])
         }
         if pollResult == 0 {
+          if let error = cancellationErrorIfInterrupted() { throw error }
           throw NSError(domain: "CameraVendorPtpSocket", code: 9, userInfo: [NSLocalizedDescriptionKey: "等待相机返回数据超时"])
         }
         if Int16(pfd.revents) & Int16(POLLERR | POLLNVAL) != 0 {
+          if let error = cancellationErrorIfInterrupted() { throw error }
           throw NSError(domain: "CameraVendorPtpSocket", code: 8, userInfo: [NSLocalizedDescriptionKey: "相机断开连接"])
         }
 
         let toRead = min(length - offset, maxRecvChunk)
-        let count = Darwin.recv(fd, baseAddress.advanced(by: offset), toRead, 0)
+        let count = receiveFunction(
+          descriptor,
+          baseAddress.advanced(by: offset),
+          toRead,
+          MSG_DONTWAIT
+        )
         if count < 0 {
+          if let error = cancellationErrorIfInterrupted() { throw error }
           if errno == EINTR { continue }
+          if errno == EAGAIN || errno == EWOULDBLOCK { continue }
           let err = String(cString: strerror(errno))
           throw NSError(domain: "CameraVendorPtpSocket", code: 7, userInfo: [NSLocalizedDescriptionKey: "读取失败: \(err)"])
         }
         if count == 0 {
+          if let error = cancellationErrorIfInterrupted() { throw error }
           throw NSError(domain: "CameraVendorPtpSocket", code: 8, userInfo: [NSLocalizedDescriptionKey: "相机提前断开连接 (已读 \(offset)/\(length) 字节)"])
         }
         cadence.recordRecv()
@@ -506,11 +587,28 @@ final class CameraVendorPtpSocket {
     return (offset, prefix, socketReceiveMs, fileWriteMs, cadence)
   }
 
-  func close() {
-    if fd >= 0 {
-      _ = Darwin.shutdown(fd, SHUT_RDWR)
-      Darwin.close(fd)
-      fd = -1
+  @discardableResult
+  func interrupt(reason: String) -> Bool {
+    let descriptor: Int32
+    stateLock.lock()
+    descriptor = fd
+    if descriptor >= 0 {
+      interruptionReason = reason
     }
+    stateLock.unlock()
+    guard descriptor >= 0 else { return false }
+    _ = Darwin.shutdown(descriptor, SHUT_RDWR)
+    return true
+  }
+
+  func close() {
+    let descriptor: Int32
+    stateLock.lock()
+    descriptor = fd
+    fd = -1
+    stateLock.unlock()
+    guard descriptor >= 0 else { return }
+    _ = Darwin.shutdown(descriptor, SHUT_RDWR)
+    Darwin.close(descriptor)
   }
 }

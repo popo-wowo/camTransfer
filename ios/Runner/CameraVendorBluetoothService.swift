@@ -1,4 +1,3 @@
-import CoreLocation
 import CoreBluetooth
 import Darwin
 import Foundation
@@ -1382,8 +1381,10 @@ enum CameraVendorBackgroundMetadataRefreshPolicy {
     isPriorityDownloadActive: Bool = false
   ) -> Bool {
     guard !isPriorityDownloadActive else { return false }
-    let nsError = error as NSError
-    return nsError.domain == "CameraVendorPtpSocket"
+    return CameraTransportFailureDispositionPolicy.disposition(
+      for: error,
+      context: .backgroundMetadata
+    ) == .sessionTerminal
   }
 
   static func shouldCacheReadImageInfoKeepAliveResult() -> Bool { false }
@@ -2024,7 +2025,7 @@ enum CameraVendorCameraWifiConnector {
       passphrase: configuration.passphrase,
       isWEP: false
     )
-    hotspotConfiguration.joinOnce = true
+    hotspotConfiguration.joinOnce = false
     hotspotConfiguration.hidden = configuration.isHidden
 
     report(
@@ -2035,12 +2036,6 @@ enum CameraVendorCameraWifiConnector {
       "[OBS] WIFI_JOIN_START ssid=\(configuration.ssid) hidden=\(configuration.isHidden) " +
       "passphraseLength=\(configuration.passphrase.count)"
     )
-    let locationStatus = await CameraVendorWifiLocationAuthorizer.shared.prepareForSSIDAccess(
-      diagnosticHandler: report
-    )
-    if !CameraVendorWifiJoinDiagnostics.canReadCurrentSSID(with: locationStatus) {
-      report("当前定位权限不足，iOS 可能无法返回当前 Wi-Fi 名称")
-    }
     if CameraVendorWifiJoinDiagnostics.shouldRemoveExistingConfigurationBeforeJoin {
       NEHotspotConfigurationManager.shared.removeConfiguration(forSSID: configuration.ssid)
       report("已移除旧的 Wi-Fi 配置: \(configuration.ssid)")

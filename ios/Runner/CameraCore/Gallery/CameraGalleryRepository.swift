@@ -5,6 +5,8 @@ struct CameraGalleryRepository {
   private(set) var snapshotID: CameraGallerySnapshotID?
   private(set) var items: [CameraGalleryCatalogItem] = []
   private(set) var entries: [CameraGalleryEntryViewState] = []
+  private var handleToItemIndex: [Int: Int] = [:]
+  private var handleToEntryIndex: [Int: Int] = [:]
 
   mutating func install(
     _ snapshot: CameraGalleryCatalogSnapshot,
@@ -30,13 +32,14 @@ struct CameraGalleryRepository {
         resolvedMetadata: nil
       )
     }
+    rebuildItemIndex()
     replaceSummaryPage(items.map(CameraGalleryRepositoryAdapter.summary(from:)))
   }
 
   func contains(_ identity: CameraGalleryChildIdentity) -> Bool {
     generation == identity.generation &&
       snapshotID == identity.snapshotID &&
-      entries.contains(where: { $0.summary.handle == identity.handle })
+      handleToEntryIndex[identity.handle] != nil
   }
 
   mutating func applyThumbnail(
@@ -44,7 +47,7 @@ struct CameraGalleryRepository {
     identity: CameraGalleryChildIdentity
   ) -> Bool {
     guard contains(identity),
-          let itemIndex = items.firstIndex(where: { $0.handle == identity.handle }) else {
+          let itemIndex = handleToItemIndex[identity.handle] else {
       return false
     }
     items[itemIndex] = CameraGalleryRepositoryAdapter.item(
@@ -80,12 +83,12 @@ struct CameraGalleryRepository {
   }
 
   private mutating func replaceSummaryForExistingHandle(_ resolvedMetadata: CameraGalleryResolvedItemMetadata) {
-    guard let itemIndex = items.firstIndex(where: { $0.handle == resolvedMetadata.handle }) else { return }
+    guard let itemIndex = handleToItemIndex[resolvedMetadata.handle] else { return }
     items[itemIndex] = CameraGalleryRepositoryAdapter.mergedItem(
       existingItem: items[itemIndex],
       resolvedMetadata: resolvedMetadata
     )
-    guard let entryIndex = entries.firstIndex(where: { $0.summary.handle == resolvedMetadata.handle }) else { return }
+    guard let entryIndex = handleToEntryIndex[resolvedMetadata.handle] else { return }
     entries[entryIndex].summary = CameraGalleryRepositoryAdapter.summary(from: items[itemIndex])
   }
 
@@ -110,10 +113,11 @@ struct CameraGalleryRepository {
         )
       )
     }
+    rebuildEntryIndex()
   }
 
   mutating func applyThumbnailUpdate(handle: Int, thumbnail: CameraGalleryEntryThumbnail) {
-    guard let index = entries.firstIndex(where: { $0.summary.handle == handle }) else { return }
+    guard let index = handleToEntryIndex[handle] else { return }
     entries[index].thumbnail = thumbnail
   }
 
@@ -123,7 +127,7 @@ struct CameraGalleryRepository {
     identity: CameraGalleryChildIdentity
   ) -> Bool {
     guard contains(identity),
-          let index = entries.firstIndex(where: { $0.summary.handle == identity.handle }) else {
+          let index = handleToEntryIndex[identity.handle] else {
       return false
     }
     entries[index].thumbnail.state = state
@@ -134,7 +138,7 @@ struct CameraGalleryRepository {
   }
 
   mutating func applyDetailsUpdate(handle: Int, details: CameraGalleryEntryDetails) {
-    guard let index = entries.firstIndex(where: { $0.summary.handle == handle }) else { return }
+    guard let index = handleToEntryIndex[handle] else { return }
     let existing = entries[index].details
     entries[index].details = CameraGalleryEntryDetails(
       handle: handle,
@@ -152,6 +156,18 @@ struct CameraGalleryRepository {
     applyDetailsUpdate(
       handle: result.handle,
       details: CameraGalleryRepositoryAdapter.entryDetails(from: result)
+    )
+  }
+
+  private mutating func rebuildItemIndex() {
+    handleToItemIndex = Dictionary(
+      uniqueKeysWithValues: items.enumerated().map { ($0.element.handle, $0.offset) }
+    )
+  }
+
+  private mutating func rebuildEntryIndex() {
+    handleToEntryIndex = Dictionary(
+      uniqueKeysWithValues: entries.enumerated().map { ($0.element.summary.handle, $0.offset) }
     )
   }
 

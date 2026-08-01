@@ -1,4 +1,3 @@
-import CoreLocation
 import Darwin
 import Foundation
 import NetworkExtension
@@ -196,30 +195,6 @@ enum CameraVendorWifiJoinDiagnostics {
     )
   }
 
-  static func shouldRequestLocationAuthorization(for status: CLAuthorizationStatus) -> Bool {
-    status == .notDetermined
-  }
-
-  static func canReadCurrentSSID(with status: CLAuthorizationStatus) -> Bool {
-    status == .authorizedAlways || status == .authorizedWhenInUse
-  }
-
-  static func describeLocationAuthorizationStatus(_ status: CLAuthorizationStatus) -> String {
-    switch status {
-    case .notDetermined:
-      return "notDetermined"
-    case .restricted:
-      return "restricted"
-    case .denied:
-      return "denied"
-    case .authorizedAlways:
-      return "authorizedAlways"
-    case .authorizedWhenInUse:
-      return "authorizedWhenInUse"
-    @unknown default:
-      return "unknown"
-    }
-  }
 }
 
 enum CameraVendorWifiHandoffStabilizationPolicy {
@@ -237,6 +212,14 @@ enum CameraVendorWifiAssociationReadiness {
       .trimmingCharacters(in: .whitespacesAndNewlines)
 
     if normalizedCurrentSSID == normalizedTargetSSID {
+      return true
+    }
+
+    // Wi-Fi interface (en0) already has a camera-subnet IP — the physical
+    // association is done even though iOS captive detection hasn't finished
+    // reporting the SSID through NEHotspotNetwork.fetchCurrent.
+    if let ip = CameraVendorNetworkUtils.wifiIPv4Address(),
+       ip.hasPrefix("192.168.0.") {
       return true
     }
 
@@ -286,51 +269,5 @@ final class CameraVendorWifiApplyContinuationGate: @unchecked Sendable {
     lock.unlock()
     continuation.resume(returning: value)
     return true
-  }
-}
-
-@MainActor
-final class CameraVendorWifiLocationAuthorizer: NSObject, @preconcurrency CLLocationManagerDelegate {
-  static let shared = CameraVendorWifiLocationAuthorizer()
-
-  private let manager = CLLocationManager()
-  private var continuation: CheckedContinuation<CLAuthorizationStatus, Never>?
-  private var diagnosticHandler: ((String) -> Void)?
-
-  private override init() {
-    super.init()
-    manager.delegate = self
-  }
-
-  func prepareForSSIDAccess(
-    diagnosticHandler: ((String) -> Void)? = nil
-  ) async -> CLAuthorizationStatus {
-    self.diagnosticHandler = diagnosticHandler
-    let currentStatus = manager.authorizationStatus
-    diagnosticHandler?(
-      "定位权限状态: \(CameraVendorWifiJoinDiagnostics.describeLocationAuthorizationStatus(currentStatus))"
-    )
-
-    guard CameraVendorWifiJoinDiagnostics.shouldRequestLocationAuthorization(for: currentStatus) else {
-      return currentStatus
-    }
-
-    diagnosticHandler?("请求定位权限，以便确认当前 Wi-Fi SSID")
-    manager.requestWhenInUseAuthorization()
-    let updatedStatus = await withCheckedContinuation { (continuation: CheckedContinuation<CLAuthorizationStatus, Never>) in
-      self.continuation = continuation
-    }
-    diagnosticHandler?(
-      "定位权限更新为: \(CameraVendorWifiJoinDiagnostics.describeLocationAuthorizationStatus(updatedStatus))"
-    )
-    return updatedStatus
-  }
-
-  func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-    guard let continuation else {
-      return
-    }
-    self.continuation = nil
-    continuation.resume(returning: manager.authorizationStatus)
   }
 }

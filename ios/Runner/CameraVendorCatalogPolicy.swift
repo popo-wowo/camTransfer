@@ -85,25 +85,7 @@ struct CameraVendorCountSweepResult {
 
 enum CameraVendorCatalogTransportEvidencePolicy {
   static func provesTransportLost(_ error: Error) -> Bool {
-    let nsError = error as NSError
-    if nsError.domain == "CameraVendorPtpSocket" {
-      return true
-    }
-    if nsError.domain == NSURLErrorDomain {
-      switch nsError.code {
-      case NSURLErrorCannotConnectToHost,
-           NSURLErrorNetworkConnectionLost,
-           NSURLErrorNotConnectedToInternet,
-           NSURLErrorTimedOut:
-        return true
-      default:
-        break
-      }
-    }
-    let message = nsError.localizedDescription.lowercased()
-    return message.contains("socket 未建立") ||
-      message.contains("connection reset") ||
-      message.contains("broken pipe")
+    CameraTransportFailureDispositionPolicy.disposition(for: error, context: .catalog) == .sessionTerminal
   }
 }
 
