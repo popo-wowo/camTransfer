@@ -1,432 +1,320 @@
-# iOS Linked HD Preview Design
+# iOS HD Preview and Full-Screen Design
 
 ## Status
 
-Approved in principle by the user on 2026-08-01. This document defines the
-target design only; implementation and physical-device acceptance remain
-pending.
+Revised after user correction on 2026-08-01. This document defines the target
+design only. Swift implementation and physical-device acceptance are pending.
 
-This design supersedes the following parts of
-`2026-07-30-ios-gallery-shared-filter-dual-loader-design.md`:
+The earlier revision in commit `154f6651` is superseded by this document. In
+particular, this revision rejects these earlier assumptions:
 
-- treating the 30-handle loading window as the total HD cache;
-- deleting loaded state whenever an in-memory entry is evicted;
-- allowing full-screen preview to act as a separate HD request owner;
-- limiting full-screen camera priority to one page instead of current, next,
-  and previous after the current page becomes available.
+- thumbnail full-screen and HD full-screen are not one loading state machine;
+- the number `30` is not merely a scheduling window; it is the HD cache entry
+  limit;
+- the existing `NativeGalleryHighDefinitionPreviewCache` is not replaced by an
+  unbounded or `512 MiB` session asset store;
+- the current thumbnail full-screen architecture is preserved.
 
-## Problem Statement
+## Hard Product Constraints
 
-iOS currently presents the same camera-provided screen preview through two UI
-surfaces:
+1. Thumbnail browsing and HD browsing use two distinct full-screen loading
+   flows.
+2. Thumbnail full-screen shows the thumbnail immediately, then loads only the
+   currently displayed photo's HD preview. It never preloads adjacent photos.
+3. Vertical HD browsing and HD full-screen paging are linked. They reuse the
+   HD list's ordered snapshot, loader, and 30-entry cache.
+4. The HD cache contains at most 30 photo entries. Loading may continue as the
+   viewport moves, but entry 31 evicts the least-recently-used entry.
+5. The current Catalog, Runtime, Gallery session, PTP command lane, and download
+   ownership boundaries remain intact. This feature must not introduce a second
+   Catalog owner, camera session, command lane, or download manager.
 
-1. a vertically scrolling high-definition Gallery list;
-2. a horizontally paging full-screen viewer.
+## Current Architecture Anchors
 
-The current implementation does not yet model these as two presentations of
-one shared HD-preview session. It also decodes the camera JPEG/HEIF data at its
-full pixel dimensions for the vertical list.
+The implementation plan must extend these existing owners instead of replacing
+them:
 
-Physical-device logs from 2026-08-01 show the consequences:
+- `NativeGalleryViewController`
+  - owns thumbnail/HD browse mode and Gallery navigation;
+  - currently opens `NativePhotoPreviewViewController`;
+  - owns the vertical HD decoded-image presentation cache.
+- `NativePhotoPreviewViewController`
+  - is the existing thumbnail-origin full-screen flow;
+  - creates page controllers for horizontal navigation;
+  - only the page marked by `setDisplayedPage(true)` calls `loadImage()`;
+  - shows `item.thumbnailData` or the cached thumbnail first;
+  - requests the HD preview only for that currently displayed page.
+- `CameraGalleryHDPreviewPipeline`
+  - is the existing serial HD-list camera-request owner;
+  - loads visible handles, then handles below, then handles above;
+  - publishes `NativeGalleryHDPreviewState` through `CameraGallerySession`.
+- `NativeGalleryHighDefinitionPreviewCache`
+  - is the existing HD encoded-data cache;
+  - owns loaded handles, orientation, memory data, disk files, and LRU order;
+  - keeps at most 30 entries.
+- `CameraGallerySession` and `CameraSessionRuntime`
+  - remain the Gallery lifecycle and public intent boundaries.
+- `CameraVendorPtpSession`
+  - remains the single physical PTP command executor.
 
-- a compressed HD JPEG of about `1.9 MB` decodes to `1824 x 2736`, about
-  `19 MiB` of RGBA pixels;
-- other camera previews decode to `2560 x 3840` or `3888 x 2592`, about
-  `37.5-38.4 MiB` each;
-- the vertical list schedules up to eight decoded images while its decoded
-  cache budget is `96 MiB`;
-- the same handle is decoded repeatedly after `NSCache` eviction, producing
-  blank/loading cells and scroll hitching;
-- preview and original-download code both write CameraVendor property `D226`, but
-  the logical download-mode state can disagree with the physical camera mode;
-- after HD preview resets `D226` to `0`, an original download can read fresh
-  ObjectInfo as `167936` bytes and save that compressed screen object instead
-  of the original file.
+No new component may restart BLE, Wi-Fi, PTP, Catalog, or Gallery state merely
+because the user opens or closes either full-screen viewer.
 
-The target design must fix the display architecture and the transfer-mode
-ownership together. Improving only the bitmap cache would leave incorrect
-downloads possible, while fixing only `D226` would leave the Gallery janky.
+## Product Behavior Matrix
 
-## Goals
+| Entry surface | Full-screen flow | First display | Camera loading | Prefetch | Return target |
+|---|---|---|---|---|---|
+| Thumbnail grid | Thumbnail full-screen | Thumbnail | Current page only | None | Current thumbnail |
+| Vertical HD list | Linked HD full-screen | Existing HD cache entry, otherwise thumbnail | Shared HD pipeline | Current, then next/previous within the 30-entry cache | Current HD card |
 
-1. Treat vertical HD browsing and full-screen paging as two presentations of
-   one HD-preview session.
-2. Keep one authoritative ordered photo sequence, request state, compressed-data
-   availability, selection state, and download state.
-3. Decode the vertical list only to the pixels required by the rendered card.
-4. Decode only the current full-screen page at the camera preview's native
-   dimensions; keep adjacent pages at screen-fit resolution.
-5. Return from full-screen to the same handle and make that handle the center
-   of the vertical loading priority.
-6. Preserve successful load state independently of compressed-memory and
-   decoded-image eviction.
-7. Prevent any preview operation from leaving the download mode state out of
-   sync with the physical `D226` value.
-8. Keep camera requests serial and mutually exclusive with every download
-   transfer mode.
-
-## Non-Goals
-
-- Do not download the original photo merely to render full-screen preview.
-- Do not create separate filters or Catalog membership for the two HD surfaces.
-- Do not allow full-screen paging across photos outside the current filtered
-  Gallery sequence.
-- Do not add infinite server-style Catalog paging in this change.
-- Do not persist HD previews across camera sessions.
-- Do not change RAW/JPEG pairing or Gallery filter semantics.
-- Do not introduce a second PTP command lane or a second download manager.
-
-## Product Contract
-
-### Vertical HD list
-
-- Shows the current shared Gallery filter and ordering.
-- Scrolls vertically and supports batch selection.
-- Loads current visible handles first, then nearby handles below, then nearby
-  handles above.
-- Uses screen-sized decoded images rather than native-sized preview bitmaps.
-- A compressed preview that has already been fetched is considered loaded even
-  when its decoded bitmap is no longer resident.
-- Local disk restoration must not display the camera-loading spinner.
-
-### Full-screen viewer
-
-- Opens at the handle tapped in the vertical list or thumbnail grid.
-- Pages horizontally through the same filtered display-photo sequence.
-- Supports double-tap and pinch zoom.
-- Keeps the current page at native HD-preview resolution so zoom remains useful.
-- Keeps the previous and next pages at screen-fit resolution only.
-- Updates selection and download state through the same Runtime state used by
-  the Gallery.
-- Returns its current handle when closed.
-
-### Return positioning
-
-- If the Catalog identity and handle are still valid, closing full-screen
-  scrolls the active collection view to that handle.
-- In HD mode the item is positioned near the vertical center and becomes the
-  center of the HD loading priority.
-- In thumbnail mode the item is positioned visibly and the thumbnail viewport
-  is resubmitted.
-- If the Catalog was replaced or the handle no longer belongs to the filter,
-  the Gallery keeps its existing scroll position and does not guess another
-  item.
-
-### Download cancellation return
-
-- User cancellation is a normal download outcome, not a Gallery disconnect.
-- After the active transfer reaches a safe cancellation boundary and transfer
-  mode is reset, the app dismisses download UI back to the originating Gallery
-  browse mode.
-- The current filter, selection, browse mode, and return handle are preserved.
-- Only an independently proven terminal camera/session failure may route to
-  Home. A plain user cancellation must never reuse that route.
+The two rows are separate feature-level state machines. They may share immutable
+Catalog identity, selection/download state, the physical PTP command lane, and
+a read-only hit for already-fetched encoded bytes of the current handle. They do
+not share loading focus, cache insertion, prefetch policy, or controller
+lifecycle.
 
 ## Architecture Summary
 
 ```text
-CameraGallerySession
+CameraGalleryPresentation
+  +-- one filtered Catalog membership and order
   |
-  +-- CameraGalleryPresentation
-  |     authoritative filtered order and sections
+  +-- Thumbnail grid
+  |     +-- existing NativePhotoPreviewViewController
+  |           thumbnail first
+  |           current displayed page only
+  |           no adjacent camera prefetch
   |
-  +-- CameraGalleryHDPreviewPipeline
-  |     one serial HD fetch owner
-  |     one active focus: vertical list or full-screen
-  |
-  +-- CameraGalleryHDPreviewStore
-  |     authoritative asset records
-  |     compressed memory LRU
-  |     session-scoped disk files
-  |
-  +-- NativeGalleryHDPreviewImageRepository
-        target-aware decode tasks and decoded-image caches
-        |
-        +-- vertical HD list
-        +-- full-screen pager
+  +-- Vertical HD list
+        +-- existing CameraGalleryHDPreviewPipeline
+        +-- existing 30-entry NativeGalleryHighDefinitionPreviewCache
+        +-- dedicated linked HD full-screen controller
+              horizontal paging
+              current/next/previous priority
+              no second camera loader
 
 CameraSessionRuntime
-  +-- selection/download state
+  +-- shared selection and download state
   +-- Gallery/download admission
 
-CameraVendorPtpSession command lane
-  +-- CameraVendorTransferModeCoordinator
-        only owner allowed to write D226 and companion compression properties
+CameraVendorPtpSession
+  +-- one serialized command lane
+  +-- one transfer-mode coordinator for D226
 ```
 
-The two UI surfaces never fetch directly from the camera and never own loaded
-history. They submit focus changes and render publications from the shared
-session.
+## Flow A: Thumbnail Full-Screen
 
-## State Ownership
+### Entry
 
-| State | Owner | Consumers |
-|---|---|---|
-| Filtered sections and ordering | `CameraGallerySession` | thumbnail, vertical HD, full-screen |
-| HD request priority, in-flight state, and failure | `CameraGalleryHDPreviewPipeline` | both HD surfaces |
-| Successful asset availability, compressed bytes, and disk location | `CameraGalleryHDPreviewStore` | pipeline, decoder, full-screen |
-| Decoded image variants | `NativeGalleryHDPreviewImageRepository` | visible cells/pages |
-| Current full-screen handle | `NativePhotoPreviewViewController` while open | Gallery close callback |
-| Vertical scroll position | `NativeGalleryViewController` | vertical Gallery only |
-| Selection and download state | `CameraSessionRuntime` | both HD surfaces, download center |
-| Physical CameraVendor transfer mode | `CameraVendorTransferModeCoordinator` | preview and download executors |
+When a photo is opened from thumbnail mode:
 
-No controller infers fetch success from `NSCache` residency. No controller
-writes `D226` directly.
+1. `NativeGalleryViewController` captures the current filtered thumbnail item
+   order and initial index.
+2. It opens the existing `NativePhotoPreviewViewController`.
+3. The displayed page renders `item.thumbnailData` or the current decoded
+   thumbnail immediately.
+4. Only after the page is visible does it request that handle's HD preview.
 
-## Shared HD Preview Session
+This flow does not activate or reprioritize
+`CameraGalleryHDPreviewPipeline`.
 
-### Focus model
+### Paging
 
-The pipeline receives one focus value:
+`UIPageViewController` may construct previous and next page controllers for
+gesture handling, but construction is not loading.
+
+- Only `setDisplayedPage(true)` may start an HD request.
+- When the gesture completes, the previous page cancels its request and the new
+  displayed page starts its own request.
+- A cancelled interactive transition must keep the actually visible page as
+  current.
+- No request is started for an adjacent page merely because the page controller
+  exists.
+
+### Cache behavior
+
+Thumbnail full-screen is demand-only:
+
+- it may read an already-existing HD encoded entry for the current handle;
+- a successful current-page request remains page-local and does not insert into
+  or refresh the HD list's 30-entry LRU;
+- it never inserts next/previous handles through prefetch;
+- it never submits a 30-handle loading window;
+- it never reports HD-list loading progress.
+
+The read-only hit avoids a needless camera round trip without allowing
+thumbnail full-screen to evict or reprioritize HD-list entries. Thumbnail
+full-screen owns its current-page bytes, task, and cancellation state.
+
+### Closing
+
+The close callback returns the current handle and Catalog identity.
+
+- If the Catalog identity still matches, the thumbnail grid scrolls that handle
+  into view and resubmits its real thumbnail viewport.
+- The HD pipeline remains inactive when the originating browse mode is
+  thumbnail.
+- Closing thumbnail full-screen must not switch the Gallery into HD mode.
+
+## Flow B: Vertical HD List
+
+### Loading order
+
+The existing `CameraGalleryHDPreviewPipeline` remains the sole HD-list camera
+request owner. For every viewport update it calculates up to 30 unique handles:
+
+1. visible display handles in Gallery order;
+2. handles immediately below the visible range;
+3. handles immediately above the visible range.
+
+Camera requests remain serial. A new viewport replaces pending priority without
+force-killing the in-flight PTP request; the worker changes direction after the
+safe completion boundary.
+
+The 30-handle priority list and 30-entry cache have the same upper bound, but
+they have different meanings:
+
+- priority list: which missing handles should be requested next;
+- cache: which completed photo entries are retained now.
+
+Loading does not stop forever after 30 photos. When the viewport moves, new
+handles may load and old LRU entries may be evicted so retained count remains
+30.
+
+### Cache contract
+
+`NativeGalleryHighDefinitionPreviewCache` remains the cache owner and retains
+at most 30 photo entries.
+
+One entry is keyed by `(sessionEpoch, handle, hdPreview)` and contains:
+
+- encoded preview bytes in memory when resident;
+- session disk file;
+- loaded-handle membership;
+- object orientation;
+- LRU position;
+- the identity used to invalidate decoded vertical/full-screen variants stored
+  by the existing presentation-layer caches.
+
+When entry 31 is stored:
+
+1. choose the least-recently-used unpinned entry;
+2. remove its encoded memory data;
+3. remove its disk file;
+4. remove loaded-handle and orientation state;
+5. notify the existing presentation caches to remove decoded variants for that
+   handle;
+6. emit one explicit eviction log.
+
+Visible HD cards and the settled full-screen current page are touched before
+eviction. Current, next, and previous full-screen handles are pinned while a
+page transition is active.
+
+An evicted handle is no longer considered loaded. If it becomes visible again,
+it may be requested again through the HD pipeline. This is expected LRU
+behavior, not an unbounded loaded-history design.
+
+## Flow C: Linked HD Full-Screen
+
+### Separate controller, shared HD owner
+
+Opening a card from the vertical HD list uses a dedicated linked-HD full-screen
+controller. It does not repurpose the thumbnail full-screen request state
+machine.
+
+The recommended boundary is:
 
 ```swift
-enum CameraGalleryHDPreviewFocus: Equatable {
-  case inactive
-  case verticalList(visibleHandles: [Int])
-  case fullScreen(currentHandle: Int, orderedHandles: [Int])
+struct NativeGalleryHDFullScreenContext {
+  let catalogIdentity: CameraGalleryCatalogIdentity
+  let orderedDisplayHandles: [Int]
+  let initialHandle: Int
 }
 ```
 
-The ordered handles are validated against the current Catalog identity and the
-shared display-photo projection before use. Full-screen opened from thumbnail
-mode must not depend on an already-active vertical-HD snapshot; the session can
-derive the same display sequence directly from the current presentation.
+The context is derived from the current `NativeGalleryHDPreviewSnapshot`.
+RAW sidecars remain attached to their display card and do not become blank
+full-screen pages.
 
-Vertical-list priority remains:
+The new controller is only a presentation and navigation owner. It does not
+fetch from the camera directly. It submits the current full-screen focus to the
+existing `CameraGalleryHDPreviewPipeline`.
 
-1. visible handles in Gallery order;
-2. handles below the visible range;
-3. handles above the visible range;
-4. at most 30 pending priority candidates.
+### Paging and priority
 
-The number `30` is a scheduling window, not a loaded-history limit and not a
-disk-cache limit.
-
-Full-screen priority is:
+When a full-screen page settles, HD priority becomes:
 
 1. current handle;
 2. next display handle;
 3. previous display handle.
 
-Only the current handle is mandatory. Adjacent camera prefetch starts only
-after the current page is available and the command lane is not needed by a
-download.
+Rules:
 
-### Request state and asset availability
+- current is mandatory;
+- next/previous are eligible only after current is available;
+- all fetched results enter the same 30-entry HD cache;
+- full-screen prefetch never creates a 31st retained entry without LRU eviction;
+- a download request preempts all HD camera loading through existing admission;
+- cancelled paging restores the actually visible page as current.
 
-The pipeline owns transient request state. The store owns successful local
-availability. These are separate:
+### Decode tiers
 
-```swift
-enum CameraGalleryHDPreviewRequestState: Equatable {
-  case idle
-  case loading(requestID: UUID)
-  case failed(CameraGalleryHDPreviewFailure)
-}
-
-enum CameraGalleryHDPreviewAvailability: Equatable {
-  case absent
-  case compressedMemory
-  case compressedDisk
-}
-```
-
-`compressedDisk` remains a loaded item even if its in-memory compressed bytes
-and all decoded images were evicted. Reading and decoding the disk file is local
-rehydration, not a new camera load. A successful camera fetch becomes available
-only after the store has atomically written and published its asset record.
-
-The UI derives display state as follows:
-
-- decoded variant available: show image;
-- compressed bytes exist locally: keep the last lower-quality image
-  or thumbnail while local decode runs; do not show a camera spinner;
-- camera request active: show the loading indicator;
-- request failed: show retry state;
-- not yet requested: show the normal waiting placeholder.
-
-## Compressed Data Store
-
-`NativeGalleryHighDefinitionPreviewCache` is replaced by a focused
-`CameraGalleryHDPreviewStore` in `CameraCore/Gallery`.
-
-The store maintains one record per `(sessionEpoch, handle, hdPreview)`:
-
-- byte count;
-- object orientation;
-- encoded format;
-- optional in-memory `Data`;
-- session disk-file URL;
-- last-access sequence.
-
-### Memory layer
-
-- Byte-budgeted LRU, initially `64 MiB`.
-- Eviction removes only the in-memory `Data`.
-- It never removes the asset record, orientation, or the disk file.
-
-### Disk layer
-
-- One directory per camera session epoch.
-- Successful bytes are written atomically before the asset is published as
-  available.
-- Initial session disk budget is `512 MiB`, enforced by encoded byte cost rather
-  than item count. The exact production budget may be lowered by a measured
-  free-space guard, but it must not silently fall back to a 30-item limit.
-- Current full-screen, adjacent pages, and the active vertical viewport are
-  pinned while enforcing the disk budget; older unpinned assets are evicted in
-  LRU order with an explicit diagnostic marker.
-- Remaining files are cleared on session replacement, disconnect, or explicit
-  Gallery teardown.
-- There is no 30-file app-level eviction.
-- A missing OS-purged cache file changes availability to `absent`; it does not
-  masquerade as an active request.
-
-This separation ensures that scrolling through more than 30 photos does not
-erase loaded history merely because the request window moved.
-
-## Target-Aware Image Decoding
-
-The current `UIImage(data:)` first path is not suitable for the vertical HD
-list because it decodes the full source dimensions. All HD display decoding
-must use ImageIO with an explicit target.
+The encoded HD object is normally only a few megabytes, while a full native
+RGBA decode may consume roughly `19-38 MiB`. Display decoding therefore uses
+ImageIO target sizes instead of unconditional `UIImage(data:)` decoding.
 
 ```swift
-enum NativeGalleryHDPreviewDecodeTier: Hashable {
-  case verticalList(maxPixelSize: Int)
+enum NativeGalleryHDDecodeTarget: Hashable {
+  case verticalCard(maxPixelSize: Int)
   case fullScreenFit(maxPixelSize: Int)
   case fullScreenNative
 }
 ```
 
-The decoded cache key includes:
+- Vertical card: decode near the rendered card width multiplied by display
+  scale, with at most 20 percent headroom.
+- Full-screen fit: decode near the full-screen viewport size; use for adjacent
+  pages and the first presentation of current.
+- Full-screen native: only the settled current page may retain the native HD
+  preview decode. This is still the compressed camera preview, not the original
+  photo file.
 
-- session epoch;
-- handle;
-- object orientation;
-- decode tier and target pixel size.
+Decoded variants remain owned by the existing presentation layer and the
+focused decoder helper; they are not moved into a new cache owner. Every variant
+is keyed to one of the 30 retained handle identities. Evicting the encoded entry
+invalidates every decoded variant for that handle. When paging settles, the
+previous native variant is released or downgraded to fit.
 
-### Vertical-list tier
+### Closing and linkage
 
-- Target width is the rendered card width multiplied by display scale.
-- Add at most 20 percent headroom to avoid decode churn during small layout
-  changes.
-- Never exceed the source dimensions.
-- Initial decoded-cache budget: `64 MiB`.
-- The repository coalesces duplicate requests for the same key.
+The HD full-screen close callback returns current handle and Catalog identity.
 
-For a typical iPhone-width card, this turns a `1824 x 2736` source into a
-roughly screen-width bitmap rather than a `19 MiB` native bitmap.
+After dismissal:
 
-### Full-screen fit tier
+1. verify Catalog identity still matches;
+2. map current handle using the current HD snapshot, not a stale opening index;
+3. scroll the vertical HD collection so the card is near the center;
+4. restore HD-pipeline priority around the post-scroll visible handles;
+5. keep the 30-entry cache and existing loaded state intact.
 
-- Target is the full-screen viewport multiplied by display scale.
-- Used for the previous and next pages and as the first image shown on the
-  current page.
-- Initial adjacent-page decoded budget: `32 MiB`.
+If the Catalog was replaced or the handle no longer exists, keep the current
+Gallery position and do not guess a replacement.
 
-### Full-screen native tier
+## Transfer Mode and Download Correctness
 
-- Only the settled current page may retain a native decode of the compressed HD
-  preview source. This is never an original-file decode.
-- The previous native page is released when paging completes.
-- The page first displays `fullScreenFit`, then promotes to native off the main
-  thread.
-- Native decode failure leaves the fit image visible and exposes retry without
-  blanking the page.
+### Single physical owner
 
-### Memory pressure
+Preview and download flows share the physical command lane but must not write
+`D226` independently.
 
-On memory warning:
+Add `CameraVendorTransferModeCoordinator` under
+`CameraVendorPtpSession`. It is the only component allowed to prepare/reset
+`D226` and companion compression properties.
 
-1. release the current native image after preserving the fit image;
-2. clear adjacent full-screen variants;
-3. clear off-screen vertical-list variants;
-4. keep compressed disk assets and their availability records.
-
-Memory pressure must not trigger a camera request by itself.
-
-## Vertical and Full-Screen Linkage
-
-### Opening
-
-The Gallery builds an immutable navigation context from the current render
-projection:
+Logical purposes remain distinct:
 
 ```swift
-struct NativeGalleryHDPreviewNavigationContext {
-  let catalogIdentity: CameraGalleryCatalogIdentity
-  let orderedDisplayHandles: [Int]
-  let initialHandle: Int
-  let sourceMode: NativeGalleryBrowseMode
-}
-```
-
-For HD mode, `orderedDisplayHandles` comes from the HD snapshot's display
-cards. RAW sidecars remain selectable from their card but do not become blank
-image pages. For thumbnail mode, the sequence uses previewable display photos
-from the current filtered presentation.
-
-Opening full-screen changes pipeline focus from `.verticalList` or `.inactive`
-to `.fullScreen`; it does not create a second preview requester. Thumbnail mode
-does not activate vertical-list loading merely because full-screen is open.
-Entering full-screen also releases off-screen vertical-list decoded variants;
-the compressed store remains shared.
-
-### Paging
-
-- `UIPageViewController` remains the paging container.
-- A page controller reads the shared store and requests decoded variants from
-  the shared image repository.
-- When paging settles, full-screen publishes the new `currentHandle` and the
-  pipeline reprioritizes that handle.
-- Cancelled interactive paging restores the actual visible page as current.
-- Zoom and manual rotation are page-local presentation state and are discarded
-  when that page controller is released.
-
-### Closing and return positioning
-
-The close contract changes from:
-
-```swift
-onPreviewClosed: () -> Void
-```
-
-to:
-
-```swift
-onPreviewClosed: (_ currentHandle: Int, _ catalogIdentity: CameraGalleryCatalogIdentity) -> Void
-```
-
-After the full-screen controller has been dismissed:
-
-1. validate that the Catalog identity still matches;
-2. map `currentHandle` to the active snapshot's index path;
-3. scroll it into the active collection view without rebuilding sections;
-4. if `sourceMode == .highDefinition`, place it near the vertical center,
-   restore `.verticalList`, and submit the post-scroll visible handles;
-5. if `sourceMode == .thumbnail`, keep the HD pipeline `.inactive`, position
-   the thumbnail visibly, resume the thumbnail pipeline, and resubmit its
-   post-scroll viewport.
-
-The scroll occurs after layout has the current snapshot. It must not use a
-stale index captured when full-screen opened.
-
-## Download and D226 Mode Ownership
-
-### Root rule
-
-There is one physical transfer-mode owner on the serialized camera command
-lane. Preview code, full-screen code, download code, and debug experiments are
-not allowed to write `D226` or its companion compression properties
-independently.
-
-Introduce `CameraVendorTransferModeCoordinator`, owned by
-`CameraVendorPtpSession`, with these logical modes:
-
-```swift
-enum CameraVendorPhysicalTransferMode: Equatable {
+enum CameraVendorPhysicalTransferPurpose: Equatable {
   case reset
   case screenPreview
   case compressedDownload
@@ -435,297 +323,280 @@ enum CameraVendorPhysicalTransferMode: Equatable {
 }
 ```
 
-Every successful preparation records the last confirmed physical mode. Any
-failed preparation or reset sets the mode to `.unknown`; the next camera
-operation must prepare from the physical property boundary instead of trusting
-an older logical flag.
+Thumbnail current-page preview and HD-pipeline preview both use the same safe
+physical screen-preview operation, even though their UI state machines are
+separate:
 
-### Screen preview operation
-
-For each camera fetch:
-
-1. acquire normal Gallery command admission;
-2. ensure physical mode is `screenPreview` by writing `D226=1`;
+1. acquire Gallery command admission;
+2. write `D226=1`;
 3. read fresh ObjectInfo;
-4. read exactly the reported screen-preview bytes;
-5. validate and store the image;
-6. reset to `D226=0` at the serialized operation boundary;
-7. update physical state to `reset` or `unknown` if reset failed.
+4. read exactly the reported preview bytes;
+5. validate the encoded image;
+6. reset `D226=0` at the serialized operation boundary.
 
-### Compressed download operation
+Compressed download prepares its companion resize property and writes
+`D226=1` before fresh ObjectInfo. Original download writes `D226=2` before
+fresh ObjectInfo. Switching queue modes requires reset and fresh preparation.
 
-For a queued compressed download:
+No remembered session-lifetime flag may suppress the original `D226=2` write
+after a preview reset. A failed property write or reset marks physical state
+unknown.
 
-1. pause and join the shared HD camera-fetch pump;
-2. acquire the exclusive download lease;
-3. prepare the required resize/compression companion property;
-4. explicitly write `D226=1` before fresh ObjectInfo;
-5. read ObjectInfo only after all preparation responses succeed;
-6. transfer exactly the fresh compressed size;
-7. retain this mode only while consecutive serialized queue items request the
-   same compressed mode.
+## Download Cancellation Return
 
-The coordinator distinguishes `screenPreview` from `compressedDownload` even
-though both use `D226=1`, because their admission, companion properties, result
-validation, and lifecycle are different.
+User cancellation is not a Gallery exit.
 
-### Original download operation
+The required sequence is:
 
-For a queued original download:
+1. request soft cancellation;
+2. drain at a verified chunk boundary;
+3. finalize the active download item;
+4. reset physical transfer mode;
+5. release exclusive download admission;
+6. resume the originating Gallery content flow;
+7. dismiss download UI back to the same Gallery mode and handle.
 
-1. pause and join the shared HD camera-fetch pump;
-2. acquire the exclusive download lease;
-3. explicitly write `D226=2` before the first fresh ObjectInfo, regardless of
-   a remembered logical download mode;
-4. read fresh ObjectInfo only after the property response succeeds;
-5. use that fresh size for ReadImage transfer;
-6. retain this mode only while consecutive serialized queue items request
-   original mode.
+Thumbnail origin returns to the thumbnail grid. HD origin returns to the
+vertical HD list. Only a separately proven terminal connection/session failure
+may route Home.
 
-When the queue switches between compressed and original modes, the coordinator
-performs the required reset and fresh preparation before ObjectInfo. When the
-queue completes or is cancelled, it writes `D226=0`. A reset failure marks the
-mode unknown and blocks Gallery camera requests until a fresh preparation or
-session recovery succeeds.
+## State Ownership
 
-No session-lifetime optimization may skip step 3 after a preview operation.
-The debug `session` lifetime experiment must not alter correctness in an app
-installed for user testing.
+| State | Owner |
+|---|---|
+| Catalog generation, membership, filter, order | Existing `CameraGalleryCatalogRuntime` / `CameraGallerySession` |
+| Thumbnail viewport and thumbnail fetches | Existing thumbnail pipeline |
+| Thumbnail full-screen current-page task | Existing `NativePhotoPreviewViewController` page |
+| Vertical HD/full-screen camera priority | Existing `CameraGalleryHDPreviewPipeline` |
+| Thirty retained HD entries | Existing `NativeGalleryHighDefinitionPreviewCache` |
+| HD full-screen current handle and zoom | Dedicated linked-HD full-screen controller |
+| Selection/download state | Existing `CameraSessionRuntime` |
+| Physical D226 mode | `CameraVendorTransferModeCoordinator` inside existing PTP session |
+| Gallery/Home navigation | Existing Gallery/session navigation owner |
 
-### Download safety evidence
+The change must not move these states into a new parallel Runtime or controller
+singleton.
 
-Before every file transfer, log one unsuppressed summary containing:
+## Error and Lifecycle Semantics
 
-- purpose;
-- requested logical mode;
-- physical mode before and after preparation;
-- whether a property write occurred;
-- handle;
-- fresh ObjectInfo size;
-- cached size, if any;
-- selected transfer size.
+### Thumbnail full-screen failure
 
-This makes `mode=original` with `freshSize=167936` immediately attributable and
-prevents diagnostic policies from hiding the state transition that matters.
+- Keep the thumbnail visible.
+- Mark only the current page request failed.
+- Retry only when that page is still displayed or the user explicitly retries.
+- Never start adjacent requests as recovery.
 
-## Lifecycle and Concurrency
+### HD failure
 
-- HD camera requests remain serial.
-- Vertical-list-to-full-screen changes focus; it does not disconnect or recreate
-  PTP.
-- Full-screen-to-list or full-screen-to-thumbnail preserves compressed session
-  files and asset availability.
-- Download admission pauses and joins the active HD camera-fetch pump, then
-  owns the command lane exclusively.
-- Local disk reads and image decodes may run concurrently because they do not
-  use PTP; they are cancelled only for UI lifecycle, stale identity, or memory
-  pressure.
-- Filter or Catalog replacement cancels old-generation work and rejects late
-  publications by Catalog identity.
-- Disconnect clears compressed session files, decoded caches, focus, and mode
-  coordinator state.
+- Mark only that handle failed for the current Catalog identity.
+- Keep a thumbnail or existing lower-quality decoded image visible.
+- Explicit retry re-enters the HD pipeline for that handle.
+- Cache eviction is not reported as camera failure.
 
-## Error Semantics
+### Catalog replacement
 
-### Camera fetch failure
+- Cancel old-identity camera tasks at the safe boundary.
+- Reject late results by session epoch, generation, snapshot identity, handle,
+  and media variant.
+- Full-screen close does not scroll into a different Catalog.
 
-- Marks only that handle failed for the current Catalog identity.
-- Existing lower-quality thumbnail remains visible.
-- Explicit retry removes the failure and submits the handle to the shared
-  pipeline.
+### Memory warning
 
-### Local disk/decode failure
+- Release full-screen native decode first.
+- Release adjacent fit decodes next.
+- Release off-screen vertical-card decodes next.
+- Do not change the 30-entry encoded cache contract merely because decoded
+  images were released.
+- Memory pressure alone does not start a camera request.
 
-- Does not mark the camera fetch failed.
-- Removes only the invalid local asset or decoded variant.
-- If compressed bytes remain valid, retry local decode.
-- If the disk asset is missing, show the thumbnail and request camera data only
-  when the item becomes current/visible or the user explicitly retries.
+### Disconnect
 
-### Catalog replacement while full-screen is open
-
-- The current full-screen snapshot remains immutable until close or terminal
-  transport loss.
-- Late data from the replaced identity is rejected.
-- Close does not attempt return positioning into the new Catalog.
-
-### Download interruption
-
-- Cancellation drains at a verified chunk boundary.
-- The exclusive finalizer resets transfer mode before Gallery work resumes.
-- Gallery focus is restored only after Runtime returns to `galleryReady`.
-- Runtime publishes a distinct user-cancelled result carrying the originating
-  browse mode and return handle. The controller dismisses back to Gallery and
-  must not translate this result into Gallery exit or Home navigation.
-- A transport failure discovered during cancellation is reported separately;
-  only that terminal failure may start the existing disconnect route.
+- Cancel and join both full-screen current-page work and HD-pipeline work.
+- Clear the 30-entry cache for the ended session.
+- Clear transfer-mode coordinator state.
+- Route according to the existing terminal disconnect owner.
 
 ## Diagnostics
 
-Add concise, unsuppressed markers at component boundaries:
+Required unsuppressed boundary logs:
 
 ```text
-HD_ASSET_FETCH_BEGIN handle=... focus=vertical-list|fullscreen
-HD_ASSET_FETCH_END handle=... encodedBytes=... disk=true
-HD_ASSET_RESTORE handle=... source=memory|disk
-HD_ASSET_DISK_EVICT handle=... encodedBytes=... reason=budget|os-purge
-HD_DECODE_BEGIN handle=... tier=vertical-list|fit|native targetPixels=...
+THUMB_FULLSCREEN_PAGE_DISPLAYED handle=...
+THUMB_FULLSCREEN_PREVIEW_BEGIN handle=... source=thumbnail
+THUMB_FULLSCREEN_PREVIEW_END handle=... encodedBytes=...
+THUMB_FULLSCREEN_PREVIEW_CANCEL handle=... reason=page-changed|closed|download
+THUMB_FULLSCREEN_HD_CACHE_UNCHANGED handle=... retained=...
+HD_PRIORITY_PLAN focus=list|fullscreen candidates=... retained=...
+HD_CACHE_STORE handle=... retained=... limit=30
+HD_CACHE_EVICT handle=... retained=30 reason=lru
+HD_DECODE_BEGIN handle=... tier=vertical|fit|native targetPixels=...
 HD_DECODE_END handle=... tier=... decodedPixels=... costBytes=...
-HD_DECODE_CACHE_HIT handle=... tier=...
-HD_FOCUS_CHANGE from=vertical-list|inactive to=fullscreen handle=...
 HD_FULLSCREEN_PAGE_SETTLED handle=...
 HD_FULLSCREEN_CLOSE_RETURN handle=... catalogMatch=true|false
-PTP_TRANSFER_MODE_PREPARE purpose=... before=... requested=... wrote=true|false
+PTP_TRANSFER_MODE_PREPARE purpose=... before=... requested=... wrote=...
 PTP_TRANSFER_MODE_READY purpose=... actual=... freshSize=...
+DOWNLOAD_CANCEL_RETURN mode=thumbnail|highDefinition handle=... terminal=false
 ```
 
-The logs must distinguish camera fetch, disk restoration, compressed cache hit,
-fit decode, and native decode. Repeated native decode for one settled handle is
-a defect unless preceded by memory pressure or target-key change.
+The logs must prove that thumbnail full-screen never requests an undisplayed
+page and that the HD retained count never exceeds 30.
 
 ## File Boundaries
 
-### Create
-
-- `ios/Runner/CameraCore/Gallery/CameraGalleryHDPreviewStore.swift`
-  - authoritative asset records, compressed memory LRU, session disk files.
-- `ios/Runner/NativeGalleryHDPreviewImageRepository.swift`
-  - target-aware ImageIO decode, task coalescing, decoded variant caches.
-- `ios/Runner/CameraVendorTransferModeCoordinator.swift`
-  - physical CameraVendor transfer-mode state and legal transitions.
-
-### Modify
+### Preserve
 
 - `ios/Runner/CameraCore/Gallery/CameraGalleryHDPreviewPipeline.swift`
-  - one vertical-list/full-screen focus and one fetch priority pump.
-- `ios/Runner/CameraCore/Gallery/CameraGallerySession.swift`
-  - expose focus changes and shared asset access.
-- `ios/Runner/CameraSessionRuntime.swift`
-  - forward HD focus and shared image/data access without becoming another owner.
-- `ios/Runner/NativeGalleryViewController.swift`
-  - remove full-size HD decode cache, request vertical-list variants, open navigation
-    context, and restore current handle on close.
+  - remains the single vertical-HD and HD-full-screen fetch owner.
 - `ios/Runner/NativePhotoPreviewViewController.swift`
-  - page through the provided filtered sequence, use fit/native tiers, and
-    return current handle.
-- `ios/Runner/CameraVendorPtpSession.swift`
-  - route all `D226` writes through the transfer-mode coordinator.
-- `ios/Runner/CameraVendorTransferPolicy.swift`
-  - remove correctness dependence on session-lifetime remembered mode.
-- `ios/RunnerTests/RunnerTests.swift`
-  - add state, cache, paging, return-position, and transfer-mode regressions.
-- `ios/project.yml`
-  - include newly created Swift files if project generation requires explicit
-    source declarations.
+  - remains the thumbnail-origin full-screen flow;
+  - keep thumbnail-first and current-page-only behavior.
+- `ios/Runner/NativeGalleryViewController.swift`
+  - remains browse-mode and navigation owner.
+- `ios/Runner/NativePhotoPreviewViewController.swift`:
+  `NativeGalleryHighDefinitionPreviewCache`
+  - remains the 30-entry encoded HD cache in the first implementation;
+  - do not replace or relocate it as unrelated refactoring.
 
-The existing large view-controller files are not broadly refactored beyond
-moving the new cache/decode responsibilities into focused files.
+### Create
+
+- `ios/Runner/NativeGalleryHDFullScreenViewController.swift`
+  - linked HD paging UI and current-handle return contract;
+  - submits focus to the existing HD pipeline, never fetches PTP directly.
+- `ios/Runner/NativeGalleryHDTargetDecoder.swift`
+  - ImageIO target-aware vertical/fit/native decoding;
+  - contains no Gallery membership or camera-request state.
+- `ios/Runner/CameraVendorTransferModeCoordinator.swift`
+  - physical transfer-mode transitions under the existing PTP session.
+
+### Modify narrowly
+
+- `ios/Runner/NativeGalleryViewController.swift`
+  - branch preview entry by browse mode;
+  - thumbnail opens existing controller;
+  - HD opens linked-HD controller;
+  - restore the returned handle to the correct collection mode.
+- `ios/Runner/CameraCore/Gallery/CameraGalleryHDPreviewPipeline.swift`
+  - add explicit list/full-screen focus priority without adding another worker.
+- `ios/Runner/CameraCore/Gallery/CameraGallerySession.swift`
+  - forward HD focus intents through the existing session boundary.
+- `ios/Runner/CameraSessionRuntime.swift`
+  - expose those existing-session intents; do not own another cache or loader.
+- `ios/Runner/CameraVendorPtpSession.swift`
+  - route transfer-mode writes through the coordinator.
+- `ios/Runner/CameraVendorTransferPolicy.swift`
+  - remove correctness dependence on Debug session-lifetime D226 suppression.
+- `ios/RunnerTests/RunnerTests.swift`
+  - add behavior, cache, mode, navigation, and ownership regressions.
+- `ios/project.yml`
+  - include new focused Swift files only if source generation requires it.
+
+No broad `NativeGalleryViewController` split, Catalog refactor, Runtime
+replacement, or new PTP lane belongs in this change.
 
 ## Test Strategy
 
-### Store tests
+### Thumbnail full-screen tests
 
-- Memory eviction keeps the asset record and disk availability.
-- Disk eviction uses encoded-byte LRU, protects pinned handles, and has no
-  30-item stop condition.
-- Disk restoration does not create a camera request.
-- Session replacement rejects and removes previous-epoch assets.
-- Atomic write failure never publishes an available asset.
+- Initial page displays thumbnail before HD data arrives.
+- Creating previous/next page controllers causes zero camera requests.
+- Only the page marked displayed requests its handle.
+- Completed swipe cancels the previous task and requests the new current page.
+- Cancelled swipe keeps the original current handle.
+- Thumbnail full-screen never submits HD-list focus or adjacent prefetch.
+- A thumbnail current-page fetch does not insert, touch, or evict an HD-list
+  cache entry.
+- Closing returns current handle to the thumbnail grid.
 
-### Decode tests
+### HD cache tests
 
-- Vertical-list decode output does not exceed the requested pixel target.
-- Cache keys distinguish vertical-list, fit, and native variants.
-- Duplicate requests for the same key share one decode task.
-- Evicting a decoded image does not change asset availability.
-- Memory warning keeps compressed disk assets while removing decoded variants.
+- Cache retains at most 30 photo entries.
+- Storing entry 31 evicts exactly the LRU unpinned entry.
+- Eviction removes memory data, disk file, loaded state, orientation, and
+  decoded variants for that handle.
+- HD-list or linked-HD access refreshes LRU position; the thumbnail
+  full-screen read-only hit does not.
+- Loading continues beyond 30 total visited photos while retained count remains
+  30.
+- Current HD full-screen handle cannot be evicted during an active transition.
 
-### Focus and paging tests
+### Linked HD full-screen tests
 
-- Vertical list and full-screen use the same filtered display-handle order.
-- RAW sidecars are not emitted as blank full-screen pages.
-- Full-screen priority is current, next, previous.
-- Settled page changes current handle; cancelled paging restores the visible
-  handle.
-- Closing returns the current handle and Catalog identity.
-- Matching Catalog scrolls to the returned handle; replaced Catalog does not.
+- It uses the HD snapshot order, not thumbnail full-screen request state.
+- Priority is current, then next, then previous.
+- Only current retains native decode; adjacent pages use fit decode.
+- RAW sidecars do not create blank pages.
+- Closing returns current handle and centers the HD list on it.
+- Replaced Catalog rejects return positioning and late results.
 
-### Transfer-mode tests
+### Transfer and cancellation tests
 
-- HD preview writes `D226=1` before ObjectInfo and resets after the request.
-- Compressed download prepares its companion property and writes `D226=1`
-  before fresh ObjectInfo.
-- Original download writes `D226=2` before fresh ObjectInfo after any preview.
-- Switching compressed/original queue items performs reset and fresh mode
-  preparation before ObjectInfo.
-- A remembered original mode cannot suppress the write after `D226=0`.
+- Both preview flows write `D226=1` before fresh ObjectInfo and reset afterward.
+- Compressed download prepares companion property and `D226=1` before ObjectInfo.
+- Original download always writes `D226=2` before fresh ObjectInfo after preview.
+- Failed preparation/reset marks physical mode unknown.
 - User cancellation resets mode before Gallery requests resume.
-- User cancellation returns the originating Gallery context and never emits a
-  Gallery-exit/Home-navigation outcome by itself.
-- Failed property/reset writes mark physical mode unknown.
-- No source outside `CameraVendorTransferModeCoordinator` performs a direct
-  `D226` write.
+- User cancellation returns to the originating Gallery mode and never emits
+  Home navigation by itself.
 
-### Regression and build verification
+### Architecture guard tests
 
-- Run focused new tests first.
-- Run the complete `RunnerTests` suite and compare executed-test count with the
-  current baseline.
+- There remains one `CameraGalleryCatalogRuntime` owner.
+- There remains one `CameraGalleryHDPreviewPipeline` camera worker.
+- Thumbnail full-screen performs current-only requests without activating that
+  worker.
+- There remains one PTP command lane and one download manager.
+- No UI controller writes `D226` directly.
+
+### Verification
+
+- Run focused tests first.
+- Run the complete `RunnerTests` suite and report executed-test count.
 - Run `git diff --check`.
-- Generate the Xcode project if required by `project.yml` changes.
 - Build Debug for the connected iPhone target.
+- Install and launch on the physical iPhone.
+- Treat simulator/build/install proof separately from real-camera behavior.
 
 ## Physical-Device Acceptance
 
-Use the same iPhone and real camera for the complete flow:
+Use one continuous iPhone and camera session:
 
-1. Enter HD mode and scroll rapidly through at least 30 cards.
-2. Confirm encoded preview logs remain compressed-preview sized (typically
-   `1-6 MB` for the observed camera and within the protocol safety cap) while
-   vertical-list decoded dimensions remain near the card target. Do not compare
-   encoded bytes with RGBA decoded cost.
-3. Confirm a loaded card never returns to a camera spinner after decoded-cache
-   eviction.
-4. Open one card full-screen and verify current page native promotion.
-5. Swipe at least ten pages in both directions; confirm only the settled current
-   page retains a native decode.
-6. Close on a different photo and confirm the vertical list returns to that
-   handle and resumes priority around it.
-7. Reopen previously visited pages and confirm `source=disk` or cache-hit logs,
-   not repeated camera reads.
-8. Select photos from both vertical and full-screen surfaces and confirm both
-   reflect the same queue state.
-9. Start original download immediately after HD/full-screen browsing.
-10. Confirm an unsuppressed `D226=2` preparation precedes fresh ObjectInfo.
-11. Confirm downloaded byte counts match original ObjectInfo, not `167936` and
-    not the `1-6 MB` screen preview.
-12. Cancel a download, return to Gallery, and repeat HD plus original download
-    without reconnecting.
-13. Confirm cancellation preserves the originating filter, browse mode,
-    selection, and return handle, with no Home navigation unless a separate
-    terminal disconnect is logged.
-
-Compile-only, simulator-only, install-only, and old logs do not satisfy this
-acceptance matrix.
+1. In thumbnail mode, open full-screen and confirm thumbnail appears first.
+2. Stay on one page and confirm only that handle gets an HD camera request.
+3. Confirm that request does not change the HD list's retained count or LRU.
+4. Begin but cancel a horizontal swipe and confirm no undisplayed handle fetch.
+5. Complete a swipe and confirm the new current page alone begins loading.
+6. Close on a different page and confirm the thumbnail grid returns to it.
+7. Enter vertical HD mode and scroll through more than 30 photos.
+8. Confirm loading continues while `retained <= 30` at every cache log.
+9. Confirm entry 31 produces one LRU eviction rather than stopping the loader.
+10. Open HD full-screen and swipe both directions.
+11. Confirm HD priority is current/next/previous and uses the same 30-entry
+    cache as the vertical HD list.
+12. Confirm only the settled current page retains a native decode.
+13. Close on a different page and confirm the vertical HD list centers it and
+    resumes loading around it.
+14. Start original download immediately after both preview flows.
+15. Confirm an unsuppressed `D226=2` preparation precedes fresh ObjectInfo and
+    the saved byte count is the original size, not the HD preview size.
+16. Cancel download and confirm the app returns to the originating Gallery mode,
+    with no Home navigation unless an independent terminal disconnect is logged.
 
 ## Acceptance Criteria
 
-The design is complete when all of the following are true:
+The design is correctly implemented only when:
 
-- vertical HD and full-screen use one ordered sequence and one fetch/store
-  state;
-- vertical cards are decoded to a bounded target rather than native preview
-  dimensions;
-- only one full-screen page retains a native HD bitmap;
-- full-screen closes back to the current handle;
-- decoded eviction never changes a successful item to camera-loading state;
-- disk restoration never re-enters PTP;
-- disk retention is byte-budgeted and never stops loading at an arbitrary
-  30-item count;
-- original download always prepares physical original mode before fresh
-  ObjectInfo;
-- user cancellation returns to the originating Gallery context after mode
-  reset and does not route Home by itself;
-- the real-camera flow proves correct original byte counts after HD browsing;
-- full `RunnerTests`, build, install, launch, and physical-device evidence are
-  reported separately.
+- thumbnail full-screen remains thumbnail-first, current-page-only, and has no
+  adjacent prefetch;
+- vertical HD and HD full-screen share the existing HD pipeline and the same
+  30-entry LRU cache;
+- the cache never retains more than 30 photo entries and loading can continue
+  beyond 30 visited photos by eviction;
+- vertical cards use bounded target decode instead of native-sized RGBA images;
+- only the settled HD full-screen page retains a native HD-preview decode;
+- each full-screen flow returns to the correct originating Gallery mode and
+  current handle;
+- D226 preparation is physically correct for preview, compressed download, and
+  original download;
+- user cancellation returns to Gallery rather than Home;
+- no duplicate Catalog owner, HD camera worker, PTP lane, Runtime, or download
+  manager is introduced.
