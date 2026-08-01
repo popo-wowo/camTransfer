@@ -6763,6 +6763,25 @@ final class RunnerTests: XCTestCase {
     )
   }
 
+  func testHomePairingProbeDoesNotRestartAfterReturningFromCameraSession() {
+    XCTAssertTrue(
+      NativeHomePairingProbePolicy.shouldBegin(
+        hasRememberedCamera: true,
+        isConnectionWorkerActive: false,
+        hasPairingProbeTask: false,
+        hasReturnedFromCameraSession: false
+      )
+    )
+    XCTAssertFalse(
+      NativeHomePairingProbePolicy.shouldBegin(
+        hasRememberedCamera: true,
+        isConnectionWorkerActive: false,
+        hasPairingProbeTask: false,
+        hasReturnedFromCameraSession: true
+      )
+    )
+  }
+
   func testSpecifiedObjectEmptySnapshotRecoveryRetriesOnlyEmptyFirstSnapshot() {
     XCTAssertTrue(
       CameraVendorSpecifiedObjectEmptySnapshotRecoveryPolicy.shouldRetry(

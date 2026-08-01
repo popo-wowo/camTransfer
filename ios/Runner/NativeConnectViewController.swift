@@ -299,6 +299,20 @@ enum NativeHomePassiveConnectionResetPolicy {
   }
 }
 
+enum NativeHomePairingProbePolicy {
+  static func shouldBegin(
+    hasRememberedCamera: Bool,
+    isConnectionWorkerActive: Bool,
+    hasPairingProbeTask: Bool,
+    hasReturnedFromCameraSession: Bool
+  ) -> Bool {
+    hasRememberedCamera
+      && !isConnectionWorkerActive
+      && !hasPairingProbeTask
+      && !hasReturnedFromCameraSession
+  }
+}
+
 enum NativeConnectFlowResultLogPolicy {
   static func message(
     state: IOSCameraConnectFlowState,
@@ -935,6 +949,7 @@ final class NativeConnectViewController: UIViewController {
   private let wiredImportProbeService = WiredCameraImportService()
   private var autoDownloadRule = CameraAutoDownloadRuleStore.load()
   private var quickDownloadTask: Task<Void, Never>?
+  private var hasReturnedFromCameraSession = false
   private var cameras: [IOSCameraDiscoveredCamera] = []
   private var wiredImportDevices: [WiredCameraImportDevice] = []
   private weak var scanController: NativeScanViewController?
@@ -1076,8 +1091,17 @@ final class NativeConnectViewController: UIViewController {
 
   private func beginPairingProbeIfNeeded() {
     guard let record = cameraSessionRuntime.rememberedCameraRecords.first else { return }
-    guard !cameraSessionRuntime.isConnectionWorkerActive else { return }
-    guard pairingProbeTask == nil else { return }
+    guard NativeHomePairingProbePolicy.shouldBegin(
+      hasRememberedCamera: true,
+      isConnectionWorkerActive: cameraSessionRuntime.isConnectionWorkerActive,
+      hasPairingProbeTask: pairingProbeTask != nil,
+      hasReturnedFromCameraSession: hasReturnedFromCameraSession
+    ) else {
+      if hasReturnedFromCameraSession {
+        CameraVendorFileLogger.log("[PAIRING_PROBE_UI_SKIP] reason=returned-from-camera-session")
+      }
+      return
+    }
 
     CameraVendorFileLogger.log("[PAIRING_PROBE_UI_BEGIN] peripheralID=\(record.peripheralID)")
 
@@ -1957,6 +1981,7 @@ final class NativeConnectViewController: UIViewController {
     case .recoveryDownloadCenter(let payload):
       finishRecoveredDownloadEntryIfPossible(payload: payload)
     case .home:
+      hasReturnedFromCameraSession = true
       navigationController?.popToViewController(self, animated: true)
       updateRememberedCameraCard()
     }
