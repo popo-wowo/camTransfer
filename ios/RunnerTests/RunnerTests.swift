@@ -3608,6 +3608,83 @@ final class RunnerTests: XCTestCase {
     )
   }
 
+  func testConnectedApplicationHandshakeStartsApplicationInfoWriteAtMostOncePerGeneration() {
+    XCTAssertTrue(
+      CameraVendorConnectedApplicationHandshakePolicy.shouldStartApplicationInfoWrite(
+        attemptedGeneration: nil,
+        currentGeneration: 4
+      )
+    )
+    XCTAssertTrue(
+      CameraVendorConnectedApplicationHandshakePolicy.shouldStartApplicationInfoWrite(
+        attemptedGeneration: 3,
+        currentGeneration: 4
+      )
+    )
+    XCTAssertFalse(
+      CameraVendorConnectedApplicationHandshakePolicy.shouldStartApplicationInfoWrite(
+        attemptedGeneration: 4,
+        currentGeneration: 4
+      )
+    )
+  }
+
+  func testConnectedApplicationHandshakeRejectsStaleIdentityWriteCallbacks() {
+    XCTAssertTrue(
+      CameraVendorConnectedApplicationHandshakePolicy.acceptsIdentityWriteCallback(
+        characteristicGeneration: 4,
+        currentGeneration: 4,
+        isCurrentPeripheral: true,
+        isCurrentCharacteristic: true
+      )
+    )
+    XCTAssertFalse(
+      CameraVendorConnectedApplicationHandshakePolicy.acceptsIdentityWriteCallback(
+        characteristicGeneration: 3,
+        currentGeneration: 4,
+        isCurrentPeripheral: true,
+        isCurrentCharacteristic: true
+      )
+    )
+    XCTAssertFalse(
+      CameraVendorConnectedApplicationHandshakePolicy.acceptsIdentityWriteCallback(
+        characteristicGeneration: 4,
+        currentGeneration: 4,
+        isCurrentPeripheral: false,
+        isCurrentCharacteristic: true
+      )
+    )
+    XCTAssertFalse(
+      CameraVendorConnectedApplicationHandshakePolicy.acceptsIdentityWriteCallback(
+        characteristicGeneration: 4,
+        currentGeneration: 4,
+        isCurrentPeripheral: true,
+        isCurrentCharacteristic: false
+      )
+    )
+  }
+
+  func testConnectedApplicationHandshakeCompletesIdentityAtMostOncePerGeneration() {
+    XCTAssertTrue(
+      CameraVendorConnectedApplicationHandshakePolicy.shouldCompleteIdentityHandshake(
+        completedGeneration: nil,
+        currentGeneration: 4
+      )
+    )
+    XCTAssertTrue(
+      CameraVendorConnectedApplicationHandshakePolicy.shouldCompleteIdentityHandshake(
+        completedGeneration: 3,
+        currentGeneration: 4
+      )
+    )
+    XCTAssertFalse(
+      CameraVendorConnectedApplicationHandshakePolicy.shouldCompleteIdentityHandshake(
+        completedGeneration: 4,
+        currentGeneration: 4
+      )
+    )
+  }
+
   func testBluetoothIdentityWriteCompletionIsGatedByConnectedApplicationInfo() throws {
     let source = try runnerSource("CameraVendorBluetoothService.swift")
     let start = try XCTUnwrap(
@@ -3661,6 +3738,23 @@ final class RunnerTests: XCTestCase {
     if let identifierReadyRange, let completionRange {
       XCTAssertLessThan(identifierReadyRange.lowerBound, completionRange.lowerBound)
     }
+  }
+
+  func testBluetoothConnectedApplicationTimeoutRequiresCurrentGeneration() throws {
+    let source = try runnerSource("CameraVendorBluetoothService.swift")
+    let start = try XCTUnwrap(
+      source.range(of: "private func scheduleConnectedApplicationInfoTimeout(")?.lowerBound
+    )
+    let end = try XCTUnwrap(
+      source.range(
+        of: "private func completeConnectedApplicationInfoWrite(on peripheral: CBPeripheral)",
+        range: start..<source.endIndex
+      )?.lowerBound
+    )
+    let body = String(source[start..<end])
+
+    XCTAssertTrue(body.contains("generation == self.secureHandshakeGeneration"))
+    XCTAssertTrue(body.contains("currentGeneration: self.secureHandshakeGeneration"))
   }
 
   func testStandbyUuidMatchesCurrentCameraVendorDocumentation() {

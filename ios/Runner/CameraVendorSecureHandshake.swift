@@ -45,6 +45,31 @@ enum CameraVendorConnectedApplicationHandshakePolicy {
   ) -> Bool {
     pendingGeneration == currentGeneration && isCurrentCharacteristic
   }
+
+  static func shouldStartApplicationInfoWrite(
+    attemptedGeneration: UInt64?,
+    currentGeneration: UInt64
+  ) -> Bool {
+    attemptedGeneration != currentGeneration
+  }
+
+  static func acceptsIdentityWriteCallback(
+    characteristicGeneration: UInt64?,
+    currentGeneration: UInt64,
+    isCurrentPeripheral: Bool,
+    isCurrentCharacteristic: Bool
+  ) -> Bool {
+    characteristicGeneration == currentGeneration
+      && isCurrentPeripheral
+      && isCurrentCharacteristic
+  }
+
+  static func shouldCompleteIdentityHandshake(
+    completedGeneration: UInt64?,
+    currentGeneration: UInt64
+  ) -> Bool {
+    completedGeneration != currentGeneration
+  }
 }
 
 enum CameraVendorSecureIdentificationAckPolicy {

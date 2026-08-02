@@ -2720,6 +2720,10 @@ final class CameraVendorBluetoothService: NSObject {
   private var secureHandshakeReconnectCount = 0
   private var secureIdentificationNumberAlreadyPaired = false
   private var secureHandshakeGeneration: UInt64 = 0
+  private var connectedDeviceNameCharacteristicGeneration: UInt64?
+  private var connectedDeviceIdentificationCharacteristicGeneration: UInt64?
+  private var connectedApplicationInfoWriteGeneration: UInt64?
+  private var completedIdentityHandshakeGeneration: UInt64?
   private var pendingConnectedApplicationInfoGeneration: UInt64?
   private var rememberedPairedCameras: [CameraVendorPairedCameraRecord]
   private var rememberedPairedCamera: CameraVendorPairedCameraRecord?
@@ -3273,6 +3277,16 @@ final class CameraVendorBluetoothService: NSObject {
         )
         return
       }
+      guard CameraVendorConnectedApplicationHandshakePolicy.shouldStartApplicationInfoWrite(
+        attemptedGeneration: connectedApplicationInfoWriteGeneration,
+        currentGeneration: secureHandshakeGeneration
+      ) else {
+        appendObservation(
+          "BLE_HANDSHAKE_GATE appInfo=required result=ignored-duplicate generation=\(secureHandshakeGeneration)"
+        )
+        return
+      }
+      connectedApplicationInfoWriteGeneration = secureHandshakeGeneration
       guard let characteristic = connectedApplicationInfoCharacteristic else {
         failConnectedApplicationHandshake("缺少 Connected Application Information 特征")
         return
@@ -3306,9 +3320,10 @@ final class CameraVendorBluetoothService: NSObject {
     let timeout = DispatchWorkItem { [weak self, weak peripheral, weak characteristic] in
       guard let self, let peripheral, let characteristic,
             self.selectedPeripheral?.identifier == peripheral.identifier,
+            generation == self.secureHandshakeGeneration,
             CameraVendorConnectedApplicationHandshakePolicy.acceptsWriteCallback(
               pendingGeneration: self.pendingConnectedApplicationInfoGeneration,
-              currentGeneration: generation,
+              currentGeneration: self.secureHandshakeGeneration,
               isCurrentCharacteristic: characteristic === self.connectedApplicationInfoCharacteristic
             ) else {
         return
@@ -3347,6 +3362,16 @@ final class CameraVendorBluetoothService: NSObject {
   }
 
   private func completeIdentityHandshake(on peripheral: CBPeripheral) {
+    guard CameraVendorConnectedApplicationHandshakePolicy.shouldCompleteIdentityHandshake(
+      completedGeneration: completedIdentityHandshakeGeneration,
+      currentGeneration: secureHandshakeGeneration
+    ) else {
+      appendObservation(
+        "BLE_HANDSHAKE_GATE result=ignored-duplicate-completion generation=\(secureHandshakeGeneration)"
+      )
+      return
+    }
+    completedIdentityHandshakeGeneration = secureHandshakeGeneration
     hasWrittenPairingIdentifier = true
     secureHandshakePhase = .completed
     handleIdentifierWriteCompletion(on: peripheral)
@@ -3777,6 +3802,10 @@ final class CameraVendorBluetoothService: NSObject {
     connectedApplicationInfoCharacteristic = nil
     pendingConnectedApplicationInfoGeneration = nil
     secureHandshakeGeneration &+= 1
+    connectedDeviceNameCharacteristicGeneration = nil
+    connectedDeviceIdentificationCharacteristicGeneration = nil
+    connectedApplicationInfoWriteGeneration = nil
+    completedIdentityHandshakeGeneration = nil
   }
 
   private func makeCoreRememberedRecord(
@@ -5042,8 +5071,10 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
         pairingCharacteristic = characteristic
       } else if characteristic.uuid == connectedDeviceIdentificationCharacteristicUUID {
         connectedDeviceIdentificationCharacteristic = characteristic
+        connectedDeviceIdentificationCharacteristicGeneration = secureHandshakeGeneration
       } else if characteristic.uuid == connectedDeviceNameCharacteristicUUID {
         connectedDeviceNameCharacteristic = characteristic
+        connectedDeviceNameCharacteristicGeneration = secureHandshakeGeneration
       } else if characteristic.uuid == connectedApplicationInfoCharacteristicUUID {
         connectedApplicationInfoCharacteristic = characteristic
       } else if isHandshakeMetadataCharacteristic(characteristic) {
@@ -5380,6 +5411,28 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
 
       completeConnectedApplicationInfoWrite(on: peripheral)
       return
+    }
+
+    if characteristic.uuid == connectedDeviceNameCharacteristicUUID
+        || characteristic.uuid == connectedDeviceIdentificationCharacteristicUUID {
+      let characteristicGeneration = characteristic.uuid == connectedDeviceNameCharacteristicUUID
+        ? connectedDeviceNameCharacteristicGeneration
+        : connectedDeviceIdentificationCharacteristicGeneration
+      let isCurrentCharacteristic = characteristic.uuid == connectedDeviceNameCharacteristicUUID
+        ? characteristic === connectedDeviceNameCharacteristic
+        : characteristic === connectedDeviceIdentificationCharacteristic
+      guard CameraVendorConnectedApplicationHandshakePolicy.acceptsIdentityWriteCallback(
+        characteristicGeneration: characteristicGeneration,
+        currentGeneration: secureHandshakeGeneration,
+        isCurrentPeripheral: selectedPeripheral?.identifier == peripheral.identifier,
+        isCurrentCharacteristic: isCurrentCharacteristic
+      ) else {
+        appendObservation(
+          "BLE_IDENTITY_WRITE_ACK result=ignored-stale uuid=\(characteristic.uuid.uuidString) " +
+          "generation=\(secureHandshakeGeneration)"
+        )
+        return
+      }
     }
 
     if let error = error as NSError? {
