@@ -3,12 +3,10 @@ import UIKit
 enum NativeAutoDownloadSettingsSavePolicy {
   static func resolvedRule(
     _ rule: CameraAutoDownloadRule,
-    forcesEnabled: Bool
+    forcesEnabled _: Bool
   ) -> CameraAutoDownloadRule {
     var resolvedRule = rule
-    if forcesEnabled {
-      resolvedRule.isEnabled = true
-    }
+    resolvedRule.isEnabled = true
     return resolvedRule
   }
 }
@@ -21,7 +19,6 @@ final class NativeAutoDownloadSettingsViewController: UIViewController {
 
   private let scrollView = UIScrollView()
   private let contentStack = UIStackView()
-  private let enableSwitch = UISwitch()
   private let disconnectSwitch = UISwitch()
 
   private let formatChips = NativeChipBarControl()
@@ -79,10 +76,6 @@ final class NativeAutoDownloadSettingsViewController: UIViewController {
       contentStack.widthAnchor.constraint(equalTo: scrollView.widthAnchor),
     ])
 
-    if !forcesEnabledOnSave {
-      contentStack.addArrangedSubview(makeSwitchRow(title: "启用自动下载", toggle: enableSwitch, isOn: rule.isEnabled, action: #selector(enableChanged)))
-    }
-
     let formatIDs = ["all", "jpg", "raw", "heif"]
     formatChips.allowsMultipleSelection = true
     formatChips.exclusiveSelectionID = "all"
@@ -138,7 +131,7 @@ final class NativeAutoDownloadSettingsViewController: UIViewController {
     footerLabel.font = .preferredFont(forTextStyle: .footnote)
     footerLabel.textColor = .secondaryLabel
     footerLabel.numberOfLines = 0
-    footerLabel.text = "连接相机后将自动按此规则筛选并开始下载，无需手动进入图库选择。"
+    footerLabel.text = "点击快速下载后，将按此规则筛选并开始下载。"
     contentStack.addArrangedSubview(footerLabel)
   }
 
@@ -176,10 +169,6 @@ final class NativeAutoDownloadSettingsViewController: UIViewController {
   }
 
   // MARK: - Actions
-
-  @objc private func enableChanged() {
-    rule.isEnabled = enableSwitch.isOn
-  }
 
   @objc private func disconnectChanged() {
     rule.disconnectAfterDownload = disconnectSwitch.isOn

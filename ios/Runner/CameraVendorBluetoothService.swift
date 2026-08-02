@@ -19,7 +19,7 @@ struct CameraVendorConnectionSummary: Equatable {
     serialNumber: String,
     connectedDeviceName: String = CameraVendorHandshakeIdentityPolicy.currentConnectedDeviceName(),
     preferredWifiNetwork: CameraVendorWifiNetworkConfiguration? = nil,
-    preferCompressedDownloads: Bool = true,
+    preferCompressedDownloads: Bool = false,
     verifiedConnectionSteps: [IOSCameraConnectionStep] = []
   ) {
     self.deviceName = deviceName
@@ -1148,7 +1148,7 @@ enum CameraVendorTransferActivationResizePolicy {
   static var preferCompressedDownloads: Bool {
     get {
       guard UserDefaults.standard.object(forKey: preferenceKey) != nil else {
-        return true
+        return false
       }
       return UserDefaults.standard.bool(forKey: preferenceKey)
     }
