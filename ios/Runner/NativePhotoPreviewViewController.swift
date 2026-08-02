@@ -78,6 +78,8 @@ final class NativeGalleryHighDefinitionPreviewCache {
   private var lruOrder: [CameraGalleryMediaCacheKey] = []
   private var loaded: Set<CameraGalleryMediaCacheKey> = []
   private var objectOrientations: [CameraGalleryMediaCacheKey: Int] = [:]
+  private var pinned: Set<CameraGalleryMediaCacheKey> = []
+  private var evictionObservers: [UUID: (Int) -> Void] = [:]
 
   init(
     maxEntries: Int = 30,
@@ -133,6 +135,30 @@ final class NativeGalleryHighDefinitionPreviewCache {
     }
   }
 
+  func setPinnedHandles(
+    _ handles: [Int],
+    for catalogIdentity: CameraGalleryCatalogIdentity
+  ) {
+    pinned = Set(handles.map {
+      CameraGalleryMediaCacheKey(
+        sessionEpoch: catalogIdentity.sessionEpoch,
+        handle: $0,
+        variant: .hdPreview
+      )
+    })
+  }
+
+  @discardableResult
+  func observeEvictions(_ observer: @escaping (Int) -> Void) -> UUID {
+    let id = UUID()
+    evictionObservers[id] = observer
+    return id
+  }
+
+  func removeEvictionObserver(_ id: UUID) {
+    evictionObservers.removeValue(forKey: id)
+  }
+
   func restoreLoadedData(for identity: CameraGalleryMediaIdentity) -> Data? {
     guard let key = cacheKey(for: identity), loaded.contains(key) else { return nil }
     if let data = memoryData(for: identity) {
@@ -164,11 +190,27 @@ final class NativeGalleryHighDefinitionPreviewCache {
     )
   }
 
+  func readOnlyLoadedPreview(for identity: CameraGalleryMediaIdentity) -> NativeGalleryCachedPreview? {
+    guard let key = cacheKey(for: identity), loaded.contains(key) else { return nil }
+    let data = memory[key] ?? (try? Data(contentsOf: fileURL(for: key)))
+    guard let data else { return nil }
+    return NativeGalleryCachedPreview(
+      data: data,
+      objectOrientation: objectOrientations[key]
+    )
+  }
+
+  func releaseMemoryData(for identity: CameraGalleryMediaIdentity) {
+    guard let key = cacheKey(for: identity) else { return }
+    memory.removeValue(forKey: key)
+  }
+
   func reset() {
     memory.removeAll()
     lruOrder.removeAll()
     loaded.removeAll()
     objectOrientations.removeAll()
+    pinned.removeAll()
     try? FileManager.default.removeItem(at: directory)
   }
 
@@ -178,6 +220,7 @@ final class NativeGalleryHighDefinitionPreviewCache {
     lruOrder.removeAll { $0 == key }
     loaded.remove(key)
     objectOrientations.removeValue(forKey: key)
+    pinned.remove(key)
     try? FileManager.default.removeItem(at: fileURL(for: key))
   }
 
@@ -193,13 +236,19 @@ final class NativeGalleryHighDefinitionPreviewCache {
 
   private func evictIfNeeded() {
     while lruOrder.count > maxEntries {
-      let evicted = lruOrder.removeFirst()
+      guard let evictionIndex = lruOrder.firstIndex(where: { !pinned.contains($0) }) else {
+        return
+      }
+      let evicted = lruOrder.remove(at: evictionIndex)
       memory.removeValue(forKey: evicted)
       loaded.remove(evicted)
       objectOrientations.removeValue(forKey: evicted)
+      pinned.remove(evicted)
       try? FileManager.default.removeItem(at: fileURL(for: evicted))
+      evictionObservers.values.forEach { $0(evicted.handle) }
       CameraVendorFileLogger.log(
-        "[OBS] HD_PREVIEW_CACHE_EVICT handle=0x\(String(format: "%08X", evicted.handle)) retained=\(loaded.count)"
+        "[OBS] HD_CACHE_EVICT handle=0x\(String(format: "%08X", evicted.handle)) " +
+        "retained=\(loaded.count) limit=\(maxEntries) reason=lru"
       )
     }
   }
@@ -239,7 +288,7 @@ final class NativePhotoPreviewViewController: UIViewController, UIPageViewContro
   private let onTransferLockedDismissAttempt: () -> Void
   private let previewImageCache: NativeGalleryHighDefinitionPreviewCache
   private let previewCatalogIdentity: CameraGalleryCatalogIdentity
-  private let onPreviewClosed: () -> Void
+  private let onPreviewClosed: (Int, CameraGalleryCatalogIdentity) -> Void
   private var currentIndex: Int
   private var pageController: UIPageViewController!
   private var controlsHidden = false
@@ -334,7 +383,7 @@ final class NativePhotoPreviewViewController: UIViewController, UIPageViewContro
     runtime: CameraSessionRuntime,
     previewImageCache: NativeGalleryHighDefinitionPreviewCache,
     previewCatalogIdentity: CameraGalleryCatalogIdentity,
-    onPreviewClosed: @escaping () -> Void,
+    onPreviewClosed: @escaping (Int, CameraGalleryCatalogIdentity) -> Void,
     shouldLoadPreviewThumbnail: @escaping () -> Bool,
     cachedThumbnailImageProvider: @escaping (Int) -> UIImage?,
     displayStateProvider: @escaping (Int) -> CameraGalleryEntryViewState?,
@@ -542,12 +591,7 @@ final class NativePhotoPreviewViewController: UIViewController, UIPageViewContro
       previewImageDataProvider: { [weak self] handle in
         guard let self,
               let identity = self.previewMediaIdentity(for: handle) else { return nil }
-        return self.previewImageCache.restoreLoadedPreview(for: identity)
-      },
-      onPreviewImageDataLoaded: { [weak self] handle, data, orientation in
-        guard let self,
-              let identity = self.previewMediaIdentity(for: handle) else { return }
-        self.previewImageCache.store(data, for: identity, objectOrientation: orientation)
+        return self.previewImageCache.readOnlyLoadedPreview(for: identity)
       }
     )
   }
@@ -563,7 +607,8 @@ final class NativePhotoPreviewViewController: UIViewController, UIPageViewContro
   private func reportPreviewClosedIfNeeded() {
     guard !hasReportedPreviewClosed else { return }
     hasReportedPreviewClosed = true
-    onPreviewClosed()
+    guard items.indices.contains(currentIndex) else { return }
+    onPreviewClosed(items[currentIndex].handle, previewCatalogIdentity)
   }
 
   private func applyDismissDragProgress(_ progress: CGFloat) {
@@ -727,9 +772,7 @@ final class NativePhotoPreviewViewController: UIViewController, UIPageViewContro
     _ pageViewController: UIPageViewController,
     willTransitionTo pendingViewControllers: [UIViewController]
   ) {
-    guard let page = pendingViewControllers.first as? NativePhotoPreviewPageController else { return }
-    currentIndex = page.index
-    refreshChromeForCurrentItem()
+    _ = pendingViewControllers
   }
 
   func pageViewController(
@@ -738,10 +781,11 @@ final class NativePhotoPreviewViewController: UIViewController, UIPageViewContro
     previousViewControllers: [UIViewController],
     transitionCompleted completed: Bool
   ) {
+    guard let page = pageController.viewControllers?.first as? NativePhotoPreviewPageController else { return }
     previousViewControllers.forEach {
+      guard $0 !== page else { return }
       ($0 as? NativePhotoPreviewPageController)?.setDisplayedPage(false)
     }
-    guard let page = pageController.viewControllers?.first as? NativePhotoPreviewPageController else { return }
     page.setDisplayedPage(true)
     currentIndex = page.index
     refreshChromeForCurrentItem()
@@ -761,7 +805,6 @@ final class NativePhotoPreviewPageController: UIViewController, UIScrollViewDele
   private let onDismissCommit: () -> Void
   private let onDismissCancel: () -> Void
   private let previewImageDataProvider: (Int) -> NativeGalleryCachedPreview?
-  private let onPreviewImageDataLoaded: (Int, Data, Int?) -> Void
   private var loadTask: Task<Void, Never>?
   private var isDisplayedPage = false
 
@@ -825,8 +868,7 @@ final class NativePhotoPreviewPageController: UIViewController, UIScrollViewDele
     onDismissBlocked: @escaping () -> Void,
     onDismissCommit: @escaping () -> Void,
     onDismissCancel: @escaping () -> Void,
-    previewImageDataProvider: @escaping (Int) -> NativeGalleryCachedPreview?,
-    onPreviewImageDataLoaded: @escaping (Int, Data, Int?) -> Void
+    previewImageDataProvider: @escaping (Int) -> NativeGalleryCachedPreview?
   ) {
     self.item = item
     self.index = index
@@ -840,7 +882,6 @@ final class NativePhotoPreviewPageController: UIViewController, UIScrollViewDele
     self.onDismissCommit = onDismissCommit
     self.onDismissCancel = onDismissCancel
     self.previewImageDataProvider = previewImageDataProvider
-    self.onPreviewImageDataLoaded = onPreviewImageDataLoaded
     super.init(nibName: nil, bundle: nil)
   }
 
@@ -995,7 +1036,6 @@ final class NativePhotoPreviewPageController: UIViewController, UIScrollViewDele
           )
           if let image {
             hasLoadedPreviewImage = true
-            onPreviewImageDataLoaded(item.handle, data, previewOrientation)
             await MainActor.run {
               self.setSourceImage(image, imageData: data, objectOrientation: previewOrientation)
             }

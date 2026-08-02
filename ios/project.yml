@@ -51,7 +51,7 @@ targets:
         INFOPLIST_FILE: Runner/Info.plist
         CODE_SIGN_ENTITLEMENTS: Runner/Runner.entitlements
         PRODUCT_NAME: Runner
-        CURRENT_PROJECT_VERSION: 5
+        CURRENT_PROJECT_VERSION: 6
         MARKETING_VERSION: 1.0
         GENERATE_INFOPLIST_FILE: NO
     attributes:
@@ -79,7 +79,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.camtransfer.app.CameraSessionActivityWidget
         PRODUCT_NAME: CameraSessionActivityWidget
-        CURRENT_PROJECT_VERSION: 5
+        CURRENT_PROJECT_VERSION: 6
         MARKETING_VERSION: 1.0
         GENERATE_INFOPLIST_FILE: NO
         APPLICATION_EXTENSION_API_ONLY: YES

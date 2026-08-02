@@ -240,15 +240,19 @@ enum NativeGalleryPreviewImageLoadPolicy {
     if hasPreviewImage { return false }
     let label = item.formatLabel.uppercased()
     let filename = item.filename.uppercased()
-    return !item.formatHints.isDisjoint(with: [.jpg, .heif]) ||
+    return !item.formatHints.isDisjoint(with: [.jpg, .heif, .raw]) ||
       label == "JPG" ||
       label == "JPEG" ||
       label == "HEIF" ||
+      label == "RAW" ||
+      label == "RAF" ||
       filename.hasSuffix(".JPG") ||
       filename.hasSuffix(".JPEG") ||
       filename.hasSuffix(".HEIC") ||
       filename.hasSuffix(".HEIF") ||
-      filename.hasSuffix(".HIF")
+      filename.hasSuffix(".HIF") ||
+      filename.hasSuffix(".RAW") ||
+      filename.hasSuffix(".RAF")
   }
 }
 
@@ -988,6 +992,30 @@ struct NativeGalleryDecodedThumbnailCacheKey: Hashable, Sendable {
 
   var storageKey: NSString {
     "\(sessionEpoch.uuidString):\(handle):\(orientation ?? -1)" as NSString
+  }
+}
+
+struct NativeGalleryDecodedHDPreviewCacheKey: Hashable, Sendable {
+  let sessionEpoch: UUID
+  let handle: Int
+  let orientation: Int?
+  let target: NativeGalleryHDDecodeTarget
+
+  var storageKey: NSString {
+    ("\(sessionEpoch.uuidString):hd:\(handle):\(orientation ?? -1):" +
+      "\(target.label):\(target.maxPixelSize ?? 0)") as NSString
+  }
+}
+
+enum NativeGalleryHDFullScreenReturnPolicy {
+  static func indexPath(
+    handle: Int,
+    openingCatalogIdentity: CameraGalleryCatalogIdentity,
+    currentCatalogIdentity: CameraGalleryCatalogIdentity?,
+    snapshot: NativeGalleryHDPreviewSnapshot
+  ) -> IndexPath? {
+    guard currentCatalogIdentity == openingCatalogIdentity else { return nil }
+    return snapshot.indexPath(forDisplayHandle: handle)
   }
 }
 

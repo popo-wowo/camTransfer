@@ -5,6 +5,11 @@ enum NativeGalleryBrowseMode {
   case highDefinition
 }
 
+enum NativeGalleryHDPreviewFocus: Equatable {
+  case list(visibleHandles: [Int])
+  case fullScreen(currentHandle: Int)
+}
+
 enum NativeGalleryHDChromePolicy {
   static let usesGalleryBackground = true
 }
@@ -280,6 +285,24 @@ enum NativeGalleryHDPreviewSessionPolicy {
       nextAbove -= 1
     }
     return orderedUnique(result)
+  }
+
+  static func fullScreenPriority(
+    orderedHandles: [Int],
+    currentHandle: Int
+  ) -> [Int] {
+    let ordered = orderedUnique(orderedHandles)
+    guard let currentIndex = ordered.firstIndex(of: currentHandle) else { return [] }
+    var result = [currentHandle]
+    let nextIndex = currentIndex + 1
+    if ordered.indices.contains(nextIndex) {
+      result.append(ordered[nextIndex])
+    }
+    let previousIndex = currentIndex - 1
+    if ordered.indices.contains(previousIndex) {
+      result.append(ordered[previousIndex])
+    }
+    return result
   }
 
   static func loadedCount(sessionHandles: Set<Int>, loadedHandles: Set<Int>) -> Int {

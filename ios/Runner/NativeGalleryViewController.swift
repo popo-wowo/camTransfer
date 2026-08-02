@@ -102,6 +102,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
   private let summary: CameraVendorConnectionSummary
   private let rememberedPeripheralID: UUID?
   private let runtime: CameraSessionRuntime
+  private let hdPreviewCache: NativeGalleryHighDefinitionPreviewCache?
   private var galleryRenderState = NativeGalleryRenderState(
     presentation: .unavailable
   )
@@ -146,8 +147,19 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
   private var browseMode: NativeGalleryBrowseMode = .thumbnail
   private var hdPresentationState: NativeGalleryHDPreviewState?
   private var hdRenderedSectionDisplayHandles: [[Int]] = []
-  private var hdDecodeFailureLoggedHandles: Set<Int> = []
+  private var hdPreviewDecodeTasks: [Int: Task<Void, Never>] = [:]
+  private let hdPreviewImageCache: NSCache<NSString, UIImage> = {
+    let cache = NSCache<NSString, UIImage>()
+    cache.countLimit = 16
+    cache.totalCostLimit = 96 * 1024 * 1024
+    return cache
+  }()
+  private var hdPreviewImageCacheKeysByHandle: [Int: NSString] = [:]
+  private var hdDecodeFailureLoggedKeys: Set<NSString> = []
+  private var hdCacheEvictionObserverID: UUID?
   private var hdTransitionTask: Task<Void, Never>?
+  private var hdPreviewSnapshotRefreshWorkItem: DispatchWorkItem?
+  private var pendingHDPreviewSnapshotCatalogIdentity: CameraGalleryCatalogIdentity?
   private let browseModeControl = NativeGalleryModeControl()
 
   private let galleryFilterButton: UIButton = {
@@ -593,6 +605,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     self.summary = summary
     self.rememberedPeripheralID = rememberedPeripheralID
     self.runtime = runtime
+    self.hdPreviewCache = runtime.galleryPreviewCache
     self.currentPreferCompressedDownloads = summary.preferCompressedDownloads
     super.init(nibName: nil, bundle: nil)
   }
@@ -638,6 +651,12 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
         presentation: catalog,
         delta: delta
       )
+      if self.browseMode == .highDefinition,
+         let catalogIdentity = self.runtime.galleryCatalogIdentity {
+        self.scheduleHDPreviewSnapshotRefresh(
+          expectedCatalogIdentity: catalogIdentity
+        )
+      }
       let handles = delta.changedHandles
       let retryableFailedHandles = handles.filter { handle in
         guard let item = catalog.items.first(where: { $0.handle == handle }),
@@ -684,6 +703,9 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
         self.applyHDPreviewState(state)
       }
     }
+    hdCacheEvictionObserverID = hdPreviewCache?.observeEvictions { [weak self] handle in
+      self?.removeDecodedHDPreview(for: handle)
+    }
     NotificationCenter.default.addObserver(
       self,
       selector: #selector(appDidBecomeActive),
@@ -703,13 +725,18 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     let observerID = runtimePresentationObserverID
     let incrementalObserverID = incrementalCatalogObserverID
     let previewObserverID = galleryPreviewObserverID
+    let cacheEvictionObserverID = hdCacheEvictionObserverID
+    let previewCache = hdPreviewCache
     let runtime = runtime
     visibleThumbnailRefreshWorkItem?.cancel()
+    hdPreviewSnapshotRefreshWorkItem?.cancel()
     let thumbnailRehydrateTasks = thumbnailRehydrateTasks
+    let hdPreviewDecodeTasks = hdPreviewDecodeTasks
     let hdTransitionTask = hdTransitionTask
     Task { @MainActor in
       await hdTransitionTask?.value
       thumbnailRehydrateTasks.values.forEach { $0.cancel() }
+      hdPreviewDecodeTasks.values.forEach { $0.cancel() }
       if let observerID {
         runtime.removeObserver(observerID)
       }
@@ -719,8 +746,19 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       if let previewObserverID {
         runtime.removeObserver(previewObserverID)
       }
+      if let cacheEvictionObserverID {
+        previewCache?.removeEvictionObserver(cacheEvictionObserverID)
+      }
       runtime.send(.galleryPresentationDetached)
     }
+  }
+
+  override func didReceiveMemoryWarning() {
+    super.didReceiveMemoryWarning()
+    cancelHDPreviewDecodeTasks()
+    hdPreviewImageCache.removeAllObjects()
+    hdPreviewImageCacheKeysByHandle.removeAll()
+    hdDecodeFailureLoggedKeys.removeAll()
   }
 
   override func viewWillAppear(_ animated: Bool) {
@@ -1423,6 +1461,10 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     galleryFilterButton.isEnabled = true
     switch mode {
     case .thumbnail:
+      hdPreviewSnapshotRefreshWorkItem?.cancel()
+      hdPreviewSnapshotRefreshWorkItem = nil
+      pendingHDPreviewSnapshotCatalogIdentity = nil
+      cancelHDPreviewDecodeTasks()
       hdCollectionView.isHidden = true
       collectionView.isHidden = false
       hdTopChipRow.isHidden = true
@@ -1477,6 +1519,35 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     }
   }
 
+  private func scheduleHDPreviewSnapshotRefresh(
+    expectedCatalogIdentity: CameraGalleryCatalogIdentity
+  ) {
+    pendingHDPreviewSnapshotCatalogIdentity = expectedCatalogIdentity
+    guard hdPreviewSnapshotRefreshWorkItem == nil else { return }
+    let workItem = DispatchWorkItem { [weak self] in
+      guard let self else { return }
+      self.hdPreviewSnapshotRefreshWorkItem = nil
+      guard self.browseMode == .highDefinition,
+            let catalogIdentity = self.pendingHDPreviewSnapshotCatalogIdentity else {
+        self.pendingHDPreviewSnapshotCatalogIdentity = nil
+        return
+      }
+      self.pendingHDPreviewSnapshotCatalogIdentity = nil
+      let snapshot = NativeGalleryHDPreviewSessionPolicy.snapshot(
+        sections: self.gallerySections
+      )
+      self.enqueueHDTransition { [weak self] in
+        guard let self else { return }
+        await self.runtime.updateGalleryHDPreviewSnapshot(
+          snapshot,
+          expectedCatalogIdentity: catalogIdentity
+        )
+      }
+    }
+    hdPreviewSnapshotRefreshWorkItem = workItem
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: workItem)
+  }
+
   private func hdVisibleHandles() -> [Int] {
     guard let snapshot = hdPresentationState?.snapshot else { return [] }
     return hdCollectionView.indexPathsForVisibleItems
@@ -1489,6 +1560,9 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
   private func applyHDPreviewState(_ state: NativeGalleryHDPreviewState?) {
     guard browseMode == .highDefinition else { return }
     hdPresentationState = state
+    if state == nil {
+      cancelHDPreviewDecodeTasks()
+    }
     let sectionHandles = state?.snapshot.sectionDisplayHandles ?? []
     if sectionHandles != hdRenderedSectionDisplayHandles {
       hdRenderedSectionDisplayHandles = sectionHandles
@@ -1501,9 +1575,9 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
         }
         configureHDCell(cell, previewItem: item)
       }
-      hdCollectionView.collectionViewLayout.invalidateLayout()
     }
     updateHDStatusLabel(state)
+    scheduleHDPreviewDecodes(for: state)
   }
 
   private func refreshHDCell(for handle: Int) {
@@ -1530,22 +1604,11 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
 
   private func hdLoadState(for item: CameraVendorGalleryItem) -> NativeGalleryHDPreviewCell.LoadState {
     let handle = item.handle
-    if let preview = runtime.cachedGalleryHDPreview(for: handle) {
-      if let image = CameraVendorGalleryThumbnailRenderer.decoded(
-        from: preview.data,
-        objectOrientation: preview.objectOrientation,
-        diagnosticHandle: handle
-      ) {
-        hdDecodeFailureLoggedHandles.remove(handle)
-        return .loaded(image)
-      }
-      if hdDecodeFailureLoggedHandles.insert(handle).inserted {
-        CameraVendorFileLogger.log(
-          "[OBS] HD_PREVIEW_DECODE_FAILED handle=0x\(String(format: "%08X", handle)) " +
-          "bytes=\(preview.data.count) orientation=\(preview.objectOrientation.map(String.init) ?? "unknown")"
-        )
-      }
-      return .failed
+    if let image = cachedHDPreviewImage(for: handle) {
+      return .loaded(image)
+    }
+    if let key = decodedHDPreviewCacheKey(for: handle, target: verticalHDDecodeTarget()) {
+      return hdDecodeFailureLoggedKeys.contains(key.storageKey) ? .failed : .loading
     }
     // Non-previewable items (RAW, video) can't be HD-loaded
     if !NativeGalleryPreviewImageLoadPolicy.shouldRequestPreviewImage(item: item, hasPreviewImage: false) {
@@ -1554,6 +1617,136 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     if hdPresentationState?.loadState.failedHandles.contains(handle) == true { return .failed }
     if hdPresentationState?.loadState.loadingHandles.contains(handle) == true { return .loading }
     return .waiting
+  }
+
+  private func verticalHDDecodeTarget() -> NativeGalleryHDDecodeTarget {
+    .verticalCard(maxPixelSize: NativeGalleryHDDecodeSizingPolicy.verticalCardMaxPixelSize(
+      renderedWidth: max(1, hdCollectionView.bounds.width),
+      displayScale: view.window?.screen.scale ?? UIScreen.main.scale
+    ))
+  }
+
+  private func decodedHDPreviewCacheKey(
+    for handle: Int,
+    target: NativeGalleryHDDecodeTarget
+  ) -> NativeGalleryDecodedHDPreviewCacheKey? {
+    guard let catalogIdentity = runtime.galleryCatalogIdentity,
+          let preview = runtime.peekCachedGalleryHDPreview(for: handle) else { return nil }
+    return NativeGalleryDecodedHDPreviewCacheKey(
+      sessionEpoch: catalogIdentity.sessionEpoch,
+      handle: handle,
+      orientation: preview.objectOrientation,
+      target: target
+    )
+  }
+
+  private func cachedHDPreviewImage(for handle: Int) -> UIImage? {
+    guard let expectedKey = decodedHDPreviewCacheKey(
+      for: handle,
+      target: verticalHDDecodeTarget()
+    )?.storageKey,
+          hdPreviewImageCacheKeysByHandle[handle] == expectedKey else { return nil }
+    return hdPreviewImageCache.object(forKey: expectedKey)
+  }
+
+  private func scheduleHDPreviewDecodes(for state: NativeGalleryHDPreviewState?) {
+    guard let state else { return }
+    let visibleHandles = hdVisibleHandles()
+    let candidates = NativeGalleryHDPreviewSessionPolicy.priorityWindow(
+      orderedHandles: state.snapshot.loadableDisplayHandles,
+      visibleHandles: visibleHandles.isEmpty
+        ? Array(state.snapshot.loadableDisplayHandles.prefix(3))
+        : visibleHandles,
+      limit: 8
+    )
+    for handle in candidates where state.loadedHandles.contains(handle) {
+      scheduleHDPreviewDecode(for: handle)
+    }
+  }
+
+  private func scheduleHDPreviewDecode(for handle: Int) {
+    guard browseMode == .highDefinition,
+          hdPreviewDecodeTasks[handle] == nil,
+          cachedHDPreviewImage(for: handle) == nil,
+          let catalogIdentity = runtime.galleryCatalogIdentity,
+          let preview = runtime.peekCachedGalleryHDPreview(for: handle) else { return }
+    let target = verticalHDDecodeTarget()
+    let cacheKey = NativeGalleryDecodedHDPreviewCacheKey(
+      sessionEpoch: catalogIdentity.sessionEpoch,
+      handle: handle,
+      orientation: preview.objectOrientation,
+      target: target
+    )
+    guard !hdDecodeFailureLoggedKeys.contains(cacheKey.storageKey) else { return }
+    hdPreviewDecodeTasks[handle] = Task { @MainActor [weak self] in
+      let image = await NativeGalleryHDTargetDecoder.decodedImage(
+        from: preview.data,
+        objectOrientation: preview.objectOrientation,
+        target: target,
+        diagnosticHandle: handle
+      )
+      guard let self else { return }
+      self.hdPreviewDecodeTasks.removeValue(forKey: handle)
+      guard !Task.isCancelled,
+            self.browseMode == .highDefinition,
+            self.runtime.galleryCatalogIdentity == catalogIdentity,
+            self.decodedHDPreviewCacheKey(for: handle, target: target) == cacheKey else { return }
+      guard let image else {
+        if self.hdDecodeFailureLoggedKeys.insert(cacheKey.storageKey).inserted {
+          CameraVendorFileLogger.log(
+            "[OBS] HD_PREVIEW_DECODE_FAILED handle=0x\(String(format: "%08X", handle)) " +
+            "bytes=\(preview.data.count) orientation=\(preview.objectOrientation.map(String.init) ?? "unknown")"
+          )
+        }
+        self.refreshHDCell(for: handle)
+        return
+      }
+      self.hdDecodeFailureLoggedKeys.remove(cacheKey.storageKey)
+      let previousKey = self.hdPreviewImageCacheKeysByHandle[handle]
+      let decodedCost = max(1, Int(image.size.width * image.size.height * 4))
+      self.hdPreviewImageCache.setObject(image, forKey: cacheKey.storageKey, cost: decodedCost)
+      self.hdPreviewImageCacheKeysByHandle[handle] = cacheKey.storageKey
+      if let previousKey, previousKey != cacheKey.storageKey {
+        self.hdPreviewImageCache.removeObject(forKey: previousKey)
+      }
+      self.refreshHDCellAfterDecode(handle: handle, image: image)
+    }
+  }
+
+  private func refreshHDCellAfterDecode(handle: Int, image: UIImage) {
+    guard let snapshot = hdPresentationState?.snapshot,
+          let indexPath = snapshot.indexPath(forDisplayHandle: handle),
+          hdCollectionView.indexPathsForVisibleItems.contains(indexPath) else { return }
+    let decodedAspectRatio = image.size.height > 0 ? image.size.width / image.size.height : 1.5
+    if abs(decodedAspectRatio - 1.5) > 0.01 {
+      UIView.performWithoutAnimation {
+        hdCollectionView.performBatchUpdates {
+          hdCollectionView.reloadItems(at: [indexPath])
+        }
+      }
+    } else {
+      refreshHDCell(for: handle)
+    }
+  }
+
+  private func cancelHDPreviewDecodeTasks() {
+    hdPreviewDecodeTasks.values.forEach { $0.cancel() }
+    hdPreviewDecodeTasks.removeAll()
+  }
+
+  private func removeDecodedHDPreview(for handle: Int) {
+    hdPreviewDecodeTasks.removeValue(forKey: handle)?.cancel()
+    if let key = hdPreviewImageCacheKeysByHandle.removeValue(forKey: handle) {
+      hdPreviewImageCache.removeObject(forKey: key)
+      hdDecodeFailureLoggedKeys.remove(key)
+    }
+  }
+
+  private func retryHDPreviewDecode(for handle: Int) {
+    if let key = decodedHDPreviewCacheKey(for: handle, target: verticalHDDecodeTarget()) {
+      hdDecodeFailureLoggedKeys.remove(key.storageKey)
+    }
+    runtime.retryGalleryHDPreview(handle: handle)
   }
 
   private func configureHDCell(
@@ -1604,7 +1797,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     cell.onQueueTapped = { [weak self] in
       guard let self else { return }
       if case .failed = state {
-        self.runtime.retryGalleryHDPreview(handle: handle)
+        self.retryHDPreviewDecode(for: handle)
         return
       }
       guard (hasLoadedPreview || allowsDisplayQueueWithoutImage),
@@ -1618,7 +1811,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     cell.onQueueRawTapped = { [weak self] in
       guard let self else { return }
       if case .failed = state {
-        self.runtime.retryGalleryHDPreview(handle: handle)
+        self.retryHDPreviewDecode(for: handle)
         return
       }
       guard let rawSidecar = previewItem.rawSidecar,
@@ -2673,6 +2866,14 @@ extension NativeGalleryViewController {
       showToast("正在下载，请先保持在照片筛选页面")
       return
     }
+    switch browseMode {
+    case .thumbnail:
+      break
+    case .highDefinition:
+      guard catalogPresentation.items.indices.contains(index) else { return }
+      presentHDFullScreenPreview(startingAt: catalogPresentation.items[index].handle)
+      return
+    }
     guard let previewImageCache = runtime.galleryPreviewCache else { return }
     let previewItems = catalogPresentation.items
     guard previewItems.indices.contains(index),
@@ -2692,12 +2893,16 @@ extension NativeGalleryViewController {
         runtime: self.runtime,
         previewImageCache: previewImageCache,
         previewCatalogIdentity: previewCatalogIdentity,
-        onPreviewClosed: { [weak self] in
+        onPreviewClosed: { [weak self] handle, openingCatalogIdentity in
           guard let self else { return }
           self.enqueueHDTransition { [weak self] in
             guard let self else { return }
             await self.runtime.resumeGalleryContentWorkAfterFullScreenPreview()
             if self.browseMode == .thumbnail {
+              if self.runtime.galleryCatalogIdentity == openingCatalogIdentity,
+                 let indexPath = self.indexPath(forHandle: handle) {
+                self.collectionView.scrollToItem(at: indexPath, at: .centeredVertically, animated: false)
+              }
               self.lastSubmittedThumbnailViewportIdentity = nil
               self.scheduleVisibleThumbnailRefresh(after: 0)
             } else {
@@ -2751,6 +2956,53 @@ extension NativeGalleryViewController {
       }
       navigationController.pushViewController(controller, animated: true)
     }
+  }
+
+  private func presentHDFullScreenPreview(startingAt handle: Int) {
+    guard let snapshot = hdPresentationState?.snapshot,
+          let catalogIdentity = runtime.galleryCatalogIdentity else { return }
+    let orderedItems = snapshot.items.compactMap { previewItem -> CameraVendorGalleryItem? in
+      let item = previewItem.displayItem
+      return NativeGalleryPreviewImageLoadPolicy.shouldRequestPreviewImage(
+        item: item,
+        hasPreviewImage: false
+      ) ? item : nil
+    }
+    guard orderedItems.contains(where: { $0.handle == handle }) else { return }
+    let controller = NativeGalleryHDFullScreenViewController(
+      context: NativeGalleryHDFullScreenContext(
+        catalogIdentity: catalogIdentity,
+        orderedItems: orderedItems,
+        initialHandle: handle
+      ),
+      runtime: runtime,
+      cachedThumbnailImageProvider: { [weak self] handle in
+        self?.cachedThumbnailImage(for: handle)
+      },
+      onClosed: { [weak self] currentHandle, openingCatalogIdentity in
+        guard let self,
+              self.browseMode == .highDefinition,
+              let currentSnapshot = self.hdPresentationState?.snapshot,
+              let indexPath = NativeGalleryHDFullScreenReturnPolicy.indexPath(
+                handle: currentHandle,
+                openingCatalogIdentity: openingCatalogIdentity,
+                currentCatalogIdentity: self.runtime.galleryCatalogIdentity,
+                snapshot: currentSnapshot
+              ) else {
+          return
+        }
+        self.hdCollectionView.scrollToItem(
+          at: indexPath,
+          at: .centeredVertically,
+          animated: false
+        )
+        self.hdCollectionView.layoutIfNeeded()
+        self.runtime.restoreGalleryHDPreviewListFocus(
+          visibleHandles: self.hdVisibleHandles()
+        )
+      }
+    )
+    navigationController?.pushViewController(controller, animated: true)
   }
 
   private func presentNotice(title: String, message: String) {
@@ -3276,10 +3528,8 @@ final class NativeDownloadListViewController: UIViewController {
       self.isStoppingForExit = true
       self.refreshSummary()
       let runtime = self.runtime
-      Task { @MainActor [weak self] in
+      Task { @MainActor in
         await runtime.stopDownloadAndWait()
-        guard let self else { return }
-        self.navigationController?.popViewController(animated: true)
       }
     })
     present(alert, animated: true)
@@ -3647,7 +3897,12 @@ extension NativeGalleryViewController: UICollectionViewDelegateFlowLayout {
     willDisplay cell: UICollectionViewCell,
     forItemAt indexPath: IndexPath
   ) {
-    if collectionView === hdCollectionView { return }
+    if collectionView === hdCollectionView {
+      if let handle = hdPresentationState?.snapshot.item(at: indexPath)?.displayItem.handle {
+        scheduleHDPreviewDecode(for: handle)
+      }
+      return
+    }
     scheduleVisibleThumbnailRefresh()
   }
 
@@ -3679,10 +3934,7 @@ extension NativeGalleryViewController: UICollectionViewDelegateFlowLayout {
     if collectionView === hdCollectionView {
       let width = collectionView.bounds.width
       let handle = hdPresentationState?.snapshot.item(at: indexPath)?.displayItem.handle
-      // Use actual image dimensions from cache if loaded, otherwise default 3:2 landscape
-      if let handle,
-         let preview = runtime.peekCachedGalleryHDPreview(for: handle),
-         let image = UIImage(data: preview.data) {
+      if let handle, let image = cachedHDPreviewImage(for: handle) {
         let height = NativeGalleryHDPreviewLayoutPolicy.cellHeight(
           forWidth: width,
           imageWidth: image.size.width,

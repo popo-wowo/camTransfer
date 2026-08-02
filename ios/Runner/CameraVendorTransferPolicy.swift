@@ -78,6 +78,95 @@ enum CameraVendorPreviewImageReadPolicy {
   }
 }
 
+enum CameraVendorPreviewImageSource: Equatable {
+  case compressedObject(handle: UInt32, size: UInt32)
+  case standardThumbnail(handle: UInt32)
+}
+
+enum CameraVendorPreviewImageSourcePolicy {
+  static func companionCandidateHandle(
+    for originalInfo: CameraVendorCameraObjectInfo
+  ) -> UInt32? {
+    guard isRaw(originalInfo),
+          !CameraVendorPreviewImageReadPolicy.supports(
+            formatLabel: originalInfo.formatLabel,
+            compressedSize: originalInfo.compressedSize
+          ),
+          let handle = UInt32(exactly: originalInfo.handle),
+          handle < UInt32.max else {
+      return nil
+    }
+    return handle + 1
+  }
+
+  static func source(
+    originalInfo: CameraVendorCameraObjectInfo,
+    companionInfo: CameraVendorCameraObjectInfo?
+  ) -> CameraVendorPreviewImageSource? {
+    guard let originalHandle = UInt32(exactly: originalInfo.handle) else { return nil }
+    if CameraVendorPreviewImageReadPolicy.supports(
+      formatLabel: originalInfo.formatLabel,
+      compressedSize: originalInfo.compressedSize
+    ) {
+      return .compressedObject(
+        handle: originalHandle,
+        size: originalInfo.compressedSize
+      )
+    }
+    guard isRaw(originalInfo) else { return nil }
+    if let companionInfo,
+       isValidCompanion(companionInfo, for: originalInfo),
+       let companionHandle = UInt32(exactly: companionInfo.handle) {
+      return .compressedObject(
+        handle: companionHandle,
+        size: companionInfo.compressedSize
+      )
+    }
+    return .standardThumbnail(handle: originalHandle)
+  }
+
+  private static func isValidCompanion(
+    _ companionInfo: CameraVendorCameraObjectInfo,
+    for rawInfo: CameraVendorCameraObjectInfo
+  ) -> Bool {
+    guard let expectedHandle = companionCandidateHandle(for: rawInfo),
+          UInt32(exactly: companionInfo.handle) == expectedHandle,
+          CameraVendorPreviewImageReadPolicy.supports(
+            formatLabel: companionInfo.formatLabel,
+            compressedSize: companionInfo.compressedSize
+          ),
+          filenameStem(rawInfo.filename) == filenameStem(companionInfo.filename),
+          !filenameStem(rawInfo.filename).isEmpty,
+          datesAreCompatible(rawInfo.captureDate, companionInfo.captureDate) else {
+      return false
+    }
+    return rawInfo.storageID == 0 ||
+      companionInfo.storageID == 0 ||
+      rawInfo.storageID == companionInfo.storageID
+  }
+
+  private static func isRaw(_ info: CameraVendorCameraObjectInfo) -> Bool {
+    let format = info.formatLabel.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    let filename = info.filename.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    return format == "RAW" ||
+      format == "RAF" ||
+      filename.hasSuffix(".RAW") ||
+      filename.hasSuffix(".RAF")
+  }
+
+  private static func filenameStem(_ filename: String) -> String {
+    let normalized = filename.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    guard !normalized.isEmpty, !normalized.hasPrefix("0X") else { return "" }
+    return (normalized as NSString).deletingPathExtension
+  }
+
+  private static func datesAreCompatible(_ left: String, _ right: String) -> Bool {
+    let normalizedLeft = left.trimmingCharacters(in: .whitespacesAndNewlines)
+    let normalizedRight = right.trimmingCharacters(in: .whitespacesAndNewlines)
+    return normalizedLeft.isEmpty || normalizedRight.isEmpty || normalizedLeft == normalizedRight
+  }
+}
+
 struct CameraVendorOriginalTransferCapabilityRecord: Codable, Equatable {
   let readSize: UInt32
   let updatedAt: Date
@@ -375,10 +464,10 @@ enum CameraVendorDownloadModePolicy {
           value: resizeRateS,
           width: .uint16
         ),
-        imageForceCompression(forceCompressed),
+        imageForceCompressionProperty(forceCompressed),
       ]
     case .original:
-      return [imageForceCompression(forceOriginal)]
+      return [imageForceCompressionProperty(forceOriginal)]
     }
   }
 
@@ -388,7 +477,7 @@ enum CameraVendorDownloadModePolicy {
     guard property.code == CameraVendorDevicePropCode.imageForceCompression else {
       return nil
     }
-    return imageForceCompression(forceReset)
+    return imageForceCompressionProperty(forceReset)
   }
 
   static func payload(for property: CameraVendorDownloadModeProperty) -> Data {
@@ -402,7 +491,7 @@ enum CameraVendorDownloadModePolicy {
     }
   }
 
-  private static func imageForceCompression(_ value: UInt32) -> CameraVendorDownloadModeProperty {
+  static func imageForceCompressionProperty(_ value: UInt32) -> CameraVendorDownloadModeProperty {
     CameraVendorDownloadModeProperty(
       code: CameraVendorDevicePropCode.imageForceCompression,
       value: value,
@@ -457,74 +546,4 @@ enum CameraVendorDownloadSizeSourcePolicy {
 enum CameraVendorTransferDownloadMode: Equatable {
   case original
   case compressed
-}
-
-enum CameraVendorOriginalDownloadD226Lifetime: Equatable {
-  case batch
-  case session
-
-  var label: String {
-    switch self {
-    case .batch: return "batch"
-    case .session: return "session"
-    }
-  }
-}
-
-enum CameraVendorDebugOriginalDownloadD226LifetimePolicy {
-  static let argumentPrefix = "--camtransfer-debug-d226-lifetime="
-
-  static func resolve(
-    arguments: [String],
-    debugBuild: Bool
-  ) -> CameraVendorOriginalDownloadD226Lifetime {
-    guard debugBuild else { return .batch }
-    guard let argument = arguments.first(where: { $0.hasPrefix(argumentPrefix) }) else {
-      return .batch
-    }
-    return argument == "\(argumentPrefix)session" ? .session : .batch
-  }
-}
-
-enum CameraVendorOriginalDownloadBatchModeAction: Equatable {
-  case prepare(CameraVendorTransferDownloadMode)
-  case reset
-}
-
-struct CameraVendorOriginalDownloadBatchModeState {
-  private var preparedMode: CameraVendorTransferDownloadMode?
-
-  mutating func begin(lifetime: CameraVendorOriginalDownloadD226Lifetime) {
-    guard lifetime == .batch else { return }
-    preparedMode = nil
-  }
-
-  mutating func actionsForPreparing(
-    _ mode: CameraVendorTransferDownloadMode
-  ) -> [CameraVendorOriginalDownloadBatchModeAction] {
-    guard let preparedMode else {
-      self.preparedMode = mode
-      return [.prepare(mode)]
-    }
-    guard preparedMode != mode else { return [] }
-    self.preparedMode = mode
-    return [.reset, .prepare(mode)]
-  }
-
-  mutating func actionsForEndingBatch() -> [CameraVendorOriginalDownloadBatchModeAction] {
-    guard preparedMode != nil else { return [] }
-    preparedMode = nil
-    return [.reset]
-  }
-
-  mutating func actionsForEndingBatch(
-    lifetime: CameraVendorOriginalDownloadD226Lifetime
-  ) -> [CameraVendorOriginalDownloadBatchModeAction] {
-    guard lifetime == .batch else { return [] }
-    return actionsForEndingBatch()
-  }
-
-  mutating func resetForSessionEnd() {
-    preparedMode = nil
-  }
 }

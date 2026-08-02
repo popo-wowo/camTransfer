@@ -268,7 +268,7 @@ final class CameraVendorPtpSession {
   private var connectedClientName = CameraVendorHandshakeIdentityPolicy.fallbackConnectedDeviceName
   private var connectedPurpose: CameraVendorPtpSessionPurpose = .gallery
   private var priorityDownloadInterruptionGeneration: UInt64 = 0
-  private var originalDownloadBatchModeState = CameraVendorOriginalDownloadBatchModeState()
+  private var transferModeCoordinator = CameraVendorTransferModeCoordinator()
   private let networkServiceProfile: CameraVendorPtpNetworkServiceProfile = {
     #if DEBUG
     return CameraVendorDebugPtpNetworkServicePolicy.resolve(
@@ -297,16 +297,6 @@ final class CameraVendorPtpSession {
     )
     #else
     return .enabled
-    #endif
-  }()
-  private let originalDownloadD226Lifetime: CameraVendorOriginalDownloadD226Lifetime = {
-    #if DEBUG
-    return CameraVendorDebugOriginalDownloadD226LifetimePolicy.resolve(
-      arguments: ProcessInfo.processInfo.arguments,
-      debugBuild: true
-    )
-    #else
-    return .batch
     #endif
   }()
   private var cameraVendorSpecifiedObjectHandles: [UInt32] = []
@@ -406,6 +396,7 @@ final class CameraVendorPtpSession {
     commandSocket.close()
     eventSocket.close()
     isConnected = false
+    transferModeCoordinator.invalidate()
   }
 
   func invalidateInFlightOperationForPriorityDownload(reason: String) {
@@ -415,18 +406,13 @@ final class CameraVendorPtpSession {
     commandSocket.close()
     eventSocket.close()
     isConnected = false
+    transferModeCoordinator.invalidate()
   }
 
   func requestActiveDownloadCancellation(reason: String) {
     activeDownloadCancellation.request()
-    let commandInterrupted = commandSocket.interrupt(reason: reason)
-    let eventInterrupted = eventSocket.interrupt(reason: reason)
-    if commandInterrupted || eventInterrupted {
-      isConnected = false
-    }
     report(
-      "[OBS] PTP_ACTIVE_DOWNLOAD_IO_INTERRUPT_REQUESTED reason=\(reason) " +
-      "command=\(commandInterrupted) event=\(eventInterrupted)"
+      "[OBS] PTP_ACTIVE_DOWNLOAD_SOFT_CANCELLATION_REQUESTED reason=\(reason)"
     )
   }
 
@@ -441,42 +427,27 @@ final class CameraVendorPtpSession {
   }
 
   func beginPriorityDownloadBatch(generation: UInt64) {
-    originalDownloadBatchModeState.begin(lifetime: originalDownloadD226Lifetime)
     report(
       "[OBS] PTP_PRIORITY_DOWNLOAD_BATCH_BEGIN " +
-      "d226Lifetime=\(originalDownloadD226Lifetime.label) " +
+      "transferPurpose=\(transferModeCoordinator.currentPurpose.label) " +
       "session=\(debugPhysicalSessionLabel) generation=\(generation)"
     )
   }
 
   func finishPriorityDownloadBatchOnCommandLane() {
-    let actions = originalDownloadBatchModeState.actionsForEndingBatch(
-      lifetime: originalDownloadD226Lifetime
-    )
     guard isConnected else {
+      transferModeCoordinator.invalidate()
       report("[OBS] PTP_PRIORITY_DOWNLOAD_BATCH_RESET_SKIPPED_DISCONNECTED")
       report("[OBS] PTP_PRIORITY_DOWNLOAD_BATCH_FINISH")
       return
     }
-    if originalDownloadD226Lifetime == .session, actions.isEmpty {
+    do {
+      _ = try resetTransferMode(reason: "priority-download-batch-finish")
+    } catch {
       report(
-        "[OBS] PTP_PRIORITY_DOWNLOAD_BATCH_D226_RESET_SUPPRESSED " +
-        "branch=d226-session-lifetime session=\(debugPhysicalSessionLabel)"
+        "[OBS] PTP_PRIORITY_DOWNLOAD_BATCH_MODE_RESET_FAILED " +
+        "error=\(error.localizedDescription)"
       )
-    }
-    for action in actions {
-      guard action == .reset else { continue }
-      do {
-        _ = try setCameraVendorImageForceCompression(
-          0,
-          reason: "priority-download-batch-finish"
-        )
-      } catch {
-        report(
-          "[OBS] PTP_PRIORITY_DOWNLOAD_BATCH_MODE_RESET_FAILED " +
-          "error=\(error.localizedDescription)"
-        )
-      }
     }
     report("[OBS] PTP_PRIORITY_DOWNLOAD_BATCH_FINISH")
   }
@@ -487,34 +458,11 @@ final class CameraVendorPtpSession {
     handle: UInt32,
     reason: String
   ) throws -> Bool {
-    let actions = originalDownloadBatchModeState.actionsForPreparing(mode)
-    do {
-      for action in actions {
-        switch action {
-        case .reset:
-          _ = try setCameraVendorImageForceCompression(
-            0,
-            reason: "\(reason)-mode-switch-reset"
-          )
-        case .prepare(let preparedMode):
-          for property in CameraVendorDownloadModePolicy.prepareProperties(mode: preparedMode) {
-            try setCameraVendorDownloadModeProperty(
-              property,
-              handle: handle,
-              mode: preparedMode,
-              reason: reason
-            )
-          }
-        }
-      }
-      return actions.contains { action in
-        if case .prepare = action { return true }
-        return false
-      }
-    } catch {
-      originalDownloadBatchModeState.resetForSessionEnd()
-      throw error
-    }
+    try prepareTransferMode(
+      physicalPurpose(for: mode),
+      handle: handle,
+      reason: reason
+    )
   }
 
   func ensureConnectedForPriorityDownload() throws {
@@ -1562,29 +1510,140 @@ final class CameraVendorPtpSession {
     report("[OBS] PTP_SET_SEARCH_MODE_OBJECT_FORMAT label=\(label) response=0x\(String(format: "%04X", response.responseCode))")
   }
 
-  func resetCameraVendorCompressionMode() throws {
-    report("按 ReferenceApp resetCompressionMode 写入 ImageForceCompression (0xD226 = 0)")
-    let forceResponse = try setCameraVendorImageForceCompression(0, reason: "resetCompressionMode")
-    report("[OBS] PTP_SET_IMAGE_FORCE_COMPRESSION_ZERO response=0x\(String(format: "%04X", forceResponse.responseCode))")
-
-    report("按 ReferenceApp resetCompressionMode 写入 ImageCompressionRealInfo (0xD227 = 0)")
-    let realInfoResponse = try sendCommandWithData(
-      operationCode: UInt16(CameraVendorPtpOperationCode.setDevicePropValue),
-      parameters: [CameraVendorDevicePropCode.imageCompressionRealInfo],
-      data: littleEndianData(UInt32(0))
-    )
-    report("[OBS] PTP_SET_IMAGE_COMPRESSION_REAL_INFO_ZERO response=0x\(String(format: "%04X", realInfoResponse.responseCode))")
+  private func physicalPurpose(
+    for mode: CameraVendorTransferDownloadMode
+  ) -> CameraVendorPhysicalTransferPurpose {
+    switch mode {
+    case .compressed: return .compressedDownload
+    case .original: return .originalDownload
+    }
   }
 
   @discardableResult
-  private func setCameraVendorImageForceCompression(_ mode: UInt32, reason: String) throws -> CameraVendorOperationResponse {
-    report("写入 ImageForceCompression (0xD226 = \(mode)) reason=\(reason)")
+  private func prepareTransferMode(
+    _ purpose: CameraVendorPhysicalTransferPurpose,
+    handle: UInt32? = nil,
+    reason: String
+  ) throws -> Bool {
+    let before = transferModeCoordinator.currentPurpose
+    let actions = transferModeCoordinator.actionsForPreparing(purpose)
+    report(
+      "[OBS] PTP_TRANSFER_MODE_PREPARE before=\(before.label) requested=\(purpose.label) " +
+      "actions=\(actions.count) reason=\(reason)"
+    )
+    do {
+      for action in actions {
+        switch action {
+        case .setProperty(let property):
+          _ = try setCameraVendorTransferModeProperty(
+            property,
+            handle: handle,
+            purpose: purpose,
+            reason: reason
+          )
+        }
+      }
+      transferModeCoordinator.recordPreparationSucceeded(purpose)
+      report(
+        "[OBS] PTP_TRANSFER_MODE_READY requested=\(purpose.label) " +
+        "actual=\(transferModeCoordinator.currentPurpose.label) reason=\(reason)"
+      )
+      return !actions.isEmpty
+    } catch {
+      transferModeCoordinator.recordPreparationFailed()
+      report(
+        "[OBS] PTP_TRANSFER_MODE_PREPARE_FAILED requested=\(purpose.label) " +
+        "actual=\(transferModeCoordinator.currentPurpose.label) reason=\(reason) " +
+        "error=\(error.localizedDescription)"
+      )
+      throw error
+    }
+  }
+
+  @discardableResult
+  private func resetTransferMode(
+    reason: String,
+    handle: UInt32? = nil
+  ) throws -> Bool {
+    let before = transferModeCoordinator.currentPurpose
+    let actions = transferModeCoordinator.actionsForReset()
+    report(
+      "[OBS] PTP_TRANSFER_MODE_PREPARE before=\(before.label) requested=reset " +
+      "actions=\(actions.count) reason=\(reason)"
+    )
+    do {
+      for action in actions {
+        switch action {
+        case .setProperty(let property):
+          _ = try setCameraVendorTransferModeProperty(
+            property,
+            handle: handle,
+            purpose: .reset,
+            reason: reason
+          )
+        }
+      }
+      transferModeCoordinator.recordResetSucceeded()
+      report(
+        "[OBS] PTP_TRANSFER_MODE_READY requested=reset actual=reset reason=\(reason)"
+      )
+      return !actions.isEmpty
+    } catch {
+      transferModeCoordinator.recordResetFailed()
+      report(
+        "[OBS] PTP_TRANSFER_MODE_RESET_FAILED before=\(before.label) reason=\(reason) " +
+        "error=\(error.localizedDescription)"
+      )
+      throw error
+    }
+  }
+
+  func resetCameraVendorCompressionMode() throws {
+    do {
+      report("按 ReferenceApp resetCompressionMode 写入 ImageForceCompression (0xD226 = 0)")
+      _ = try resetTransferMode(reason: "resetCompressionMode")
+
+      report("按 ReferenceApp resetCompressionMode 写入 ImageCompressionRealInfo (0xD227 = 0)")
+      let realInfoResponse = try sendCommandWithData(
+        operationCode: UInt16(CameraVendorPtpOperationCode.setDevicePropValue),
+        parameters: [CameraVendorDevicePropCode.imageCompressionRealInfo],
+        data: littleEndianData(UInt32(0))
+      )
+      report("[OBS] PTP_SET_IMAGE_COMPRESSION_REAL_INFO_ZERO response=0x\(String(format: "%04X", realInfoResponse.responseCode))")
+    } catch {
+      transferModeCoordinator.recordResetFailed()
+      throw error
+    }
+  }
+
+  @discardableResult
+  private func setCameraVendorTransferModeProperty(
+    _ property: CameraVendorDownloadModeProperty,
+    handle: UInt32?,
+    purpose: CameraVendorPhysicalTransferPurpose,
+    reason: String
+  ) throws -> CameraVendorOperationResponse {
     let response = try sendCommandWithData(
       operationCode: UInt16(CameraVendorPtpOperationCode.setDevicePropValue),
-      parameters: [CameraVendorDevicePropCode.imageForceCompression],
-      data: littleEndianData(UInt16(mode))
+      parameters: [property.code],
+      data: CameraVendorDownloadModePolicy.payload(for: property)
     )
-    report("[OBS] PTP_SET_IMAGE_FORCE_COMPRESSION mode=\(mode) reason=\(reason) response=0x\(String(format: "%04X", response.responseCode))")
+    report(
+      "[OBS] PTP_TRANSFER_MODE_PROPERTY " +
+      "handle=\(handle.map { String(format: "0x%08X", $0) } ?? "none") " +
+      "purpose=\(purpose.label) reason=\(reason) " +
+      "prop=0x\(String(format: "%04X", property.code)) value=\(property.value) " +
+      "width=\(property.width) response=0x\(String(format: "%04X", response.responseCode))"
+    )
+    if purpose == .compressedDownload || purpose == .originalDownload {
+      report(
+        "[OBS] PTP_DOWNLOAD_MODE_PROPERTY " +
+        "handle=\(handle.map { String(format: "0x%08X", $0) } ?? "none") " +
+        "mode=\(purpose.label) reason=\(reason) " +
+        "prop=0x\(String(format: "%04X", property.code)) value=\(property.value) " +
+        "width=\(property.width) response=0x\(String(format: "%04X", response.responseCode))"
+      )
+    }
     return response
   }
 
@@ -1595,18 +1654,12 @@ final class CameraVendorPtpSession {
     mode: CameraVendorTransferDownloadMode,
     reason: String
   ) throws -> CameraVendorOperationResponse {
-    let response = try sendCommandWithData(
-      operationCode: UInt16(CameraVendorPtpOperationCode.setDevicePropValue),
-      parameters: [property.code],
-      data: CameraVendorDownloadModePolicy.payload(for: property)
+    try setCameraVendorTransferModeProperty(
+      property,
+      handle: handle,
+      purpose: physicalPurpose(for: mode),
+      reason: reason
     )
-    report(
-      "[OBS] PTP_DOWNLOAD_MODE_PROPERTY " +
-      "handle=0x\(String(format: "%08X", handle)) mode=\(mode) reason=\(reason) " +
-      "prop=0x\(String(format: "%04X", property.code)) value=\(property.value) " +
-      "width=\(property.width) response=0x\(String(format: "%04X", response.responseCode))"
-    )
-    return response
   }
 
   private func requestCameraVendorCardSlotStatus() throws {
@@ -2297,27 +2350,88 @@ final class CameraVendorPtpSession {
 
   func previewImageWithInfo(handle: UInt32) throws -> CameraVendorPreviewImageFetchResult {
     report("[OBS] PTP_PREVIEW_IMAGE_REQUEST handle=0x\(String(format: "%08X", handle))")
-    try setCameraVendorImageForceCompression(1, reason: "previewImage")
+    try prepareTransferMode(
+      .screenPreview,
+      handle: handle,
+      reason: "previewImage"
+    )
     defer {
       do {
-        try setCameraVendorImageForceCompression(0, reason: "previewImageReset")
+        try resetTransferMode(reason: "previewImageReset", handle: handle)
       } catch {
         report("[OBS] PTP_PREVIEW_IMAGE_RESET_FAILED handle=0x\(String(format: "%08X", handle)) error=\(error.localizedDescription)")
       }
     }
-    let previewInfo = try objectInfo(handle: handle)
-    guard CameraVendorPreviewImageReadPolicy.supports(
-      formatLabel: previewInfo.formatLabel,
-      compressedSize: previewInfo.compressedSize
+    let originalInfo = try objectInfo(handle: handle)
+    var companionInfo: CameraVendorCameraObjectInfo?
+    if let companionHandle = CameraVendorPreviewImageSourcePolicy.companionCandidateHandle(
+      for: originalInfo
+    ) {
+      do {
+        companionInfo = try objectInfo(handle: companionHandle)
+      } catch {
+        report(
+          "[OBS] PTP_RAW_PREVIEW_COMPANION_REJECTED " +
+          "rawHandle=0x\(String(format: "%08X", handle)) " +
+          "candidateHandle=0x\(String(format: "%08X", companionHandle)) " +
+          "reason=object-info-read-failed error=\(error.localizedDescription)"
+        )
+      }
+    }
+    guard let source = CameraVendorPreviewImageSourcePolicy.source(
+      originalInfo: originalInfo,
+      companionInfo: companionInfo
     ) else {
       throw NSError(
         domain: "CameraVendorPtpSession",
         code: 22,
-        userInfo: [NSLocalizedDescriptionKey: "Compressed preview size unavailable handle=\(handle) size=\(previewInfo.compressedSize)"]
+        userInfo: [NSLocalizedDescriptionKey: "Compressed preview size unavailable handle=\(handle) size=\(originalInfo.compressedSize)"]
       )
     }
-    let data = try readPreviewObject(handle: handle, size: previewInfo.compressedSize)
-    let image = CameraVendorImageDataNormalizer.imageData(from: data)
+
+    let image: Data
+    let sourceDescription: String
+    switch source {
+    case .compressedObject(let previewHandle, let previewSize):
+      if previewHandle != handle, let companionInfo {
+        report(
+          "[OBS] PTP_RAW_PREVIEW_COMPANION_SELECTED " +
+          "rawHandle=0x\(String(format: "%08X", handle)) " +
+          "companionHandle=0x\(String(format: "%08X", previewHandle)) " +
+          "rawFilename=\(originalInfo.filename) companionFilename=\(companionInfo.filename) " +
+          "companionFormat=\(companionInfo.formatLabel) companionSize=\(previewSize)"
+        )
+      }
+      let data = try readPreviewObject(handle: previewHandle, size: previewSize)
+      image = CameraVendorImageDataNormalizer.imageData(from: data)
+      sourceDescription =
+        "compressedObject sourceHandle=0x\(String(format: "%08X", previewHandle)) " +
+        "rawBytes=\(data.count) readSize=\(previewSize)"
+    case .standardThumbnail(let thumbnailHandle):
+      if let companionInfo {
+        report(
+          "[OBS] PTP_RAW_PREVIEW_COMPANION_REJECTED " +
+          "rawHandle=0x\(String(format: "%08X", handle)) " +
+          "candidateHandle=0x\(String(format: "%08X", UInt32(clamping: companionInfo.handle))) " +
+          "reason=metadata-mismatch rawFilename=\(originalInfo.filename) " +
+          "candidateFilename=\(companionInfo.filename) candidateFormat=\(companionInfo.formatLabel) " +
+          "candidateSize=\(companionInfo.compressedSize)"
+        )
+      }
+      report(
+        "[OBS] PTP_RAW_PREVIEW_THUMB_FALLBACK " +
+        "handle=0x\(String(format: "%08X", thumbnailHandle)) " +
+        "filename=\(originalInfo.filename) rawSize=\(originalInfo.compressedSize)"
+      )
+      let thumbnail = try readStandardThumbnailObjectWithInfo(handle: thumbnailHandle)
+      image = normalizedThumbnailData(
+        thumbnail.data,
+        handle: thumbnailHandle,
+        source: "rawPreviewStandardGetThumb"
+      )
+      sourceDescription = "standardThumbnail sourceHandle=0x\(String(format: "%08X", thumbnailHandle))"
+    }
+
     guard CameraVendorPreviewImageValidationPolicy.isValidPreviewImageData(image) else {
       throw NSError(
         domain: "CameraVendorPtpSession",
@@ -2329,10 +2443,9 @@ final class CameraVendorPtpSession {
     }
     report(
       "[OBS] PTP_PREVIEW_IMAGE_COMPRESSED handle=0x\(String(format: "%08X", handle)) " +
-      "rawBytes=\(data.count) imageBytes=\(image.count) readSize=\(previewInfo.compressedSize) " +
-      "object=\(previewInfo.formatLabel)"
+      "imageBytes=\(image.count) \(sourceDescription) object=\(originalInfo.formatLabel)"
     )
-    return CameraVendorPreviewImageFetchResult(data: image, objectInfo: previewInfo)
+    return CameraVendorPreviewImageFetchResult(data: image, objectInfo: originalInfo)
   }
 
   private func readObjectSample(handle: UInt32, byteCount: UInt32) throws -> Data {
@@ -2857,15 +2970,18 @@ final class CameraVendorPtpSession {
       defer {
         if shouldResetForceCompression {
           do {
-            try setCameraVendorImageForceCompression(0, reason: "download-reset")
+            try resetTransferMode(reason: "download-reset", handle: handle)
           } catch {
             report("[OBS] PTP_DOWNLOAD_RESET_FORCE_COMPRESSION_FAILED error=\(error.localizedDescription)")
           }
         }
       }
       if CameraVendorOriginalDownloadPolicy.shouldSetForceCompressionBeforeStandardGetObject {
-        try setCameraVendorImageForceCompression(2, reason: "download")
-        shouldResetForceCompression = true
+        shouldResetForceCompression = try prepareTransferMode(
+          .originalDownload,
+          handle: handle,
+          reason: "download"
+        )
       } else {
         report("[OBS] PTP_DOWNLOAD_SKIP_FORCE_COMPRESSION_BEFORE_GET_OBJECT")
       }
@@ -2901,7 +3017,10 @@ final class CameraVendorPtpSession {
       }
       if shouldResetForceCompression {
         do {
-          try setCameraVendorImageForceCompression(0, reason: "download-partial-fallback-reset")
+          try resetTransferMode(
+            reason: "download-partial-fallback-reset",
+            handle: handle
+          )
         } catch {
           report("[OBS] PTP_DOWNLOAD_RESET_FORCE_COMPRESSION_ZERO_FAILED error=\(error.localizedDescription)")
         }
@@ -2916,11 +3035,11 @@ final class CameraVendorPtpSession {
         formatLabel: "UNKNOWN",
         cachedExpectedSize: cachedExpectedSize
       ) {
-        try setCameraVendorImageForceCompression(
-          CameraVendorOriginalDownloadPolicy.referenceAppFileDownloadForceCompressionMode,
+        shouldResetForceCompression = try prepareTransferMode(
+          .originalDownload,
+          handle: handle,
           reason: "download-partial-fallback-prepare"
         )
-        shouldResetForceCompression = true
       }
       if CameraVendorOriginalDownloadPolicy.shouldReadCompressionCutOffBeforeFreshFileInfo(
         formatLabel: "UNKNOWN",
@@ -2993,21 +3112,16 @@ final class CameraVendorPtpSession {
     var freshInfoMs = 0
     var readMs = 0
     var normalizeMs = 0
-    var resetProperties: [CameraVendorDownloadModeProperty] = []
+    var shouldResetTransferMode = false
     defer {
-      for resetProperty in resetProperties.reversed() {
+      if shouldResetTransferMode {
         do {
-          try setCameraVendorDownloadModeProperty(
-            resetProperty,
-            handle: handle,
-            mode: downloadMode,
-            reason: "download-data-reset"
-          )
+          try resetTransferMode(reason: "download-data-reset", handle: handle)
         } catch {
           report(
             "[OBS] PTP_DOWNLOAD_DATA_RESET_MODE_FAILED " +
             "handle=0x\(String(format: "%08X", handle)) mode=\(downloadMode) " +
-            "prop=0x\(String(format: "%04X", resetProperty.code)) error=\(error.localizedDescription)"
+            "error=\(error.localizedDescription)"
           )
         }
       }
@@ -3035,17 +3149,11 @@ final class CameraVendorPtpSession {
       } else {
         report("[OBS] PTP_DOWNLOAD_DATA_SKIP_D235_CONTEXT reason=data-download-uses-object-info-size")
       }
-      for prepareProperty in CameraVendorDownloadModePolicy.prepareProperties(mode: downloadMode) {
-        try setCameraVendorDownloadModeProperty(
-          prepareProperty,
-          handle: handle,
-          mode: downloadMode,
-          reason: "download-data-prepare"
-        )
-        if let resetProperty = CameraVendorDownloadModePolicy.resetProperty(for: prepareProperty) {
-          resetProperties.append(resetProperty)
-        }
-      }
+      shouldResetTransferMode = try prepareTransferMode(
+        physicalPurpose(for: downloadMode),
+        handle: handle,
+        reason: "download-data-prepare"
+      )
       prepMs = Int(Date().timeIntervalSince(prepStartedAt) * 1000)
       let shouldUseCachedInfo = CameraVendorOriginalDownloadPolicy.shouldUseCachedObjectInfoForDataDownload(
         formatLabel: formatLabel,
@@ -3245,7 +3353,7 @@ final class CameraVendorPtpSession {
     eventSocket.close()
     isConnected = false
     didConfirmGalleryMode = false
-    originalDownloadBatchModeState.resetForSessionEnd()
+    transferModeCoordinator.invalidate()
     diagnosticHandler = nil
   }
 

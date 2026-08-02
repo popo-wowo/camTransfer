@@ -158,6 +158,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   private let gallerySessionActivator: CameraSessionRuntimeGallerySessionActivating?
   private let connectionController: CameraSessionRuntimeConnectionControlling?
   private let legacyResumeMigrator: CameraSessionRuntimeLegacyResumeMigrating?
+  private let userCancellationHardInterruptDelayNanoseconds: UInt64
   private(set) var presentation = CameraSessionPresentation.idle
   private var identity: CameraSessionIdentity?
   private var queuedDownloads: [CameraSessionQueuedDownload] = []
@@ -179,6 +180,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   private var hasBackgroundExecutionAuthority = false
   private var activitySessionID: UUID?
   private var activeTransportBinding: CameraSessionRuntimeBinding?
+  private var isCatalogTransportUsable = false
   private(set) var galleryPresentationPayload: CameraSessionRuntimeGalleryPresentationPayload?
   private var isQuickDownloadQuerySession = false
   private var quickDownloadGalleryReadySession: IOSCameraGallerySession?
@@ -211,7 +213,8 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     connectionWorker: CameraSessionRuntimeConnectionWorker? = nil,
     gallerySessionActivator: CameraSessionRuntimeGallerySessionActivating? = nil,
     connectionController: CameraSessionRuntimeConnectionControlling? = nil,
-    legacyResumeMigrator: CameraSessionRuntimeLegacyResumeMigrating? = nil
+    legacyResumeMigrator: CameraSessionRuntimeLegacyResumeMigrating? = nil,
+    userCancellationHardInterruptDelayNanoseconds: UInt64 = 2_000_000_000
   ) {
     self.transport = transport
     self.recoveryStore = recoveryStore
@@ -224,6 +227,8 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     self.gallerySessionActivator = gallerySessionActivator
     self.connectionController = connectionController
     self.legacyResumeMigrator = legacyResumeMigrator
+    self.userCancellationHardInterruptDelayNanoseconds =
+      userCancellationHardInterruptDelayNanoseconds
     connectionController?.onSnapshotChanged = { [weak self] snapshot in
       self?.onConnectionSnapshotChanged?(snapshot)
     }
@@ -327,6 +332,24 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     gallerySession?.updateHDPreviewVisibleHandles(handles)
   }
 
+  func updateGalleryHDPreviewSnapshot(
+    _ snapshot: NativeGalleryHDPreviewSnapshot,
+    expectedCatalogIdentity: CameraGalleryCatalogIdentity
+  ) async {
+    await gallerySession?.updateHDPreviewSnapshot(
+      snapshot,
+      expectedCatalogIdentity: expectedCatalogIdentity
+    )
+  }
+
+  func focusGalleryHDFullScreen(handle: Int) {
+    gallerySession?.focusHDFullScreen(handle: handle)
+  }
+
+  func restoreGalleryHDPreviewListFocus(visibleHandles: [Int]) {
+    gallerySession?.restoreHDPreviewListFocus(visibleHandles: visibleHandles)
+  }
+
   func retryGalleryHDPreview(handle: Int) {
     gallerySession?.retryHDPreview(handle: handle)
   }
@@ -363,6 +386,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
       recoveryStore?.clear()
     }
     self.identity = identity
+    isCatalogTransportUsable = true
     activeDownloadSubmission = nil
     recoveredSnapshot = nil
     hasRequestedRecoveredConnection = false
@@ -769,6 +793,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
         if (recoveredSnapshot != nil || hasSameProcessRecovery),
            recoveryPeripheralID == identity.peripheralID {
           self.identity = identity
+          isCatalogTransportUsable = true
           configureCatalogRuntime()
           return
         }
@@ -980,6 +1005,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
                 self.activeTransportBinding == transportBinding else { return }
           self.transport.terminateCameraCommunication(reason: "catalog-transport-lost")
           self.activeTransportBinding = nil
+          self.isCatalogTransportUsable = false
         }
       }
 
@@ -1334,6 +1360,15 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     }
     send(.cancelDownloadByUser)
     guard presentation.phase == .cancelling else { return }
+    let hardInterruptTask = Task { @MainActor [weak self] in
+      guard let self else { return }
+      try? await Task.sleep(
+        nanoseconds: self.userCancellationHardInterruptDelayNanoseconds
+      )
+      guard !Task.isCancelled, self.presentation.phase == .cancelling else { return }
+      self.forceFinishUserCancelledDownloadAfterSoftCancellationTimeout()
+    }
+    defer { hardInterruptTask.cancel() }
     await withCheckedContinuation { continuation in
       guard presentation.phase == .cancelling else {
         continuation.resume()
@@ -1427,7 +1462,11 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   }
 
   private var canSubmitCatalogCommand: Bool {
-    identity != nil && presentation.phase == .galleryReady && !hasDownloadLease
+    identity != nil &&
+      isCatalogTransportUsable &&
+      catalogSessionID != nil &&
+      presentation.phase == .galleryReady &&
+      !hasDownloadLease
   }
 
   private func validateCatalogCommand() throws {
@@ -1471,6 +1510,8 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
       activeTransportBinding == cleanup.transportBinding
     if ownsCurrentSession {
       transport.cancelActiveTransfer(reason: cleanup.reason)
+      activeTransportBinding = nil
+      isCatalogTransportUsable = false
       releaseBackgroundExecution(reason: cleanup.reason)
       backgroundMaintainer?.stop(reason: cleanup.reason)
     }
@@ -1526,6 +1567,8 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
 
   private func finishRecoverableInterruption(reason: String) {
     transport.cancelActiveTransfer(reason: reason)
+    activeTransportBinding = nil
+    isCatalogTransportUsable = false
     releaseDownloadLease()
     releaseBackgroundExecution(reason: reason)
     backgroundMaintainer?.stop(reason: reason)
@@ -1596,6 +1639,8 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
 
   private func failInterruptedRecoveryPersistence(reason: String) {
     transport.cancelActiveTransfer(reason: reason)
+    activeTransportBinding = nil
+    isCatalogTransportUsable = false
     releaseDownloadLease()
     releaseBackgroundExecution(reason: reason)
     backgroundMaintainer?.stop(reason: reason)
@@ -1655,6 +1700,15 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     let completionPolicy: CameraDownloadCompletionPolicy = .returnToGallery
     activeDownloadSubmission = nil
     applyDownloadCompletionRouting(completionPolicy, reason: reason)
+  }
+
+  private func forceFinishUserCancelledDownloadAfterSoftCancellationTimeout() {
+    guard presentation.phase == .cancelling else { return }
+    let reason = "user-cancelled-download-timeout"
+    transport.cancelActiveTransfer(reason: reason)
+    _ = beginCatalogSessionTermination(reason: reason)
+    finishUserCancelledDownload(reason: reason)
+    publishPresentation()
   }
 
   private func startNextDownload(phase: CameraSessionPhase) {
@@ -1797,6 +1851,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     previousGenerationFence?.invalidate()
     transport.terminateCameraCommunication(reason: reason)
     activeTransportBinding = nil
+    isCatalogTransportUsable = false
     let terminationTask = Task { @MainActor in
       await previousQueryEngine?.invalidate()
       await previousSession?.invalidate()
@@ -1862,16 +1917,18 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
        beginGalleryActivationAfterQuickDownload() {
       return
     }
-    // After user-cancelled download, keep galleryReady even if identity was
-    // cleared by transport failure — the gallery UI should remain visible and
-    // allow the user to continue browsing cached content or reconnect.
+    let hasUsableCatalogTransport = identity != nil &&
+      isCatalogTransportUsable &&
+      catalogSessionID != nil
     presentation = CameraSessionPresentation(
-      phase: .galleryReady,
+      phase: hasUsableCatalogTransport ? .galleryReady :
+        (identity == nil ? .interrupted : .recovering),
       queuedHandles: [],
       inFlightHandle: nil,
       catalog: presentation.catalog
     )
     routeDownloadCompletionToGalleryIfPossible()
+    requestRecoveredConnectionIfNeeded()
   }
 
   private func beginGalleryActivationAfterQuickDownload() -> Bool {

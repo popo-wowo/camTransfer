@@ -222,7 +222,7 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
         snapshotID: CameraGallerySnapshotID(),
         dateGroups: snapshot.dateGroups,
         orderedHandles: snapshot.orderedHandles,
-        items: snapshot.items
+        items: formatTaggedItems(snapshot.items, format: format)
       )
     } catch is CancellationError {
       throw CancellationError()
@@ -247,7 +247,7 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
         snapshotID: CameraGallerySnapshotID(),
         dateGroups: snapshot.dateGroups,
         orderedHandles: snapshot.orderedHandles,
-        items: snapshot.items
+        items: formatTaggedItems(snapshot.items, format: format)
       )
     } catch is CancellationError {
       throw CancellationError()
@@ -267,6 +267,37 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
     let thumbnail = try await transport.fetchThumbnailWithInfo(for: handle)
     try generationFence.checkActive()
     return CameraGalleryRepositoryAdapter.thumbnailResult(from: thumbnail)
+  }
+
+  private func formatTaggedItems(
+    _ items: [CameraGalleryCatalogItem],
+    format: CameraMediaFormat
+  ) -> [CameraGalleryCatalogItem] {
+    let hint: CameraGalleryFormatHint
+    switch format {
+    case .jpg:
+      hint = .jpg
+    case .raw:
+      hint = .raw
+    case .heif:
+      hint = .heif
+    }
+    return items.map { item in
+      guard item.formatLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        return item
+      }
+      return CameraGalleryCatalogItem(
+        handle: item.handle,
+        filename: item.filename,
+        formatLabel: item.formatLabel,
+        captureDate: item.captureDate,
+        byteSizeText: item.byteSizeText,
+        compressedSize: item.compressedSize,
+        orientation: item.orientation,
+        formatHints: [hint],
+        thumbnailData: item.thumbnailData
+      )
+    }
   }
 
   func loadDetails(handle: Int) async throws -> CameraGalleryDetailsSourceResult {

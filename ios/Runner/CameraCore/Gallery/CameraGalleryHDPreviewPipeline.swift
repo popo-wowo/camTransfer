@@ -24,6 +24,7 @@ final class CameraGalleryHDPreviewPipeline {
   private var isJoiningLoadTask = false
   private var loadState = NativeGalleryHDPreviewLoadState()
   private var visibleHandles: [Int] = []
+  private var focus: NativeGalleryHDPreviewFocus = .list(visibleHandles: [])
   private var lastLoggedPriorityHandles: [Int] = []
   private var suspensionCount = 0
   private var isActive = false
@@ -75,6 +76,7 @@ final class CameraGalleryHDPreviewPipeline {
     }
     loadState = NativeGalleryHDPreviewLoadState()
     self.visibleHandles = visibleHandles
+    focus = .list(visibleHandles: visibleHandles)
     lastLoggedPriorityHandles = []
     isActive = true
     state = makeState(snapshot: snapshot, catalogIdentity: catalogIdentity)
@@ -86,10 +88,72 @@ final class CameraGalleryHDPreviewPipeline {
     startLoadingIfNeeded()
   }
 
+  func updateSnapshot(
+    catalogIdentity: CameraGalleryCatalogIdentity,
+    snapshot: NativeGalleryHDPreviewSnapshot
+  ) async {
+    await enqueueLifecycle { [weak self] in
+      self?.performUpdateSnapshot(
+        catalogIdentity: catalogIdentity,
+        snapshot: snapshot
+      )
+    }
+  }
+
+  private func performUpdateSnapshot(
+    catalogIdentity: CameraGalleryCatalogIdentity,
+    snapshot: NativeGalleryHDPreviewSnapshot
+  ) {
+    guard !hasTerminalTransportFailure,
+          isCurrent(catalogIdentity),
+          state?.snapshot != snapshot else { return }
+    let loadableHandles = Set(snapshot.loadableDisplayHandles)
+    loadState.loadingHandles.formIntersection(loadableHandles)
+    loadState.failedHandles.formIntersection(loadableHandles)
+    if case .fullScreen(let currentHandle) = focus,
+       !loadableHandles.contains(currentHandle) {
+      focus = .list(visibleHandles: visibleHandles)
+      cache.setPinnedHandles([], for: catalogIdentity)
+    }
+    lastLoggedPriorityHandles = []
+    state = makeState(snapshot: snapshot, catalogIdentity: catalogIdentity)
+    publish(.state(catalogIdentity, state))
+    startLoadingIfNeeded()
+  }
+
   func updateVisibleHandles(_ handles: [Int]) {
     guard !hasTerminalTransportFailure else { return }
     guard handles != visibleHandles else { return }
     visibleHandles = handles
+    focus = .list(visibleHandles: handles)
+    startLoadingIfNeeded()
+  }
+
+  func focusFullScreen(on handle: Int) {
+    guard !hasTerminalTransportFailure,
+          isActive,
+          state?.snapshot.displayHandles.contains(handle) == true else { return }
+    focus = .fullScreen(currentHandle: handle)
+    if let catalogIdentity, let snapshot = state?.snapshot {
+      cache.setPinnedHandles(
+        NativeGalleryHDPreviewSessionPolicy.fullScreenPriority(
+          orderedHandles: snapshot.loadableDisplayHandles,
+          currentHandle: handle
+        ),
+        for: catalogIdentity
+      )
+    }
+    lastLoggedPriorityHandles = []
+    startLoadingIfNeeded()
+  }
+
+  func restoreListFocus(visibleHandles handles: [Int]) {
+    visibleHandles = handles
+    focus = .list(visibleHandles: handles)
+    if let catalogIdentity {
+      cache.setPinnedHandles([], for: catalogIdentity)
+    }
+    lastLoggedPriorityHandles = []
     startLoadingIfNeeded()
   }
 
@@ -178,6 +242,10 @@ final class CameraGalleryHDPreviewPipeline {
     catalogIdentity = nil
     loadState = NativeGalleryHDPreviewLoadState()
     visibleHandles = []
+    focus = .list(visibleHandles: [])
+    if let previousCatalogIdentity {
+      cache.setPinnedHandles([], for: previousCatalogIdentity)
+    }
     lastLoggedPriorityHandles = []
     suspensionCount = 0
     isActive = false
@@ -244,20 +312,32 @@ final class CameraGalleryHDPreviewPipeline {
           suspensionCount == 0,
           let catalogIdentity,
           let snapshot = state?.snapshot {
-      let priorityHandles = NativeGalleryHDPreviewSessionPolicy.priorityWindow(
-        orderedHandles: snapshot.loadableDisplayHandles,
-        visibleHandles: visibleHandles.isEmpty
-          ? Array(snapshot.loadableDisplayHandles.prefix(3))
-          : visibleHandles,
-        limit: 30
-      )
+      let priorityHandles: [Int]
+      let focusLabel: String
+      switch focus {
+      case .list(let focusedVisibleHandles):
+        focusLabel = "list"
+        priorityHandles = NativeGalleryHDPreviewSessionPolicy.priorityWindow(
+          orderedHandles: snapshot.loadableDisplayHandles,
+          visibleHandles: focusedVisibleHandles.isEmpty
+            ? Array(snapshot.loadableDisplayHandles.prefix(3))
+            : focusedVisibleHandles,
+          limit: 30
+        )
+      case .fullScreen(let currentHandle):
+        focusLabel = "fullscreen"
+        priorityHandles = NativeGalleryHDPreviewSessionPolicy.fullScreenPriority(
+          orderedHandles: snapshot.loadableDisplayHandles,
+          currentHandle: currentHandle
+        )
+      }
       cache.touchLoadedHandles(Array(priorityHandles.reversed()), for: catalogIdentity)
       let loadedHandles = cache.loadedHandles(for: catalogIdentity)
       let priorityHandleSet = Set(priorityHandles)
       if priorityHandles != lastLoggedPriorityHandles {
         lastLoggedPriorityHandles = priorityHandles
         CameraVendorFileLogger.log(
-          "[OBS] HD_PREVIEW_PRIORITY_PLAN generation=\(catalogIdentity.generation.rawValue) " +
+          "[OBS] HD_PREVIEW_PRIORITY_PLAN focus=\(focusLabel) generation=\(catalogIdentity.generation.rawValue) " +
           "visible=\(visibleHandles.count) priority=\(priorityHandles.count) " +
           "loaded=\(loadedHandles.intersection(priorityHandleSet).count) " +
           "loading=\(loadState.loadingHandles.count) failed=\(loadState.failedHandles.count)"
@@ -280,7 +360,7 @@ final class CameraGalleryHDPreviewPipeline {
         handle: handle,
         variant: .hdPreview
       )
-      apply(.started(handle: handle), snapshot: snapshot, catalogIdentity: catalogIdentity)
+      apply(.started(handle: handle), catalogIdentity: catalogIdentity)
       let requestStartedAt = Date()
       CameraVendorFileLogger.log(
         "[OBS] HD_PREVIEW_REQUEST_BEGIN handle=0x\(String(format: "%08X", handle)) " +
@@ -289,13 +369,18 @@ final class CameraGalleryHDPreviewPipeline {
       do {
         let preview = try await fetchPreview(identity)
         try Task.checkCancellation()
-        guard isCurrent(identity) else { return }
+        guard isCurrent(catalogIdentity) else { return }
+        guard state?.snapshot.displayHandles.contains(handle) == true else {
+          apply(.cancelled(handle: handle), catalogIdentity: catalogIdentity)
+          continue
+        }
         cache.store(preview.data, for: identity, objectOrientation: preview.objectOrientation)
         loadState = NativeGalleryHDPreviewLoadReducer.reduce(
           state: loadState,
           event: .succeeded(handle: handle)
         )
-        let nextState = makeState(snapshot: snapshot, catalogIdentity: catalogIdentity)
+        guard let currentSnapshot = state?.snapshot else { return }
+        let nextState = makeState(snapshot: currentSnapshot, catalogIdentity: catalogIdentity)
         state = nextState
         publish(.preview(identity, nextState))
         CameraVendorFileLogger.log(
@@ -304,23 +389,27 @@ final class CameraGalleryHDPreviewPipeline {
           "elapsedMs=\(Int(Date().timeIntervalSince(requestStartedAt) * 1000))"
         )
       } catch is CancellationError {
-        apply(.cancelled(handle: handle), snapshot: snapshot, catalogIdentity: catalogIdentity)
+        apply(.cancelled(handle: handle), catalogIdentity: catalogIdentity)
         CameraVendorFileLogger.log(
           "[OBS] HD_PREVIEW_REQUEST_CANCELLED handle=0x\(String(format: "%08X", handle)) " +
           "elapsedMs=\(Int(Date().timeIntervalSince(requestStartedAt) * 1000))"
         )
         return
       } catch {
-        guard !Task.isCancelled, isCurrent(identity) else {
-          apply(.cancelled(handle: handle), snapshot: snapshot, catalogIdentity: catalogIdentity)
+        guard !Task.isCancelled, isCurrent(catalogIdentity) else {
+          apply(.cancelled(handle: handle), catalogIdentity: catalogIdentity)
           return
+        }
+        guard state?.snapshot.displayHandles.contains(handle) == true else {
+          apply(.cancelled(handle: handle), catalogIdentity: catalogIdentity)
+          continue
         }
 
         let disposition = CameraTransportFailureDispositionPolicy.disposition(for: error)
         switch disposition {
         case .sessionTerminal:
           hasTerminalTransportFailure = true
-          apply(.failed(handle: handle), snapshot: snapshot, catalogIdentity: catalogIdentity)
+          apply(.failed(handle: handle), catalogIdentity: catalogIdentity)
           CameraVendorFileLogger.log(
             "[OBS] HD_PREVIEW_TRANSPORT_LOST handle=0x\(String(format: "%08X", handle)) " +
             "error=\(error.localizedDescription) " +
@@ -329,10 +418,10 @@ final class CameraGalleryHDPreviewPipeline {
           reportTransportFailure?(error)
           return
         case .cancelled:
-          apply(.cancelled(handle: handle), snapshot: snapshot, catalogIdentity: catalogIdentity)
+          apply(.cancelled(handle: handle), catalogIdentity: catalogIdentity)
           return
         case .retryableOperation, .contentFailure:
-          apply(.failed(handle: handle), snapshot: snapshot, catalogIdentity: catalogIdentity)
+          apply(.failed(handle: handle), catalogIdentity: catalogIdentity)
           CameraVendorFileLogger.log(
             NativeGalleryHDPreviewFailureLogPolicy.message(
               handle: handle,
@@ -359,10 +448,10 @@ final class CameraGalleryHDPreviewPipeline {
 
   private func apply(
     _ event: NativeGalleryHDPreviewLoadEvent,
-    snapshot: NativeGalleryHDPreviewSnapshot,
     catalogIdentity: CameraGalleryCatalogIdentity
   ) {
-    guard self.catalogIdentity == catalogIdentity else { return }
+    guard self.catalogIdentity == catalogIdentity,
+          let snapshot = state?.snapshot else { return }
     loadState = NativeGalleryHDPreviewLoadReducer.reduce(state: loadState, event: event)
     publishState(snapshot: snapshot)
   }
@@ -398,9 +487,4 @@ final class CameraGalleryHDPreviewPipeline {
     isActive && self.catalogIdentity == catalogIdentity
   }
 
-  private func isCurrent(_ identity: CameraGalleryMediaIdentity) -> Bool {
-    identity.variant == .hdPreview &&
-      isCurrent(identity.catalog) &&
-      state?.snapshot.displayHandles.contains(identity.handle) == true
-  }
 }

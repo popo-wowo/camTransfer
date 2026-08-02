@@ -8,86 +8,89 @@
 
 /* Begin PBXBuildFile section */
 		007F31BFDCE8A3EB5FFA7D02 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C129A9FB18F81555600E71B3 /* RunnerTests.swift */; };
+		00DC40F2233F2C34DD993463 /* CameraVendorTransferPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF59CE8817BE76106004EB6E /* CameraVendorTransferPolicy.swift */; };
 		01563AF1C08713172483FE8A /* CameraConnectionSteps.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1785535FDE4AE556AC351EB /* CameraConnectionSteps.swift */; };
-		01563AF1C08713172483FE8B /* CameraGalleryResumeStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01563AF1C08713172483FE8C /* CameraGalleryResumeStore.swift */; };
-		A1B2C3D4E5F6071829300001 /* CameraGalleryCatalogModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6071829300000 /* CameraGalleryCatalogModels.swift */; };
-		A1B2C3D4E5F6071829300003 /* CameraGalleryRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6071829300002 /* CameraGalleryRepository.swift */; };
-		A1B2C3D4E5F6071829300005 /* CameraGallerySources.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6071829300004 /* CameraGallerySources.swift */; };
-		A1B2C3D4E5F6071829300007 /* CameraGalleryRepositoryAdapters.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6071829300006 /* CameraGalleryRepositoryAdapters.swift */; };
-		A1B2C3D4E5F6071829300009 /* CameraGalleryCatalogRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6071829300008 /* CameraGalleryCatalogRuntime.swift */; };
-		A1B2C3D4E5F6071829300011 /* CameraMediaFilterRule.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6071829300010 /* CameraMediaFilterRule.swift */; };
-		A1B2C3D4E5F6071829300013 /* CameraFilterEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6071829300012 /* CameraFilterEngine.swift */; };
-		A1B2C3D4E5F6071829300015 /* CameraGalleryMediaIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6071829300014 /* CameraGalleryMediaIdentity.swift */; };
-		A1B2C3D4E5F6071829300017 /* CameraCatalogAccessLease.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6071829300016 /* CameraCatalogAccessLease.swift */; };
-		A1B2C3D4E5F6071829300019 /* CameraCatalogQueryEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6071829300018 /* CameraCatalogQueryEngine.swift */; };
-		A1B2C3D4E5F607182930001B /* CameraGalleryThumbnailPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F607182930001A /* CameraGalleryThumbnailPipeline.swift */; };
-		A1B2C3D4E5F607182930001D /* CameraGalleryHDPreviewPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F607182930001C /* CameraGalleryHDPreviewPipeline.swift */; };
-		A1B2C3D4E5F607182930001F /* CameraGalleryFilterStateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F607182930001E /* CameraGalleryFilterStateStore.swift */; };
-		A1B2C3D4E5F6071829300021 /* CameraGallerySession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6071829300020 /* CameraGallerySession.swift */; };
-		07A9B017317FB734C0D18489 /* CameraConnectionFlowGuards.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07A9B017317FB734C0D18488 /* CameraConnectionFlowGuards.swift */; };
-		11F0A1B2C3D4E5F60718293B /* CameraRememberedConnectionFlowDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11F0A1B2C3D4E5F60718293A /* CameraRememberedConnectionFlowDriver.swift */; };
-		11F0A1B2C3D4E5F60718293D /* CameraTransferFlowDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11F0A1B2C3D4E5F60718293C /* CameraTransferFlowDriver.swift */; };
-		11F0A1B2C3D4E5F60718293F /* CameraPairingConfirmationFlowDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11F0A1B2C3D4E5F60718293E /* CameraPairingConfirmationFlowDriver.swift */; };
+		07C5C84FDD2F7E5AC97B19D2 /* CameraSessionRecoveryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DA90C5DE47229CB6AEA3395 /* CameraSessionRecoveryStore.swift */; };
 		082DDC9F626D556DD44A5273 /* CameraGalleryConnectionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = B96D60CA53C8D03F99E89C22 /* CameraGalleryConnectionCoordinator.swift */; };
-		08B8A2043D69E9E3C08B4A11 /* CameraConnectionStateMachine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08B8A2043D69E9E3C08B4A10 /* CameraConnectionStateMachine.swift */; };
-		0A6A49E12664F6DD244711A0 /* CameraConnectFlowRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A6A49E12664F6DD2447119F /* CameraConnectFlowRuntime.swift */; };
-		C0DEC0DEC0DEC0DEC0DEC001 /* CameraSessionRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DEC0DEC0DEC0DEC000 /* CameraSessionRuntime.swift */; };
-		C0DEC0DEC0DEC0DEC0DEC011 /* CameraSessionConnectionWorker.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DEC0DEC0DEC0DEC010 /* CameraSessionConnectionWorker.swift */; };
-		C0DEC0DEC0DEC0DEC0DEC021 /* CameraSessionTransferExecutor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DEC0DEC0DEC0DEC020 /* CameraSessionTransferExecutor.swift */; };
-		C0DEC0DEC0DEC0DEC0DEC031 /* CameraSessionBackgroundSupervisor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DEC0DEC0DEC0DEC030 /* CameraSessionBackgroundSupervisor.swift */; };
-		C0DEC0DEC0DEC0DEC0DEC041 /* CameraSessionRecoveryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DEC0DEC0DEC0DEC0DEC040 /* CameraSessionRecoveryStore.swift */; };
-		A1B2C3D4E5F6000DA0000001 /* NativeGalleryPolicies.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000DA0000000 /* NativeGalleryPolicies.swift */; };
-		A1B2C3D4E5F6000EA0000001 /* NativeScanViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000EA0000000 /* NativeScanViewController.swift */; };
-		A1B2C3D4E5F6000FA0000001 /* NativeGalleryViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000FA0000000 /* NativeGalleryViewController.swift */; };
-		A1B2C3D4E5F6001AA0000001 /* NativeGalleryHDPreviewCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6001AA0000000 /* NativeGalleryHDPreviewCell.swift */; };
-		A1B2C3D4E5F6001BA0000001 /* NativeGalleryHDPreviewSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6001BA0000000 /* NativeGalleryHDPreviewSession.swift */; };
-		A1B2C3D4E5F60010A0000001 /* NativePhotoPreviewViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60010A0000000 /* NativePhotoPreviewViewController.swift */; };
-		A1B2C3D4E5F60011A0000001 /* CameraAutoDownloadRule.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60011A0000000 /* CameraAutoDownloadRule.swift */; };
-		B1C2D3E4F5A60099B0000101 /* QuickDownloadUseCase.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1C2D3E4F5A60099B0000100 /* QuickDownloadUseCase.swift */; };
-		A1B2C3D4E5F60012A0000001 /* NativeAutoDownloadSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60012A0000000 /* NativeAutoDownloadSettingsViewController.swift */; };
-		A1B2C3D4E5F60013A0000001 /* CameraPhotoLibraryProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60013A0000000 /* CameraPhotoLibraryProvider.swift */; };
+		0D2EFB6B3EB5E1AA3B5EA483 /* CameraGallerySession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 790A6CEA350B518C70B09154 /* CameraGallerySession.swift */; };
 		0D2FDF3FF21F2F7B30A519B2 /* NativeConnectViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23B33146CEC3C5DA80D096F8 /* NativeConnectViewController.swift */; };
+		0ECB6E0DC3B6EB8FAD7D8125 /* CameraRememberedConnectionFlowDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D5D2A7AD1546B5E4DB8FE7A /* CameraRememberedConnectionFlowDriver.swift */; };
 		10318AC1513B94E232296B17 /* CameraSessionLiveActivityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7F279EBDC716817439DE6C6 /* CameraSessionLiveActivityController.swift */; };
+		158F246B78E9189F99ADB88E /* NativeScanViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D97C842C26BEF3F339A28F25 /* NativeScanViewController.swift */; };
+		2062800DBD92F6BB0D5B358D /* CameraSessionBackgroundSupervisor.swift in Sources */ = {isa = PBXBuildFile; fileRef = D877FB9093E865F3ADF1EEAF /* CameraSessionBackgroundSupervisor.swift */; };
 		22BB0301059A7B18AB687B87 /* CameraAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = F57265682EC0C0E6093AB35F /* CameraAdapter.swift */; };
-		24D142A045D34E67A8D3A001 /* CameraGalleryEntryCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24D142A045D34E67A8D3A002 /* CameraGalleryEntryCoordinator.swift */; };
-		2A420E455CC10F65BDB40D01 /* CameraConnectFlowCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A420E455CC10F65BDB40D00 /* CameraConnectFlowCoordinator.swift */; };
 		26168D6E335307C680D37A7C /* RunnerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83E162AB02AF87B6A27F8F7D /* RunnerApp.swift */; };
 		27F7557CB539CADB953B92AB /* CameraVendorBluetoothService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D457106A89EA9C4C918EB6D0 /* CameraVendorBluetoothService.swift */; };
-		A1B2C3D4E5F60001A0000001 /* CameraVendorDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60001A0000000 /* CameraVendorDiagnostics.swift */; };
-		A1B2C3D4E5F60002A0000001 /* CameraVendorPtpSocket.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60002A0000000 /* CameraVendorPtpSocket.swift */; };
-		A1B2C3D4E5F60003A0000001 /* CameraVendorPtpProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60003A0000000 /* CameraVendorPtpProtocol.swift */; };
-		A1B2C3D4E5F60004A0000001 /* CameraVendorPairingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60004A0000000 /* CameraVendorPairingStore.swift */; };
-		A1B2C3D4E5F60005A0000001 /* CameraCommandLane.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60005A0000000 /* CameraCommandLane.swift */; };
-		A1B2C3D4E5F60006A0000001 /* CameraVendorTransferPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60006A0000000 /* CameraVendorTransferPolicy.swift */; };
-		A1B2C3D4E5F60007A0000001 /* CameraVendorSecureHandshake.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60007A0000000 /* CameraVendorSecureHandshake.swift */; };
-		A1B2C3D4E5F60008A0000001 /* CameraVendorCatalogPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60008A0000000 /* CameraVendorCatalogPolicy.swift */; };
-		A1B2C3D4E5F60020A0000001 /* CameraTransportFailureDisposition.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60020A0000000 /* CameraTransportFailureDisposition.swift */; };
-		A1B2C3D4E5F60009A0000001 /* CameraVendorWifiPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60009A0000000 /* CameraVendorWifiPolicy.swift */; };
-		A1B2C3D4E5F6000AA0000001 /* CameraVendorOriginalTransferWorker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000AA0000000 /* CameraVendorOriginalTransferWorker.swift */; };
-		A1B2C3D4E5F6000BA0000001 /* CameraVendorRealtimeGalleryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000BA0000000 /* CameraVendorRealtimeGalleryService.swift */; };
-		A1B2C3D4E5F60015A0000001 /* CameraVendorPairingProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60015A0000000 /* CameraVendorPairingProbe.swift */; };
-		A1B2C3D4E5F6000CA0000001 /* CameraVendorPtpSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6000CA0000000 /* CameraVendorPtpSession.swift */; };
-		6F12AA01C0D1E2F300000001 /* CameraVendorConnectFlowBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F12AA01C0D1E2F300000000 /* CameraVendorConnectFlowBridge.swift */; };
-		6F12AA01C0D1E2F300000003 /* CameraVendorGalleryMainlineSessionLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F12AA01C0D1E2F300000002 /* CameraVendorGalleryMainlineSessionLoader.swift */; };
+		2964C91E97E1085E094892C3 /* CameraVendorTransferModeCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7E956887CE70662AB3291A1 /* CameraVendorTransferModeCoordinator.swift */; };
 		2982E8EDFAE95050894A8935 /* CameraDownloadModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 393CDF9EC2836EA5F98BCEE0 /* CameraDownloadModule.swift */; };
 		2D490BCE8C0BA250290AAC3B /* CameraSessionActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EB26EA8618168E48B7DE465 /* CameraSessionActivityAttributes.swift */; };
+		2EEF506BA3A1C2C641F82128 /* CameraSessionTransferExecutor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4B30C9413C1E22EBE94520C /* CameraSessionTransferExecutor.swift */; };
+		31EEB39326ED50A31610C4B6 /* CameraVendorConnectFlowBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D786BF22E5AF11DC3CCD6FC /* CameraVendorConnectFlowBridge.swift */; };
+		356561F28C44168A77FD3470 /* CameraVendorPairingStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7233B736416CA63CBCCFD9E /* CameraVendorPairingStore.swift */; };
+		3A87F09F4D6DF32C3E36B713 /* CameraVendorSecureHandshake.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E1BD9B76EA9C6F1EE461918 /* CameraVendorSecureHandshake.swift */; };
+		3DDF6D34A71DE9B7DADF4107 /* CameraGalleryRepositoryAdapters.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9EE2087D04BEC22DAE7210BD /* CameraGalleryRepositoryAdapters.swift */; };
 		41A84F673A15B58C0680151D /* LocalProofingSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F9819ABFBC29A3F5568F282 /* LocalProofingSession.swift */; };
+		454196A61238DD1B900B23A2 /* CameraGalleryCatalogRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47AED8901AC0204950919A83 /* CameraGalleryCatalogRuntime.swift */; };
 		4729DBB685779356DA98DAC7 /* CameraGalleryModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDE56B4E4C26E5C8B4081933 /* CameraGalleryModule.swift */; };
+		4C38BD78952BB518062F2473 /* CameraVendorCatalogPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF8766A2A28C19C7BF3DF783 /* CameraVendorCatalogPolicy.swift */; };
+		4DA93E83A9CFFA737F53A186 /* CameraVendorPairingProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88C4856CA0738EF7DFF81439 /* CameraVendorPairingProbe.swift */; };
+		4DBBE5464F0FF09ED93C7289 /* NativeGalleryHDPreviewCell.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE261802A4EAB8EDEF3BCEF5 /* NativeGalleryHDPreviewCell.swift */; };
+		4E051428DB1C8876066C6F0F /* CameraVendorPtpSocket.swift in Sources */ = {isa = PBXBuildFile; fileRef = 933233871AEEF6EA5F4ED57D /* CameraVendorPtpSocket.swift */; };
+		515377A16FCCBF0B8FE38613 /* CameraGallerySources.swift in Sources */ = {isa = PBXBuildFile; fileRef = 454332907FD29532E6247361 /* CameraGallerySources.swift */; };
+		54A53199C2079DDFE3C0FF6A /* CameraVendorPtpSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8941C8D867E337D6653EFE20 /* CameraVendorPtpSession.swift */; };
+		56F823F6C4D3FD626CD5CFFF /* NativeGalleryViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4523DED23D44BBD9A621FC5D /* NativeGalleryViewController.swift */; };
+		59EE0CCD4E7ED3FCF6F899E3 /* CameraVendorRealtimeGalleryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79A919D4C049FA80D701884F /* CameraVendorRealtimeGalleryService.swift */; };
+		5C3D443B5464B2CF50FF7591 /* CameraGalleryMediaIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = E81D64362E852C120071A689 /* CameraGalleryMediaIdentity.swift */; };
+		5C9981C278C8048E2FE4A6D7 /* CameraVendorDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35CA7FD4065DACF0DE04E100 /* CameraVendorDiagnostics.swift */; };
+		5E925099929AB898E5D9F6C9 /* CameraGalleryCatalogModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 123F3C97065C63A7CAEC4BF1 /* CameraGalleryCatalogModels.swift */; };
 		65E6F39481CB19CDEEF3CAA2 /* FujifilmCameraAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 885AFF3A80513C34DC44ED4E /* FujifilmCameraAdapter.swift */; };
 		662E90E88CC81BD3CA102996 /* CameraSessionActivityWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = F983ADDEA06E54D64D8BDBE9 /* CameraSessionActivityWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		677D3E52FDC11F46B9328978 /* CameraPairingConfirmationFlowDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5336B80F2176378DEC57C469 /* CameraPairingConfirmationFlowDriver.swift */; };
+		687BF03C10F037256B7746B0 /* NativeGalleryHDTargetDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3EB84F751B1E05DB914A8030 /* NativeGalleryHDTargetDecoder.swift */; };
+		6EDC471942907B568396F5B9 /* CameraTransferFlowDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CD450EA3197338E5E1DC288 /* CameraTransferFlowDriver.swift */; };
+		7720E634F58DDEDF3658A1D5 /* CameraAutoDownloadRule.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9E5D4AC6A61A47D1E6A1682 /* CameraAutoDownloadRule.swift */; };
+		7CDA7792842696F6FB5C1908 /* CameraVendorPtpProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C53741AC3CECFB161B18B95 /* CameraVendorPtpProtocol.swift */; };
+		7CFEAF3D43529A8B57A8CEFE /* NativePhotoPreviewViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE6F5960D5CC7B653A281EB2 /* NativePhotoPreviewViewController.swift */; };
+		7EB63F03FE4D431F3C0EAABD /* CameraVendorGalleryMainlineSessionLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8620442D979E9B6EF30B3869 /* CameraVendorGalleryMainlineSessionLoader.swift */; };
+		7EE5E8C1B87C300993C9BF33 /* CameraPhotoLibraryProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32DDB6284AEA69334A7C8123 /* CameraPhotoLibraryProvider.swift */; };
 		85B5B6854C8EE2B26A17285A /* WiredCameraImportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7ECDADD41B7B41D631C7FA7E /* WiredCameraImportService.swift */; };
+		8A5C7DF56BBCE910249EFEBC /* CameraGalleryResumeStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70D504D9B9952EF606A7A12 /* CameraGalleryResumeStore.swift */; };
 		904B943B16FECFC1CC4C38DD /* CameraSessionActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E157140EF5819ABC146105D /* CameraSessionActivityWidget.swift */; };
 		93B1ECA3AC91631F6AA9B76C /* CameraAppFlowCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5CB84B3B3F24064BF055CBF8 /* CameraAppFlowCoordinator.swift */; };
+		9463C95FF88E9ECBE16CD042 /* NativeGalleryHDFullScreenViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96C713C31DEEF1E0942BD441 /* NativeGalleryHDFullScreenViewController.swift */; };
+		9A73FC96160322D3014179ED /* CameraSessionConnectionWorker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BF127734F9C6F964F88FE29 /* CameraSessionConnectionWorker.swift */; };
+		9B5DAC9FE8A1FA52D06922A9 /* CameraGalleryEntryCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33BA409F38B7F16ED88A20A3 /* CameraGalleryEntryCoordinator.swift */; };
 		A3EFB62D951429A026DA058D /* WiredCameraImportViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 769F32414557A775543C8639 /* WiredCameraImportViewController.swift */; };
 		A5E8E3BBD16B08C09ED18943 /* ProAccessController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E412E8677CF860F78B6EC5B /* ProAccessController.swift */; };
 		AAD5C220703D8BC74702480B /* CameraCoreModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 850707930ED023C58251512E /* CameraCoreModels.swift */; };
+		AB7DE2ACA047B66705B5BBEF /* CameraGalleryRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99F05E213876FAAB30E4A121 /* CameraGalleryRepository.swift */; };
+		AD2D6F269138CE28FE28BD10 /* CameraFilterEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9443BEF52D01D2B6A8BA6D5 /* CameraFilterEngine.swift */; };
+		B0A90DEEEEF3144B63E6E3D2 /* CameraGalleryThumbnailPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43CEC9046074254D7A0FD04E /* CameraGalleryThumbnailPipeline.swift */; };
+		B0F66DD55877D9584C56E232 /* CameraGalleryFilterStateStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A5188CCE73788748A90195C /* CameraGalleryFilterStateStore.swift */; };
 		B4BB601B9F87A73C4A8256A1 /* CameraRegistrationGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 18EF932F34DA5C981150C7FA /* CameraRegistrationGuard.swift */; };
+		B5775926B98401F0801726DF /* CameraSessionRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A8A9D0740DB5D59D2759D55 /* CameraSessionRuntime.swift */; };
 		B903C941DD4D21BEF9D7D864 /* CameraPairingModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85DC3285FFADBB45ADDC2E40 /* CameraPairingModule.swift */; };
+		BFD60BA1A498A9A0299EBAE5 /* CameraCommandLane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0AF9152A2C822D3385CACBE2 /* CameraCommandLane.swift */; };
 		C005391B19856E8E51D6BEBA /* WiredCameraImportModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = E20546164F7859705D226FCE /* WiredCameraImportModels.swift */; };
+		C1ECD53CBEAF2C62F2A4E2B4 /* CameraCatalogAccessLease.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4294D83A8BDED519C3ED418 /* CameraCatalogAccessLease.swift */; };
+		C3C4D0320E3F152750BBCC45 /* CameraVendorOriginalTransferWorker.swift in Sources */ = {isa = PBXBuildFile; fileRef = E112B899E46FB0222B3F1013 /* CameraVendorOriginalTransferWorker.swift */; };
+		C3DDD2AC95F3CEF1C6539E37 /* CameraCatalogQueryEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 077F0D35FDEF16BB0F31DE52 /* CameraCatalogQueryEngine.swift */; };
+		C3E722C4955DB59B3D21F257 /* QuickDownloadUseCase.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33BAE8CC33A1362A856A40FA /* QuickDownloadUseCase.swift */; };
+		C662F5C07D245D087BF260BB /* CameraConnectionStateMachine.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8C63BB16D8CDF10A0C91AD5 /* CameraConnectionStateMachine.swift */; };
+		CBA17A04287790D7CEDA414F /* NativeAutoDownloadSettingsViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BFF364C04DED784514A5978 /* NativeAutoDownloadSettingsViewController.swift */; };
+		D133097E78568D4B14106C62 /* CameraVendorWifiPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = E30F2E5C671E41551A325021 /* CameraVendorWifiPolicy.swift */; };
+		D35F0F6D963AC90A786B537D /* CameraMediaFilterRule.swift in Sources */ = {isa = PBXBuildFile; fileRef = F33E132EAC86B702E92D0736 /* CameraMediaFilterRule.swift */; };
 		D73790471C7408BB145A1C23 /* CamTransferPaywallViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BC38F167D0C94A49E9C91AA /* CamTransferPaywallViewController.swift */; };
 		DC18D6045664645A1F5E31C1 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 510043DBEC3442DBC23147B8 /* Assets.xcassets */; };
+		DCEA2CF1EC6E2D4FF098B299 /* NativeGalleryHDPreviewSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E42005BD544F5AA50190078 /* NativeGalleryHDPreviewSession.swift */; };
+		E3AE111E6509FA626EAA7115 /* CameraGalleryHDPreviewPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5292E8C26D9C9146466FF36 /* CameraGalleryHDPreviewPipeline.swift */; };
+		E4E06DB46EF0678B4A9DDCB1 /* CameraTransportFailureDisposition.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90F7FE2E756D6894F1551C79 /* CameraTransportFailureDisposition.swift */; };
 		E7BE625B6F1C444945049488 /* FujifilmXSeriesProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 863C640E1DFF7EEB915C907B /* FujifilmXSeriesProfile.swift */; };
+		E7C009B76304D4BC3C997DF9 /* CameraConnectionFlowGuards.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9249F1A4D7A6F6B6697F7DFA /* CameraConnectionFlowGuards.swift */; };
+		E9B85CA50C617FE4AEAC6FA6 /* NativeGalleryPolicies.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83DCCA61E25B1B4BF5BFD9EE /* NativeGalleryPolicies.swift */; };
+		F0F955880762DFB3B34F35B5 /* CameraConnectFlowCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CAE28E72F8814F293BF3FD0 /* CameraConnectFlowCoordinator.swift */; };
 		FA556DCB3B834F4BB68B8612 /* CameraSessionActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EB26EA8618168E48B7DE465 /* CameraSessionActivityAttributes.swift */; };
+		FE20FBF0479597E3F7F5C6CD /* CameraConnectFlowRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD5ADD83775CA4E77BF0DE86 /* CameraConnectFlowRuntime.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -122,91 +125,94 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		077F0D35FDEF16BB0F31DE52 /* CameraCatalogQueryEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraCatalogQueryEngine.swift; sourceTree = "<group>"; };
+		0AF9152A2C822D3385CACBE2 /* CameraCommandLane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraCommandLane.swift; sourceTree = "<group>"; };
+		0CD450EA3197338E5E1DC288 /* CameraTransferFlowDriver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraTransferFlowDriver.swift; sourceTree = "<group>"; };
+		0E42005BD544F5AA50190078 /* NativeGalleryHDPreviewSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeGalleryHDPreviewSession.swift; sourceTree = "<group>"; };
+		123F3C97065C63A7CAEC4BF1 /* CameraGalleryCatalogModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryCatalogModels.swift; sourceTree = "<group>"; };
 		18EF932F34DA5C981150C7FA /* CameraRegistrationGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraRegistrationGuard.swift; sourceTree = "<group>"; };
-		07A9B017317FB734C0D18488 /* CameraConnectionFlowGuards.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraConnectionFlowGuards.swift; sourceTree = "<group>"; };
-		11F0A1B2C3D4E5F60718293A /* CameraRememberedConnectionFlowDriver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraRememberedConnectionFlowDriver.swift; sourceTree = "<group>"; };
-		11F0A1B2C3D4E5F60718293C /* CameraTransferFlowDriver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraTransferFlowDriver.swift; sourceTree = "<group>"; };
-		11F0A1B2C3D4E5F60718293E /* CameraPairingConfirmationFlowDriver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPairingConfirmationFlowDriver.swift; sourceTree = "<group>"; };
-		08B8A2043D69E9E3C08B4A10 /* CameraConnectionStateMachine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraConnectionStateMachine.swift; sourceTree = "<group>"; };
-		0A6A49E12664F6DD2447119F /* CameraConnectFlowRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraConnectFlowRuntime.swift; sourceTree = "<group>"; };
-		C0DEC0DEC0DEC0DEC0DEC000 /* CameraSessionRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSessionRuntime.swift; sourceTree = "<group>"; };
-		C0DEC0DEC0DEC0DEC0DEC010 /* CameraSessionConnectionWorker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSessionConnectionWorker.swift; sourceTree = "<group>"; };
-		C0DEC0DEC0DEC0DEC0DEC020 /* CameraSessionTransferExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSessionTransferExecutor.swift; sourceTree = "<group>"; };
-		C0DEC0DEC0DEC0DEC0DEC030 /* CameraSessionBackgroundSupervisor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSessionBackgroundSupervisor.swift; sourceTree = "<group>"; };
-		C0DEC0DEC0DEC0DEC0DEC040 /* CameraSessionRecoveryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSessionRecoveryStore.swift; sourceTree = "<group>"; };
 		1B96651EFBF5171FE9A72C98 /* Runner.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Runner.entitlements; sourceTree = "<group>"; };
+		1BF127734F9C6F964F88FE29 /* CameraSessionConnectionWorker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSessionConnectionWorker.swift; sourceTree = "<group>"; };
+		1BFF364C04DED784514A5978 /* NativeAutoDownloadSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAutoDownloadSettingsViewController.swift; sourceTree = "<group>"; };
 		1E157140EF5819ABC146105D /* CameraSessionActivityWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSessionActivityWidget.swift; sourceTree = "<group>"; };
 		23B33146CEC3C5DA80D096F8 /* NativeConnectViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeConnectViewController.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F6000DA0000000 /* NativeGalleryPolicies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeGalleryPolicies.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F6000EA0000000 /* NativeScanViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeScanViewController.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F6000FA0000000 /* NativeGalleryViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeGalleryViewController.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F6001AA0000000 /* NativeGalleryHDPreviewCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeGalleryHDPreviewCell.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F6001BA0000000 /* NativeGalleryHDPreviewSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeGalleryHDPreviewSession.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60010A0000000 /* NativePhotoPreviewViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePhotoPreviewViewController.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60011A0000000 /* CameraAutoDownloadRule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraAutoDownloadRule.swift; sourceTree = "<group>"; };
-		B1C2D3E4F5A60099B0000100 /* QuickDownloadUseCase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickDownloadUseCase.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60012A0000000 /* NativeAutoDownloadSettingsViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAutoDownloadSettingsViewController.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60013A0000000 /* CameraPhotoLibraryProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPhotoLibraryProvider.swift; sourceTree = "<group>"; };
-		24D142A045D34E67A8D3A002 /* CameraGalleryEntryCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryEntryCoordinator.swift; sourceTree = "<group>"; };
-		2A420E455CC10F65BDB40D00 /* CameraConnectFlowCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraConnectFlowCoordinator.swift; sourceTree = "<group>"; };
+		2A5188CCE73788748A90195C /* CameraGalleryFilterStateStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryFilterStateStore.swift; sourceTree = "<group>"; };
+		2D5D2A7AD1546B5E4DB8FE7A /* CameraRememberedConnectionFlowDriver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraRememberedConnectionFlowDriver.swift; sourceTree = "<group>"; };
 		2EB26EA8618168E48B7DE465 /* CameraSessionActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSessionActivityAttributes.swift; sourceTree = "<group>"; };
+		32DDB6284AEA69334A7C8123 /* CameraPhotoLibraryProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPhotoLibraryProvider.swift; sourceTree = "<group>"; };
+		33BA409F38B7F16ED88A20A3 /* CameraGalleryEntryCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryEntryCoordinator.swift; sourceTree = "<group>"; };
+		33BAE8CC33A1362A856A40FA /* QuickDownloadUseCase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickDownloadUseCase.swift; sourceTree = "<group>"; };
+		35CA7FD4065DACF0DE04E100 /* CameraVendorDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorDiagnostics.swift; sourceTree = "<group>"; };
 		393CDF9EC2836EA5F98BCEE0 /* CameraDownloadModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraDownloadModule.swift; sourceTree = "<group>"; };
+		3A8A9D0740DB5D59D2759D55 /* CameraSessionRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSessionRuntime.swift; sourceTree = "<group>"; };
+		3EB84F751B1E05DB914A8030 /* NativeGalleryHDTargetDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeGalleryHDTargetDecoder.swift; sourceTree = "<group>"; };
+		43CEC9046074254D7A0FD04E /* CameraGalleryThumbnailPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryThumbnailPipeline.swift; sourceTree = "<group>"; };
 		441BB440808680D6267F3889 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		4523DED23D44BBD9A621FC5D /* NativeGalleryViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeGalleryViewController.swift; sourceTree = "<group>"; };
+		454332907FD29532E6247361 /* CameraGallerySources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGallerySources.swift; sourceTree = "<group>"; };
+		47AED8901AC0204950919A83 /* CameraGalleryCatalogRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryCatalogRuntime.swift; sourceTree = "<group>"; };
 		48E2AFFE9BFB207202AD0539 /* RunnerTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = RunnerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		4E412E8677CF860F78B6EC5B /* ProAccessController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProAccessController.swift; sourceTree = "<group>"; };
 		510043DBEC3442DBC23147B8 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		5336B80F2176378DEC57C469 /* CameraPairingConfirmationFlowDriver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPairingConfirmationFlowDriver.swift; sourceTree = "<group>"; };
 		5BC38F167D0C94A49E9C91AA /* CamTransferPaywallViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CamTransferPaywallViewController.swift; sourceTree = "<group>"; };
+		5C53741AC3CECFB161B18B95 /* CameraVendorPtpProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorPtpProtocol.swift; sourceTree = "<group>"; };
 		5CB84B3B3F24064BF055CBF8 /* CameraAppFlowCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraAppFlowCoordinator.swift; sourceTree = "<group>"; };
-		6F12AA01C0D1E2F300000000 /* CameraVendorConnectFlowBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorConnectFlowBridge.swift; sourceTree = "<group>"; };
-		6F12AA01C0D1E2F300000002 /* CameraVendorGalleryMainlineSessionLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorGalleryMainlineSessionLoader.swift; sourceTree = "<group>"; };
+		6CAE28E72F8814F293BF3FD0 /* CameraConnectFlowCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraConnectFlowCoordinator.swift; sourceTree = "<group>"; };
+		6E1BD9B76EA9C6F1EE461918 /* CameraVendorSecureHandshake.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorSecureHandshake.swift; sourceTree = "<group>"; };
 		769F32414557A775543C8639 /* WiredCameraImportViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WiredCameraImportViewController.swift; sourceTree = "<group>"; };
+		790A6CEA350B518C70B09154 /* CameraGallerySession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGallerySession.swift; sourceTree = "<group>"; };
+		79A919D4C049FA80D701884F /* CameraVendorRealtimeGalleryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorRealtimeGalleryService.swift; sourceTree = "<group>"; };
 		7ECDADD41B7B41D631C7FA7E /* WiredCameraImportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WiredCameraImportService.swift; sourceTree = "<group>"; };
+		83DCCA61E25B1B4BF5BFD9EE /* NativeGalleryPolicies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeGalleryPolicies.swift; sourceTree = "<group>"; };
 		83E162AB02AF87B6A27F8F7D /* RunnerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunnerApp.swift; sourceTree = "<group>"; };
 		850707930ED023C58251512E /* CameraCoreModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraCoreModels.swift; sourceTree = "<group>"; };
 		85DC3285FFADBB45ADDC2E40 /* CameraPairingModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPairingModule.swift; sourceTree = "<group>"; };
+		8620442D979E9B6EF30B3869 /* CameraVendorGalleryMainlineSessionLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorGalleryMainlineSessionLoader.swift; sourceTree = "<group>"; };
 		863C640E1DFF7EEB915C907B /* FujifilmXSeriesProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FujifilmXSeriesProfile.swift; sourceTree = "<group>"; };
 		885AFF3A80513C34DC44ED4E /* FujifilmCameraAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FujifilmCameraAdapter.swift; sourceTree = "<group>"; };
+		88C4856CA0738EF7DFF81439 /* CameraVendorPairingProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorPairingProbe.swift; sourceTree = "<group>"; };
+		8941C8D867E337D6653EFE20 /* CameraVendorPtpSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorPtpSession.swift; sourceTree = "<group>"; };
+		8D786BF22E5AF11DC3CCD6FC /* CameraVendorConnectFlowBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorConnectFlowBridge.swift; sourceTree = "<group>"; };
+		8DA90C5DE47229CB6AEA3395 /* CameraSessionRecoveryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSessionRecoveryStore.swift; sourceTree = "<group>"; };
 		8F9819ABFBC29A3F5568F282 /* LocalProofingSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalProofingSession.swift; sourceTree = "<group>"; };
+		90F7FE2E756D6894F1551C79 /* CameraTransportFailureDisposition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraTransportFailureDisposition.swift; sourceTree = "<group>"; };
+		9249F1A4D7A6F6B6697F7DFA /* CameraConnectionFlowGuards.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraConnectionFlowGuards.swift; sourceTree = "<group>"; };
+		933233871AEEF6EA5F4ED57D /* CameraVendorPtpSocket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorPtpSocket.swift; sourceTree = "<group>"; };
+		96C713C31DEEF1E0942BD441 /* NativeGalleryHDFullScreenViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeGalleryHDFullScreenViewController.swift; sourceTree = "<group>"; };
+		99F05E213876FAAB30E4A121 /* CameraGalleryRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryRepository.swift; sourceTree = "<group>"; };
 		9A5AD375AC847AF6C9C1F85E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
-		A1B2C3D4E5F6071829300000 /* CameraGalleryCatalogModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryCatalogModels.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F6071829300002 /* CameraGalleryRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryRepository.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F6071829300004 /* CameraGallerySources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGallerySources.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F6071829300006 /* CameraGalleryRepositoryAdapters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryRepositoryAdapters.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F6071829300008 /* CameraGalleryCatalogRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryCatalogRuntime.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F6071829300010 /* CameraMediaFilterRule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraMediaFilterRule.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F6071829300012 /* CameraFilterEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraFilterEngine.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F6071829300014 /* CameraGalleryMediaIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryMediaIdentity.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F6071829300016 /* CameraCatalogAccessLease.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraCatalogAccessLease.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F6071829300018 /* CameraCatalogQueryEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraCatalogQueryEngine.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F607182930001A /* CameraGalleryThumbnailPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryThumbnailPipeline.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F607182930001C /* CameraGalleryHDPreviewPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryHDPreviewPipeline.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F607182930001E /* CameraGalleryFilterStateStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryFilterStateStore.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F6071829300020 /* CameraGallerySession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGallerySession.swift; sourceTree = "<group>"; };
+		9EE2087D04BEC22DAE7210BD /* CameraGalleryRepositoryAdapters.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryRepositoryAdapters.swift; sourceTree = "<group>"; };
+		A7E956887CE70662AB3291A1 /* CameraVendorTransferModeCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorTransferModeCoordinator.swift; sourceTree = "<group>"; };
+		A9E5D4AC6A61A47D1E6A1682 /* CameraAutoDownloadRule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraAutoDownloadRule.swift; sourceTree = "<group>"; };
 		B1785535FDE4AE556AC351EB /* CameraConnectionSteps.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraConnectionSteps.swift; sourceTree = "<group>"; };
-		01563AF1C08713172483FE8C /* CameraGalleryResumeStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryResumeStore.swift; sourceTree = "<group>"; };
 		B2E448C1951CDAF54DC87758 /* Runner.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Runner.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B70D504D9B9952EF606A7A12 /* CameraGalleryResumeStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryResumeStore.swift; sourceTree = "<group>"; };
+		B7233B736416CA63CBCCFD9E /* CameraVendorPairingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorPairingStore.swift; sourceTree = "<group>"; };
 		B96D60CA53C8D03F99E89C22 /* CameraGalleryConnectionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryConnectionCoordinator.swift; sourceTree = "<group>"; };
 		C129A9FB18F81555600E71B3 /* RunnerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunnerTests.swift; sourceTree = "<group>"; };
+		C4B30C9413C1E22EBE94520C /* CameraSessionTransferExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSessionTransferExecutor.swift; sourceTree = "<group>"; };
+		C9443BEF52D01D2B6A8BA6D5 /* CameraFilterEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraFilterEngine.swift; sourceTree = "<group>"; };
 		CDE56B4E4C26E5C8B4081933 /* CameraGalleryModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryModule.swift; sourceTree = "<group>"; };
+		CE6F5960D5CC7B653A281EB2 /* NativePhotoPreviewViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePhotoPreviewViewController.swift; sourceTree = "<group>"; };
+		CF8766A2A28C19C7BF3DF783 /* CameraVendorCatalogPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorCatalogPolicy.swift; sourceTree = "<group>"; };
+		D4294D83A8BDED519C3ED418 /* CameraCatalogAccessLease.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraCatalogAccessLease.swift; sourceTree = "<group>"; };
 		D457106A89EA9C4C918EB6D0 /* CameraVendorBluetoothService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorBluetoothService.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60001A0000000 /* CameraVendorDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorDiagnostics.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60002A0000000 /* CameraVendorPtpSocket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorPtpSocket.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60003A0000000 /* CameraVendorPtpProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorPtpProtocol.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60004A0000000 /* CameraVendorPairingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorPairingStore.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60005A0000000 /* CameraCommandLane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraCommandLane.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60006A0000000 /* CameraVendorTransferPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorTransferPolicy.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60007A0000000 /* CameraVendorSecureHandshake.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorSecureHandshake.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60008A0000000 /* CameraVendorCatalogPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorCatalogPolicy.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60020A0000000 /* CameraTransportFailureDisposition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraTransportFailureDisposition.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60009A0000000 /* CameraVendorWifiPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorWifiPolicy.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60015A0000000 /* CameraVendorPairingProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorPairingProbe.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F6000AA0000000 /* CameraVendorOriginalTransferWorker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorOriginalTransferWorker.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F6000BA0000000 /* CameraVendorRealtimeGalleryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorRealtimeGalleryService.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F6000CA0000000 /* CameraVendorPtpSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorPtpSession.swift; sourceTree = "<group>"; };
+		D877FB9093E865F3ADF1EEAF /* CameraSessionBackgroundSupervisor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSessionBackgroundSupervisor.swift; sourceTree = "<group>"; };
+		D97C842C26BEF3F339A28F25 /* NativeScanViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeScanViewController.swift; sourceTree = "<group>"; };
+		DD5ADD83775CA4E77BF0DE86 /* CameraConnectFlowRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraConnectFlowRuntime.swift; sourceTree = "<group>"; };
+		DE261802A4EAB8EDEF3BCEF5 /* NativeGalleryHDPreviewCell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeGalleryHDPreviewCell.swift; sourceTree = "<group>"; };
+		E112B899E46FB0222B3F1013 /* CameraVendorOriginalTransferWorker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorOriginalTransferWorker.swift; sourceTree = "<group>"; };
 		E20546164F7859705D226FCE /* WiredCameraImportModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WiredCameraImportModels.swift; sourceTree = "<group>"; };
+		E30F2E5C671E41551A325021 /* CameraVendorWifiPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorWifiPolicy.swift; sourceTree = "<group>"; };
+		E81D64362E852C120071A689 /* CameraGalleryMediaIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryMediaIdentity.swift; sourceTree = "<group>"; };
+		EF59CE8817BE76106004EB6E /* CameraVendorTransferPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorTransferPolicy.swift; sourceTree = "<group>"; };
 		EF5FB4318A26DD0D0A2B2D64 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		F33E132EAC86B702E92D0736 /* CameraMediaFilterRule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraMediaFilterRule.swift; sourceTree = "<group>"; };
+		F5292E8C26D9C9146466FF36 /* CameraGalleryHDPreviewPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraGalleryHDPreviewPipeline.swift; sourceTree = "<group>"; };
 		F57265682EC0C0E6093AB35F /* CameraAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraAdapter.swift; sourceTree = "<group>"; };
 		F7F279EBDC716817439DE6C6 /* CameraSessionLiveActivityController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraSessionLiveActivityController.swift; sourceTree = "<group>"; };
+		F8C63BB16D8CDF10A0C91AD5 /* CameraConnectionStateMachine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraConnectionStateMachine.swift; sourceTree = "<group>"; };
 		F983ADDEA06E54D64D8BDBE9 /* CameraSessionActivityWidget.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = CameraSessionActivityWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -225,45 +231,48 @@
 			isa = PBXGroup;
 			children = (
 				510043DBEC3442DBC23147B8 /* Assets.xcassets */,
+				A9E5D4AC6A61A47D1E6A1682 /* CameraAutoDownloadRule.swift */,
+				0AF9152A2C822D3385CACBE2 /* CameraCommandLane.swift */,
+				B70D504D9B9952EF606A7A12 /* CameraGalleryResumeStore.swift */,
+				32DDB6284AEA69334A7C8123 /* CameraPhotoLibraryProvider.swift */,
+				D877FB9093E865F3ADF1EEAF /* CameraSessionBackgroundSupervisor.swift */,
+				1BF127734F9C6F964F88FE29 /* CameraSessionConnectionWorker.swift */,
 				F7F279EBDC716817439DE6C6 /* CameraSessionLiveActivityController.swift */,
+				8DA90C5DE47229CB6AEA3395 /* CameraSessionRecoveryStore.swift */,
+				3A8A9D0740DB5D59D2759D55 /* CameraSessionRuntime.swift */,
+				C4B30C9413C1E22EBE94520C /* CameraSessionTransferExecutor.swift */,
+				90F7FE2E756D6894F1551C79 /* CameraTransportFailureDisposition.swift */,
 				D457106A89EA9C4C918EB6D0 /* CameraVendorBluetoothService.swift */,
-				A1B2C3D4E5F60001A0000000 /* CameraVendorDiagnostics.swift */,
-				A1B2C3D4E5F60002A0000000 /* CameraVendorPtpSocket.swift */,
-				A1B2C3D4E5F60003A0000000 /* CameraVendorPtpProtocol.swift */,
-				A1B2C3D4E5F60004A0000000 /* CameraVendorPairingStore.swift */,
-				A1B2C3D4E5F60005A0000000 /* CameraCommandLane.swift */,
-				A1B2C3D4E5F60006A0000000 /* CameraVendorTransferPolicy.swift */,
-				A1B2C3D4E5F60007A0000000 /* CameraVendorSecureHandshake.swift */,
-				A1B2C3D4E5F60008A0000000 /* CameraVendorCatalogPolicy.swift */,
-				A1B2C3D4E5F60020A0000000 /* CameraTransportFailureDisposition.swift */,
-				A1B2C3D4E5F60009A0000000 /* CameraVendorWifiPolicy.swift */,
-				A1B2C3D4E5F60015A0000000 /* CameraVendorPairingProbe.swift */,
-				A1B2C3D4E5F6000AA0000000 /* CameraVendorOriginalTransferWorker.swift */,
-				A1B2C3D4E5F6000BA0000000 /* CameraVendorRealtimeGalleryService.swift */,
-				A1B2C3D4E5F6000CA0000000 /* CameraVendorPtpSession.swift */,
-				6F12AA01C0D1E2F300000000 /* CameraVendorConnectFlowBridge.swift */,
-				6F12AA01C0D1E2F300000002 /* CameraVendorGalleryMainlineSessionLoader.swift */,
-				C0DEC0DEC0DEC0DEC0DEC000 /* CameraSessionRuntime.swift */,
-				C0DEC0DEC0DEC0DEC0DEC010 /* CameraSessionConnectionWorker.swift */,
-				C0DEC0DEC0DEC0DEC0DEC020 /* CameraSessionTransferExecutor.swift */,
-				C0DEC0DEC0DEC0DEC0DEC030 /* CameraSessionBackgroundSupervisor.swift */,
-				C0DEC0DEC0DEC0DEC0DEC040 /* CameraSessionRecoveryStore.swift */,
-				01563AF1C08713172483FE8C /* CameraGalleryResumeStore.swift */,
+				CF8766A2A28C19C7BF3DF783 /* CameraVendorCatalogPolicy.swift */,
+				8D786BF22E5AF11DC3CCD6FC /* CameraVendorConnectFlowBridge.swift */,
+				35CA7FD4065DACF0DE04E100 /* CameraVendorDiagnostics.swift */,
+				8620442D979E9B6EF30B3869 /* CameraVendorGalleryMainlineSessionLoader.swift */,
+				E112B899E46FB0222B3F1013 /* CameraVendorOriginalTransferWorker.swift */,
+				88C4856CA0738EF7DFF81439 /* CameraVendorPairingProbe.swift */,
+				B7233B736416CA63CBCCFD9E /* CameraVendorPairingStore.swift */,
+				5C53741AC3CECFB161B18B95 /* CameraVendorPtpProtocol.swift */,
+				8941C8D867E337D6653EFE20 /* CameraVendorPtpSession.swift */,
+				933233871AEEF6EA5F4ED57D /* CameraVendorPtpSocket.swift */,
+				79A919D4C049FA80D701884F /* CameraVendorRealtimeGalleryService.swift */,
+				6E1BD9B76EA9C6F1EE461918 /* CameraVendorSecureHandshake.swift */,
+				A7E956887CE70662AB3291A1 /* CameraVendorTransferModeCoordinator.swift */,
+				EF59CE8817BE76106004EB6E /* CameraVendorTransferPolicy.swift */,
+				E30F2E5C671E41551A325021 /* CameraVendorWifiPolicy.swift */,
 				5BC38F167D0C94A49E9C91AA /* CamTransferPaywallViewController.swift */,
 				441BB440808680D6267F3889 /* Info.plist */,
 				8F9819ABFBC29A3F5568F282 /* LocalProofingSession.swift */,
+				1BFF364C04DED784514A5978 /* NativeAutoDownloadSettingsViewController.swift */,
 				23B33146CEC3C5DA80D096F8 /* NativeConnectViewController.swift */,
-				A1B2C3D4E5F6000DA0000000 /* NativeGalleryPolicies.swift */,
-				A1B2C3D4E5F6000EA0000000 /* NativeScanViewController.swift */,
-				A1B2C3D4E5F6000FA0000000 /* NativeGalleryViewController.swift */,
-				A1B2C3D4E5F6001AA0000000 /* NativeGalleryHDPreviewCell.swift */,
-				A1B2C3D4E5F6001BA0000000 /* NativeGalleryHDPreviewSession.swift */,
-				A1B2C3D4E5F60010A0000000 /* NativePhotoPreviewViewController.swift */,
-				A1B2C3D4E5F60011A0000000 /* CameraAutoDownloadRule.swift */,
-				B1C2D3E4F5A60099B0000100 /* QuickDownloadUseCase.swift */,
-				A1B2C3D4E5F60012A0000000 /* NativeAutoDownloadSettingsViewController.swift */,
-				A1B2C3D4E5F60013A0000000 /* CameraPhotoLibraryProvider.swift */,
+				96C713C31DEEF1E0942BD441 /* NativeGalleryHDFullScreenViewController.swift */,
+				DE261802A4EAB8EDEF3BCEF5 /* NativeGalleryHDPreviewCell.swift */,
+				0E42005BD544F5AA50190078 /* NativeGalleryHDPreviewSession.swift */,
+				3EB84F751B1E05DB914A8030 /* NativeGalleryHDTargetDecoder.swift */,
+				83DCCA61E25B1B4BF5BFD9EE /* NativeGalleryPolicies.swift */,
+				4523DED23D44BBD9A621FC5D /* NativeGalleryViewController.swift */,
+				CE6F5960D5CC7B653A281EB2 /* NativePhotoPreviewViewController.swift */,
+				D97C842C26BEF3F339A28F25 /* NativeScanViewController.swift */,
 				4E412E8677CF860F78B6EC5B /* ProAccessController.swift */,
+				33BAE8CC33A1362A856A40FA /* QuickDownloadUseCase.swift */,
 				1B96651EFBF5171FE9A72C98 /* Runner.entitlements */,
 				83E162AB02AF87B6A27F8F7D /* RunnerApp.swift */,
 				E20546164F7859705D226FCE /* WiredCameraImportModels.swift */,
@@ -278,12 +287,12 @@
 		1F0BEDE9CDFB985775CE208B /* Connection */ = {
 			isa = PBXGroup;
 			children = (
+				9249F1A4D7A6F6B6697F7DFA /* CameraConnectionFlowGuards.swift */,
+				F8C63BB16D8CDF10A0C91AD5 /* CameraConnectionStateMachine.swift */,
 				B1785535FDE4AE556AC351EB /* CameraConnectionSteps.swift */,
-				07A9B017317FB734C0D18488 /* CameraConnectionFlowGuards.swift */,
-				11F0A1B2C3D4E5F60718293A /* CameraRememberedConnectionFlowDriver.swift */,
-				08B8A2043D69E9E3C08B4A10 /* CameraConnectionStateMachine.swift */,
-				11F0A1B2C3D4E5F60718293C /* CameraTransferFlowDriver.swift */,
 				B96D60CA53C8D03F99E89C22 /* CameraGalleryConnectionCoordinator.swift */,
+				2D5D2A7AD1546B5E4DB8FE7A /* CameraRememberedConnectionFlowDriver.swift */,
+				0CD450EA3197338E5E1DC288 /* CameraTransferFlowDriver.swift */,
 			);
 			path = Connection;
 			sourceTree = "<group>";
@@ -351,21 +360,21 @@
 		70ADC841B306BC5A302EAE83 /* Gallery */ = {
 			isa = PBXGroup;
 			children = (
-				A1B2C3D4E5F6071829300016 /* CameraCatalogAccessLease.swift */,
-				A1B2C3D4E5F6071829300018 /* CameraCatalogQueryEngine.swift */,
-				A1B2C3D4E5F6071829300012 /* CameraFilterEngine.swift */,
-				A1B2C3D4E5F6071829300000 /* CameraGalleryCatalogModels.swift */,
-				A1B2C3D4E5F6071829300008 /* CameraGalleryCatalogRuntime.swift */,
-				A1B2C3D4E5F607182930001E /* CameraGalleryFilterStateStore.swift */,
-				A1B2C3D4E5F6071829300014 /* CameraGalleryMediaIdentity.swift */,
-				A1B2C3D4E5F6071829300020 /* CameraGallerySession.swift */,
-				A1B2C3D4E5F607182930001C /* CameraGalleryHDPreviewPipeline.swift */,
-				A1B2C3D4E5F607182930001A /* CameraGalleryThumbnailPipeline.swift */,
-				A1B2C3D4E5F6071829300006 /* CameraGalleryRepositoryAdapters.swift */,
+				D4294D83A8BDED519C3ED418 /* CameraCatalogAccessLease.swift */,
+				077F0D35FDEF16BB0F31DE52 /* CameraCatalogQueryEngine.swift */,
+				C9443BEF52D01D2B6A8BA6D5 /* CameraFilterEngine.swift */,
+				123F3C97065C63A7CAEC4BF1 /* CameraGalleryCatalogModels.swift */,
+				47AED8901AC0204950919A83 /* CameraGalleryCatalogRuntime.swift */,
+				2A5188CCE73788748A90195C /* CameraGalleryFilterStateStore.swift */,
+				F5292E8C26D9C9146466FF36 /* CameraGalleryHDPreviewPipeline.swift */,
+				E81D64362E852C120071A689 /* CameraGalleryMediaIdentity.swift */,
 				CDE56B4E4C26E5C8B4081933 /* CameraGalleryModule.swift */,
-				A1B2C3D4E5F6071829300002 /* CameraGalleryRepository.swift */,
-				A1B2C3D4E5F6071829300004 /* CameraGallerySources.swift */,
-				A1B2C3D4E5F6071829300010 /* CameraMediaFilterRule.swift */,
+				99F05E213876FAAB30E4A121 /* CameraGalleryRepository.swift */,
+				9EE2087D04BEC22DAE7210BD /* CameraGalleryRepositoryAdapters.swift */,
+				790A6CEA350B518C70B09154 /* CameraGallerySession.swift */,
+				454332907FD29532E6247361 /* CameraGallerySources.swift */,
+				43CEC9046074254D7A0FD04E /* CameraGalleryThumbnailPipeline.swift */,
+				F33E132EAC86B702E92D0736 /* CameraMediaFilterRule.swift */,
 			);
 			path = Gallery;
 			sourceTree = "<group>";
@@ -398,8 +407,8 @@
 		BEE86CF019D82C3074C43480 /* Pairing */ = {
 			isa = PBXGroup;
 			children = (
+				5336B80F2176378DEC57C469 /* CameraPairingConfirmationFlowDriver.swift */,
 				85DC3285FFADBB45ADDC2E40 /* CameraPairingModule.swift */,
-				11F0A1B2C3D4E5F60718293E /* CameraPairingConfirmationFlowDriver.swift */,
 			);
 			path = Pairing;
 			sourceTree = "<group>";
@@ -424,9 +433,9 @@
 			isa = PBXGroup;
 			children = (
 				5CB84B3B3F24064BF055CBF8 /* CameraAppFlowCoordinator.swift */,
-				2A420E455CC10F65BDB40D00 /* CameraConnectFlowCoordinator.swift */,
-				0A6A49E12664F6DD2447119F /* CameraConnectFlowRuntime.swift */,
-				24D142A045D34E67A8D3A002 /* CameraGalleryEntryCoordinator.swift */,
+				6CAE28E72F8814F293BF3FD0 /* CameraConnectFlowCoordinator.swift */,
+				DD5ADD83775CA4E77BF0DE86 /* CameraConnectFlowRuntime.swift */,
+				33BA409F38B7F16ED88A20A3 /* CameraGalleryEntryCoordinator.swift */,
 			);
 			path = Orchestration;
 			sourceTree = "<group>";
@@ -577,75 +586,78 @@
 				D73790471C7408BB145A1C23 /* CamTransferPaywallViewController.swift in Sources */,
 				22BB0301059A7B18AB687B87 /* CameraAdapter.swift in Sources */,
 				93B1ECA3AC91631F6AA9B76C /* CameraAppFlowCoordinator.swift in Sources */,
-				2A420E455CC10F65BDB40D01 /* CameraConnectFlowCoordinator.swift in Sources */,
-				0A6A49E12664F6DD244711A0 /* CameraConnectFlowRuntime.swift in Sources */,
-				C0DEC0DEC0DEC0DEC0DEC001 /* CameraSessionRuntime.swift in Sources */,
-				C0DEC0DEC0DEC0DEC0DEC011 /* CameraSessionConnectionWorker.swift in Sources */,
-				C0DEC0DEC0DEC0DEC0DEC021 /* CameraSessionTransferExecutor.swift in Sources */,
-				C0DEC0DEC0DEC0DEC0DEC031 /* CameraSessionBackgroundSupervisor.swift in Sources */,
-				C0DEC0DEC0DEC0DEC0DEC041 /* CameraSessionRecoveryStore.swift in Sources */,
-				07A9B017317FB734C0D18489 /* CameraConnectionFlowGuards.swift in Sources */,
-				11F0A1B2C3D4E5F60718293B /* CameraRememberedConnectionFlowDriver.swift in Sources */,
+				7720E634F58DDEDF3658A1D5 /* CameraAutoDownloadRule.swift in Sources */,
+				C1ECD53CBEAF2C62F2A4E2B4 /* CameraCatalogAccessLease.swift in Sources */,
+				C3DDD2AC95F3CEF1C6539E37 /* CameraCatalogQueryEngine.swift in Sources */,
+				BFD60BA1A498A9A0299EBAE5 /* CameraCommandLane.swift in Sources */,
+				F0F955880762DFB3B34F35B5 /* CameraConnectFlowCoordinator.swift in Sources */,
+				FE20FBF0479597E3F7F5C6CD /* CameraConnectFlowRuntime.swift in Sources */,
+				E7C009B76304D4BC3C997DF9 /* CameraConnectionFlowGuards.swift in Sources */,
+				C662F5C07D245D087BF260BB /* CameraConnectionStateMachine.swift in Sources */,
 				01563AF1C08713172483FE8A /* CameraConnectionSteps.swift in Sources */,
-				08B8A2043D69E9E3C08B4A11 /* CameraConnectionStateMachine.swift in Sources */,
-				11F0A1B2C3D4E5F60718293D /* CameraTransferFlowDriver.swift in Sources */,
 				AAD5C220703D8BC74702480B /* CameraCoreModels.swift in Sources */,
 				2982E8EDFAE95050894A8935 /* CameraDownloadModule.swift in Sources */,
-				24D142A045D34E67A8D3A001 /* CameraGalleryEntryCoordinator.swift in Sources */,
-				A1B2C3D4E5F6071829300001 /* CameraGalleryCatalogModels.swift in Sources */,
-				A1B2C3D4E5F6071829300009 /* CameraGalleryCatalogRuntime.swift in Sources */,
-				A1B2C3D4E5F607182930001F /* CameraGalleryFilterStateStore.swift in Sources */,
-				A1B2C3D4E5F6071829300021 /* CameraGallerySession.swift in Sources */,
+				AD2D6F269138CE28FE28BD10 /* CameraFilterEngine.swift in Sources */,
+				5E925099929AB898E5D9F6C9 /* CameraGalleryCatalogModels.swift in Sources */,
+				454196A61238DD1B900B23A2 /* CameraGalleryCatalogRuntime.swift in Sources */,
 				082DDC9F626D556DD44A5273 /* CameraGalleryConnectionCoordinator.swift in Sources */,
-				01563AF1C08713172483FE8B /* CameraGalleryResumeStore.swift in Sources */,
+				9B5DAC9FE8A1FA52D06922A9 /* CameraGalleryEntryCoordinator.swift in Sources */,
+				B0F66DD55877D9584C56E232 /* CameraGalleryFilterStateStore.swift in Sources */,
+				E3AE111E6509FA626EAA7115 /* CameraGalleryHDPreviewPipeline.swift in Sources */,
+				5C3D443B5464B2CF50FF7591 /* CameraGalleryMediaIdentity.swift in Sources */,
 				4729DBB685779356DA98DAC7 /* CameraGalleryModule.swift in Sources */,
-				A1B2C3D4E5F6071829300007 /* CameraGalleryRepositoryAdapters.swift in Sources */,
-				A1B2C3D4E5F6071829300003 /* CameraGalleryRepository.swift in Sources */,
-				A1B2C3D4E5F6071829300005 /* CameraGallerySources.swift in Sources */,
-				A1B2C3D4E5F607182930001D /* CameraGalleryHDPreviewPipeline.swift in Sources */,
-				A1B2C3D4E5F607182930001B /* CameraGalleryThumbnailPipeline.swift in Sources */,
-				11F0A1B2C3D4E5F60718293F /* CameraPairingConfirmationFlowDriver.swift in Sources */,
+				AB7DE2ACA047B66705B5BBEF /* CameraGalleryRepository.swift in Sources */,
+				3DDF6D34A71DE9B7DADF4107 /* CameraGalleryRepositoryAdapters.swift in Sources */,
+				8A5C7DF56BBCE910249EFEBC /* CameraGalleryResumeStore.swift in Sources */,
+				0D2EFB6B3EB5E1AA3B5EA483 /* CameraGallerySession.swift in Sources */,
+				515377A16FCCBF0B8FE38613 /* CameraGallerySources.swift in Sources */,
+				B0A90DEEEEF3144B63E6E3D2 /* CameraGalleryThumbnailPipeline.swift in Sources */,
+				D35F0F6D963AC90A786B537D /* CameraMediaFilterRule.swift in Sources */,
+				677D3E52FDC11F46B9328978 /* CameraPairingConfirmationFlowDriver.swift in Sources */,
 				B903C941DD4D21BEF9D7D864 /* CameraPairingModule.swift in Sources */,
+				7EE5E8C1B87C300993C9BF33 /* CameraPhotoLibraryProvider.swift in Sources */,
 				B4BB601B9F87A73C4A8256A1 /* CameraRegistrationGuard.swift in Sources */,
+				0ECB6E0DC3B6EB8FAD7D8125 /* CameraRememberedConnectionFlowDriver.swift in Sources */,
 				FA556DCB3B834F4BB68B8612 /* CameraSessionActivityAttributes.swift in Sources */,
+				2062800DBD92F6BB0D5B358D /* CameraSessionBackgroundSupervisor.swift in Sources */,
+				9A73FC96160322D3014179ED /* CameraSessionConnectionWorker.swift in Sources */,
 				10318AC1513B94E232296B17 /* CameraSessionLiveActivityController.swift in Sources */,
+				07C5C84FDD2F7E5AC97B19D2 /* CameraSessionRecoveryStore.swift in Sources */,
+				B5775926B98401F0801726DF /* CameraSessionRuntime.swift in Sources */,
+				2EEF506BA3A1C2C641F82128 /* CameraSessionTransferExecutor.swift in Sources */,
+				6EDC471942907B568396F5B9 /* CameraTransferFlowDriver.swift in Sources */,
+				E4E06DB46EF0678B4A9DDCB1 /* CameraTransportFailureDisposition.swift in Sources */,
 				27F7557CB539CADB953B92AB /* CameraVendorBluetoothService.swift in Sources */,
-				A1B2C3D4E5F60001A0000001 /* CameraVendorDiagnostics.swift in Sources */,
-				A1B2C3D4E5F60002A0000001 /* CameraVendorPtpSocket.swift in Sources */,
-				A1B2C3D4E5F60003A0000001 /* CameraVendorPtpProtocol.swift in Sources */,
-				A1B2C3D4E5F60004A0000001 /* CameraVendorPairingStore.swift in Sources */,
-				A1B2C3D4E5F60005A0000001 /* CameraCommandLane.swift in Sources */,
-				A1B2C3D4E5F60006A0000001 /* CameraVendorTransferPolicy.swift in Sources */,
-				A1B2C3D4E5F60007A0000001 /* CameraVendorSecureHandshake.swift in Sources */,
-				A1B2C3D4E5F60008A0000001 /* CameraVendorCatalogPolicy.swift in Sources */,
-				A1B2C3D4E5F60020A0000001 /* CameraTransportFailureDisposition.swift in Sources */,
-				A1B2C3D4E5F60009A0000001 /* CameraVendorWifiPolicy.swift in Sources */,
-				A1B2C3D4E5F60015A0000001 /* CameraVendorPairingProbe.swift in Sources */,
-				A1B2C3D4E5F6000AA0000001 /* CameraVendorOriginalTransferWorker.swift in Sources */,
-				A1B2C3D4E5F6000BA0000001 /* CameraVendorRealtimeGalleryService.swift in Sources */,
-				A1B2C3D4E5F6000CA0000001 /* CameraVendorPtpSession.swift in Sources */,
-				A1B2C3D4E5F6071829300013 /* CameraFilterEngine.swift in Sources */,
-				A1B2C3D4E5F6071829300015 /* CameraGalleryMediaIdentity.swift in Sources */,
-				A1B2C3D4E5F6071829300017 /* CameraCatalogAccessLease.swift in Sources */,
-				A1B2C3D4E5F6071829300019 /* CameraCatalogQueryEngine.swift in Sources */,
-				A1B2C3D4E5F6071829300011 /* CameraMediaFilterRule.swift in Sources */,
-				6F12AA01C0D1E2F300000001 /* CameraVendorConnectFlowBridge.swift in Sources */,
-				6F12AA01C0D1E2F300000003 /* CameraVendorGalleryMainlineSessionLoader.swift in Sources */,
+				4C38BD78952BB518062F2473 /* CameraVendorCatalogPolicy.swift in Sources */,
+				31EEB39326ED50A31610C4B6 /* CameraVendorConnectFlowBridge.swift in Sources */,
+				5C9981C278C8048E2FE4A6D7 /* CameraVendorDiagnostics.swift in Sources */,
+				7EB63F03FE4D431F3C0EAABD /* CameraVendorGalleryMainlineSessionLoader.swift in Sources */,
+				C3C4D0320E3F152750BBCC45 /* CameraVendorOriginalTransferWorker.swift in Sources */,
+				4DA93E83A9CFFA737F53A186 /* CameraVendorPairingProbe.swift in Sources */,
+				356561F28C44168A77FD3470 /* CameraVendorPairingStore.swift in Sources */,
+				7CDA7792842696F6FB5C1908 /* CameraVendorPtpProtocol.swift in Sources */,
+				54A53199C2079DDFE3C0FF6A /* CameraVendorPtpSession.swift in Sources */,
+				4E051428DB1C8876066C6F0F /* CameraVendorPtpSocket.swift in Sources */,
+				59EE0CCD4E7ED3FCF6F899E3 /* CameraVendorRealtimeGalleryService.swift in Sources */,
+				3A87F09F4D6DF32C3E36B713 /* CameraVendorSecureHandshake.swift in Sources */,
+				2964C91E97E1085E094892C3 /* CameraVendorTransferModeCoordinator.swift in Sources */,
+				00DC40F2233F2C34DD993463 /* CameraVendorTransferPolicy.swift in Sources */,
+				D133097E78568D4B14106C62 /* CameraVendorWifiPolicy.swift in Sources */,
 				65E6F39481CB19CDEEF3CAA2 /* FujifilmCameraAdapter.swift in Sources */,
 				E7BE625B6F1C444945049488 /* FujifilmXSeriesProfile.swift in Sources */,
 				41A84F673A15B58C0680151D /* LocalProofingSession.swift in Sources */,
+				CBA17A04287790D7CEDA414F /* NativeAutoDownloadSettingsViewController.swift in Sources */,
 				0D2FDF3FF21F2F7B30A519B2 /* NativeConnectViewController.swift in Sources */,
-				A1B2C3D4E5F6000DA0000001 /* NativeGalleryPolicies.swift in Sources */,
-				A1B2C3D4E5F6000EA0000001 /* NativeScanViewController.swift in Sources */,
-				A1B2C3D4E5F6000FA0000001 /* NativeGalleryViewController.swift in Sources */,
-				A1B2C3D4E5F6001AA0000001 /* NativeGalleryHDPreviewCell.swift in Sources */,
-				A1B2C3D4E5F6001BA0000001 /* NativeGalleryHDPreviewSession.swift in Sources */,
-				A1B2C3D4E5F60010A0000001 /* NativePhotoPreviewViewController.swift in Sources */,
-				A1B2C3D4E5F60011A0000001 /* CameraAutoDownloadRule.swift in Sources */,
-				B1C2D3E4F5A60099B0000101 /* QuickDownloadUseCase.swift in Sources */,
-				A1B2C3D4E5F60012A0000001 /* NativeAutoDownloadSettingsViewController.swift in Sources */,
-				A1B2C3D4E5F60013A0000001 /* CameraPhotoLibraryProvider.swift in Sources */,
+				9463C95FF88E9ECBE16CD042 /* NativeGalleryHDFullScreenViewController.swift in Sources */,
+				4DBBE5464F0FF09ED93C7289 /* NativeGalleryHDPreviewCell.swift in Sources */,
+				DCEA2CF1EC6E2D4FF098B299 /* NativeGalleryHDPreviewSession.swift in Sources */,
+				687BF03C10F037256B7746B0 /* NativeGalleryHDTargetDecoder.swift in Sources */,
+				E9B85CA50C617FE4AEAC6FA6 /* NativeGalleryPolicies.swift in Sources */,
+				56F823F6C4D3FD626CD5CFFF /* NativeGalleryViewController.swift in Sources */,
+				7CFEAF3D43529A8B57A8CEFE /* NativePhotoPreviewViewController.swift in Sources */,
+				158F246B78E9189F99ADB88E /* NativeScanViewController.swift in Sources */,
 				A5E8E3BBD16B08C09ED18943 /* ProAccessController.swift in Sources */,
+				C3E722C4955DB59B3D21F257 /* QuickDownloadUseCase.swift in Sources */,
 				26168D6E335307C680D37A7C /* RunnerApp.swift in Sources */,
 				C005391B19856E8E51D6BEBA /* WiredCameraImportModels.swift in Sources */,
 				85B5B6854C8EE2B26A17285A /* WiredCameraImportService.swift in Sources */,

@@ -175,6 +175,26 @@ final class CameraGallerySession {
     hdPreviewPipeline.updateVisibleHandles(handles)
   }
 
+  func updateHDPreviewSnapshot(
+    _ snapshot: NativeGalleryHDPreviewSnapshot,
+    expectedCatalogIdentity: CameraGalleryCatalogIdentity
+  ) async {
+    guard !isCatalogSubmissionPending,
+          catalogIdentity == expectedCatalogIdentity else { return }
+    await hdPreviewPipeline.updateSnapshot(
+      catalogIdentity: expectedCatalogIdentity,
+      snapshot: snapshot
+    )
+  }
+
+  func focusHDFullScreen(handle: Int) {
+    hdPreviewPipeline.focusFullScreen(on: handle)
+  }
+
+  func restoreHDPreviewListFocus(visibleHandles: [Int]) {
+    hdPreviewPipeline.restoreListFocus(visibleHandles: visibleHandles)
+  }
+
   func retryHDPreview(handle: Int) {
     hdPreviewPipeline.retry(handle: handle)
   }

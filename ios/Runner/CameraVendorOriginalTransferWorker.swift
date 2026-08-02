@@ -175,7 +175,21 @@ struct CameraVendorOriginalReadImageExecutor {
     fileHandle: FileHandle,
     withSerializedLease: (_ body: () throws -> CameraVendorOriginalReadImageExecutionResult) throws -> CameraVendorOriginalReadImageExecutionResult
   ) throws -> CameraVendorOriginalReadImageExecutionResult {
-    try withSerializedLease {
+    report(
+      "[OBS] PTP_ORIGINAL_COMMAND_LOCK_WAIT " +
+      "handle=0x\(String(format: "%08X", handle))"
+    )
+    return try withSerializedLease {
+      report(
+        "[OBS] PTP_ORIGINAL_COMMAND_LOCK_ACQUIRED " +
+        "handle=0x\(String(format: "%08X", handle))"
+      )
+      defer {
+        report(
+          "[OBS] PTP_ORIGINAL_COMMAND_LOCK_RELEASED " +
+          "handle=0x\(String(format: "%08X", handle))"
+        )
+      }
       let startedAt = Date()
       var state = CameraVendorAdaptiveDownloadChunkState(readSize: initialReadSize)
       var offset: UInt64 = 0
@@ -196,14 +210,33 @@ struct CameraVendorOriginalReadImageExecutor {
         )
         let transactionID = nextTransactionID()
         let chunkStartedAt = Date()
+        report(
+          "[OBS] PTP_ORIGINAL_REQUEST_SEND_BEGIN " +
+          "handle=0x\(String(format: "%08X", handle)) transaction=\(transactionID) " +
+          "offset=\(offset) size=\(requestSize)"
+        )
         try sendRequest(transactionID, handle, offset, requestSize)
+        report(
+          "[OBS] PTP_ORIGINAL_REQUEST_SEND_END " +
+          "handle=0x\(String(format: "%08X", handle)) transaction=\(transactionID)"
+        )
 
         let streamedChunk: CameraVendorOriginalReadImageTransactionResult
         do {
+          report(
+            "[OBS] PTP_ORIGINAL_RECEIVE_BEGIN " +
+            "handle=0x\(String(format: "%08X", handle)) transaction=\(transactionID)"
+          )
           streamedChunk = try receivePayloadAndResponse(
             transactionID,
             Int(requestSize),
             fileHandle
+          )
+          report(
+            "[OBS] PTP_ORIGINAL_RESPONSE_RECEIVED " +
+            "handle=0x\(String(format: "%08X", handle)) transaction=\(transactionID) " +
+            "response=0x\(String(format: "%04X", streamedChunk.responseCode)) " +
+            "bytes=\(streamedChunk.byteCount)"
           )
         } catch {
           throw error
