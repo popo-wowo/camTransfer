@@ -18,6 +18,35 @@ enum CameraVendorSecureHandshakeCodec {
   }
 }
 
+enum CameraVendorConnectedApplicationHandshakeAction: Equatable {
+  case completeIdentityHandshake
+  case writeApplicationInfo(Data)
+}
+
+enum CameraVendorConnectedApplicationHandshakePolicy {
+  static let characteristicUUIDString = "8B5ECF55-FC6B-40D0-B4C1-76F64E5453C7"
+  static let applicationInfoPayload = Data([0x80, 0x01, 0x01])
+  static let writeTimeoutSeconds: TimeInterval = 5
+
+  static func action(
+    availableCharacteristicUUIDStrings: Set<String>
+  ) -> CameraVendorConnectedApplicationHandshakeAction {
+    let normalizedUUIDs = Set(availableCharacteristicUUIDStrings.map { $0.uppercased() })
+    guard normalizedUUIDs.contains(characteristicUUIDString) else {
+      return .completeIdentityHandshake
+    }
+    return .writeApplicationInfo(applicationInfoPayload)
+  }
+
+  static func acceptsWriteCallback(
+    pendingGeneration: UInt64?,
+    currentGeneration: UInt64,
+    isCurrentCharacteristic: Bool
+  ) -> Bool {
+    pendingGeneration == currentGeneration && isCurrentCharacteristic
+  }
+}
+
 enum CameraVendorSecureIdentificationAckPolicy {
   static func shouldSkipIdentificationAck(isRememberedPairing _: Bool) -> Bool {
     false
@@ -92,6 +121,7 @@ enum CameraVendorSecureHandshakePhase {
   case awaitingDeviceNameWrite
   case awaitingIdentificationNumberRead
   case awaitingIdentificationNumberWrite
+  case awaitingConnectedApplicationInfoWrite
   case completed
 }
 
@@ -128,7 +158,8 @@ enum CameraVendorSecureHandshakeRecoveryPolicy {
     switch phase {
     case .awaitingIdentificationNumberWrite:
       return true
-    case .idle, .awaitingDeviceNameWrite, .awaitingIdentificationNumberRead, .completed:
+    case .idle, .awaitingDeviceNameWrite, .awaitingIdentificationNumberRead,
+         .awaitingConnectedApplicationInfoWrite, .completed:
       return false
     }
   }
