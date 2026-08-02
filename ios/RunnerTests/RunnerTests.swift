@@ -6,6 +6,31 @@ import UIKit
 import XCTest
 @testable import Runner
 
+private actor AsyncTestGate {
+  private var continuation: CheckedContinuation<Void, Never>?
+  private var isOpen = false
+
+  func wait() async {
+    if isOpen {
+      return
+    }
+    await withCheckedContinuation { continuation in
+      if isOpen {
+        continuation.resume()
+      } else {
+        self.continuation = continuation
+      }
+    }
+  }
+
+  func open() {
+    guard !isOpen else { return }
+    isOpen = true
+    continuation?.resume()
+    continuation = nil
+  }
+}
+
 final class RunnerTests: XCTestCase {
   func testWiredCameraImportPolicyAcceptsPhotosAndVideos() {
     XCTAssertTrue(WiredCameraImportPolicy.isSupportedMedia(filename: "DSCF0001.JPG", uti: nil))
@@ -3202,6 +3227,236 @@ final class RunnerTests: XCTestCase {
     XCTAssertNotNil(match)
     XCTAssertEqual(match?.appVariant, .standby)
     XCTAssertEqual(match?.pairingToken, Data([0x01, 0x02, 0x03, 0x04]))
+  }
+
+  func testRememberedRedReconnectAcceptsExactEndpointWith123D() {
+    let peripheralID = UUID(uuidString: "42D39012-FB38-3F92-C07A-53625FCCAB90")!
+
+    XCTAssertTrue(
+      CameraVendorRememberedRedReconnectAdmissionPolicy.shouldAdmit(
+        observedPeripheralID: peripheralID,
+        rememberedPeripheralID: peripheralID,
+        serviceUUIDs: [CameraVendorDeviceMatcher.securePairServiceUUIDString]
+      )
+    )
+  }
+
+  func testRememberedRedReconnectRejectsWrongEndpoint() {
+    let rememberedID = UUID(uuidString: "42D39012-FB38-3F92-C07A-53625FCCAB90")!
+    let observedID = UUID(uuidString: "A3DD810A-E306-8298-E4A0-D94124300FD7")!
+
+    XCTAssertFalse(
+      CameraVendorRememberedRedReconnectAdmissionPolicy.shouldAdmit(
+        observedPeripheralID: observedID,
+        rememberedPeripheralID: rememberedID,
+        serviceUUIDs: [CameraVendorDeviceMatcher.securePairServiceUUIDString]
+      )
+    )
+  }
+
+  func testRememberedRedReconnectRejectsWrongService() {
+    let peripheralID = UUID(uuidString: "42D39012-FB38-3F92-C07A-53625FCCAB90")!
+
+    XCTAssertFalse(
+      CameraVendorRememberedRedReconnectAdmissionPolicy.shouldAdmit(
+        observedPeripheralID: peripheralID,
+        rememberedPeripheralID: peripheralID,
+        serviceUUIDs: [CameraVendorDeviceMatcher.standbyServiceUUIDString]
+      )
+    )
+  }
+
+  func testRememberedRedReconnectBuildsTypedMatchWithoutModelFallback() {
+    let peripheralID = UUID(uuidString: "42D39012-FB38-3F92-C07A-53625FCCAB90")!
+    let services = [CameraVendorDeviceMatcher.securePairServiceUUIDString]
+    let manufacturerData = Data([0xD8, 0x04, 0x01, 0x31, 0x41, 0x44, 0x36, 0x33])
+
+    XCTAssertNil(
+      CameraVendorDeviceMatcher.matchAdvertisement(
+        name: "X-M5",
+        serviceUUIDs: services,
+        manufacturerData: manufacturerData
+      )
+    )
+
+    let match = CameraVendorDeviceMatcher.matchRememberedRedReconnectAdvertisement(
+      name: "X-M5",
+      observedPeripheralID: peripheralID,
+      rememberedPeripheralID: peripheralID,
+      rememberedAppVariant: .standby,
+      serviceUUIDs: services,
+      manufacturerData: manufacturerData
+    )
+
+    XCTAssertEqual(match?.resolvedName, "X-M5")
+    XCTAssertEqual(match?.appVariant, .standby)
+    XCTAssertEqual(match?.admission, .rememberedRedReconnect)
+    XCTAssertTrue(match?.reasons.contains("remembered-endpoint") == true)
+    XCTAssertTrue(match?.reasons.contains("service:ConnectedDeviceInformationRED") == true)
+  }
+
+  func testRememberedRedReconnectAdmissionRunsBeforeGenericAdvertisementMatcher() throws {
+    let source = try runnerSource("CameraVendorBluetoothService.swift")
+    let methodStart = try XCTUnwrap(
+      source.range(of: "func centralManager(\n    _ central: CBCentralManager,\n    didDiscover peripheral: CBPeripheral")?.lowerBound
+    )
+    let methodEnd = try XCTUnwrap(
+      source.range(of: "private func logUnmatchedAdvertisementSample", range: methodStart..<source.endIndex)?.lowerBound
+    )
+    let body = String(source[methodStart..<methodEnd])
+    let rememberedAdmission = try XCTUnwrap(
+      body.range(of: "matchRememberedRedReconnectAdvertisement")?.lowerBound
+    )
+    let genericAdmission = try XCTUnwrap(
+      body.range(of: "matchAdvertisement", range: rememberedAdmission..<body.endIndex)?.lowerBound
+    )
+
+    XCTAssertLessThan(rememberedAdmission, genericAdmission)
+  }
+
+  func testRememberedRedReconnectIdentityAcceptsExactEndpointAndFullSerial() {
+    let peripheralID = UUID(uuidString: "42D39012-FB38-3F92-C07A-53625FCCAB90")!
+
+    XCTAssertEqual(
+      CameraVendorRememberedRedReconnectIdentityPolicy.decision(
+        admission: .rememberedRedReconnect,
+        rememberedPeripheralID: peripheralID,
+        connectedPeripheralID: peripheralID,
+        rememberedSerialNumber: "AD63001234",
+        connectedSerialNumber: "AD63001234"
+      ),
+      .accepted
+    )
+  }
+
+  func testRememberedRedReconnectIdentityRejectsMissingStoredSerial() {
+    let peripheralID = UUID(uuidString: "42D39012-FB38-3F92-C07A-53625FCCAB90")!
+
+    for missingSerial in [nil, "", "  ", "-"] as [String?] {
+      XCTAssertEqual(
+        CameraVendorRememberedRedReconnectIdentityPolicy.decision(
+          admission: .rememberedRedReconnect,
+          rememberedPeripheralID: peripheralID,
+          connectedPeripheralID: peripheralID,
+          rememberedSerialNumber: missingSerial,
+          connectedSerialNumber: "AD63001234"
+        ),
+        .rejected(reason: .missingRememberedSerial)
+      )
+    }
+  }
+
+  func testRememberedRedReconnectIdentityRejectsMissingObservedSerial() {
+    let peripheralID = UUID(uuidString: "42D39012-FB38-3F92-C07A-53625FCCAB90")!
+
+    for missingSerial in [nil, "", "  ", "-"] as [String?] {
+      XCTAssertEqual(
+        CameraVendorRememberedRedReconnectIdentityPolicy.decision(
+          admission: .rememberedRedReconnect,
+          rememberedPeripheralID: peripheralID,
+          connectedPeripheralID: peripheralID,
+          rememberedSerialNumber: "AD63001234",
+          connectedSerialNumber: missingSerial
+        ),
+        .rejected(reason: .missingConnectedSerial)
+      )
+    }
+  }
+
+  func testRememberedRedReconnectIdentityRejectsSerialMismatch() {
+    let peripheralID = UUID(uuidString: "42D39012-FB38-3F92-C07A-53625FCCAB90")!
+
+    XCTAssertEqual(
+      CameraVendorRememberedRedReconnectIdentityPolicy.decision(
+        admission: .rememberedRedReconnect,
+        rememberedPeripheralID: peripheralID,
+        connectedPeripheralID: peripheralID,
+        rememberedSerialNumber: "AD63001234",
+        connectedSerialNumber: "AD63005678"
+      ),
+      .rejected(reason: .serialMismatch)
+    )
+  }
+
+  func testRememberedRedReconnectIdentityRejectsEndpointMismatch() {
+    XCTAssertEqual(
+      CameraVendorRememberedRedReconnectIdentityPolicy.decision(
+        admission: .rememberedRedReconnect,
+        rememberedPeripheralID: UUID(uuidString: "42D39012-FB38-3F92-C07A-53625FCCAB90"),
+        connectedPeripheralID: UUID(uuidString: "A3DD810A-E306-8298-E4A0-D94124300FD7"),
+        rememberedSerialNumber: "AD63001234",
+        connectedSerialNumber: "AD63001234"
+      ),
+      .rejected(reason: .endpointMismatch)
+    )
+  }
+
+  func testGenericAdvertisementDoesNotRequireRememberedRedIdentityGate() {
+    XCTAssertEqual(
+      CameraVendorRememberedRedReconnectIdentityPolicy.decision(
+        admission: .generic,
+        rememberedPeripheralID: nil,
+        connectedPeripheralID: nil,
+        rememberedSerialNumber: nil,
+        connectedSerialNumber: nil
+      ),
+      .notRequired
+    )
+  }
+
+  func testRememberedRedReconnectIdentityGateRunsBeforeHandshakeMutation() throws {
+    let source = try runnerSource("CameraVendorBluetoothService.swift")
+    let methodStart = try XCTUnwrap(
+      source.range(of: "private func maybeStartPairing(on peripheral: CBPeripheral)")?.lowerBound
+    )
+    let methodEnd = try XCTUnwrap(
+      source.range(of: "private func startPairingIfReady", range: methodStart..<source.endIndex)?.lowerBound
+    )
+    let body = String(source[methodStart..<methodEnd])
+    let identityGate = try XCTUnwrap(
+      body.range(of: "CameraVendorRememberedRedReconnectIdentityPolicy.decision")?.lowerBound
+    )
+    let handshakeMutation = try XCTUnwrap(
+      body.range(of: "handshakeCoordinator.markHandshakeStarted()")?.lowerBound
+    )
+
+    XCTAssertLessThan(identityGate, handshakeMutation)
+    XCTAssertTrue(body.contains("central.cancelPeripheralConnection(peripheral)"))
+  }
+
+  func testRememberedRedReconnectIdentityRejectionStatusSurvivesDisconnectCallback() throws {
+    let source = try runnerSource("CameraVendorBluetoothService.swift")
+    let gateStart = try XCTUnwrap(
+      source.range(of: "private func maybeStartPairing(on peripheral: CBPeripheral)")?.lowerBound
+    )
+    let gateEnd = try XCTUnwrap(
+      source.range(of: "private func startPairingIfReady", range: gateStart..<source.endIndex)?.lowerBound
+    )
+    let gateBody = String(source[gateStart..<gateEnd])
+    let rejectionState = try XCTUnwrap(
+      gateBody.range(of: "pendingRememberedRedReconnectIdentityRejectionReason = reason")?.lowerBound
+    )
+    let cancellation = try XCTUnwrap(
+      gateBody.range(of: "central.cancelPeripheralConnection(peripheral)")?.lowerBound
+    )
+    XCTAssertLessThan(rejectionState, cancellation)
+
+    let disconnectStart = try XCTUnwrap(
+      source.range(of: "didDisconnectPeripheral peripheral: CBPeripheral")?.lowerBound
+    )
+    let disconnectEnd = try XCTUnwrap(
+      source.range(of: "extension CameraVendorBluetoothService: CBPeripheralDelegate", range: disconnectStart..<source.endIndex)?.lowerBound
+    )
+    let disconnectBody = String(source[disconnectStart..<disconnectEnd])
+    let preservedStatus = try XCTUnwrap(
+      disconnectBody.range(of: "pendingRememberedRedReconnectIdentityRejectionReason")?.lowerBound
+    )
+    let genericStatus = try XCTUnwrap(
+      disconnectBody.range(of: "updateStatus(\"连接已断开\"")?.lowerBound
+    )
+
+    XCTAssertLessThan(preservedStatus, genericStatus)
+    XCTAssertTrue(disconnectBody.contains("相机身份校验失败，请重新配对"))
   }
 
   func testCameraVendorAdvertisementMatcherRejectsUnrelatedAdvertisement() {
@@ -10763,7 +11018,8 @@ final class RunnerTests: XCTestCase {
       rssi: -48,
       appVariant: .referenceApp,
       pairingToken: nil,
-      matchDetails: "service:ReferenceApp"
+      matchDetails: "service:ReferenceApp",
+      admission: .generic
     )
 
     XCTAssertFalse(
@@ -10791,7 +11047,8 @@ final class RunnerTests: XCTestCase {
       rssi: -48,
       appVariant: .referenceApp,
       pairingToken: nil,
-      matchDetails: "service:ReferenceApp"
+      matchDetails: "service:ReferenceApp",
+      admission: .generic
     )
 
     XCTAssertTrue(
@@ -12331,17 +12588,17 @@ final class RunnerTests: XCTestCase {
     let runtime = makePtpRuntimeForExclusiveWindowTests()
     let firstStarted = expectation(description: "first PTP runtime window started")
     let secondStarted = expectation(description: "second PTP runtime window started")
-    let releaseFirst = DispatchSemaphore(value: 0)
-    let releaseSecond = DispatchSemaphore(value: 0)
+    let releaseFirst = AsyncTestGate()
+    let releaseSecond = AsyncTestGate()
     let firstOperation: () async throws -> String = {
       firstStarted.fulfill()
-      releaseFirst.wait()
+      await releaseFirst.wait()
       try Task.checkCancellation()
       return "first"
     }
     let secondOperation: () async throws -> String = {
       secondStarted.fulfill()
-      releaseSecond.wait()
+      await releaseSecond.wait()
       try Task.checkCancellation()
       return "second"
     }
@@ -12367,11 +12624,11 @@ final class RunnerTests: XCTestCase {
 
     await fulfillment(of: [firstStarted, secondStarted], timeout: 1)
     if releaseFirstWindowFirst {
-      releaseFirst.signal()
+      await releaseFirst.open()
       let firstResult = await first.value
       XCTAssertEqual(firstResult, "first")
     } else {
-      releaseSecond.signal()
+      await releaseSecond.open()
       let secondResult = await second.value
       XCTAssertEqual(secondResult, "second")
     }
@@ -12388,11 +12645,11 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(probeResult, "cancelled")
 
     if releaseFirstWindowFirst {
-      releaseSecond.signal()
+      await releaseSecond.open()
       let secondResult = await second.value
       XCTAssertEqual(secondResult, "second")
     } else {
-      releaseFirst.signal()
+      await releaseFirst.open()
       let firstResult = await first.value
       XCTAssertEqual(firstResult, "first")
     }
@@ -12411,17 +12668,17 @@ final class RunnerTests: XCTestCase {
     }
     let firstStarted = expectation(description: "first service window started")
     let secondStarted = expectation(description: "second service window started")
-    let releaseFirst = DispatchSemaphore(value: 0)
-    let releaseSecond = DispatchSemaphore(value: 0)
+    let releaseFirst = AsyncTestGate()
+    let releaseSecond = AsyncTestGate()
     let firstOperation: () async throws -> String = {
       firstStarted.fulfill()
-      releaseFirst.wait()
+      await releaseFirst.wait()
       try Task.checkCancellation()
       return "first"
     }
     let secondOperation: () async throws -> String = {
       secondStarted.fulfill()
-      releaseSecond.wait()
+      await releaseSecond.wait()
       try Task.checkCancellation()
       return "second"
     }
@@ -12454,11 +12711,11 @@ final class RunnerTests: XCTestCase {
     )
 
     if releaseFirstWindowFirst {
-      releaseFirst.signal()
+      await releaseFirst.open()
       let firstResult = await first.value
       XCTAssertEqual(firstResult, "first")
     } else {
-      releaseSecond.signal()
+      await releaseSecond.open()
       let secondResult = await second.value
       XCTAssertEqual(secondResult, "second")
     }
@@ -12475,11 +12732,11 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(probeResult, "cancelled")
 
     if releaseFirstWindowFirst {
-      releaseSecond.signal()
+      await releaseSecond.open()
       let secondResult = await second.value
       XCTAssertEqual(secondResult, "second")
     } else {
-      releaseFirst.signal()
+      await releaseFirst.open()
       let firstResult = await first.value
       XCTAssertEqual(firstResult, "first")
     }
@@ -12547,13 +12804,13 @@ final class RunnerTests: XCTestCase {
     let lane = CameraCommandLane()
     let runtime = makePtpRuntimeForExclusiveWindowTests(commandLane: lane)
     let operationStarted = expectation(description: "exclusive operation started")
-    let releaseOperation = DispatchSemaphore(value: 0)
+    let releaseOperation = AsyncTestGate()
 
     let window = Task { () -> String in
       do {
         return try await runtime.withExclusiveDownloadWindow {
           operationStarted.fulfill()
-          releaseOperation.wait()
+          await releaseOperation.wait()
           return "operation"
         }
       } catch is CancellationError {
@@ -12577,7 +12834,7 @@ final class RunnerTests: XCTestCase {
     }
     XCTAssertEqual(probeWhileOperationIsRunning, "cancelled")
 
-    releaseOperation.signal()
+    await releaseOperation.open()
     let windowResult = await window.value
     XCTAssertEqual(windowResult, "operation")
 

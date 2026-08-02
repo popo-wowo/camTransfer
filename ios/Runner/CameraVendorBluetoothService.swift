@@ -2309,6 +2309,12 @@ struct CameraVendorDiscoveredCamera: Equatable {
   let appVariant: CameraVendorAppVariant
   let pairingToken: Data?
   let matchDetails: String
+  let admission: CameraVendorAdvertisementAdmission
+}
+
+enum CameraVendorAdvertisementAdmission: Equatable {
+  case generic
+  case rememberedRedReconnect
 }
 
 struct CameraVendorAdvertisementMatch: Equatable {
@@ -2316,6 +2322,7 @@ struct CameraVendorAdvertisementMatch: Equatable {
   let appVariant: CameraVendorAppVariant
   let pairingToken: Data?
   let reasons: [String]
+  let admission: CameraVendorAdvertisementAdmission
 }
 
 enum CameraVendorDeviceMatcher {
@@ -2371,7 +2378,34 @@ enum CameraVendorDeviceMatcher {
       resolvedName: displayName,
       appVariant: appVariant,
       pairingToken: token,
-      reasons: reasons
+      reasons: reasons,
+      admission: .generic
+    )
+  }
+
+  static func matchRememberedRedReconnectAdvertisement(
+    name: String?,
+    observedPeripheralID: UUID,
+    rememberedPeripheralID: UUID?,
+    rememberedAppVariant: CameraVendorAppVariant,
+    serviceUUIDs: [String],
+    manufacturerData: Data?
+  ) -> CameraVendorAdvertisementMatch? {
+    guard CameraVendorRememberedRedReconnectAdmissionPolicy.shouldAdmit(
+      observedPeripheralID: observedPeripheralID,
+      rememberedPeripheralID: rememberedPeripheralID,
+      serviceUUIDs: serviceUUIDs
+    ) else {
+      return nil
+    }
+
+    let displayName = normalizedName(name).flatMap { $0.isEmpty ? nil : $0 } ?? "CAMERA_VENDOR"
+    return CameraVendorAdvertisementMatch(
+      resolvedName: displayName,
+      appVariant: rememberedAppVariant,
+      pairingToken: pairingToken(from: manufacturerData),
+      reasons: ["remembered-endpoint", "service:ConnectedDeviceInformationRED"],
+      admission: .rememberedRedReconnect
     )
   }
 
@@ -2643,6 +2677,8 @@ final class CameraVendorBluetoothService: NSObject {
   private var transferActivationTimeoutSetAt: CFAbsoluteTime = 0
   private var discoveredName: String?
   private var discoveredSerialNumber: String?
+  private var pendingRememberedRedReconnectIdentityRejectionReason:
+    CameraVendorRememberedRedReconnectIdentityRejectionReason?
   private var handshakeCoordinator = CameraVendorHandshakeCoordinator()
   private var lastHandshakeWaitReason: String?
   private let logStore = CameraVendorLogStore()
@@ -3307,6 +3343,7 @@ final class CameraVendorBluetoothService: NSObject {
     observedCharacteristicValues = [:]
     discoveredName = nil
     discoveredSerialNumber = nil
+    pendingRememberedRedReconnectIdentityRejectionReason = nil
     handshakeCoordinator = CameraVendorHandshakeCoordinator()
     lastHandshakeWaitReason = nil
     handshakeMode = .undetermined
@@ -3463,6 +3500,7 @@ final class CameraVendorBluetoothService: NSObject {
     observedCharacteristicValues = [:]
     discoveredName = nil
     discoveredSerialNumber = nil
+    pendingRememberedRedReconnectIdentityRejectionReason = nil
     handshakeCoordinator = CameraVendorHandshakeCoordinator()
     lastHandshakeWaitReason = nil
     handshakeMode = .undetermined
@@ -3514,7 +3552,8 @@ final class CameraVendorBluetoothService: NSObject {
           rssi: 0,
           appVariant: record.appVariant,
           pairingToken: nil,
-          matchDetails: "remembered-system-retrieve"
+          matchDetails: "remembered-system-retrieve",
+          admission: .generic
         )
         discoveredPeripherals[peripheral.identifier] = peripheral
         discoveredCameras = [camera]
@@ -3591,6 +3630,7 @@ final class CameraVendorBluetoothService: NSObject {
     observedCharacteristicValues = [:]
     discoveredName = nil
     discoveredSerialNumber = nil
+    pendingRememberedRedReconnectIdentityRejectionReason = nil
     handshakeCoordinator = CameraVendorHandshakeCoordinator()
     lastHandshakeWaitReason = nil
     handshakeMode = .undetermined
@@ -3725,6 +3765,21 @@ final class CameraVendorBluetoothService: NSObject {
     }
 
     if canStartHandshake {
+      let identityDecision = CameraVendorRememberedRedReconnectIdentityPolicy.decision(
+        admission: selectedCamera?.admission ?? .generic,
+        rememberedPeripheralID: rememberedPairedCamera?.peripheralID,
+        connectedPeripheralID: peripheral.identifier,
+        rememberedSerialNumber: rememberedPairedCamera?.serialNumber,
+        connectedSerialNumber: discoveredSerialNumber
+      )
+      if case .rejected(let reason) = identityDecision {
+        pendingRememberedRedReconnectIdentityRejectionReason = reason
+        appendLog("已配对 RED 重连身份校验失败 reason=\(reason.rawValue)")
+        updateStatus("相机身份校验失败，请重新配对", isBusy: false)
+        central.cancelPeripheralConnection(peripheral)
+        return
+      }
+
       handshakeCoordinator.markHandshakeStarted()
       lastHandshakeWaitReason = nil
       startPairingIfReady(on: peripheral)
@@ -3808,7 +3863,8 @@ final class CameraVendorBluetoothService: NSObject {
       rssi: rssi,
       appVariant: match.appVariant,
       pairingToken: match.pairingToken,
-      matchDetails: match.reasons.joined(separator: ", ")
+      matchDetails: match.reasons.joined(separator: ", "),
+      admission: match.admission
     )
 
     if let index = discoveredCameras.firstIndex(where: { $0.id == camera.id }) {
@@ -4499,11 +4555,21 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
     let manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data
 
     let name = localName ?? peripheral.name
-    guard let match = CameraVendorDeviceMatcher.matchAdvertisement(
+    let rememberedRedReconnectMatch =
+      CameraVendorDeviceMatcher.matchRememberedRedReconnectAdvertisement(
+        name: name ?? rememberedPairedCamera?.deviceName,
+        observedPeripheralID: peripheral.identifier,
+        rememberedPeripheralID: autoReconnectTargetPeripheralID,
+        rememberedAppVariant: rememberedPairedCamera?.appVariant ?? .unknown,
+        serviceUUIDs: serviceUUIDs,
+        manufacturerData: manufacturerData
+      )
+    let genericMatch = CameraVendorDeviceMatcher.matchAdvertisement(
       name: name,
       serviceUUIDs: serviceUUIDs,
       manufacturerData: manufacturerData
-    ) else {
+    )
+    guard let match = rememberedRedReconnectMatch ?? genericMatch else {
       logUnmatchedAdvertisementSample(
         peripheral: peripheral,
         name: name,
@@ -4668,6 +4734,14 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
     } else {
       appendLog("连接断开")
       appendObservation("BLE_DISCONNECTED error=nil")
+    }
+
+    if selectedPeripheral?.identifier == peripheral.identifier,
+       let rejectionReason = pendingRememberedRedReconnectIdentityRejectionReason {
+      pendingRememberedRedReconnectIdentityRejectionReason = nil
+      appendLog("已配对 RED 重连身份校验拒绝后断开 reason=\(rejectionReason.rawValue)")
+      updateStatus("相机身份校验失败，请重新配对", isBusy: false)
+      return
     }
 
     if selectedPeripheral?.identifier == peripheral.identifier {

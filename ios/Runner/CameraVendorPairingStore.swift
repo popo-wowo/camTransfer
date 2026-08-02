@@ -295,6 +295,79 @@ enum CameraVendorFreshPairingRegistrationPolicy {
   }
 }
 
+enum CameraVendorRememberedRedReconnectAdmissionPolicy {
+  static func shouldAdmit(
+    observedPeripheralID: UUID,
+    rememberedPeripheralID: UUID?,
+    serviceUUIDs: [String]
+  ) -> Bool {
+    guard observedPeripheralID == rememberedPeripheralID else {
+      return false
+    }
+
+    let connectedDeviceInformationRed =
+      CameraVendorDeviceMatcher.securePairServiceUUIDString.uppercased()
+    return serviceUUIDs.contains {
+      $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        == connectedDeviceInformationRed
+    }
+  }
+}
+
+enum CameraVendorRememberedRedReconnectIdentityRejectionReason: String, Equatable {
+  case endpointMismatch = "endpoint-mismatch"
+  case missingRememberedSerial = "missing-remembered-serial"
+  case missingConnectedSerial = "missing-connected-serial"
+  case serialMismatch = "serial-mismatch"
+}
+
+enum CameraVendorRememberedRedReconnectIdentityDecision: Equatable {
+  case notRequired
+  case accepted
+  case rejected(reason: CameraVendorRememberedRedReconnectIdentityRejectionReason)
+}
+
+enum CameraVendorRememberedRedReconnectIdentityPolicy {
+  static func decision(
+    admission: CameraVendorAdvertisementAdmission,
+    rememberedPeripheralID: UUID?,
+    connectedPeripheralID: UUID?,
+    rememberedSerialNumber: String?,
+    connectedSerialNumber: String?
+  ) -> CameraVendorRememberedRedReconnectIdentityDecision {
+    guard admission == .rememberedRedReconnect else {
+      return .notRequired
+    }
+
+    guard let rememberedPeripheralID,
+          let connectedPeripheralID,
+          rememberedPeripheralID == connectedPeripheralID else {
+      return .rejected(reason: .endpointMismatch)
+    }
+
+    let rememberedSerial = normalizedSerial(rememberedSerialNumber)
+    guard !rememberedSerial.isEmpty, rememberedSerial != "-" else {
+      return .rejected(reason: .missingRememberedSerial)
+    }
+
+    let connectedSerial = normalizedSerial(connectedSerialNumber)
+    guard !connectedSerial.isEmpty, connectedSerial != "-" else {
+      return .rejected(reason: .missingConnectedSerial)
+    }
+
+    guard rememberedSerial == connectedSerial else {
+      return .rejected(reason: .serialMismatch)
+    }
+    return .accepted
+  }
+
+  private static func normalizedSerial(_ value: String?) -> String {
+    value?
+      .trimmingCharacters(in: CharacterSet(charactersIn: "\0"))
+      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  }
+}
+
 enum CameraVendorRememberedReconnectPolicy {
   static let shouldStartNormalDiscoveryAfterTargetTimeout = false
   static let shouldTrySystemRetrievedPeripheralBeforeScanning = false
