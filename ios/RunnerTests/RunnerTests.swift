@@ -7668,6 +7668,27 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(CameraVendorTransferActivationResizePolicy.postWriteDelaySeconds, 0.5)
   }
 
+  func testTransferActivationDefaultsToOriginalWhenNoPreferenceWasSaved() {
+    let defaults = UserDefaults.standard
+    let key = "camtransfer.downloadCompressionEnabled"
+    let previousValue = defaults.object(forKey: key)
+    defer {
+      if let previousValue {
+        defaults.set(previousValue, forKey: key)
+      } else {
+        defaults.removeObject(forKey: key)
+      }
+    }
+
+    defaults.removeObject(forKey: key)
+
+    XCTAssertFalse(CameraVendorTransferActivationResizePolicy.preferCompressedDownloads)
+    XCTAssertEqual(
+      CameraVendorTransferActivationResizePolicy.currentPayload,
+      CameraVendorTransferActivationResizePolicy.resizeDisabledPayload
+    )
+  }
+
   func testTransferActivationDisconnectPolicyAcceptsPromptDisconnectAfterWaitingForCameraConfirmation() {
     XCTAssertTrue(
       CameraVendorTransferActivationDisconnectPolicy.shouldTreatDisconnectAsWifiHandoff(
@@ -8576,11 +8597,11 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(NativeHomeQuickDownloadEntryPolicy.action(ruleIsEnabled: true), .start)
   }
 
-  func testQuickDownloadSettingsConfirmationForcesRuleEnabled() {
+  func testSavingQuickDownloadSettingsAlwaysMarksRuleEnabled() {
     var rule = CameraAutoDownloadRule()
     rule.isEnabled = false
 
-    XCTAssertFalse(
+    XCTAssertTrue(
       NativeAutoDownloadSettingsSavePolicy.resolvedRule(
         rule,
         forcesEnabled: false
@@ -9347,7 +9368,11 @@ final class RunnerTests: XCTestCase {
         "title = forcesEnabledOnSave ? \"快速下载参数\" : \"自动下载规则\""
       )
     )
-    XCTAssertTrue(settingsSource.contains("if !forcesEnabledOnSave {"))
+    XCTAssertFalse(settingsSource.contains("启用自动下载"))
+    XCTAssertFalse(settingsSource.contains("enableSwitch"))
+    XCTAssertFalse(settingsSource.contains("enableChanged"))
+    XCTAssertTrue(settingsSource.contains("点击快速下载后，将按此规则筛选并开始下载。"))
+    XCTAssertFalse(settingsSource.contains("连接相机后将自动按此规则筛选并开始下载"))
     XCTAssertTrue(
       settingsSource.contains(
         "NativeAutoDownloadSettingsSavePolicy.resolvedRule(rule, forcesEnabled: forcesEnabledOnSave)"
@@ -17280,8 +17305,8 @@ final class RunnerTests: XCTestCase {
       preferCompressedDownloads: false
     )
 
-    XCTAssertTrue(defaultSummary.preferCompressedDownloads)
-    XCTAssertEqual(defaultSummary.activeTransferDownloadMode, .compressed)
+    XCTAssertFalse(defaultSummary.preferCompressedDownloads)
+    XCTAssertEqual(defaultSummary.activeTransferDownloadMode, .original)
     XCTAssertFalse(originalSummary.preferCompressedDownloads)
     XCTAssertEqual(originalSummary.activeTransferDownloadMode, .original)
   }
@@ -18734,7 +18759,7 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(NativeGalleryAndroidParityLayoutPolicy.filterToGridSpacing, 2)
     XCTAssertEqual(NativeGalleryAndroidParityLayoutPolicy.filterHeaderHeight, 42)
     XCTAssertEqual(NativeGalleryAndroidParityLayoutPolicy.filterTopSpacing, 0)
-    XCTAssertFalse(NativeGalleryAndroidParityLayoutPolicy.shouldShowPinchHintBubble)
+    XCTAssertTrue(NativeGalleryAndroidParityLayoutPolicy.shouldShowPinchHintBubble)
     XCTAssertEqual(NativeGalleryAndroidParityLayoutPolicy.bottomBarHeight, 52)
     XCTAssertEqual(NativeGalleryAndroidParityLayoutPolicy.bottomBarBottomInset, 10)
   }

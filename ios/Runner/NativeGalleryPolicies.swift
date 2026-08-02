@@ -505,7 +505,7 @@ enum NativeGalleryAndroidParityLayoutPolicy {
   static let filterToGridSpacing: CGFloat = 2
   static let filterHeaderHeight: CGFloat = 42
   static let filterTopSpacing: CGFloat = 0
-  static let shouldShowPinchHintBubble = false
+  static let shouldShowPinchHintBubble = true
   static let bottomBarHeight: CGFloat = 52
   static let bottomBarBottomInset: CGFloat = 10
 }
