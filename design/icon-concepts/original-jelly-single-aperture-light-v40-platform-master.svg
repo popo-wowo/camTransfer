@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <radialGradient id="background" cx="44%" cy="34%" r="86%">
+      <stop offset="0" stop-color="#242424"/>
+      <stop offset="0.62" stop-color="#171717"/>
+      <stop offset="1" stop-color="#0B0B0B"/>
+    </radialGradient>
+    <radialGradient id="softJellyWhite" cx="29%" cy="18%" r="87%">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.47" stop-color="#FFFEFB"/>
+      <stop offset="0.72" stop-color="#F8F2E9"/>
+      <stop offset="0.90" stop-color="#E8DFD4"/>
+      <stop offset="1" stop-color="#CFC6BB"/>
+    </radialGradient>
+    <radialGradient id="apertureRing" cx="35%" cy="26%" r="80%">
+      <stop offset="0" stop-color="#494949"/>
+      <stop offset="0.46" stop-color="#343434"/>
+      <stop offset="0.78" stop-color="#242424"/>
+      <stop offset="1" stop-color="#151515"/>
+    </radialGradient>
+    <radialGradient id="glassCore" cx="44%" cy="40%" r="72%">
+      <stop offset="0" stop-color="#111416"/>
+      <stop offset="0.52" stop-color="#050708"/>
+      <stop offset="1" stop-color="#000000"/>
+    </radialGradient>
+    <linearGradient id="softReflection" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8B969B" stop-opacity="0.14"/>
+      <stop offset="0.48" stop-color="#B7BFC2" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.13"/>
+    </linearGradient>
+    <filter id="jellyLift" x="-30%" y="-30%" width="160%" height="176%">
+      <feDropShadow dx="0" dy="26" stdDeviation="22" flood-color="#000000" flood-opacity="0.56"/>
+    </filter>
+    <filter id="reflectionBlur" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="1.5"/>
+    </filter>
+    <clipPath id="pupilClip">
+      <circle cx="637" cy="472" r="78"/>
+    </clipPath>
+  </defs>
+
+  <!-- Production masters are full bleed; iOS/Android apply the platform mask. -->
+  <rect width="1024" height="1024" fill="url(#background)"/>
+
+  <ellipse cx="278" cy="536" rx="246" ry="251" fill="url(#softJellyWhite)" filter="url(#jellyLift)"/>
+  <ellipse cx="766" cy="446" rx="233" ry="239" fill="url(#softJellyWhite)" filter="url(#jellyLift)"/>
+  <ellipse cx="188" cy="369" rx="72" ry="39" transform="rotate(-28 188 369)" fill="#FFFFFF" opacity="0.38"/>
+  <ellipse cx="684" cy="299" rx="67" ry="36" transform="rotate(-26 684 299)" fill="#FFFFFF" opacity="0.35"/>
+
+  <circle cx="407" cy="592" r="82" fill="#010101"/>
+  <circle cx="637" cy="472" r="82" fill="#010101"/>
+  <circle cx="432" cy="562" r="17" fill="#FFFFFF"/>
+  <circle cx="376" cy="619" r="7" fill="#FFFFFF"/>
+
+  <circle cx="637" cy="472" r="57" fill="url(#apertureRing)"/>
+  <circle cx="637" cy="474" r="42" fill="url(#glassCore)"/>
+  <path d="M602 492
+           C617 508 645 514 670 494
+           C663 509 648 519 631 519
+           C616 517 606 509 600 500
+           C598 497 599 494 602 492 Z"
+        fill="url(#softReflection)" filter="url(#reflectionBlur)" clip-path="url(#pupilClip)"/>
+  <circle cx="614" cy="447" r="17" fill="#FFFFFF"/>
+  <circle cx="662" cy="499" r="8" fill="#FFFFFF"/>
+</svg>
