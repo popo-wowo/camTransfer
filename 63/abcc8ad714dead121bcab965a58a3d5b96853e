@@ -1,0 +1,64 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "63abcc8ad714dead121bcab965a58a3d5b96853e",
+  "prompts": {
+    "1044195238a48098": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fbda4-375d-7e43-9057-54c6c3c6bd25",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 1253,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/508a69ca73c1a8d8110bc2cef07dbb27f3595a6e7c4aad053c9a1846f77f6713"
+    },
+    "1e8061a2b4569eae": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc151-533b-7102-bde8-0a77e206253a",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 253,
+      "total_deletions": 0,
+      "accepted_lines": 253,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/3896fa4e447ed78258c89c07369992d1509ba90fef08567d681500e19894bfbb"
+    },
+    "7ba42731cc1e7686": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3e2fb603-f5ff-4191-8e4d-66104dfdd939",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 45711,
+      "overriden_lines": 10,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/aabe19133c252dcfe67e3504933747ab99a3c1add2015f99f72424897bed12ce"
+    },
+    "9ccd7042b8f527e3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc0b3-24c4-7951-b783-0e56cd730811",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 0,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/3e882a904a6df4fb46220079df5b52be27745597527eb3564ad91732395d5f4a"
+    }
+  }
+}
