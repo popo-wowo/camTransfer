@@ -3757,6 +3757,139 @@ final class RunnerTests: XCTestCase {
     XCTAssertTrue(body.contains("currentGeneration: self.secureHandshakeGeneration"))
   }
 
+  func testBluetoothDisconnectInvalidatesConnectedApplicationHandshakeBeforeRouting() throws {
+    let source = try runnerSource("CameraVendorBluetoothService.swift")
+    let start = try XCTUnwrap(
+      source.range(
+        of: "func centralManager(\n    _ central: CBCentralManager,\n    didDisconnectPeripheral peripheral: CBPeripheral"
+      )?.lowerBound
+    )
+    let end = try XCTUnwrap(
+      source.range(
+        of: "extension CameraVendorBluetoothService: CBPeripheralDelegate",
+        range: start..<source.endIndex
+      )?.lowerBound
+    )
+    let body = String(source[start..<end])
+
+    let invalidation = body.range(of: "resetConnectedApplicationHandshakeState()")
+    let disconnectRouting = body.range(of: "if selectedPeripheral?.identifier == peripheral.identifier")
+    XCTAssertNotNil(invalidation)
+    XCTAssertNotNil(disconnectRouting)
+    if let invalidation, let disconnectRouting {
+      XCTAssertLessThan(invalidation.lowerBound, disconnectRouting.lowerBound)
+    }
+  }
+
+  func testBluetoothApplicationInfoAckRequiresCurrentConnectedPeripheral() throws {
+    let source = try runnerSource("CameraVendorBluetoothService.swift")
+    let callbackStart = try XCTUnwrap(
+      source.range(
+        of: "func peripheral(\n    _ peripheral: CBPeripheral,\n    didWriteValueFor characteristic: CBCharacteristic"
+      )?.lowerBound
+    )
+    let start = try XCTUnwrap(
+      source.range(
+        of: "if characteristic.uuid == connectedApplicationInfoCharacteristicUUID",
+        range: callbackStart..<source.endIndex
+      )?.lowerBound
+    )
+    let end = try XCTUnwrap(
+      source.range(
+        of: "if characteristic.uuid == connectedDeviceNameCharacteristicUUID",
+        range: start..<source.endIndex
+      )?.lowerBound
+    )
+    let body = String(source[start..<end])
+
+    XCTAssertTrue(body.contains("selectedPeripheral === peripheral"))
+    XCTAssertTrue(body.contains("peripheral.state == .connected"))
+  }
+
+  func testBluetoothDiscoveryCallbacksRequireCurrentConnectedPeripheral() throws {
+    let source = try runnerSource("CameraVendorBluetoothService.swift")
+    let delegateExtensionStart = try XCTUnwrap(
+      source.range(of: "extension CameraVendorBluetoothService: CBPeripheralDelegate")?.lowerBound
+    )
+    let servicesStart = try XCTUnwrap(
+      source.range(
+        of: "func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?)",
+        range: delegateExtensionStart..<source.endIndex
+      )?.lowerBound
+    )
+    let servicesEnd = try XCTUnwrap(
+      source.range(
+        of: "func peripheral(\n    _ peripheral: CBPeripheral,\n    didDiscoverCharacteristicsFor service: CBService",
+        range: servicesStart..<source.endIndex
+      )?.lowerBound
+    )
+    let characteristicsEnd = try XCTUnwrap(
+      source.range(
+        of: "func peripheral(\n    _ peripheral: CBPeripheral,\n    didUpdateValueFor characteristic: CBCharacteristic",
+        range: servicesEnd..<source.endIndex
+      )?.lowerBound
+    )
+    let servicesBody = String(source[servicesStart..<servicesEnd])
+    let characteristicsBody = String(source[servicesEnd..<characteristicsEnd])
+
+    for body in [servicesBody, characteristicsBody] {
+      XCTAssertTrue(body.contains("selectedPeripheral === peripheral"))
+      XCTAssertTrue(body.contains("peripheral.state == .connected"))
+    }
+  }
+
+  func testBluetoothValueAndNotificationCallbacksRequireCurrentConnectedPeripheral() throws {
+    let source = try runnerSource("CameraVendorBluetoothService.swift")
+    let delegateExtensionStart = try XCTUnwrap(
+      source.range(of: "extension CameraVendorBluetoothService: CBPeripheralDelegate")?.lowerBound
+    )
+    let valueStart = try XCTUnwrap(
+      source.range(
+        of: "func peripheral(\n    _ peripheral: CBPeripheral,\n    didUpdateValueFor characteristic: CBCharacteristic",
+        range: delegateExtensionStart..<source.endIndex
+      )?.lowerBound
+    )
+    let valueEnd = try XCTUnwrap(
+      source.range(
+        of: "func peripheral(\n    _ peripheral: CBPeripheral,\n    didWriteValueFor characteristic: CBCharacteristic",
+        range: valueStart..<source.endIndex
+      )?.lowerBound
+    )
+    let notificationStart = try XCTUnwrap(
+      source.range(
+        of: "func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic",
+        range: valueEnd..<source.endIndex
+      )?.lowerBound
+    )
+    let valueBody = String(source[valueStart..<valueEnd])
+    let notificationBody = String(source[notificationStart..<source.endIndex])
+
+    for body in [valueBody, notificationBody] {
+      XCTAssertTrue(body.contains("selectedPeripheral === peripheral"))
+      XCTAssertTrue(body.contains("peripheral.state == .connected"))
+    }
+  }
+
+  func testBluetoothNormalConnectionUsesGenerationBoundPeripheralDelegateProxy() throws {
+    let source = try runnerSource("CameraVendorBluetoothService.swift")
+
+    XCTAssertTrue(source.contains("final class CameraVendorPeripheralDelegateProxy"))
+    XCTAssertTrue(source.contains("callbackGeneration: UInt64"))
+    XCTAssertTrue(source.contains("callbackGeneration == secureHandshakeGeneration"))
+    XCTAssertTrue(source.contains("installGenerationBoundPeripheralDelegate(on: peripheral)"))
+  }
+
+  func testBluetoothCentralCallbacksRequireCurrentConnectionRequest() throws {
+    let source = try runnerSource("CameraVendorBluetoothService.swift")
+
+    XCTAssertTrue(source.contains("pendingCentralConnectionGeneration"))
+    XCTAssertTrue(source.contains("beginCentralConnection(to: peripheral)"))
+    XCTAssertTrue(source.contains("pendingCentralConnectionGeneration == secureHandshakeGeneration"))
+    XCTAssertTrue(source.contains("hasPendingCurrentCentralConnection"))
+    XCTAssertTrue(source.contains("peripheral.state != .connecting"))
+    XCTAssertTrue(source.contains("peripheral.state != .connected"))
+  }
+
   func testStandbyUuidMatchesCurrentCameraVendorDocumentation() {
     XCTAssertEqual(
       CameraVendorDeviceMatcher.standbyServiceUUIDString,

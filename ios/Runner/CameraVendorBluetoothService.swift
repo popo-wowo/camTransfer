@@ -2613,6 +2613,72 @@ protocol CameraVendorBluetoothServiceDelegate: AnyObject {
   )
 }
 
+final class CameraVendorPeripheralDelegateProxy: NSObject, CBPeripheralDelegate {
+  private weak var owner: CameraVendorBluetoothService?
+  private let callbackGeneration: UInt64
+
+  init(owner: CameraVendorBluetoothService, callbackGeneration: UInt64) {
+    self.owner = owner
+    self.callbackGeneration = callbackGeneration
+  }
+
+  private func forwardTarget(
+    for peripheral: CBPeripheral,
+    event: String
+  ) -> CameraVendorBluetoothService? {
+    guard let owner,
+          owner.acceptsPeripheralDelegateCallback(
+            peripheral,
+            callbackGeneration: callbackGeneration,
+            event: event
+          ) else {
+      return nil
+    }
+    return owner
+  }
+
+  func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+    forwardTarget(for: peripheral, event: "services")?
+      .peripheral(peripheral, didDiscoverServices: error)
+  }
+
+  func peripheral(
+    _ peripheral: CBPeripheral,
+    didDiscoverCharacteristicsFor service: CBService,
+    error: Error?
+  ) {
+    forwardTarget(for: peripheral, event: "characteristics")?
+      .peripheral(peripheral, didDiscoverCharacteristicsFor: service, error: error)
+  }
+
+  func peripheral(
+    _ peripheral: CBPeripheral,
+    didUpdateValueFor characteristic: CBCharacteristic,
+    error: Error?
+  ) {
+    forwardTarget(for: peripheral, event: "value")?
+      .peripheral(peripheral, didUpdateValueFor: characteristic, error: error)
+  }
+
+  func peripheral(
+    _ peripheral: CBPeripheral,
+    didWriteValueFor characteristic: CBCharacteristic,
+    error: Error?
+  ) {
+    forwardTarget(for: peripheral, event: "write")?
+      .peripheral(peripheral, didWriteValueFor: characteristic, error: error)
+  }
+
+  func peripheral(
+    _ peripheral: CBPeripheral,
+    didUpdateNotificationStateFor characteristic: CBCharacteristic,
+    error: Error?
+  ) {
+    forwardTarget(for: peripheral, event: "notification")?
+      .peripheral(peripheral, didUpdateNotificationStateFor: characteristic, error: error)
+  }
+}
+
 final class CameraVendorBluetoothService: NSObject {
   private let buildMarker = "BUILD_MARK_20260718_ORIGINAL_TRANSFER_WORKER"
   private let pairServiceUUID = CBUUID(string: "91F1DE68-DFF6-466E-8B65-FF13B0F16FB8")
@@ -2720,6 +2786,9 @@ final class CameraVendorBluetoothService: NSObject {
   private var secureHandshakeReconnectCount = 0
   private var secureIdentificationNumberAlreadyPaired = false
   private var secureHandshakeGeneration: UInt64 = 0
+  private var activePeripheralDelegateProxy: CameraVendorPeripheralDelegateProxy?
+  private var pendingCentralConnectionGeneration: UInt64?
+  private var pendingCentralConnectionPeripheral: CBPeripheral?
   private var connectedDeviceNameCharacteristicGeneration: UInt64?
   private var connectedDeviceIdentificationCharacteristicGeneration: UInt64?
   private var connectedApplicationInfoWriteGeneration: UInt64?
@@ -3247,11 +3316,11 @@ final class CameraVendorBluetoothService: NSObject {
     appendLog("开始连接 \(camera.name) [\(camera.appVariant.rawValue)]")
     if peripheral.state == .connected {
       appendLog("相机 BLE 已连接，直接重新发现服务完成配对确认")
-      peripheral.delegate = self
+      installGenerationBoundPeripheralDelegate(on: peripheral)
       peripheral.discoverServices(nil)
       return true
     }
-    central.connect(peripheral, options: nil)
+    beginCentralConnection(to: peripheral)
     return true
   }
 
@@ -3542,7 +3611,7 @@ final class CameraVendorBluetoothService: NSObject {
     prepareConnectionAttempt(peripheral: peripheral, camera: camera)
     appendLog("开始连接 \(camera.name) [\(camera.appVariant.rawValue)]")
     updateStatus("连接相机中", isBusy: true)
-    central.connect(peripheral, options: nil)
+    beginCentralConnection(to: peripheral)
   }
 
   func startFreshPairingConnection(cameraID: UUID) {
@@ -3692,7 +3761,7 @@ final class CameraVendorBluetoothService: NSObject {
         appendLog("系统已取回上次配对的相机外设，直接发起连接: \(record.deviceName) [\(record.peripheralID.uuidString)]")
         prepareConnectionAttempt(peripheral: peripheral, camera: camera)
         updateStatus("连接上次配对的相机", isBusy: true)
-        central.connect(peripheral, options: nil)
+        beginCentralConnection(to: peripheral)
         return
       }
       appendLog("系统未取回上次配对外设，改为扫描广播: \(record.peripheralID.uuidString)")
@@ -3799,6 +3868,9 @@ final class CameraVendorBluetoothService: NSObject {
   private func resetConnectedApplicationHandshakeState() {
     connectedApplicationInfoTimeoutWorkItem?.cancel()
     connectedApplicationInfoTimeoutWorkItem = nil
+    activePeripheralDelegateProxy = nil
+    pendingCentralConnectionGeneration = nil
+    pendingCentralConnectionPeripheral = nil
     connectedApplicationInfoCharacteristic = nil
     pendingConnectedApplicationInfoGeneration = nil
     secureHandshakeGeneration &+= 1
@@ -3806,6 +3878,58 @@ final class CameraVendorBluetoothService: NSObject {
     connectedDeviceIdentificationCharacteristicGeneration = nil
     connectedApplicationInfoWriteGeneration = nil
     completedIdentityHandshakeGeneration = nil
+  }
+
+  private func installGenerationBoundPeripheralDelegate(on peripheral: CBPeripheral) {
+    let proxy = CameraVendorPeripheralDelegateProxy(
+      owner: self,
+      callbackGeneration: secureHandshakeGeneration
+    )
+    activePeripheralDelegateProxy = proxy
+    peripheral.delegate = proxy
+  }
+
+  private func beginCentralConnection(to peripheral: CBPeripheral) {
+    pendingCentralConnectionGeneration = secureHandshakeGeneration
+    pendingCentralConnectionPeripheral = peripheral
+    central.connect(peripheral, options: nil)
+  }
+
+  private func consumeCurrentCentralConnectionCallback(
+    for peripheral: CBPeripheral,
+    event: String
+  ) -> Bool {
+    let accepted = pendingCentralConnectionGeneration == secureHandshakeGeneration
+      && pendingCentralConnectionPeripheral === peripheral
+      && selectedPeripheral === peripheral
+    if accepted {
+      pendingCentralConnectionGeneration = nil
+      pendingCentralConnectionPeripheral = nil
+    } else {
+      appendObservation(
+        "BLE_CENTRAL_CALLBACK result=ignored-stale event=\(event) " +
+        "pendingGeneration=\(String(describing: pendingCentralConnectionGeneration)) " +
+        "currentGeneration=\(secureHandshakeGeneration)"
+      )
+    }
+    return accepted
+  }
+
+  fileprivate func acceptsPeripheralDelegateCallback(
+    _ peripheral: CBPeripheral,
+    callbackGeneration: UInt64,
+    event: String
+  ) -> Bool {
+    let accepted = callbackGeneration == secureHandshakeGeneration
+      && selectedPeripheral === peripheral
+      && peripheral.state == .connected
+    if !accepted {
+      appendObservation(
+        "BLE_PERIPHERAL_CALLBACK result=ignored-stale event=\(event) " +
+        "callbackGeneration=\(callbackGeneration) currentGeneration=\(secureHandshakeGeneration)"
+      )
+    }
+    return accepted
   }
 
   private func makeCoreRememberedRecord(
@@ -3863,7 +3987,7 @@ final class CameraVendorBluetoothService: NSObject {
         return
       }
       self.appendLog("重新连接相机，继续 ReferenceApp 配对")
-      self.central.connect(peripheral, options: nil)
+      self.beginCentralConnection(to: peripheral)
     }
   }
 
@@ -4756,7 +4880,7 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
       appendLog("已找到上次配对的相机，自动发起连接")
       prepareConnectionAttempt(peripheral: peripheral, camera: camera)
       updateStatus("连接上次配对的相机", isBusy: true)
-      central.connect(peripheral, options: nil)
+      beginCentralConnection(to: peripheral)
       return
     }
 
@@ -4772,7 +4896,7 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
       central.stopScan()
       appendLog("已捕获可配对广播，自动重新连接 | services \(serviceUUIDs.joined(separator: ",")) | mfg \(hexString(manufacturerData))")
       updateStatus("重新连接相机中", isBusy: true)
-      central.connect(peripheral, options: nil)
+      beginCentralConnection(to: peripheral)
     }
   }
 
@@ -4820,11 +4944,15 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
       return
     }
 
+    guard consumeCurrentCentralConnectionCallback(for: peripheral, event: "did-connect") else {
+      return
+    }
+
     recordBackgroundHardwareActivity()
     appendLog("蓝牙连接成功: \(peripheral.name ?? peripheral.identifier.uuidString)")
     appendObservation("BLE_CONNECTED name=\(peripheral.name ?? "nil") id=\(peripheral.identifier.uuidString)")
     updateStatus("读取相机服务中", isBusy: true)
-    peripheral.delegate = self
+    installGenerationBoundPeripheralDelegate(on: peripheral)
     peripheral.discoverServices(nil)
   }
 
@@ -4840,6 +4968,17 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
       } else {
         completePairingProbe(result: .offline, reason: "didFailToConnect")
       }
+      return
+    }
+
+    guard peripheral.state != .connecting else {
+      appendObservation(
+        "BLE_CENTRAL_CALLBACK result=ignored-prior-request event=did-fail-to-connect"
+      )
+      return
+    }
+
+    guard consumeCurrentCentralConnectionCallback(for: peripheral, event: "did-fail-to-connect") else {
       return
     }
 
@@ -4870,6 +5009,27 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
         completePairingProbe(result: .offline, reason: "didDisconnect")
       }
       return
+    }
+
+    let hasPendingCurrentCentralConnection =
+      pendingCentralConnectionGeneration == secureHandshakeGeneration
+      && pendingCentralConnectionPeripheral === peripheral
+    guard !hasPendingCurrentCentralConnection else {
+      appendObservation(
+        "BLE_CENTRAL_CALLBACK result=ignored-prior-link event=did-disconnect " +
+        "generation=\(secureHandshakeGeneration)"
+      )
+      return
+    }
+
+    guard selectedPeripheral === peripheral,
+          peripheral.state != .connected else {
+      appendObservation("BLE_CENTRAL_CALLBACK result=ignored-stale event=did-disconnect")
+      return
+    }
+
+    if selectedPeripheral === peripheral {
+      resetConnectedApplicationHandshakeState()
     }
 
     if let error {
@@ -5002,6 +5162,12 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
       return
     }
 
+    guard selectedPeripheral === peripheral,
+          peripheral.state == .connected else {
+      appendObservation("BLE_SERVICE_DISCOVERY result=ignored-stale")
+      return
+    }
+
     if let error {
       appendLog("发现服务失败: \(error.localizedDescription)")
       updateStatus("读取服务失败", isBusy: false)
@@ -5053,6 +5219,14 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
         return
       }
       peripheral.readValue(for: characteristic)
+      return
+    }
+
+    guard selectedPeripheral === peripheral,
+          peripheral.state == .connected else {
+      appendObservation(
+        "BLE_CHARACTERISTIC_DISCOVERY result=ignored-stale service=\(service.uuid.uuidString)"
+      )
       return
     }
 
@@ -5122,6 +5296,14 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
         // Read succeeded — encryption link is valid, pairing is good.
         completePairingProbe(result: .online, reason: "characteristic-read-success")
       }
+      return
+    }
+
+    guard selectedPeripheral === peripheral,
+          peripheral.state == .connected else {
+      appendObservation(
+        "BLE_CHARACTERISTIC_VALUE result=ignored-stale uuid=\(characteristic.uuid.uuidString)"
+      )
       return
     }
 
@@ -5392,6 +5574,13 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
     error: Error?
   ) {
     if characteristic.uuid == connectedApplicationInfoCharacteristicUUID {
+      guard selectedPeripheral === peripheral,
+            peripheral.state == .connected else {
+        appendObservation(
+          "BLE_APP_INFO_WRITE_ACK result=ignored-stale-peripheral generation=\(secureHandshakeGeneration)"
+        )
+        return
+      }
       let isCurrentCharacteristic = characteristic === connectedApplicationInfoCharacteristic
       guard CameraVendorConnectedApplicationHandshakePolicy.acceptsWriteCallback(
         pendingGeneration: pendingConnectedApplicationInfoGeneration,
@@ -5424,7 +5613,7 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
       guard CameraVendorConnectedApplicationHandshakePolicy.acceptsIdentityWriteCallback(
         characteristicGeneration: characteristicGeneration,
         currentGeneration: secureHandshakeGeneration,
-        isCurrentPeripheral: selectedPeripheral?.identifier == peripheral.identifier,
+        isCurrentPeripheral: selectedPeripheral === peripheral && peripheral.state == .connected,
         isCurrentCharacteristic: isCurrentCharacteristic
       ) else {
         appendObservation(
@@ -5549,6 +5738,13 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
   }
 
   func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
+    guard selectedPeripheral === peripheral,
+          peripheral.state == .connected else {
+      appendObservation(
+        "BLE_NOTIFICATION_STATE result=ignored-stale uuid=\(characteristic.uuid.uuidString)"
+      )
+      return
+    }
     handshakeCoordinator.completeNotificationSubscription(for: characteristic.uuid.uuidString)
     if let error {
       appendLog("订阅失败 \(characteristic.uuid.uuidString): \(error.localizedDescription)")
