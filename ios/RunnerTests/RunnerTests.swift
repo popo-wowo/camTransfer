@@ -6428,6 +6428,27 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(source.contains("\"Connected\""))
   }
 
+  func testCameraSessionActivityWidgetMinimalViewShowsRemainingDownloadCount() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("CameraSessionActivityWidget/CameraSessionActivityWidget.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    let minimalStart = try XCTUnwrap(source.range(of: "} minimal: {")?.upperBound)
+    let minimalEnd = try XCTUnwrap(
+      source.range(
+        of: "\n      }\n    }\n  }\n}",
+        range: minimalStart..<source.endIndex
+      )?.lowerBound
+    )
+    let minimalSource = String(source[minimalStart..<minimalEnd])
+
+    XCTAssertTrue(minimalSource.contains("if context.state.isShowingDownloadProgress"))
+    XCTAssertTrue(minimalSource.contains("Text(\"\\(context.state.downloadRemainingCount)\")"))
+    XCTAssertTrue(minimalSource.contains(".monospacedDigit()"))
+    XCTAssertTrue(minimalSource.contains(".minimumScaleFactor("))
+  }
+
   func testIOSRuntimeGalleryEntryUsesDedicatedRememberedCameraConnectionBoundary() throws {
     let sourceURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()

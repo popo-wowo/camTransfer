@@ -64,7 +64,17 @@ struct CameraSessionActivityWidget: Widget {
           Text("\(context.state.galleryItemCount)")
         }
       } minimal: {
-        Image(systemName: context.state.isShowingDownloadProgress ? "arrow.down.circle.fill" : "camera")
+        if context.state.isShowingDownloadProgress {
+          Text("\(context.state.downloadRemainingCount)")
+            .font(.caption2)
+            .fontWeight(.bold)
+            .monospacedDigit()
+            .lineLimit(1)
+            .minimumScaleFactor(0.5)
+            .accessibilityLabel("还剩 \(context.state.downloadRemainingCount) 张")
+        } else {
+          Image(systemName: "camera")
+        }
       }
     }
   }
