@@ -3630,6 +3630,39 @@ final class RunnerTests: XCTestCase {
     )
   }
 
+  func testBluetoothPairingConfirmationCannotCompleteBeforeConnectedApplicationInfoAck() throws {
+    let source = try runnerSource("CameraVendorBluetoothService.swift")
+    let continueStart = try XCTUnwrap(
+      source.range(of: "private func continueAfterIdentityWrite(on peripheral: CBPeripheral)")?.lowerBound
+    )
+    let continueEnd = try XCTUnwrap(
+      source.range(
+        of: "private func scheduleConnectedApplicationInfoTimeout(",
+        range: continueStart..<source.endIndex
+      )?.lowerBound
+    )
+    let continueBody = String(source[continueStart..<continueEnd])
+
+    let completeStart = try XCTUnwrap(
+      source.range(of: "private func completeIdentityHandshake(on peripheral: CBPeripheral)")?.lowerBound
+    )
+    let completeEnd = try XCTUnwrap(
+      source.range(
+        of: "private func handleIdentifierWriteCompletion(on peripheral: CBPeripheral)",
+        range: completeStart..<source.endIndex
+      )?.lowerBound
+    )
+    let completeBody = String(source[completeStart..<completeEnd])
+
+    XCTAssertFalse(continueBody.contains("hasWrittenPairingIdentifier = true"))
+    let identifierReadyRange = completeBody.range(of: "hasWrittenPairingIdentifier = true")
+    let completionRange = completeBody.range(of: "handleIdentifierWriteCompletion(on: peripheral)")
+    XCTAssertNotNil(identifierReadyRange)
+    if let identifierReadyRange, let completionRange {
+      XCTAssertLessThan(identifierReadyRange.lowerBound, completionRange.lowerBound)
+    }
+  }
+
   func testStandbyUuidMatchesCurrentCameraVendorDocumentation() {
     XCTAssertEqual(
       CameraVendorDeviceMatcher.standbyServiceUUIDString,
