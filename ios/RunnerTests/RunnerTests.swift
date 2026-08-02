@@ -3565,6 +3565,71 @@ final class RunnerTests: XCTestCase {
     )
   }
 
+  func testConnectedApplicationHandshakeRequiresXAppIdentityWhenCharacteristicExists() {
+    let action = CameraVendorConnectedApplicationHandshakePolicy.action(
+      availableCharacteristicUUIDStrings: [
+        CameraVendorConnectedApplicationHandshakePolicy.characteristicUUIDString
+      ]
+    )
+
+    XCTAssertEqual(action, .writeApplicationInfo(Data([0x80, 0x01, 0x01])))
+  }
+
+  func testConnectedApplicationHandshakeCompletesDirectlyWhenCharacteristicIsAbsent() {
+    XCTAssertEqual(
+      CameraVendorConnectedApplicationHandshakePolicy.action(
+        availableCharacteristicUUIDStrings: []
+      ),
+      .completeIdentityHandshake
+    )
+  }
+
+  func testConnectedApplicationHandshakeRejectsStaleOrForeignWriteCallbacks() {
+    XCTAssertTrue(
+      CameraVendorConnectedApplicationHandshakePolicy.acceptsWriteCallback(
+        pendingGeneration: 4,
+        currentGeneration: 4,
+        isCurrentCharacteristic: true
+      )
+    )
+    XCTAssertFalse(
+      CameraVendorConnectedApplicationHandshakePolicy.acceptsWriteCallback(
+        pendingGeneration: 3,
+        currentGeneration: 4,
+        isCurrentCharacteristic: true
+      )
+    )
+    XCTAssertFalse(
+      CameraVendorConnectedApplicationHandshakePolicy.acceptsWriteCallback(
+        pendingGeneration: 4,
+        currentGeneration: 4,
+        isCurrentCharacteristic: false
+      )
+    )
+  }
+
+  func testBluetoothIdentityWriteCompletionIsGatedByConnectedApplicationInfo() throws {
+    let source = try runnerSource("CameraVendorBluetoothService.swift")
+    let start = try XCTUnwrap(
+      source.range(
+        of: "func peripheral(\n    _ peripheral: CBPeripheral,\n    didWriteValueFor characteristic: CBCharacteristic"
+      )?.lowerBound
+    )
+    let end = try XCTUnwrap(
+      source.range(
+        of: "func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor",
+        range: start..<source.endIndex
+      )?.lowerBound
+    )
+    let body = String(source[start..<end])
+
+    XCTAssertTrue(body.contains("continueAfterIdentityWrite(on: peripheral)"))
+    XCTAssertTrue(body.contains("completeConnectedApplicationInfoWrite"))
+    XCTAssertFalse(
+      body.contains("secureHandshakePhase = .completed\n      handleIdentifierWriteCompletion(on: peripheral)")
+    )
+  }
+
   func testStandbyUuidMatchesCurrentCameraVendorDocumentation() {
     XCTAssertEqual(
       CameraVendorDeviceMatcher.standbyServiceUUIDString,
