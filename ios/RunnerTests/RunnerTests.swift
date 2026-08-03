@@ -3104,10 +3104,10 @@ final class RunnerTests: XCTestCase {
     XCTAssertTrue(descriptor.legalDisclaimer?.contains("not affiliated") == true)
   }
 
-  func testFujifilmXSeriesProfilePreservesCurrentXt5ConnectionAndDownloadPolicies() {
-    let profile = FujifilmXSeriesProfile.xt5Current
+  func testFujifilmXSeriesProfilePreservesCurrentConnectionAndDownloadPolicies() {
+    let profile = FujifilmXSeriesProfile.currentBaseline
 
-    XCTAssertEqual(profile.id, "fujifilm-x-series-xt5-current")
+    XCTAssertEqual(profile.id, "fujifilm-current-baseline")
     XCTAssertEqual(
       profile.ptpStartupDelaySeconds,
       CameraVendorGalleryPtpStartupPolicy.startupDelaySeconds(didCompleteWifiHandoff: true)
@@ -3120,7 +3120,7 @@ final class RunnerTests: XCTestCase {
   }
 
   func testFujifilmXSeriesProfilePreservesCurrentObjectSizePolicy() {
-    let profile = FujifilmXSeriesProfile.xt5Current
+    let profile = FujifilmXSeriesProfile.currentBaseline
 
     XCTAssertFalse(profile.shouldSkipFreshFileInfoProbe(formatLabel: "HEIF", cachedExpectedSize: 100))
     XCTAssertTrue(profile.shouldSkipFreshFileInfoProbe(formatLabel: "RAW", cachedExpectedSize: 100))
@@ -3150,7 +3150,7 @@ final class RunnerTests: XCTestCase {
   }
 
   func testFujifilmCameraAdapterCreatesCurrentGallerySession() {
-    let adapter = FujifilmCameraAdapter(profile: .xt5Current)
+    let adapter = FujifilmCameraAdapter(profile: .currentBaseline)
     let session = adapter.makeGallerySession()
 
     XCTAssertEqual(adapter.descriptor.id, "fujifilm-x-series")
@@ -3158,9 +3158,9 @@ final class RunnerTests: XCTestCase {
   }
 
   func testFujifilmCameraAdapterExposesCurrentProfileForDiagnostics() {
-    let adapter = FujifilmCameraAdapter(profile: .xt5Current)
+    let adapter = FujifilmCameraAdapter(profile: .currentBaseline)
 
-    XCTAssertEqual(adapter.profile.id, FujifilmXSeriesProfile.xt5Current.id)
+    XCTAssertEqual(adapter.profile.id, FujifilmXSeriesProfile.currentBaseline.id)
   }
 
   func testNativeConnectUsesDefaultFujifilmAdapterDescriptor() {

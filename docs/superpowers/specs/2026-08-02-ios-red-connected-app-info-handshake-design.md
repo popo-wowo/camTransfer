@@ -20,7 +20,7 @@ GFX100RF 已完成 BLE 重连、相机热点启动、手机加入相机 Wi-Fi，
 ## 非目标
 
 - 不新增按 `GFX100RF`、`X-T5`、`X-S20` 等型号名称分支。
-- 不把应用身份写入放进 `.xt5Current` Profile。
+- 不把应用身份写入放进 `.currentBaseline` Profile。
 - 不修改现有 82 字节 PTP/IP INIT 包、GUID 生成或 68 字节 ACK 解析。
 - 不根据当前只有常量、没有 XApp 调用证据的 `EB4166B0` 增加协议步骤。
 - 不处理当前基线中 `Info.plist` 后台定位声明与测试预期不一致的问题。
@@ -126,7 +126,7 @@ BLE_HANDSHAKE_GATE required=<steps> completed=<steps> result=<waiting|complete|f
 - 识别号 ACK 后，若应用身份步骤未完成，不调用 `handleIdentifierWriteCompletion()`。
 - 已记住重连与新配对使用同一能力策略。
 - AP 激活不会发生在 BLE 握手门槛之前。
-- `.xt5Current` 不承载 BLE 应用身份协议。
+- `.currentBaseline` 不承载 BLE 应用身份协议。
 - 不出现相机型号名称硬编码。
 
 ### 回归验证
