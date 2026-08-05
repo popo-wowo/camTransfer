@@ -4,16 +4,6 @@ enum CameraVendorSpecifiedObjectSnapshotPolicy {
   static let shouldCompareBeforeAndAfterEmptySearchMode = false
 }
 
-enum CameraVendorInitialCatalogBootstrapRecoveryPolicy {
-  static let storeNotAvailableResponseCode = 0x2013
-
-  static func shouldRecover(after error: Error) -> Bool {
-    let nsError = error as NSError
-    return nsError.domain == "CameraVendorPtpSession"
-      && nsError.code == storeNotAvailableResponseCode
-  }
-}
-
 typealias CameraVendorSpecifiedObjectDateGroup = CameraGalleryDateGroup
 
 enum CameraVendorSearchModeAllCondition: Equatable {
@@ -26,7 +16,6 @@ enum CameraVendorWirelessRealFileFormat {
 
 enum CameraVendorCatalogMembershipPolicy: Equatable {
   case direct
-  case countSweepThenApply
   /// D604=X returns a broad directory; subtract the baseline (ALL) handles
   /// to isolate the format-specific handles that are NOT in the initial catalog.
   case subtractBaseline
@@ -52,35 +41,6 @@ struct CameraVendorCatalogSnapshot: Equatable {
   let dateGroups: [CameraVendorSpecifiedObjectDateGroup]
   let orderedHandles: [UInt32]
   let items: [CameraVendorGalleryItem]
-}
-
-struct CameraVendorCountSweepFormatCount {
-  let label: String
-  let mask: UInt16
-  let count: UInt32?
-}
-
-struct CameraVendorCountSweepResult {
-  let sweepCounts: [CameraVendorCountSweepFormatCount]
-  let baselineHandleCount: Int
-  let heifDeclaredCount: UInt32?
-  let heifHandleCount: Int
-  let heifHandles: [UInt32]
-  let confirmReadback: Data
-
-  var heifExact616: Bool {
-    heifDeclaredCount == 616 && heifHandleCount == 616
-  }
-
-  var diagnosticSummary: String {
-    let sweepSummary = sweepCounts.map { "\($0.label)=\($0.count.map(String.init) ?? "nil")" }.joined(separator: " ")
-    return "[COUNT_SWEEP_RESULT] sweep=[\(sweepSummary)] " +
-      "baseline=\(baselineHandleCount) " +
-      "heif_declared=\(heifDeclaredCount.map(String.init) ?? "nil") " +
-      "heif_handles=\(heifHandleCount) " +
-      "exact_616=\(heifExact616) " +
-      "readback_bytes=\(confirmReadback.count)"
-  }
 }
 
 enum CameraVendorCatalogTransportEvidencePolicy {

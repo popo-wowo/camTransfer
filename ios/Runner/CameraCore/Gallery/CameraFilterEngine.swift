@@ -22,8 +22,8 @@ enum CameraFilterEngine {
         return .allCatalog
       }
       if requestedFormats.contains(.heif) {
-        // HEIF uses subtractBaseline: camera PTP set difference is fast,
-        // no per-handle ObjectInfo needed.
+        // HEIF is the only product format whose current camera response needs
+        // compatibility subtraction. Video uses direct MOV + MP4 catalogs.
         return .subtractBaseline(requestedFormats)
       }
       return .exactFormats(requestedFormats)

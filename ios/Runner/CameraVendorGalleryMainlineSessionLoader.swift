@@ -14,7 +14,7 @@ final class CameraVendorGalleryMainlineSessionLoader {
 
   func loadGallerySession(
     context: IOSCameraConnectionContext,
-    publishStep: @escaping (IOSCameraConnectionStep) -> Void
+    publishStep: @escaping @MainActor (IOSCameraConnectionStep) -> Void
   ) async throws -> CameraVendorGalleryMainlineLoadResult {
     let fetchGeneration = try galleryService.beginMainlineGalleryFetch()
     defer { galleryService.finishMainlineGalleryFetch(generation: fetchGeneration) }

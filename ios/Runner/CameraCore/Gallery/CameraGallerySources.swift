@@ -82,7 +82,7 @@ struct CameraGalleryCatalogTransactionFailure: Error, Equatable, Sendable {
 
 @MainActor
 protocol CameraCatalogQuerySource: AnyObject {
-  func loadExpandedCatalog() async throws -> CameraGalleryCatalogSnapshot
+  func loadInitialCatalog() async throws -> CameraGalleryCatalogSnapshot
   func loadExactCatalog(for format: CameraMediaFormat) async throws -> CameraGalleryCatalogSnapshot
   func loadSubtractBaselineCatalog(for format: CameraMediaFormat) async throws -> CameraGalleryCatalogSnapshot
 }

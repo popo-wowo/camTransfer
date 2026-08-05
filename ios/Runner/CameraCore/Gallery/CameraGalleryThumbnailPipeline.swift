@@ -177,6 +177,17 @@ actor CameraGalleryThumbnailPipeline {
     await cancelTasksAndJoin()
   }
 
+  func resumeAfterCatalogFailure() {
+    guard isCatalogSuspended else { return }
+    isCatalogSuspended = false
+    guard !isSuspended, !isInvalidated else { return }
+    if latestVisibleHandles.isEmpty {
+      startDetailsIfPossible()
+    } else {
+      startThumbnailWorkerIfNeeded()
+    }
+  }
+
   func suspendForExternalWork() async {
     guard !isExternalWorkSuspended else { return }
     isExternalWorkSuspended = true

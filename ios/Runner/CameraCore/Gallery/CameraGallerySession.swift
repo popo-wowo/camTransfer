@@ -93,7 +93,19 @@ final class CameraGallerySession {
   func enter() async {
     guard !isInvalidated else { return }
     await catalogRuntime.updateDownloadedHandles(downloadedHandles())
-    await catalogRuntime.start(initial: filterIntent)
+    let restoredFilterIntent = filterIntent
+    await catalogRuntime.start(initial: .all)
+    await catalogRuntime.waitUntilCatalogIdle()
+    guard !isInvalidated,
+          case .ready = presentation.state else { return }
+    if restoredFilterIntent.hasSameCameraMembership(as: .all) {
+      if restoredFilterIntent != .all {
+        await submitFilter(restoredFilterIntent)
+      }
+      await catalogRuntime.startPostReadyAllEnrichment()
+    } else {
+      await submitFilter(restoredFilterIntent)
+    }
   }
 
   func submitFilter(_ intent: CameraGalleryFilterIntent) async {

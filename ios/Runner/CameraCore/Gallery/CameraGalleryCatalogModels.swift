@@ -110,6 +110,7 @@ enum CameraGalleryFormatIntent: Equatable, Sendable {
   case jpg
   case heif
   case raw
+  case video
 }
 
 enum CameraGallerySortIntent: String, Equatable, Codable, Sendable {
@@ -155,6 +156,7 @@ struct CameraGalleryFilterIntent: Equatable, Codable, Sendable {
     case .jpg: formatSelection = .selected([.jpg])
     case .heif: formatSelection = .selected([.heif])
     case .raw: formatSelection = .selected([.raw])
+    case .video: formatSelection = .selected([.video])
     }
     rule = CameraMediaFilterRule(
       formats: formatSelection,
@@ -182,6 +184,8 @@ struct CameraGalleryFilterIntent: Equatable, Codable, Sendable {
       return .heif
     case .selected(let formats) where formats == [.raw]:
       return .raw
+    case .selected(let formats) where formats == [.video]:
+      return .video
     case .selected:
       return .all
     }

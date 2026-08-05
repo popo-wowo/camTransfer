@@ -506,27 +506,14 @@ final class CameraVendorPtpSessionRuntime {
 
   func fetchInitialCameraCatalog() async throws -> CameraVendorCatalogSnapshot {
     try await commandLane.runExclusiveSessionMutation {
-      do {
-        return try self.session.cameraVendorInitialCatalogSnapshot()
-      } catch {
-        guard CameraVendorInitialCatalogBootstrapRecoveryPolicy.shouldRecover(after: error) else {
-          throw error
-        }
-        try self.session.recoverInitialCameraCatalogAfterStoreNotAvailable()
-        return try self.session.cameraVendorInitialCatalogSnapshot()
-      }
+      try self.session.prepareCameraVendorInitialGalleryAccessIfNeeded()
+      return try self.session.cameraVendorInitialCatalogSnapshot()
     }
   }
 
   func fetchCameraCatalog(query: CameraVendorCatalogQuery) async throws -> CameraVendorCatalogSnapshot {
     try await commandLane.runExclusiveSessionMutation {
       try self.session.cameraVendorCatalogSnapshot(query: query)
-    }
-  }
-
-  func executeCountSweepExperiment() async throws -> CameraVendorCountSweepResult {
-    try await commandLane.runExclusiveSessionMutation {
-      try self.session.cameraVendorCountSweepExperiment()
     }
   }
 
@@ -1206,14 +1193,6 @@ final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, C
 
   func fetchInitialCameraCatalog() async throws -> CameraVendorCatalogSnapshot {
     try await ptpRuntime.fetchInitialCameraCatalog()
-  }
-
-  func executeCountSweepExperiment() async throws -> CameraVendorCountSweepResult {
-    try await ptpRuntime.executeCountSweepExperiment()
-  }
-
-  func prepareCameraVendorLegacyGalleryLoadIfNeeded() throws {
-    try session.prepareCameraVendorLegacyGalleryLoadIfNeeded()
   }
 
   private func waitForManualCameraWifiIfNeeded(

@@ -193,11 +193,14 @@ enum NativeGalleryHDPreviewSessionPolicy {
   ) -> NativeGalleryHDPreviewSnapshot {
     NativeGalleryHDPreviewSnapshot(
       sections: sections.map { section in
-        NativeGalleryHDPreviewSection(
+        let stillItems = section.items.filter(
+          CameraVendorGalleryDownloadPolicy.isSupportedStill
+        )
+        return NativeGalleryHDPreviewSection(
           day: section.day,
           title: section.title,
-          orderedRepresentedHandles: section.items.map(\.handle),
-          items: previewItems(from: section.items)
+          orderedRepresentedHandles: stillItems.map(\.handle),
+          items: previewItems(from: stillItems)
         )
       }
     )

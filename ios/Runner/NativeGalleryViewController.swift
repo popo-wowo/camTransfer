@@ -492,16 +492,6 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     return button
   }()
 
-  private let reservedReceiveProbeButton: UIButton = {
-    let button = UIButton(type: .system)
-    button.translatesAutoresizingMaskIntoConstraints = false
-    button.setTitle("HEIF Count Sweep", for: .normal)
-    NativeLuxuryTheme.styleSecondaryButton(button)
-    NativeLuxuryTheme.setIcon("sparkle.magnifyingglass", on: button)
-    button.isHidden = true
-    return button
-  }()
-
   private let toastLabel: UILabel = {
     let label = UILabel()
     label.translatesAutoresizingMaskIntoConstraints = false
@@ -826,6 +816,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
       .init(id: "jpg", title: "JPG"),
       .init(id: "raw", title: "RAW"),
       .init(id: "heif", title: "HEIF"),
+      .init(id: "video", title: "视频"),
     ], selectedIDs: ["all"])
     downloadScopeChips.configure(items: [
       .init(id: "all", title: "全部下载状态"),
@@ -862,7 +853,6 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     galleryBackButton.addTarget(self, action: #selector(exitGalleryTapped), for: .touchUpInside)
     galleryFilterButton.addTarget(self, action: #selector(toggleFilterPanel), for: .touchUpInside)
     configureGalleryToolsMenu()
-    reservedReceiveProbeButton.addTarget(self, action: #selector(reservedReceiveProbeTapped), for: .touchUpInside)
     bottomSelectAllButton.addTarget(self, action: #selector(selectAllTapped), for: .touchUpInside)
     bottomCompressionSwitch.addTarget(self, action: #selector(bottomTransferSizeChanged), for: .valueChanged)
     bottomCompressionSwitch.accessibilityLabel = "下载尺寸"
@@ -1214,7 +1204,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     case .began:
       guard let indexPath = collectionView.indexPathForItem(at: location),
             let item = galleryItem(at: indexPath),
-            NativeGalleryDownloadSelectionPolicy.canSelect(downloadState: runtime.downloadState(for: item.handle)) else {
+            canSelectStillItem(item) else {
         dragSelectionMode = nil
         dragSelectionStartHandle = nil
         dragSelectionLastEndHandle = nil
@@ -1236,9 +1226,9 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
         ) else {
           return
         }
-        let endHandle = collectionView.indexPathForItem(at: location).flatMap { galleryItem(at: $0)?.handle }
-        let canSelectEndHandle = endHandle
-          .map { NativeGalleryDownloadSelectionPolicy.canSelect(downloadState: runtime.downloadState(for: $0)) } ?? false
+        let endItem = collectionView.indexPathForItem(at: location).flatMap { galleryItem(at: $0) }
+        let endHandle = endItem?.handle
+        let canSelectEndHandle = endItem.map(canSelectStillItem) ?? false
         guard NativeGalleryDragSelectionPolicy.shouldCommitDragSelection(
           startHandle: startHandle,
           endHandle: endHandle,
@@ -1289,15 +1279,11 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
           let startHandle = dragSelectionStartHandle,
           let item = galleryItem(at: indexPath),
           dragSelectionLastEndHandle != item.handle,
-          NativeGalleryDownloadSelectionPolicy.canSelect(downloadState: runtime.downloadState(for: item.handle)) else {
+          canSelectStillItem(item) else {
       return
     }
     dragSelectionLastEndHandle = item.handle
-    let selectableHandles = Set(
-      catalogPresentation.items.map(\.handle).filter {
-        NativeGalleryDownloadSelectionPolicy.canSelect(downloadState: runtime.downloadState(for: $0))
-      }
-    )
+    let selectableHandles = selectableStillHandles(from: catalogPresentation.items)
     let updated = NativeGalleryDragSelectionPolicy.updatedRangeSelection(
       selectedHandles: selectedHandles,
       orderedHandles: catalogPresentation.items.map(\.handle),
@@ -1989,11 +1975,27 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     return .other
   }
 
+  private func selectableStillHandles(
+    from items: [CameraVendorGalleryItem]
+  ) -> Set<Int> {
+    let supportedHandles = items.compactMap { item in
+      CameraVendorGalleryDownloadPolicy.isSupportedStill(item) ? item.handle : nil
+    }
+    return Set(runtime.downloadableHandles(from: supportedHandles))
+  }
+
+  private func canSelectStillItem(_ item: CameraVendorGalleryItem) -> Bool {
+    CameraVendorGalleryDownloadPolicy.isSupportedStill(item) &&
+      NativeGalleryDownloadSelectionPolicy.canSelect(
+        downloadState: runtime.downloadState(for: item.handle)
+      )
+  }
+
   @objc private func selectAllTapped() {
     guard NativeGalleryDownloadModePresentationPolicy.canInteractWithGallery(isDownloading: runtime.isDownloading) else {
       return
     }
-    let selectableHandles = Set(runtime.downloadableHandles(from: catalogPresentation.items.map(\.handle)))
+    let selectableHandles = selectableStillHandles(from: catalogPresentation.items)
     let previousSelection = selectedHandles
     if selectedHandles == selectableHandles, !selectableHandles.isEmpty {
       selectedHandles.removeAll()
@@ -2084,13 +2086,6 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     appendDiagnostic("[缓存] 已清理全部下载缓存 count=\(clearedCount)")
     showToast(clearedCount > 0 ? "已清理 \(clearedCount) 张缓存，可重新下载" : "没有可清理的下载缓存")
   }
-
-
-  @objc private func reservedReceiveProbeTapped() {
-    appendDiagnostic("[HEIF实验] 启动 XApp Count Sweep 实验...")
-    runtime.runCountSweepExperiment()
-  }
-
   private func applyCatalogPresentation(_ presentation: CameraGalleryPresentation) {
     let previousPresentation = catalogPresentation
     let previousItems = catalogPresentation.items
@@ -2515,9 +2510,6 @@ extension NativeGalleryViewController {
       totalSelectableCount: selectableCount,
       isDownloading: runtime.isDownloading
     )
-    if !canLeave {
-      reservedReceiveProbeButton.isEnabled = false
-    }
   }
 
   private func galleryEntryViewState(for handle: Int) -> CameraGalleryEntryViewState? {
@@ -2677,6 +2669,7 @@ extension NativeGalleryViewController {
     guard NativeGalleryDownloadModePresentationPolicy.canInteractWithGallery(isDownloading: runtime.isDownloading) else {
       return
     }
+    guard selectedHandles.contains(item.handle) || canSelectStillItem(item) else { return }
     prioritizeGalleryInteraction()
     let previousSelection = selectedHandles
     if selectedHandles.contains(item.handle) {
@@ -2702,8 +2695,7 @@ extension NativeGalleryViewController {
       return
     }
     guard gallerySections.indices.contains(sectionIndex) else { return }
-    let handles = runtime.downloadableHandles(from: gallerySections[sectionIndex].items.map(\.handle))
-    let selectableHandles = Set(handles)
+    let selectableHandles = selectableStillHandles(from: gallerySections[sectionIndex].items)
     guard !selectableHandles.isEmpty else { return }
     prioritizeGalleryInteraction()
     let previousSelection = selectedHandles
@@ -2770,11 +2762,10 @@ extension NativeGalleryViewController {
             let currentItem = self.galleryItem(at: indexPath) else {
         return
       }
-      let currentState = self.runtime.downloadState(for: currentItem.handle)
       guard NativeGalleryDownloadModePresentationPolicy.canInteractWithGallery(isDownloading: self.runtime.isDownloading) else {
         return
       }
-      guard NativeGalleryDownloadSelectionPolicy.canSelect(downloadState: currentState) else { return }
+      guard self.canSelectStillItem(currentItem) else { return }
       self.toggleSelection(for: currentItem)
     }
     cell.onClearCacheTapped = { [weak self, weak cell] in
@@ -2792,7 +2783,7 @@ extension NativeGalleryViewController {
   private func configureGalleryHeader(_ header: NativeGallerySectionHeaderView, at indexPath: IndexPath) {
     guard gallerySections.indices.contains(indexPath.section) else { return }
     let section = gallerySections[indexPath.section]
-    let selectableHandles = Set(runtime.downloadableHandles(from: section.items.map(\.handle)))
+    let selectableHandles = selectableStillHandles(from: section.items)
     let allSelected = !selectableHandles.isEmpty && selectableHandles.isSubset(of: selectedHandles)
     let isCollapsed = collapsedSections.contains(indexPath.section)
     header.configure(
@@ -2862,6 +2853,9 @@ extension NativeGalleryViewController {
   }
 
   private func presentPreview(startingAt index: Int) {
+    guard catalogPresentation.items.indices.contains(index) else { return }
+    let selectedItem = catalogPresentation.items[index]
+    guard CameraVendorGalleryDownloadPolicy.isSupportedStill(selectedItem) else { return }
     guard NativeGalleryNavigationPolicy.canOpenPreview(isDownloading: runtime.isDownloading) else {
       showToast("正在下载，请先保持在照片筛选页面")
       return
@@ -2870,13 +2864,14 @@ extension NativeGalleryViewController {
     case .thumbnail:
       break
     case .highDefinition:
-      guard catalogPresentation.items.indices.contains(index) else { return }
-      presentHDFullScreenPreview(startingAt: catalogPresentation.items[index].handle)
+      presentHDFullScreenPreview(startingAt: selectedItem.handle)
       return
     }
     guard let previewImageCache = runtime.galleryPreviewCache else { return }
-    let previewItems = catalogPresentation.items
-    guard previewItems.indices.contains(index),
+    let previewItems = catalogPresentation.items.filter(
+      CameraVendorGalleryDownloadPolicy.isSupportedStill
+    )
+    guard let previewIndex = previewItems.firstIndex(where: { $0.handle == selectedItem.handle }),
           let previewCatalogIdentity = runtime.galleryCatalogIdentity else { return }
 
     enqueueHDTransition { [weak self] in
@@ -2889,7 +2884,7 @@ extension NativeGalleryViewController {
 
       let controller = NativePhotoPreviewViewController(
         items: previewItems,
-        initialIndex: index,
+        initialIndex: previewIndex,
         runtime: self.runtime,
         previewImageCache: previewImageCache,
         previewCatalogIdentity: previewCatalogIdentity,

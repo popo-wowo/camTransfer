@@ -4,13 +4,13 @@ final class IOSCameraGalleryConnectionCoordinator {
   let runners: [IOSCameraConnectionStepRunner]
   private let initialConfirmedSteps: [IOSCameraConnectionStep]
   private let stateMachine: IOSCameraConnectionStateMachine
-  private let onStepStarted: ((IOSCameraConnectionStep) -> Void)?
+  private let onStepStarted: (@MainActor (IOSCameraConnectionStep) -> Void)?
   private var completedSteps: [IOSCameraConnectionStep] = []
 
   init(
     initialConfirmedSteps: [IOSCameraConnectionStep] = [],
     stateMachine: IOSCameraConnectionStateMachine = IOSCameraConnectionStateMachine(),
-    onStepStarted: ((IOSCameraConnectionStep) -> Void)? = nil,
+    onStepStarted: (@MainActor (IOSCameraConnectionStep) -> Void)? = nil,
     runners: [IOSCameraConnectionStepRunner]
   ) {
     precondition(
@@ -37,7 +37,7 @@ final class IOSCameraGalleryConnectionCoordinator {
         )
       }
       if let onStepStarted {
-        onStepStarted(runner.step)
+        await onStepStarted(runner.step)
       }
       let execution = try await runner.run(context: context)
       let nextStep = try stateMachine.advance(from: runner.step, with: execution.evidence)

@@ -184,9 +184,7 @@ D212 read gallery context #2
 D244 read gallery access state #2
 9054 read current image info, handle 0x10000001
 9055 read current image thumbnail, handle 0x10000001
-9050 read SearchModeDescAll
-skip 9052 GetSearchModeAll
-skip 9051 SetSearchModeAll
+skip 9050 GetSearchModeDescAll (descriptor is unused by current Catalog construction)
 D22B read current object handle
 9053 read SpecifiedObjectCountGroupByDate, params [0, 30000]
 D212 read context before specified list
@@ -198,10 +196,33 @@ Do not wire `D222` ready polling into the normal path. It remains diagnostic
 only. Previous field notes say D222 polling can disturb D212 and lead to
 `0x2009`, timeouts, or connection refusal.
 
-`9052 GetSearchModeAll` is still not part of the release gallery handshake. A
-debug build may read and log a SearchModeAll snapshot after `9050` only for
-format-count research; it must not send `9051 SetSearchModeAll` unless the
-payload format and restore path are proven on real camera logs.
+`9050 GetSearchModeDescAll` is intentionally not a `GalleryReady` gate. Its
+descriptor response is not consumed by the current Catalog or filter query
+construction, and field logs show that some camera/firmware combinations can
+return `0x2019 Device Busy`. The opcode, request helper, and retry policy remain
+implemented for a future capability-driven probe. If that probe is introduced,
+run it outside the blocking gallery startup path, parse the descriptor before
+using it, and treat busy/unsupported responses as non-fatal when the normal
+Catalog path is usable.
+
+The same boundary applies to empty-Catalog recovery. A zero-count/empty-handle
+snapshot may perform its bounded delay, optional `D22B` refresh, and Catalog
+retry, but it must not insert `9050` into that recovery loop.
+
+The initial unfiltered Catalog does not need `9052/9051`. User-initiated
+camera-side filtering is a separate, already-supported transaction:
+
+```text
+9052 backup current SearchModeAll
+9051 write the requested SearchModeAll conditions
+9053 read SpecifiedObjectCountGroupByDate
+D620 read SpecifiedObjectCount
+D621 read SpecifiedObjectHandles
+9051 restore the backed-up SearchModeAll
+```
+
+Removing `9050` from Gallery bootstrap must not remove, bypass, or weaken this
+filter transaction.
 
 ## Object Discovery
 

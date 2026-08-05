@@ -77,6 +77,26 @@ enum IOSCameraConnectionStep: String, CaseIterable, Equatable {
   }
 }
 
+enum CameraVendorConnectionStepStatusTextPolicy {
+  static let waitingForCameraWifiStatus = "正在等待相机 Wi-Fi"
+  static let enteringGalleryStatus = "正在进入相机相册"
+
+  static func status(for step: IOSCameraConnectionStep) -> String? {
+    switch step {
+    case .reconnectPairedBle,
+         .transferAuthorization,
+         .activateCameraWifi,
+         .waitCameraWifiReady,
+         .joinCameraWifi:
+      return waitingForCameraWifiStatus
+    case .connectPtp, .confirmGalleryMode, .loadGallery:
+      return enteringGalleryStatus
+    default:
+      return nil
+    }
+  }
+}
+
 enum IOSCameraConnectionAction: Equatable {
   case retryStep
   case restartPairing

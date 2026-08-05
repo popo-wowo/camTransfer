@@ -18,7 +18,6 @@ protocol CameraSessionRuntimeTransport: AnyObject {
   /// sending any command to the shared physical PTP service.
   func retireForSessionSupersession()
   func terminateCameraCommunication(reason: String)
-  func executeCountSweepExperiment() async throws -> CameraVendorCountSweepResult
 }
 
 extension CameraSessionRuntimeTransport {
@@ -50,13 +49,6 @@ extension CameraSessionRuntimeTransport {
     )
   }
 
-  func executeCountSweepExperiment() async throws -> CameraVendorCountSweepResult {
-    throw NSError(
-      domain: "CameraSessionRuntimeTransport",
-      code: NSURLErrorUnsupportedURL,
-      userInfo: [NSLocalizedDescriptionKey: "当前传输层不支持 count sweep 实验"]
-    )
-  }
 }
 
 @MainActor
@@ -188,7 +180,7 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
     self.generationFence = generationFence
   }
 
-  func loadExpandedCatalog() async throws -> CameraGalleryCatalogSnapshot {
+  func loadInitialCatalog() async throws -> CameraGalleryCatalogSnapshot {
     try generationFence.checkActive()
     do {
       let snapshot = try await transport.fetchInitialCameraCatalog()
@@ -204,62 +196,79 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
     } catch let failure as CameraGalleryCatalogTransactionFailure {
       throw failure
     } catch {
-      throw CameraGalleryCatalogTransactionFailure(
-        primaryMessage: error.localizedDescription,
-        restorationMessage: nil,
-        provesTransportLost: false
-      )
+      throw catalogTransactionFailure(for: error)
     }
   }
 
   func loadExactCatalog(for format: CameraMediaFormat) async throws -> CameraGalleryCatalogSnapshot {
     try generationFence.checkActive()
-    let query = cameraCatalogQuery(for: format)
-    do {
-      let snapshot = try await transport.fetchCameraCatalog(query: query)
-      try generationFence.checkActive()
-      return CameraGalleryCatalogSnapshot(
-        snapshotID: CameraGallerySnapshotID(),
-        dateGroups: snapshot.dateGroups,
-        orderedHandles: snapshot.orderedHandles,
-        items: formatTaggedItems(snapshot.items, format: format)
-      )
-    } catch is CancellationError {
-      throw CancellationError()
-    } catch let failure as CameraGalleryCatalogTransactionFailure {
-      throw failure
-    } catch {
-      throw CameraGalleryCatalogTransactionFailure(
-        primaryMessage: error.localizedDescription,
-        restorationMessage: nil,
-        provesTransportLost: false
-      )
-    }
+    return try await loadCatalog(
+      queries: exactCatalogQueries(for: format),
+      format: format
+    )
   }
 
   func loadSubtractBaselineCatalog(for format: CameraMediaFormat) async throws -> CameraGalleryCatalogSnapshot {
     try generationFence.checkActive()
-    let query = subtractBaselineCatalogQuery(for: format)
-    do {
-      let snapshot = try await transport.fetchCameraCatalog(query: query)
-      try generationFence.checkActive()
-      return CameraGalleryCatalogSnapshot(
-        snapshotID: CameraGallerySnapshotID(),
-        dateGroups: snapshot.dateGroups,
-        orderedHandles: snapshot.orderedHandles,
-        items: formatTaggedItems(snapshot.items, format: format)
+    guard format == .heif else {
+      throw CameraGalleryCatalogTransactionFailure(
+        primaryMessage: "subtract-baseline 目录策略仅用于 HEIF",
+        restorationMessage: nil,
+        provesTransportLost: false
       )
+    }
+    return try await loadCatalog(
+      queries: [heifSubtractBaselineCatalogQuery()],
+      format: format
+    )
+  }
+
+  private func loadCatalog(
+    queries: [CameraVendorCatalogQuery],
+    format: CameraMediaFormat
+  ) async throws -> CameraGalleryCatalogSnapshot {
+    do {
+      if queries.count == 1, let query = queries.first {
+        let snapshot = try await transport.fetchCameraCatalog(query: query)
+        try generationFence.checkActive()
+        return CameraGalleryCatalogSnapshot(
+          snapshotID: CameraGallerySnapshotID(),
+          dateGroups: snapshot.dateGroups,
+          orderedHandles: snapshot.orderedHandles,
+          items: formatTaggedItems(snapshot.items, format: format)
+        )
+      }
+      var orderedItems: [CameraGalleryCatalogItem] = []
+      var seenHandles: Set<Int> = []
+      for query in queries {
+        let snapshot = try await transport.fetchCameraCatalog(query: query)
+        try generationFence.checkActive()
+        for item in formatTaggedItems(snapshot.items, format: format)
+          where seenHandles.insert(item.handle).inserted {
+          orderedItems.append(item)
+        }
+      }
+      return makeSnapshot(items: orderedItems)
     } catch is CancellationError {
       throw CancellationError()
     } catch let failure as CameraGalleryCatalogTransactionFailure {
       throw failure
     } catch {
-      throw CameraGalleryCatalogTransactionFailure(
-        primaryMessage: error.localizedDescription,
-        restorationMessage: nil,
-        provesTransportLost: false
-      )
+      throw catalogTransactionFailure(for: error)
     }
+  }
+
+  private func catalogTransactionFailure(
+    for error: Error
+  ) -> CameraGalleryCatalogTransactionFailure {
+    CameraGalleryCatalogTransactionFailure(
+      primaryMessage: error.localizedDescription,
+      restorationMessage: nil,
+      provesTransportLost: CameraTransportFailureDispositionPolicy.disposition(
+        for: error,
+        context: .catalog
+      ) == .sessionTerminal
+    )
   }
 
   func loadThumbnail(handle: Int) async throws -> CameraGalleryThumbnailResult {
@@ -281,6 +290,8 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
       hint = .raw
     case .heif:
       hint = .heif
+    case .video:
+      hint = .video
     }
     return items.map { item in
       guard item.formatLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -317,10 +328,12 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
     transport.finishVisibleThumbnailBatch(handles: handles)
   }
 
-  private func cameraCatalogQuery(for format: CameraMediaFormat) -> CameraVendorCatalogQuery {
+  private func exactCatalogQueries(
+    for format: CameraMediaFormat
+  ) -> [CameraVendorCatalogQuery] {
     switch format {
     case .jpg:
-      return CameraVendorCatalogQuery(
+      return [CameraVendorCatalogQuery(
         conditions: [
           .uint16(
             propertyCode: CameraVendorSearchModeAllPayload.objectFormatPropertyCode,
@@ -328,9 +341,9 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
           ),
         ],
         label: "format-jpg"
-      )
+      )]
     case .raw:
-      return CameraVendorCatalogQuery(
+      return [CameraVendorCatalogQuery(
         conditions: [
           .uint16(
             propertyCode: CameraVendorSearchModeAllPayload.objectFormatPropertyCode,
@@ -338,37 +351,66 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
           ),
         ],
         label: "format-raw"
-      )
+      )]
     case .heif:
-      return CameraVendorCatalogQuery(
-        conditions: [
-          .uint16(
-            propertyCode: CameraVendorSearchModeAllPayload.objectFormatPropertyCode,
-            value: CameraVendorSearchModeAllPayload.heifObjectFormatMask
-          ),
-        ],
-        label: "format-heif",
-        membershipPolicy: .subtractBaseline
-      )
+      return [heifSubtractBaselineCatalogQuery()]
+    case .video:
+      return [
+        CameraVendorCatalogQuery(
+          conditions: [
+            .uint16(
+              propertyCode: CameraVendorSearchModeAllPayload.objectFormatPropertyCode,
+              value: CameraVendorSearchModeAllPayload.movObjectFormatMask
+            ),
+          ],
+          label: "format-mov"
+        ),
+        CameraVendorCatalogQuery(
+          conditions: [
+            .uint16(
+              propertyCode: CameraVendorSearchModeAllPayload.objectFormatPropertyCode,
+              value: CameraVendorSearchModeAllPayload.mp4ObjectFormatMask
+            ),
+          ],
+          label: "format-mp4"
+        ),
+      ]
     }
   }
 
-  private func subtractBaselineCatalogQuery(for format: CameraMediaFormat) -> CameraVendorCatalogQuery {
-    switch format {
-    case .heif:
-      return CameraVendorCatalogQuery(
-        conditions: [
-          .uint16(
-            propertyCode: CameraVendorSearchModeAllPayload.objectFormatPropertyCode,
-            value: CameraVendorSearchModeAllPayload.heifObjectFormatMask
-          ),
-        ],
-        label: "format-heif",
-        membershipPolicy: .subtractBaseline
-      )
-    case .jpg, .raw:
-      return cameraCatalogQuery(for: format)
-    }
+  private func heifSubtractBaselineCatalogQuery() -> CameraVendorCatalogQuery {
+    CameraVendorCatalogQuery(
+      conditions: [
+        .uint16(
+          propertyCode: CameraVendorSearchModeAllPayload.objectFormatPropertyCode,
+          value: CameraVendorSearchModeAllPayload.heifObjectFormatMask
+        ),
+      ],
+      label: "format-heif",
+      membershipPolicy: .subtractBaseline
+    )
+  }
+
+  private func makeSnapshot(
+    items: [CameraGalleryCatalogItem]
+  ) -> CameraGalleryCatalogSnapshot {
+    let groupedDates = Dictionary(grouping: items) { String($0.captureDate.prefix(8)) }
+    let orderedDates = items.map { String($0.captureDate.prefix(8)) }
+      .filter { !$0.isEmpty }
+      .reduce(into: [String]()) { dates, date in
+        if !dates.contains(date) { dates.append(date) }
+      }
+    return CameraGalleryCatalogSnapshot(
+      snapshotID: CameraGallerySnapshotID(),
+      dateGroups: orderedDates.map {
+        CameraGalleryDateGroup(
+          dateText: $0,
+          objectCount: UInt32(groupedDates[$0]?.count ?? 0)
+        )
+      },
+      orderedHandles: items.map { UInt32($0.handle) },
+      items: items
+    )
   }
 }
 
@@ -619,10 +661,6 @@ final class CameraVendorGallerySessionRuntimeTransport: CameraSessionRuntimeTran
 
   func fetchCameraCatalog(query: CameraVendorCatalogQuery) async throws -> CameraVendorCatalogSnapshot {
     try await galleryService.fetchCameraCatalog(query: query)
-  }
-
-  func executeCountSweepExperiment() async throws -> CameraVendorCountSweepResult {
-    try await galleryService.executeCountSweepExperiment()
   }
 
   func fetchObjectInfo(for handle: Int) async throws -> CameraVendorCameraObjectInfo {

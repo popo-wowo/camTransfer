@@ -635,8 +635,7 @@ enum CameraVendorGalleryLoadPolicy {
 }
 
 enum CameraVendorTransferActivationStatusTextPolicy {
-  static let enteringGalleryStatus = "正在进入相机相册"
-  static let readyToEnterGalleryStatus = "相机 Wi‑Fi 已启动，正在进入相册"
+  static let waitingForCameraWifiStatus = "正在等待相机 Wi-Fi"
 }
 
 enum CameraVendorCameraPairingConfirmationPolicy {
@@ -1575,14 +1574,21 @@ struct CameraVendorDownloadedPhotoData {
 }
 
 enum CameraVendorGalleryDownloadPolicy {
+  static func isSupportedStill(_ item: CameraVendorGalleryItem) -> Bool {
+    if item.formatHints.contains(.video) { return false }
+    let label = item.formatLabel.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    if ["VIDEO", "MOV", "MP4"].contains(label) { return false }
+    let filenameExtension = (item.filename as NSString).pathExtension.uppercased()
+    return !["MOV", "MP4"].contains(filenameExtension)
+  }
+
   static func canDownloadOriginal(_ item: CameraVendorGalleryItem) -> Bool {
-    item.formatLabel != "Video"
+    isSupportedStill(item)
   }
 
   static func mediaType(for item: CameraVendorGalleryItem) -> CameraVendorDownloadedMediaType {
+    if !isSupportedStill(item) { return .video }
     switch item.formatLabel.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() {
-    case "VIDEO", "MOV", "MP4":
-      return .video
     case "RAW", "RAF":
       return .raw
     default:
@@ -1844,6 +1850,10 @@ struct CameraVendorGalleryState: Equatable {
 
   func downloadableHandles(from handles: [Int]) -> [Int] {
     handles.filter { handle in
+      if let item = items.first(where: { $0.handle == handle }),
+         !CameraVendorGalleryDownloadPolicy.isSupportedStill(item) {
+        return false
+      }
       switch downloadState(for: handle) {
       case .idle, .failed:
         return true
@@ -1902,7 +1912,6 @@ protocol CameraVendorGalleryService {
     for handle: Int,
     mode: CameraVendorTransferDownloadMode
   ) async throws -> CameraVendorDownloadedFile
-  func executeCountSweepExperiment() async throws -> CameraVendorCountSweepResult
 }
 
 protocol CameraVendorGalleryObjectInfoSource {
@@ -1986,13 +1995,6 @@ extension CameraVendorGalleryService {
     try await downloadOriginalFile(for: handle)
   }
 
-  func executeCountSweepExperiment() async throws -> CameraVendorCountSweepResult {
-    throw NSError(
-      domain: "CameraVendorGalleryService",
-      code: NSURLErrorUnsupportedURL,
-      userInfo: [NSLocalizedDescriptionKey: "当前相机服务不支持 count sweep 实验"]
-    )
-  }
 }
 
 
@@ -3519,7 +3521,7 @@ final class CameraVendorBluetoothService: NSObject {
     }
 
     appendLog("已配对相机 BLE 重连完成，开始让相机进入 Wi‑Fi 传图模式")
-    updateStatus(CameraVendorTransferActivationStatusTextPolicy.enteringGalleryStatus, isBusy: true)
+    updateStatus(CameraVendorTransferActivationStatusTextPolicy.waitingForCameraWifiStatus, isBusy: true)
     beginPostHandshakeProbeIfNeeded(on: peripheral)
   }
 
@@ -5455,7 +5457,7 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
             "\(hexString(previousValue)) -> \(hexString(data))" +
             (statusDescription.map { " [\($0)]" } ?? "")
           )
-          updateStatus(CameraVendorTransferActivationStatusTextPolicy.readyToEnterGalleryStatus, isBusy: true)
+          updateStatus(CameraVendorTransferActivationStatusTextPolicy.waitingForCameraWifiStatus, isBusy: true)
           // Complete immediately instead of waiting for timeout
           transferActivationTimeoutWorkItem?.cancel()
           transferActivationTimeoutWorkItem = nil

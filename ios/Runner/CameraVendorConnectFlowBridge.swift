@@ -249,7 +249,7 @@ final class CameraVendorConnectFlowBridge: NSObject, IOSCameraConnectFlowRuntime
 
   func loadGallerySession(
     from context: IOSCameraConnectionContext,
-    publishStep: @escaping (IOSCameraConnectionStep) -> Void
+    publishStep: @escaping @MainActor (IOSCameraConnectionStep) -> Void
   ) async throws -> IOSCameraGallerySession {
     guard let rememberedPeripheralID = context.rememberedPeripheralID,
           let summary = activeHandshakeSummaryByPeripheralID[rememberedPeripheralID] else {
@@ -258,7 +258,10 @@ final class CameraVendorConnectFlowBridge: NSObject, IOSCameraConnectFlowRuntime
     galleryService.configure(connectionSummary: summary)
     let galleryLoadResult = try await gallerySessionLoader.loadGallerySession(
       context: context,
-      publishStep: publishStep
+      publishStep: { [weak self] step in
+        publishStep(step)
+        self?.publishGalleryConnectionStepStatus(step)
+      }
     )
     let galleryReadySummary = galleryService.galleryReadyConnectionSummary(
       from: summary,
@@ -282,6 +285,15 @@ final class CameraVendorConnectFlowBridge: NSObject, IOSCameraConnectFlowRuntime
       bluetoothKeepAliveService: service
     )
     return session
+  }
+
+  func publishGalleryConnectionStepStatus(_ step: IOSCameraConnectionStep) {
+    guard let status = CameraVendorConnectionStepStatusTextPolicy.status(for: step) else {
+      return
+    }
+    latestStatus = status
+    latestIsBusy = true
+    publishSnapshot()
   }
 
   func cancelActiveFlow() {

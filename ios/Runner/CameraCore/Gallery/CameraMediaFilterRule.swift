@@ -4,6 +4,7 @@ enum CameraMediaFormat: String, Codable, Hashable, CaseIterable, Sendable {
   case jpg
   case raw
   case heif
+  case video
 }
 
 enum CameraMediaFormatSelection: Equatable, Codable, Sendable {

@@ -17,7 +17,7 @@ final class IOSCameraConnectFlowCoordinator {
   private let appFlow: IOSCameraAppFlowCoordinator
   private let gallerySessionLoader: (
     IOSCameraConnectionContext,
-    @escaping (IOSCameraConnectionStep) -> Void
+    @escaping @MainActor (IOSCameraConnectionStep) -> Void
   ) async throws -> IOSCameraGallerySession
   private var activeConnectionStep: IOSCameraConnectionStep?
 
@@ -30,7 +30,7 @@ final class IOSCameraConnectFlowCoordinator {
     appFlow: IOSCameraAppFlowCoordinator,
     gallerySessionLoader: @escaping (
       IOSCameraConnectionContext,
-      @escaping (IOSCameraConnectionStep) -> Void
+      @escaping @MainActor (IOSCameraConnectionStep) -> Void
     ) async throws -> IOSCameraGallerySession
   ) {
     self.appFlow = appFlow

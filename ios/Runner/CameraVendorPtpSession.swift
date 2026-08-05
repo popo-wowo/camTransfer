@@ -611,29 +611,15 @@ final class CameraVendorPtpSession {
       code: CameraVendorDevicePropCode.referenceAppGalleryObjectContext,
       name: "CameraVendor/ReferenceApp factory D212 #2 (14 bytes)"
     )
-    let galleryReadyMarker = CameraVendorPtpDataParser.cameraVendorGalleryContextValue(
-      for: CameraVendorDevicePropCode.referenceAppGalleryReadyMarker,
-      in: initialContext
-    )
     reportCameraVendorGalleryContextMarker(initialContext)
     report("[OBS] PTP_FACTORY_D212_2 bytes=\(initialContext.count) hex=\(initialContext.map { String(format: "%02x", $0) }.joined())")
 
     try requestCameraVendorCardSlotStatus()
 
-    report("[OBS] PTP_GALLERY_BOOTSTRAP_9054")
-    let didPrimeCurrentImage = primeCameraVendorCurrentImageContextIfNeeded(
-      stage: "gallery-bootstrap",
-      galleryReadyMarker: galleryReadyMarker
-    )
-    report("[OBS] PTP_GALLERY_BOOTSTRAP_9055")
-    primeCameraVendorCurrentThumbnailContextIfNeeded(
-      stage: "gallery-bootstrap",
-      imagePrimeSucceeded: didPrimeCurrentImage
-    )
-    report("[OBS] PTP_GALLERY_BOOTSTRAP_9050")
-    try requestCameraVendorSearchModeDescAll()
-    report("[OBS] PTP_GALLERY_BOOTSTRAP_D22B")
-    requestCameraVendorCurrentObjectHandleSnapshot(stage: "gallery-bootstrap")
+    report("[OBS] PTP_GALLERY_BOOTSTRAP_9054_SKIPPED reason=optional-current-image-prime")
+    report("[OBS] PTP_GALLERY_BOOTSTRAP_9055_SKIPPED reason=optional-current-thumbnail-prime")
+    report("[OBS] PTP_GALLERY_BOOTSTRAP_9050_SKIPPED reason=unused-search-mode-description")
+    report("[OBS] PTP_GALLERY_BOOTSTRAP_D22B_SKIPPED reason=optional-current-object-context")
 
     let context3 = try readCameraVendorDeviceProperty(
       code: CameraVendorDevicePropCode.referenceAppGalleryObjectContext,
@@ -645,14 +631,16 @@ final class CameraVendorPtpSession {
     report("[OBS] PTP_GALLERY_BOOTSTRAP_COMPLETE")
   }
 
-  func prepareCameraVendorLegacyGalleryLoadIfNeeded() throws {
+  func prepareCameraVendorInitialGalleryAccessIfNeeded() throws {
+    let transportLabel = operationTransport == .cameraVendorLegacy
+      ? "cameraVendorLegacy"
+      : "standardPtpIp"
+    report("[OBS] PTP_INITIAL_GALLERY_ACCESS_PREPARE_BEGIN transport=\(transportLabel)")
+    defer {
+      report("[OBS] PTP_INITIAL_GALLERY_ACCESS_PREPARE_END transport=\(transportLabel)")
+    }
     guard operationTransport == .cameraVendorLegacy else { return }
     try prepareCameraVendorLegacyGalleryLoad()
-  }
-
-  func recoverInitialCameraCatalogAfterStoreNotAvailable() throws {
-    report("[OBS] PTP_INITIAL_CAMERA_CATALOG_BOOTSTRAP_RECOVERY response=0x2013")
-    try prepareCameraVendorLegacyGalleryLoadIfNeeded()
   }
 
   private func performCameraVendorReservedReceiveDiagnosticHandshake() throws {
@@ -896,44 +884,10 @@ final class CameraVendorPtpSession {
       cameraVendorSpecifiedObjectHandlesByFormatMask = previousHandlesByFormatMask
     }
 
-    report("[OBS] PTP_INITIAL_CAMERA_CATALOG_BEGIN")
-
-    // Android records the D604=31 baseline before probing the expanded HEIF/RAW
-    // directory. The difference identifies unresolved extended-still placeholders
-    // without waiting for thousands of ObjectInfo reads.
-    let baselinePayload = CameraVendorSearchModeAllPayload.objectFormatMaskPayload(
-      CameraVendorSearchModeAllPayload.allObjectFormatMask
-    )
-    _ = try sendCommandWithData(
-      operationCode: UInt16(CameraVendorPtpOperationCode.cameraVendorSetSearchModeAll),
-      data: baselinePayload
-    )
-    let baselineSnapshot = try requestCameraVendorSpecifiedObjectSnapshot(
-      stage: "initial-camera-catalog-baseline",
-      allowsEmptyRetry: false
-    )
-    report("[OBS] PTP_INITIAL_CATALOG_BASELINE handles=\(baselineSnapshot.handles.count)")
-
-    // D604=2 returns the expanded directory on this camera, including the
-    // HEIF/RAW handles hidden from the D604=31 baseline.
-    let heifPayload = CameraVendorSearchModeAllPayload.objectFormatMaskPayload(
-      CameraVendorSearchModeAllPayload.heifObjectFormatMask
-    )
-    _ = try sendCommandWithData(
-      operationCode: UInt16(CameraVendorPtpOperationCode.cameraVendorSetSearchModeAll),
-      data: heifPayload
-    )
+    report("[OBS] PTP_INITIAL_CAMERA_CATALOG_BEGIN mode=base")
     let snapshot = try requestCameraVendorSpecifiedObjectSnapshot(
       stage: "initial-camera-catalog",
       allowsEmptyRetry: false
-    )
-    report("[OBS] PTP_INITIAL_CATALOG_EXPANDED handles=\(snapshot.handles.count)")
-
-    // Restore SearchMode to empty after reading
-    let resetPayload = CameraVendorSearchModeAllPayload.payload(for: [])
-    _ = try sendCommandWithData(
-      operationCode: UInt16(CameraVendorPtpOperationCode.cameraVendorSetSearchModeAll),
-      data: resetPayload
     )
 
     guard CameraVendorCatalogSnapshotValidationPolicy.isPublishable(
@@ -947,22 +901,17 @@ final class CameraVendorPtpSession {
         userInfo: [NSLocalizedDescriptionKey: "相机返回的初始目录计数、日期组或句柄不一致"]
       )
     }
-    let formatHints = CameraVendorCatalogPlaceholderPolicy.expandedStillFormatHints(
-      baselineHandles: baselineSnapshot.handles,
-      expandedStillHandles: snapshot.handles
-    )
     let catalog = CameraVendorCatalogSnapshot(
       dateGroups: snapshot.dateGroups,
       orderedHandles: snapshot.handles,
       items: CameraVendorCatalogPlaceholderPolicy.placeholderItems(
         from: snapshot.handles,
-        dateGroups: snapshot.dateGroups,
-        formatHintsByHandle: formatHints
+        dateGroups: snapshot.dateGroups
       )
     )
     report(
-      "[OBS] PTP_INITIAL_CAMERA_CATALOG_END groups=\(catalog.dateGroups.count) " +
-      "handles=\(catalog.orderedHandles.count) extendedStill=\(formatHints.count)"
+      "[OBS] PTP_INITIAL_CAMERA_CATALOG_END mode=base " +
+      "groups=\(catalog.dateGroups.count) handles=\(catalog.orderedHandles.count)"
     )
     return catalog
   }
@@ -971,8 +920,6 @@ final class CameraVendorPtpSession {
     query: CameraVendorCatalogQuery
   ) throws -> CameraVendorCatalogSnapshot {
     switch query.membershipPolicy {
-    case .countSweepThenApply:
-      return try cameraVendorCountSweepCatalogSnapshot(query: query)
     case .subtractBaseline:
       return try cameraVendorSubtractBaselineCatalogSnapshot(query: query)
     case .direct:
@@ -980,8 +927,8 @@ final class CameraVendorPtpSession {
     }
   }
 
-  /// HEIF/Video catalog: camera doesn't correctly filter D604=2 on this session,
-  /// so we use set subtraction: (D604=X result) minus (ALL result) = format-only handles.
+  /// HEIF catalog: this session returns a broad D604=2 directory, so isolate
+  /// HEIF with (D604=2 result) minus the initial ALL/base membership.
   /// This does not depend on ObjectInfo and completes instantly.
   private func cameraVendorSubtractBaselineCatalogSnapshot(
     query: CameraVendorCatalogQuery
@@ -1167,224 +1114,6 @@ final class CameraVendorPtpSession {
       }
       throw error
     }
-  }
-
-  /// Count sweep then apply: replicates XApp's exact pre-apply state.
-  /// 1. Backup -> sweep all formats (read count only) -> restore
-  /// 2. Write D604=31 (all formats) baseline, read full directory
-  /// 3. Apply target format from the D604=31 state, read filtered directory
-  /// 4. Do NOT restore — leave the filter active (XApp behavior)
-  private func cameraVendorCountSweepCatalogSnapshot(
-    query: CameraVendorCatalogQuery
-  ) throws -> CameraVendorCatalogSnapshot {
-    let previousHandles = cameraVendorSpecifiedObjectHandles
-    let previousDateGroups = cameraVendorSpecifiedObjectDateGroups
-    let previousHandlesByFormatMask = cameraVendorSpecifiedObjectHandlesByFormatMask
-    defer {
-      cameraVendorSpecifiedObjectHandles = previousHandles
-      cameraVendorSpecifiedObjectDateGroups = previousDateGroups
-      cameraVendorSpecifiedObjectHandlesByFormatMask = previousHandlesByFormatMask
-    }
-
-    report("[OBS] PTP_COUNT_SWEEP_CATALOG_BEGIN label=\(query.label)")
-
-    // Step 1: Backup current SearchMode
-    let savedSearchMode = try requestCameraVendorSearchModeAll(stage: "sweep-backup-\(query.label)")
-
-    // Step 2: Sweep each format mask (XApp order)
-    let sweepOrder: [(label: String, mask: UInt16)] = [
-      ("jpg", CameraVendorSearchModeAllPayload.jpegObjectFormatMask),
-      ("heif", CameraVendorSearchModeAllPayload.heifObjectFormatMask),
-      ("mp4", CameraVendorSearchModeAllPayload.mp4ObjectFormatMask),
-      ("mov", CameraVendorSearchModeAllPayload.movObjectFormatMask),
-      ("raw", CameraVendorSearchModeAllPayload.rawObjectFormatMask),
-    ]
-    for (label, mask) in sweepOrder {
-      let payload = CameraVendorSearchModeAllPayload.objectFormatMaskPayload(mask)
-      _ = try sendCommandWithData(
-        operationCode: UInt16(CameraVendorPtpOperationCode.cameraVendorSetSearchModeAll),
-        data: payload
-      )
-      let count = try requestCameraVendorSpecifiedObjectCount(stage: "sweep-\(label)")
-      report("[OBS] PTP_COUNT_SWEEP_FORMAT label=\(label) mask=0x\(String(format: "%04X", mask)) count=\(count.map(String.init) ?? "nil")")
-    }
-
-    // Step 3: Restore the backed-up SearchMode
-    try restoreCameraVendorSearchModeAll(savedSearchMode, stage: "sweep-restore-\(query.label)")
-
-    // Step 4: Establish D604=31 baseline with full directory
-    let allPayload = CameraVendorSearchModeAllPayload.objectFormatMaskPayload(
-      CameraVendorSearchModeAllPayload.allObjectFormatMask
-    )
-    _ = try sendCommandWithData(
-      operationCode: UInt16(CameraVendorPtpOperationCode.cameraVendorSetSearchModeAll),
-      data: allPayload
-    )
-    let baselineSnapshot = try requestCameraVendorSpecifiedObjectSnapshot(
-      stage: "sweep-baseline-\(query.label)",
-      allowsEmptyRetry: false
-    )
-    report(
-      "[OBS] PTP_COUNT_SWEEP_BASELINE handles=\(baselineSnapshot.handles.count)"
-    )
-
-    // Step 5: Apply the target format from the D604=31 state
-    let targetPayload = CameraVendorSearchModeAllPayload.payload(for: query.conditions)
-    report(
-      "[OBS] PTP_COUNT_SWEEP_APPLY label=\(query.label) " +
-      "payload=\(targetPayload.map { String(format: "%02x", $0) }.joined())"
-    )
-    _ = try sendCommandWithData(
-      operationCode: UInt16(CameraVendorPtpOperationCode.cameraVendorSetSearchModeAll),
-      data: targetPayload
-    )
-    let filteredSnapshot = try requestCameraVendorSpecifiedObjectSnapshot(
-      stage: "sweep-apply-\(query.label)",
-      allowsEmptyRetry: false
-    )
-
-    // Step 6: Confirm readback (do NOT restore — XApp leaves the filter active)
-    _ = try requestCameraVendorSearchModeAll(stage: "sweep-confirm-\(query.label)")
-
-    guard CameraVendorCatalogSnapshotValidationPolicy.isPublishable(
-      declaredCount: filteredSnapshot.declaredCount,
-      dateGroups: filteredSnapshot.dateGroups,
-      orderedHandles: filteredSnapshot.handles
-    ) else {
-      // Restore on failure
-      try? restoreCameraVendorSearchModeAll(savedSearchMode, stage: "sweep-fail-restore-\(query.label)")
-      throw NSError(
-        domain: "CameraVendorPtpSession",
-        code: NSURLErrorCannotParseResponse,
-        userInfo: [NSLocalizedDescriptionKey: "相机返回的筛选目录计数、日期组或句柄不一致"]
-      )
-    }
-
-    let items = CameraVendorCatalogPlaceholderPolicy.placeholderItems(
-      from: filteredSnapshot.handles,
-      dateGroups: filteredSnapshot.dateGroups
-    )
-    let catalog = CameraVendorCatalogSnapshot(
-      dateGroups: filteredSnapshot.dateGroups,
-      orderedHandles: filteredSnapshot.handles,
-      items: items
-    )
-    report(
-      "[OBS] PTP_COUNT_SWEEP_CATALOG_END label=\(query.label) " +
-      "baseline=\(baselineSnapshot.handles.count) " +
-      "filtered=\(filteredSnapshot.handles.count)"
-    )
-    return catalog
-  }
-
-  /// Executes the full XApp count sweep sequence as a HEIF diagnostic experiment.
-  /// This replicates the exact XApp pre-apply state:
-  /// 1. Backup current SearchMode (9052)
-  /// 2. Sweep each format mask writing 9051 + reading D620 count
-  /// 3. Restore backup
-  /// 4. Establish D604=31 baseline with full D620/D621
-  /// 5. Apply D604=2 from the baseline state (no restore)
-  /// 6. Confirm readback (9052)
-  ///
-  /// This method does NOT restore after a successful HEIF apply, matching XApp behavior.
-  /// The caller is responsible for subsequent SearchMode management.
-  func cameraVendorCountSweepExperiment() throws -> CameraVendorCountSweepResult {
-    let previousHandles = cameraVendorSpecifiedObjectHandles
-    let previousDateGroups = cameraVendorSpecifiedObjectDateGroups
-    let previousHandlesByFormatMask = cameraVendorSpecifiedObjectHandlesByFormatMask
-    defer {
-      cameraVendorSpecifiedObjectHandles = previousHandles
-      cameraVendorSpecifiedObjectDateGroups = previousDateGroups
-      cameraVendorSpecifiedObjectHandlesByFormatMask = previousHandlesByFormatMask
-    }
-
-    report("[OBS] PTP_COUNT_SWEEP_EXPERIMENT_BEGIN")
-
-    // Step 1: Backup current SearchMode
-    let savedSearchMode = try requestCameraVendorSearchModeAll(stage: "count-sweep-backup")
-
-    // Step 2: Sweep each format mask (XApp order: JPG, HEIF, MP4, MOV, RAW)
-    let sweepOrder: [(label: String, mask: UInt16)] = [
-      ("jpg", CameraVendorSearchModeAllPayload.jpegObjectFormatMask),
-      ("heif", CameraVendorSearchModeAllPayload.heifObjectFormatMask),
-      ("mp4", CameraVendorSearchModeAllPayload.mp4ObjectFormatMask),
-      ("mov", CameraVendorSearchModeAllPayload.movObjectFormatMask),
-      ("raw", CameraVendorSearchModeAllPayload.rawObjectFormatMask),
-    ]
-    var sweepCounts: [CameraVendorCountSweepFormatCount] = []
-    for (label, mask) in sweepOrder {
-      let payload = CameraVendorSearchModeAllPayload.objectFormatMaskPayload(mask)
-      report(
-        "[OBS] PTP_COUNT_SWEEP_WRITE label=\(label) mask=0x\(String(format: "%04X", mask)) " +
-        "payload=\(payload.map { String(format: "%02x", $0) }.joined())"
-      )
-      _ = try sendCommandWithData(
-        operationCode: UInt16(CameraVendorPtpOperationCode.cameraVendorSetSearchModeAll),
-        data: payload
-      )
-      let count = try requestCameraVendorSpecifiedObjectCount(stage: "count-sweep-\(label)")
-      sweepCounts.append(CameraVendorCountSweepFormatCount(label: label, mask: mask, count: count))
-      report("[OBS] PTP_COUNT_SWEEP_READ label=\(label) count=\(count.map(String.init) ?? "nil")")
-    }
-
-    // Step 3: Restore the backed-up SearchMode
-    try restoreCameraVendorSearchModeAll(savedSearchMode, stage: "count-sweep-restore")
-
-    // Step 4: Establish D604=31 baseline (all formats) with full directory
-    let allPayload = CameraVendorSearchModeAllPayload.objectFormatMaskPayload(
-      CameraVendorSearchModeAllPayload.allObjectFormatMask
-    )
-    report(
-      "[OBS] PTP_COUNT_SWEEP_BASELINE payload=\(allPayload.map { String(format: "%02x", $0) }.joined())"
-    )
-    _ = try sendCommandWithData(
-      operationCode: UInt16(CameraVendorPtpOperationCode.cameraVendorSetSearchModeAll),
-      data: allPayload
-    )
-    let baselineSnapshot = try requestCameraVendorSpecifiedObjectSnapshot(
-      stage: "count-sweep-baseline-all",
-      allowsEmptyRetry: false
-    )
-    report(
-      "[OBS] PTP_COUNT_SWEEP_BASELINE_RESULT " +
-      "count=\(baselineSnapshot.declaredCount.map(String.init) ?? "nil") " +
-      "handles=\(baselineSnapshot.handles.count)"
-    )
-
-    // Step 5: Apply D604=2 from the D604=31 baseline state (XApp precondition)
-    let heifPayload = CameraVendorSearchModeAllPayload.objectFormatMaskPayload(
-      CameraVendorSearchModeAllPayload.heifObjectFormatMask
-    )
-    report(
-      "[OBS] PTP_COUNT_SWEEP_HEIF_APPLY payload=\(heifPayload.map { String(format: "%02x", $0) }.joined())"
-    )
-    _ = try sendCommandWithData(
-      operationCode: UInt16(CameraVendorPtpOperationCode.cameraVendorSetSearchModeAll),
-      data: heifPayload
-    )
-    let heifSnapshot = try requestCameraVendorSpecifiedObjectSnapshot(
-      stage: "count-sweep-heif-apply",
-      allowsEmptyRetry: false
-    )
-    report(
-      "[OBS] PTP_COUNT_SWEEP_HEIF_RESULT " +
-      "declared=\(heifSnapshot.declaredCount.map(String.init) ?? "nil") " +
-      "handles=\(heifSnapshot.handles.count)"
-    )
-
-    // Step 6: Confirm readback (9052) — XApp does this, does NOT restore
-    let confirmReadback = try requestCameraVendorSearchModeAll(stage: "count-sweep-heif-confirm")
-
-    let result = CameraVendorCountSweepResult(
-      sweepCounts: sweepCounts,
-      baselineHandleCount: baselineSnapshot.handles.count,
-      heifDeclaredCount: heifSnapshot.declaredCount,
-      heifHandleCount: heifSnapshot.handles.count,
-      heifHandles: heifSnapshot.handles,
-      confirmReadback: confirmReadback
-    )
-    report("[OBS] PTP_COUNT_SWEEP_EXPERIMENT_END \(result.diagnosticSummary)")
-    return result
   }
 
   private func primeCameraVendorCurrentImageContextIfNeeded(
@@ -1740,7 +1469,10 @@ final class CameraVendorPtpSession {
         "stage=\(stage) retry=\(retryCount) delay=\(String(format: "%.1f", CameraVendorSpecifiedObjectEmptySnapshotRecoveryPolicy.retryDelaySeconds))"
       )
       Thread.sleep(forTimeInterval: CameraVendorSpecifiedObjectEmptySnapshotRecoveryPolicy.retryDelaySeconds)
-      try requestCameraVendorSearchModeDescAll()
+      report(
+        "[OBS] PTP_SPECIFIED_OBJECT_EMPTY_RECOVERY_9050_SKIPPED " +
+        "stage=\(stage) reason=unused-search-mode-description"
+      )
       if CameraVendorCatalogWireRequestPolicy.shouldReadCurrentObjectHandleBeforeSpecifiedList {
         requestCameraVendorCurrentObjectHandleSnapshot(stage: "\(stage)-empty-recovery")
       }

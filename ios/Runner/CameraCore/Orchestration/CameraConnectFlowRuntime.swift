@@ -31,7 +31,7 @@ protocol IOSCameraConnectFlowRuntimeEnvironment: AnyObject {
   func enterRememberedGallery(record: IOSCameraRememberedCameraRecord) async throws -> IOSCameraConnectionContext
   func loadGallerySession(
     from context: IOSCameraConnectionContext,
-    publishStep: @escaping (IOSCameraConnectionStep) -> Void
+    publishStep: @escaping @MainActor (IOSCameraConnectionStep) -> Void
   ) async throws -> IOSCameraGallerySession
   func cancelActiveFlow()
 }

@@ -21,10 +21,17 @@ final class QuickDownloadUseCase {
     guard runtime.activeCameraIdentity != nil else {
       return .failed(reason: "自动下载失败：连接异常")
     }
+    guard let catalogFilter = rule.catalogFilter else {
+      _ = await runtime.routeQuickDownloadFailure(
+        completionPolicy: rule.completionPolicy,
+        reason: "quick-download-video-unsupported"
+      )
+      return .failed(reason: "自动下载暂不支持视频")
+    }
 
     do {
       let resolution = try await runtime.resolveCatalog(
-        rule: rule.filter,
+        rule: catalogFilter,
         owner: .quickDownload(UUID()),
         onProgress: onProgress
       )

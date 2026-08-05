@@ -10,6 +10,23 @@ struct CameraAutoDownloadRule: Codable, Equatable {
     disconnectAfterDownload ? .disconnectToHome : .returnToGallery
   }
 
+  var catalogFilter: CameraMediaFilterRule? {
+    let formats: CameraMediaFormatSelection
+    switch filter.formats {
+    case .all:
+      formats = .selected([.jpg, .raw, .heif])
+    case .selected(let selectedFormats):
+      let supportedFormats = selectedFormats.intersection([.jpg, .raw, .heif])
+      guard !supportedFormats.isEmpty else { return nil }
+      formats = .selected(supportedFormats)
+    }
+    return CameraMediaFilterRule(
+      formats: formats,
+      date: filter.date,
+      downloadScope: filter.downloadScope
+    )
+  }
+
   var summaryText: String {
     guard isEnabled else { return "未启用" }
     return [formatText, dateText, downloadScopeText, modeText]
@@ -57,6 +74,7 @@ extension CameraMediaFormat {
     case .jpg: return "JPG"
     case .raw: return "RAW"
     case .heif: return "HEIF"
+    case .video: return "视频"
     }
   }
 }

@@ -13,11 +13,28 @@ actor CameraGalleryCatalogRuntime {
     enum SourceOperation {
       case initial
       case filtered
+      case postReadyEnrichment(
+        expectedGeneration: CameraGalleryGenerationID,
+        expectedSnapshotID: CameraGallerySnapshotID
+      )
     }
 
     let generation: CameraGalleryGenerationID
     let intent: CameraGalleryFilterIntent
     let sourceOperation: SourceOperation
+    let fallbackPresentation: CameraGalleryPresentation?
+
+    init(
+      generation: CameraGalleryGenerationID,
+      intent: CameraGalleryFilterIntent,
+      sourceOperation: SourceOperation,
+      fallbackPresentation: CameraGalleryPresentation? = nil
+    ) {
+      self.generation = generation
+      self.intent = intent
+      self.sourceOperation = sourceOperation
+      self.fallbackPresentation = fallbackPresentation
+    }
   }
 
   private final class ThumbnailPublicationRelay: @unchecked Sendable {
@@ -41,6 +58,7 @@ actor CameraGalleryCatalogRuntime {
   private var latestIntentSubmissionID = CameraGalleryIntentSubmissionID(rawValue: 0)
   private var currentIntent = CameraGalleryFilterIntent.all
   private var currentPresentation = CameraGalleryPresentation.unavailable
+  private var lastStableReadyPresentation: CameraGalleryPresentation?
   private var activeTransactionTask: Task<Void, Never>?
   private var pendingTransaction: PendingTransaction?
   private let thumbnailPipeline: CameraGalleryThumbnailPipeline
@@ -258,11 +276,34 @@ actor CameraGalleryCatalogRuntime {
     currentPresentation
   }
 
-  func waitUntilIdle() async {
+  func waitUntilCatalogIdle() async {
     while let task = activeTransactionTask {
       await task.value
     }
+  }
+
+  func waitUntilIdle() async {
+    await waitUntilCatalogIdle()
     await thumbnailPipeline.waitUntilIdle()
+  }
+
+  func startPostReadyAllEnrichment() {
+    guard !isTransportLost,
+          !isShuttingDown,
+          activeTransactionTask == nil,
+          pendingTransaction == nil,
+          currentIntent.hasSameCameraMembership(as: .all),
+          case .ready(let generation, let snapshotID) = currentPresentation.state,
+          repository.generation == generation,
+          repository.snapshotID == snapshotID else { return }
+    start(PendingTransaction(
+      generation: allocateGeneration(),
+      intent: .all,
+      sourceOperation: .postReadyEnrichment(
+        expectedGeneration: generation,
+        expectedSnapshotID: snapshotID
+      )
+    ))
   }
 
   private func submit(
@@ -290,6 +331,7 @@ actor CameraGalleryCatalogRuntime {
       return
     }
 
+    let fallbackPresentation = readyFallbackPresentation()
     let generation = allocateGeneration()
     currentIntent = intent
     isAcceptingChildWork = false
@@ -322,7 +364,8 @@ actor CameraGalleryCatalogRuntime {
     let transaction = PendingTransaction(
       generation: generation,
       intent: intent,
-      sourceOperation: sourceOperation
+      sourceOperation: sourceOperation,
+      fallbackPresentation: fallbackPresentation
     )
     guard activeTransactionTask == nil else {
       pendingTransaction = transaction
@@ -342,50 +385,99 @@ actor CameraGalleryCatalogRuntime {
   private func execute(_ transaction: PendingTransaction) async {
     do {
       let queryStartedAt = Date()
-      let resolution = try await queryEngine.resolve(
-        rule: transaction.intent.rule,
-        owner: queryOwner,
-        downloadedHandles: downloadedHandles
-      )
+      let resolution: CameraCatalogResolution
+      switch transaction.sourceOperation {
+      case .initial:
+        resolution = try await queryEngine.resolveInitial(
+          rule: transaction.intent.rule,
+          owner: queryOwner,
+          downloadedHandles: downloadedHandles
+        )
+      case .filtered:
+        resolution = try await queryEngine.resolve(
+          rule: transaction.intent.rule,
+          owner: queryOwner,
+          downloadedHandles: downloadedHandles
+        )
+      case .postReadyEnrichment:
+        resolution = try await queryEngine.resolve(
+          rule: transaction.intent.rule,
+          owner: queryOwner,
+          downloadedHandles: downloadedHandles
+        )
+      }
       let snapshot = resolution.membershipSnapshot
       CameraVendorFileLogger.log(
         "[OBS] CATALOG_QUERY_RESOLVED generation=\(transaction.generation.rawValue) " +
         "items=\(snapshot.items.count) authoritativeInfo=\(resolution.authoritativeObjectInfos.count) " +
         "elapsedMs=\(Int(Date().timeIntervalSince(queryStartedAt) * 1000))"
       )
+      switch transaction.sourceOperation {
+      case .postReadyEnrichment(let expectedGeneration, let expectedSnapshotID):
+        guard isCurrentPostReadyEnrichmentBase(
+          generation: expectedGeneration,
+          snapshotID: expectedSnapshotID
+        ) else {
+          await finishTransactionAndStartPendingIfNeeded()
+          return
+        }
+        await thumbnailPipeline.suspendForCatalogChange()
+        try Task.checkCancellation()
+        guard isCurrentPostReadyEnrichmentBase(
+          generation: expectedGeneration,
+          snapshotID: expectedSnapshotID
+        ) else {
+          await finishTransactionAndStartPendingIfNeeded()
+          return
+        }
+        await install(
+          resolution,
+          transaction: transaction,
+          preservesCurrentIntent: true
+        )
+      case .initial:
+        guard !isShuttingDown,
+              transaction.generation == currentPresentation.generation else {
+          await finishTransactionAndStartPendingIfNeeded()
+          return
+        }
+        await install(resolution, transaction: transaction)
+      case .filtered:
+        guard !isShuttingDown,
+              transaction.generation == currentPresentation.generation else {
+          await finishTransactionAndStartPendingIfNeeded()
+          return
+        }
+        await install(
+          resolution,
+          transaction: transaction,
+          preservesCurrentIntent: currentIntent.hasSameCameraMembership(as: transaction.intent)
+        )
+      }
+    } catch is CancellationError {
+      // A cancelled transaction may still finish mandatory transport cleanup.
+      // It never publishes and the latest pending intent is started below.
+    } catch let failure as CameraGalleryCatalogTransactionFailure {
+      if case .postReadyEnrichment = transaction.sourceOperation {
+        CameraVendorFileLogger.log(
+          "[OBS] CATALOG_POST_READY_ENRICHMENT_FAILED " +
+          "generation=\(transaction.generation.rawValue) primary=\(failure.primaryMessage)"
+        )
+        if failure.provesTransportLost {
+          await reportTransportEvidence(failure.catalogFailure)
+        }
+        await finishTransactionAndStartPendingIfNeeded()
+        return
+      }
       guard !isShuttingDown,
             transaction.generation == currentPresentation.generation else {
         await finishTransactionAndStartPendingIfNeeded()
         return
       }
-      let repositoryInstallStartedAt = Date()
-      repository.install(snapshot, generation: transaction.generation)
-      CameraVendorFileLogger.log(
-        "[OBS] CATALOG_REPOSITORY_INSTALL_END generation=\(transaction.generation.rawValue) " +
-        "items=\(repository.items.count) elapsedMs=\(Int(Date().timeIntervalSince(repositoryInstallStartedAt) * 1000))"
-      )
-      installedMembershipIntent = transaction.intent
-      currentIntent = transaction.intent
-      currentPresentation = makeReadyPresentation()
-      downloadedProjectionNeedsPublish = false
-      await thumbnailPipeline.install(
-        catalogIdentity: CameraGalleryCatalogIdentity(
-          cameraID: cameraID,
-          sessionEpoch: queryEngine.sessionEpoch,
-          generation: transaction.generation,
-          snapshotID: snapshot.snapshotID
-        ),
-        membership: snapshot.items.map(\.handle),
-        reusableObjectInfos: resolution.authoritativeObjectInfos
-      )
-      isAcceptingChildWork = hdPreviewSuspensionCount == 0 && downloadSuspensionCount == 0
-      await publishCurrentPresentation()
-    } catch is CancellationError {
-      // A cancelled transaction may still finish mandatory transport cleanup.
-      // It never publishes and the latest pending intent is started below.
-    } catch let failure as CameraGalleryCatalogTransactionFailure {
-      guard !isShuttingDown,
-            transaction.generation == currentPresentation.generation else {
+      if await restoreReadyPresentationIfPossible(
+        afterNonTerminalFailure: !failure.provesTransportLost,
+        transaction: transaction
+      ) {
         await finishTransactionAndStartPendingIfNeeded()
         return
       }
@@ -406,6 +498,22 @@ actor CameraGalleryCatalogRuntime {
         await finishTransactionAndStartPendingIfNeeded()
         return
       }
+      if case .postReadyEnrichment = transaction.sourceOperation {
+        let failure = CameraGalleryCatalogFailure(
+          message: error.localizedDescription,
+          restorationMessage: nil,
+          provesTransportLost: disposition == .sessionTerminal
+        )
+        CameraVendorFileLogger.log(
+          "[OBS] CATALOG_POST_READY_ENRICHMENT_FAILED " +
+          "generation=\(transaction.generation.rawValue) message=\(failure.message)"
+        )
+        if failure.provesTransportLost {
+          await reportTransportEvidence(failure)
+        }
+        await finishTransactionAndStartPendingIfNeeded()
+        return
+      }
       guard !isShuttingDown,
             transaction.generation == currentPresentation.generation else {
         await finishTransactionAndStartPendingIfNeeded()
@@ -416,6 +524,13 @@ actor CameraGalleryCatalogRuntime {
         restorationMessage: nil,
         provesTransportLost: disposition == .sessionTerminal
       )
+      if await restoreReadyPresentationIfPossible(
+        afterNonTerminalFailure: !failure.provesTransportLost,
+        transaction: transaction
+      ) {
+        await finishTransactionAndStartPendingIfNeeded()
+        return
+      }
       currentPresentation = CameraGalleryPresentation(
         state: .failed(generation: transaction.generation, failure: failure),
         intent: transaction.intent,
@@ -426,6 +541,101 @@ actor CameraGalleryCatalogRuntime {
       await reportTransportEvidence(failure)
     }
     await finishTransactionAndStartPendingIfNeeded()
+  }
+
+  private func isCurrentPostReadyEnrichmentBase(
+    generation: CameraGalleryGenerationID,
+    snapshotID: CameraGallerySnapshotID
+  ) -> Bool {
+    guard !isShuttingDown,
+          pendingTransaction == nil,
+          currentIntent.hasSameCameraMembership(as: .all),
+          case .ready(let currentGeneration, let currentSnapshotID) = currentPresentation.state,
+          currentGeneration == generation,
+          currentSnapshotID == snapshotID,
+          repository.generation == generation,
+          repository.snapshotID == snapshotID else { return false }
+    return true
+  }
+
+  private func readyFallbackPresentation() -> CameraGalleryPresentation? {
+    if isInstalledReadyPresentation(currentPresentation) {
+      return currentPresentation
+    }
+    guard let lastStableReadyPresentation,
+          isInstalledReadyPresentation(lastStableReadyPresentation) else {
+      return nil
+    }
+    return lastStableReadyPresentation
+  }
+
+  private func isInstalledReadyPresentation(
+    _ presentation: CameraGalleryPresentation
+  ) -> Bool {
+    guard case .ready(let generation, let snapshotID) = presentation.state,
+          repository.generation == generation,
+          repository.snapshotID == snapshotID,
+          let installedMembershipIntent,
+          installedMembershipIntent.hasSameCameraMembership(as: presentation.intent) else {
+      return false
+    }
+    return true
+  }
+
+  private func restoreReadyPresentationIfPossible(
+    afterNonTerminalFailure: Bool,
+    transaction: PendingTransaction
+  ) async -> Bool {
+    guard afterNonTerminalFailure,
+          let fallbackPresentation = transaction.fallbackPresentation,
+          case .ready(let generation, let snapshotID) = fallbackPresentation.state,
+          repository.generation == generation,
+          repository.snapshotID == snapshotID else {
+      return false
+    }
+    currentIntent = fallbackPresentation.intent
+    currentPresentation = makeReadyPresentation()
+    await thumbnailPipeline.resumeAfterCatalogFailure()
+    isAcceptingChildWork = hdPreviewSuspensionCount == 0 && downloadSuspensionCount == 0
+    CameraVendorFileLogger.log(
+      "[OBS] CATALOG_FILTER_FAILURE_PRESERVED_READY " +
+      "failedGeneration=\(transaction.generation.rawValue) " +
+      "restoredGeneration=\(generation.rawValue) items=\(currentPresentation.items.count)"
+    )
+    await publishCurrentPresentation()
+    return true
+  }
+
+  private func install(
+    _ resolution: CameraCatalogResolution,
+    transaction: PendingTransaction,
+    preservesCurrentIntent: Bool = false
+  ) async {
+    let snapshot = resolution.membershipSnapshot
+    let repositoryInstallStartedAt = Date()
+    repository.install(snapshot, generation: transaction.generation)
+    CameraVendorFileLogger.log(
+      "[OBS] CATALOG_REPOSITORY_INSTALL_END generation=\(transaction.generation.rawValue) " +
+      "items=\(repository.items.count) elapsedMs=\(Int(Date().timeIntervalSince(repositoryInstallStartedAt) * 1000))"
+    )
+    installedMembershipIntent = transaction.intent
+    if !preservesCurrentIntent {
+      currentIntent = transaction.intent
+    }
+    currentPresentation = makeReadyPresentation()
+    downloadedProjectionNeedsPublish = false
+    await thumbnailPipeline.install(
+      catalogIdentity: CameraGalleryCatalogIdentity(
+        cameraID: cameraID,
+        sessionEpoch: queryEngine.sessionEpoch,
+        generation: transaction.generation,
+        snapshotID: snapshot.snapshotID
+      ),
+      membership: snapshot.items.map(\.handle),
+      reusableObjectInfos: resolution.authoritativeObjectInfos
+    )
+    isAcceptingChildWork = hdPreviewSuspensionCount == 0 && downloadSuspensionCount == 0
+    await publishCurrentPresentation()
   }
 
   private func finishTransactionAndStartPendingIfNeeded() async {
@@ -620,6 +830,9 @@ actor CameraGalleryCatalogRuntime {
 
   private func publishCurrentPresentation() async {
     let presentation = currentPresentation
+    if isInstalledReadyPresentation(presentation) {
+      lastStableReadyPresentation = presentation
+    }
     let submissionID = latestIntentSubmissionID
     let startedAt = Date()
     await publishPresentation(presentation)

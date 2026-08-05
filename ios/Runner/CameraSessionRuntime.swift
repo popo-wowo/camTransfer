@@ -2072,34 +2072,4 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     waiters.forEach { $0.resume() }
   }
 
-  // MARK: - HEIF Count Sweep Experiment (Diagnostic Only)
-
-  func runCountSweepExperiment() {
-    guard presentation.phase == .galleryReady else {
-      onConnectionLogAppended?("[OBS] COUNT_SWEEP_REJECTED phase=\(presentation.phase)")
-      return
-    }
-    onConnectionLogAppended?("[OBS] COUNT_SWEEP_EXPERIMENT_REQUESTED")
-    Task { @MainActor [weak self] in
-      guard let self else { return }
-      do {
-        let result = try await self.transport.executeCountSweepExperiment()
-        self.onConnectionLogAppended?(result.diagnosticSummary)
-        if result.heifExact616 {
-          self.onConnectionLogAppended?("[OBS] COUNT_SWEEP_SUCCESS exact_616=true — HEIF catalog verified")
-        } else {
-          self.onConnectionLogAppended?(
-            "[OBS] COUNT_SWEEP_FAILED exact_616=false — HEIF remains unverified " +
-            "(declared=\(result.heifDeclaredCount.map(String.init) ?? "nil") handles=\(result.heifHandleCount))"
-          )
-        }
-        // Reload the initial catalog to restore normal gallery state
-        await self.gallerySession?.reload()
-      } catch {
-        self.onConnectionLogAppended?("[OBS] COUNT_SWEEP_ERROR \(error.localizedDescription)")
-        // Attempt to restore gallery state even after failure
-        await self.gallerySession?.reload()
-      }
-    }
-  }
 }

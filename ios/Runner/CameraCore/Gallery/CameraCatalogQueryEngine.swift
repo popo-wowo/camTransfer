@@ -30,6 +30,7 @@ actor CameraCatalogQueryEngine {
   private let source: CameraCatalogQuerySource
   private let accessGate: CameraCatalogAccessGate
   private var isInvalidated = false
+  private var initialMembershipItems: [CameraGalleryCatalogItem]?
   private var membershipItemsByCacheKey: [MembershipCacheKey: [CameraGalleryCatalogItem]] = [:]
 
   init(
@@ -44,11 +45,43 @@ actor CameraCatalogQueryEngine {
 
   func invalidate() {
     isInvalidated = true
+    initialMembershipItems = nil
     membershipItemsByCacheKey.removeAll(keepingCapacity: false)
   }
 
   func clearMembershipCache() {
+    initialMembershipItems = nil
     membershipItemsByCacheKey.removeAll(keepingCapacity: false)
+  }
+
+  func resolveInitial(
+    rule: CameraMediaFilterRule,
+    owner: CameraCatalogAccessOwner,
+    downloadedHandles: Set<Int>
+  ) async throws -> CameraCatalogResolution {
+    try checkActive()
+    if let initialMembershipItems {
+      return makeResolution(
+        membershipItems: initialMembershipItems,
+        rule: rule,
+        downloadedHandles: downloadedHandles
+      )
+    }
+    let lease = try await accessGate.acquire(owner: owner)
+    do {
+      try checkActive()
+      let items = try await loadInitialMembershipItems()
+      try checkActive()
+      await lease.release()
+      return makeResolution(
+        membershipItems: items,
+        rule: rule,
+        downloadedHandles: downloadedHandles
+      )
+    } catch {
+      await lease.release()
+      throw error
+    }
   }
 
   func resolve(
@@ -112,13 +145,34 @@ actor CameraCatalogQueryEngine {
     rule: CameraMediaFilterRule,
     downloadedHandles: Set<Int>
   ) async throws -> CameraCatalogResolution {
-    let snapshot = try await source.loadExpandedCatalog()
+    var orderedItems = try await loadInitialMembershipItems()
+    var seenHandles = Set(orderedItems.map(\.handle))
+    let heifSnapshot = try await source.loadSubtractBaselineCatalog(for: .heif)
+    try checkActive()
+    for item in heifSnapshot.items where seenHandles.insert(item.handle).inserted {
+      orderedItems.append(item)
+    }
+    let videoSnapshot = try await source.loadExactCatalog(for: .video)
+    try checkActive()
+    for item in videoSnapshot.items where seenHandles.insert(item.handle).inserted {
+      orderedItems.append(item)
+    }
     try checkActive()
     return makeResolution(
-      membershipItems: snapshot.items,
+      membershipItems: globallyNewestFirst(orderedItems),
       rule: rule,
       downloadedHandles: downloadedHandles
     )
+  }
+
+  private func loadInitialMembershipItems() async throws -> [CameraGalleryCatalogItem] {
+    if let initialMembershipItems {
+      return initialMembershipItems
+    }
+    let snapshot = try await source.loadInitialCatalog()
+    try checkActive()
+    initialMembershipItems = snapshot.items
+    return snapshot.items
   }
 
   private func resolveExactFormats(
@@ -128,7 +182,7 @@ actor CameraCatalogQueryEngine {
   ) async throws -> CameraCatalogResolution {
     var orderedItems: [CameraGalleryCatalogItem] = []
     var seenHandles: Set<Int> = []
-    for format in [CameraMediaFormat.jpg, .raw] where formats.contains(format) {
+    for format in [CameraMediaFormat.jpg, .raw, .video] where formats.contains(format) {
       let snapshot = try await source.loadExactCatalog(for: format)
       try checkActive()
       for item in snapshot.items where seenHandles.insert(item.handle).inserted {
@@ -147,14 +201,14 @@ actor CameraCatalogQueryEngine {
     rule: CameraMediaFilterRule,
     downloadedHandles: Set<Int>
   ) async throws -> CameraCatalogResolution {
-    // For HEIF (and video), the camera supports a fast PTP set-difference query:
+    // HEIF uses a compatibility set-difference query:
     // (D604=format result) minus (ALL baseline) = format-only handles.
     // This avoids per-handle ObjectInfo and completes in one PTP round-trip.
     var orderedItems: [CameraGalleryCatalogItem] = []
     var seenHandles: Set<Int> = []
 
-    // Collect exact-format handles for JPG/RAW if also requested
-    for format in [CameraMediaFormat.jpg, .raw] where requestedFormats.contains(format) {
+    // Collect direct-format handles for JPG/RAW/Video if also requested.
+    for format in [CameraMediaFormat.jpg, .raw, .video] where requestedFormats.contains(format) {
       let snapshot = try await source.loadExactCatalog(for: format)
       try checkActive()
       for item in snapshot.items where seenHandles.insert(item.handle).inserted {
