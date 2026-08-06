@@ -2,106 +2,58 @@
 
 日期：2026-08-06
 
-状态：待评审
+修订日期：2026-08-07
 
-范围：iOS 无线配对、BLE 激活、Wi-Fi handover、PTP 会话、相册入口与首次 Catalog
+状态：评审修订版，待最终确认
 
-不包含：USB、遥控拍摄、固件升级、云端业务、完整复制 XApp
+范围：iOS 无线相机身份识别、BLE 激活、Wi-Fi handover、PTP INIT/OpenSession、相册会话协商与首次 Catalog
 
-## 0. 结论先行
+不包含：USB、遥控拍摄、固件升级、云端业务、完整复制 XApp、Gallery 页面视觉重构
 
-CamTransfer 需要升级多机型兼容架构，但不应该完整复刻 XApp，也不应该先为 X‑M5 单独复制一条巨型流程。
+## 0. 结论
 
-推荐方案：
+CamTransfer 需要补齐多机型兼容能力，但不需要推倒当前连接与媒体架构，也不需要完整复刻 XApp。
+
+推荐架构是：
 
 ~~~text
-渐进式识别 CameraIdentity
-→ 解析 CameraCapabilities
-→ CameraProfileResolver 生成分阶段 Profile
-→ CameraConnectionOrchestrator 执行统一状态机
-→ Profile 只提供真正存在差异的步骤和策略
-→ Gallery Shell 与 Catalog 加载解耦
-→ 所有协议实验通过 Profile 单变量接入
+保留一条现有连接主链
+→ 在当前 IOSCameraConnectionContext 中逐步收集身份和能力事实
+→ CameraCompatibilityResolver 只生成一份 CameraConnectionPolicy
+→ 现有 Coordinator 和 StateMachine 执行主链
+→ Policy 只控制已经证实可能不同的四个策略点
+→ CameraSessionRuntime 和 Catalog Runtime 继续负责图库最终可用性
 ~~~
 
-第一阶段只做：
+第一阶段只允许将以下四个真实差异点策略化：
 
-1. 建立多 Profile 兼容骨架。
-2. 把现有 X‑T5 成功链包装为默认已验证 Profile。
-3. 把“相册页面可以展示”和“Catalog 已经成功”拆成两个状态。
-4. 增加能够回答“识别成谁、选择了哪条路、在哪个 barrier 失败”的诊断日志。
+1. activation readiness policy
+2. PTP INIT candidates
+3. post-Open negotiation
+4. initial Catalog strategy
 
-第一阶段不直接宣称修复：
+第一阶段明确不做：
 
-- X‑M5 首次 `0x9053 -> 0x2013 StoreNotAvailable`。
-- X‑E5 PTP INIT 无 ACK / reset。
-- 所有 RED 相机。
+- 不新增第二套 CameraConnectionOrchestrator。
+- 不新增独立 ConnectionBarrierLedger。
+- 不建立 PairingProfile、WifiHandoverProfile 等七层子 Profile。
+- 不把 Gallery Shell 提前展示作为兼容架构的前置任务。
+- 不把 Unknown RED 宣称为正式支持。
+- 不默认启用 standard PTP/IP INIT。
+- 不把 XApp 参考命令一次性全部加入 X-M5。
 
-X‑M5 与 X‑E5 的协议差异应在架构骨架完成后，分别通过同机型、同状态、单变量 A/B 实验确定，再写入对应 Profile。
+这次架构升级解决的是“差异可以被识别、选择、记录、隔离和验证”，不直接等价于已经修复 X-M5、X-E5 或全部 RED 相机。
 
-## 1. 背景与问题定义
+## 1. 决策依据与证据等级
 
-当前已确认三台相机的失败点不同：
+所有兼容决策必须标明证据等级。
 
-| 机型 | 已确认成功边界 | 首个失败边界 | 当前结论 |
-|---|---|---|---|
-| X‑T5 | 已存在可成功进入相册并安装 Catalog 的链路 | 当前无同批次失败证据 | 可作为首个迁移基线 |
-| X‑M5 | BLE、Wi-Fi、PTP INIT、OpenSession、legacy gallery mode | 首次 `0x9053` 返回 `0x2013` | Transport 不是已证实根因，Catalog 前相机状态仍有差异 |
-| X‑E5 | BLE、官方 Wi-Fi 凭据、AP launched、Wi-Fi、TCP 55740 可连接 | PTP INIT 无 ACK、超时或 reset | 尚未进入 OpenSession，更不能调查 `9053` |
+### 1.1 已由当前 iOS 源码确认
 
-“都是 RED”只能证明它们处于相近的 BLE 协议世代，不能证明：
-
-- PTP INIT packet 一样。
-- Function Mode / Function Version 一样。
-- Gallery bootstrap 顺序一样。
-- Catalog 前置状态一样。
-- 错误恢复策略一样。
-
-当前真正的问题不是缺少更多 `if model == ...`，而是缺少一个能在不同阶段继续修正身份和能力判断的兼容框架。
-
-## 2. 证据边界
-
-### 2.1 已确认
-
-1. XApp 会综合 BLE Service、Manufacturer Data、GATT characteristic、相机主数据、固件门槛、Function Mode、Function Version 和业务响应决定后续行为。
-2. 当前 iOS 已有统一连接步骤、CommandLane、Catalog Runtime 和 Session Runtime，但多机型差异尚未成为独立的一等模型。
-3. 当前 `FujifilmXSeriesProfile` 只有一个 `xt5Current`，主要保存 PTP 启动延迟和下载 read size，不是完整连接兼容 Profile。
-4. 当前 BLE 代码虽然声明了三种 activation strategy，但 `supportedStrategies` 实际只返回 `officialImportImage`。
-5. 当前 `CameraVendorGalleryRoutePolicy.hiddenDiagnosticRoutes` 实际只有 `strictReferenceApp` 一条路线。
-6. 当前 PTP INIT policy 只生成两个 CameraVendor legacy packet：legacy + client IP GUID、legacy。
-7. `CameraVendorPtpPacketBuilder` 虽然存在 standard INIT builder，但当前 INIT 选择链没有使用它，成功时也统一返回 `cameraVendorLegacy`。
-8. `executeConfirmGalleryModeStep()` 不执行真实协议校验，只生成 `galleryModeConfirmed` evidence。
-9. `executeLoadGalleryStep()` 只验证 PTP session ID 非空，就生成 `galleryLoaded` evidence。
-10. `CameraSessionRuntime` 当前在 Catalog `ready` 后才从 `galleryLoading` 进入 `galleryReady`；Catalog `failed` 会失败结束 pending gallery activation。
-
-### 2.2 尚未确认
-
-1. X‑M5 的根因是否为缺少 `D226=0`。
-2. X‑M5 的根因是否为 `D212` 读取顺序。
-3. `9054 / 9055 / 9050 / D22B` 中哪些是 X‑M5 首次 `9053` 的必要前置。
-4. X‑E5 是否需要 standard PTP/IP INIT、另一种 vendor INIT、不同 GUID、不同启动写入或不同 INIT 时机。
-5. X‑M5 与 X‑E5 的固件版本。最新两份日志记录了机型和序列号，但没有明确、可解析的 firmware 字段。
-6. 现有 XApp 成功抓包是否来自与 X‑M5 相同机型、相同固件和相同相机图库状态。
-
-本方案只把上述差异设计成“可表达、可诊断、可实验”的能力，不把候选指令直接写成最终固定结论。
-
-## 3. 当前 iOS 架构
-
-### 3.1 当前主链
-
-~~~mermaid
-flowchart LR
-    UI["Connect UI"] --> Loader["CameraVendorGalleryMainlineSessionLoader"]
-    Loader --> BLE["CameraVendorBluetoothService"]
-    BLE --> WiFi["Wi-Fi Handover"]
-    WiFi --> PTP["CameraVendorPtpSession"]
-    PTP --> Evidence["GalleryMode / GalleryLoaded Evidence"]
-    Evidence --> Runtime["CameraSessionRuntime"]
-    Runtime --> Catalog["CameraGalleryCatalogRuntime"]
-    Catalog --> Page["GalleryReady"]
-~~~
-
-统一顺序：
+1. 当前已经有 IOSCameraGalleryConnectionCoordinator、IOSCameraConnectionStateMachine 和 IOSCameraConnectionContext。
+2. StateMachine 已维护步骤推进和 hasGalleryReadyEvidence。
+3. CameraSessionRuntime、Catalog owner、download owner、generation fence 和 CommandLane 已形成单一所有权。
+4. 当前主链固定执行：
 
 ~~~text
 ReconnectPairedBle
@@ -114,183 +66,199 @@ ReconnectPairedBle
 → LoadGallery
 ~~~
 
-这套编排本身有价值，应该保留；问题在于它当前把“步骤名称”当成了“真实协议 barrier”，且没有将不同机型的步骤实现参数化。
+5. ConfirmGalleryMode 当前没有执行实际协议操作，只返回 galleryModeConfirmed。
+6. LoadGallery 当前只验证 PTP session ID，就返回 galleryLoaded。
+7. 当前 PTP INIT 只尝试两个 vendor legacy 变体。
+8. standard INIT builder 虽然存在，但没有进入实际 INIT candidate 链。
+9. 当前 BLE activation 虽声明三种 strategy，自动选择实际只有 officialImportImage。
+10. FujifilmXSeriesProfile 当前只有 xt5Current，主要控制启动延迟和下载参数，不是连接兼容策略。
+11. CameraSessionRuntime 只有在 Catalog ready 并安装当前 generation/snapshot 后才发布 GalleryReady。
 
-### 3.2 当前身份模型不足
+### 1.2 已由 XApp 静态反编译确认
 
-`IOSCameraIdentity` 当前只有 `cameraID`、`displayName`、`serialNumber` 和 `bleEndpoint`，不能表达：
+1. XApp 定义并使用多组 BLE Service：
+   - Legacy camera information
+   - RED camera information
+   - RED connected device information
+   - X-Half file transfer
+   - X-Half RED file transfer
+   - RED startup information
+2. XApp 分别维护 RED 与 non-RED Service/Characteristic Map。
+3. XApp CameraModel 包含机型、XAppSupportVersion、XAppNotSupportVersion、SDCardHotSwapVersion 和 RemoteBoot 等字段。
+4. CameraInfoModel.checkVersion() 会按机型和固件做支持判断，未知机型不会直接通过。
+5. CameraConnectModel.cameraOpen() 通过 SDK 以 ConnectType.KWlan 打开相机会话。
+6. ControlFFIR 提供 SetFunctionMode、GetFunctionVersion、SetFunctionVersion。
+7. ImportImageModel.setImageViewFunctionMode() 执行 Function Mode/Version 和 Dual Slot Status 相关操作。
+8. ImportImageModel 具有 initializeFirst() 与 initialize() 两段初始化流程。
+9. CommRetry 默认 maxAttempts=5、delay=100ms，并有不可持续错误分类。
+10. ImportImage 页面具有初始化 UI，可以在目录完成前显示初始化状态。
 
-- BLE 协议族：Legacy / RED / X-Half / Unknown。
-- 广告来源和匹配证据。
-- GATT 能力集合。
-- 相机固件。
-- PTP INIT 响应族。
-- Function Mode / Function Version。
-- 已验证的 Gallery bootstrap 版本。
+CommRetry.doWithRetry() 的反编译结果不完整，因此本方案不根据静态代码推断每一种错误码的精确重试次数和终止行为。
 
-结果是上层知道“它叫 X‑M5”，但不知道“为什么应该执行这套链路”。
+### 1.3 已由当前实机日志确认
 
-### 3.3 当前路由实际上接近单链
+#### X-M5
 
-| 层级 | 当前声明 | 当前实际选择 |
-|---|---|---|
-| BLE activation | official / legacy mode 20 / legacy mode 11 | 只自动选择 official |
-| Gallery route | 4 个 route ID | 只执行 strictReferenceApp |
-| PTP INIT | vendor legacy / standard builder | 只尝试两个 vendor legacy 变体 |
-| PTP gallery handshake | legacy / standard 分支 | 当前成功 INIT 被固定标记为 legacy |
-| 相机 Profile | `FujifilmXSeriesProfile` | 只有 `xt5Current`，且不控制连接链 |
+- BLE 身份和激活成功。
+- Wi-Fi handover 成功。
+- PTP INIT ACK 成功。
+- OpenSession 成功。
+- Gallery handshake 成功。
+- 首个明确失败点为第一次 9053 返回 0x2013。
 
-当前不是“完整 Profile 架构已经存在但缺配置”，而是“已有部分抽象雏形，但决策输入、路由输出和运行时证据没有闭环”。
+因此当前不能把 X-M5 归因于 BLE、Wi-Fi 或 PTP transport。
 
-### 3.4 当前 Gallery 状态耦合
+#### X-E5
 
-当前同时存在三个容易混淆的概念：
+- BLE 身份和激活成功。
+- AP launched。
+- Wi-Fi 和 IPv4 成功。
+- TCP 192.168.0.1:55740 可以连接。
+- 两个当前 vendor legacy INIT 变体均没有稳定获得 ACK。
+- 没有 OpenSession，也没有 Catalog。
 
-1. PTP session 已建立。
-2. Gallery mode evidence 已生成。
-3. Catalog 已成功安装、页面真正可用。
+因此当前不能用 D212、D226 或 905x 解释 X-E5。
 
-`executeConfirmGalleryModeStep()` 与 `executeLoadGalleryStep()` 的 evidence 目前没有证明 2 和 3；而 `CameraSessionRuntime` 又用 Catalog 成功决定最终 `galleryReady`。
+### 1.4 尚未确认
 
-这会导致：
+1. X-M5 的根因是否为 D226=0。
+2. X-M5 是否需要不同的 D212 顺序。
+3. 9054、9055、9050、D22B 中哪些是 X-M5 的必要前置。
+4. X-E5 是否需要 standard PTP/IP INIT。
+5. X-E5 是否需要不同 GUID、client name、client IP 编码或 INIT 时机。
+6. APState 和 TransferState 是否共同构成 X-E5 的硬 barrier。
+7. 最新 X-M5、X-E5 日志对应的准确固件版本。
+8. 已有 XApp 成功抓包是否与当前失败相机为同机型、同固件、同 SD 卡状态。
 
-- 日志显示“Gallery confirmed”，但相机还没有返回可用目录。
-- Catalog 失败时，整个进入相册动作失败，用户看不到页面内加载、重试和诊断状态。
+以上内容只能作为实验候选，不能进入正式 Policy。
 
-## 4. XApp 的兼容设计
+## 2. XApp 对我们的真实启示
 
-XApp 的核心不是“为每台相机复制一个 ViewModel”，而是多层收敛：
+XApp 值得复制的是兼容方法，而不是类结构和全部命令。
 
-~~~mermaid
-flowchart TD
-    Adv["BLE 广告与 Service"] --> Family["协议族识别"]
-    Family --> GATT["GATT 服务发现"]
-    GATT --> Identity["身份与注册信息"]
-    Identity --> Support["机型 / 固件支持判断"]
-    Support --> Capability["Characteristic 能力"]
-    Capability --> Activate["业务启动 / AP"]
-    Activate --> WiFi["Wi-Fi handover"]
-    WiFi --> Open["SDK / PTP Open"]
-    Open --> Function["Function Mode / Version"]
-    Function --> Bootstrap["ImportImage initializeFirst / initialize"]
-    Bootstrap --> Catalog["图片目录与错误恢复"]
-~~~
+### 2.1 可以复制
 
-XApp 有四个值得复用的思想：
+1. 身份逐步建立。
+   - 扫描阶段获得协议族候选。
+   - GATT 阶段获得真实 characteristic。
+   - OpenSession 后获得业务协议响应。
+2. 连接流程保持统一，差异集中在局部策略。
+3. 机型、固件、BLE 能力和实际 wire 响应共同参与支持判断。
+4. Function Mode/Version 属于相册会话初始化的一部分。
+5. ImportImage 自己拥有初始化和错误处理，不由 UI 重跑整条连接链。
+6. 未知机型不能因为属于 RED 就自动视为完整支持。
 
-1. 身份逐步建立：扫描阶段只能知道广告族和候选 endpoint；GATT 后才能知道真实身份与能力；PTP/SDK Open 后才能知道业务协议版本。
-2. 能力优先于机型名：机型用于提高规则精度，真实 characteristic 和 wire 响应优先。
-3. 统一业务通道、局部步骤差异：差异主要存在于注册、启动、INIT、Function 协商、Gallery bootstrap 和错误恢复。
-4. 错误恢复属于协议层：重试次数和错误分类不应由 UI 通过重跑整条连接链实现。
+### 2.2 不能声称已经复制或证明
 
-应复制这些结构，但不能直接复制所有 XApp 命令和错误码策略。当前证据不能证明 `0x2013` 在 X‑M5 上应该简单重试。
+以下内容不是当前反编译已经证明的 XApp 原始架构：
 
-### 4.1 当前 iOS 与 XApp 逐项对比
+- XApp 使用七个独立 Profile。
+- XApp 存在一个与本方案同名的动态 Resolver。
+- XApp 在每个阶段都会重新计算整条连接链。
+- XApp 在 Catalog ready 前完成对外 Gallery activation。
+- X-E5 使用 standard PTP/IP INIT。
+- 当前参考抓包的全部 Gallery 命令都是 X-M5 的必要前置。
 
-| 维度 | 当前 iOS | XApp 参考设计 | 目标调整 |
-|---|---|---|---|
-| 协议族识别 | 能从广告和 Service 观察 RED 等线索，但没有进入统一领域模型 | 广告、Service、Manufacturer Data 参与路由 | 新增 `CameraProtocolFamily` 和识别证据 |
-| 身份 | 机型名、序列号、endpoint、Wi-Fi 凭据 | 注册身份、Camera ID、Serial、Pairing Key/Address 等共同参与 | 建立可逐步补全的 `CameraIdentitySnapshot` |
-| 能力 | characteristic 判断散落在 BLE service | GATT characteristic 决定可用功能和启动方式 | 统一收敛为 `CameraCapabilities` |
-| 机型/固件 | 机型主要用于展示和少量策略；日志无明确固件字段 | CameraModel 主数据和最低固件门槛参与支持判断 | 机型/固件成为 Resolver 输入，但不覆盖真实能力 |
-| BLE activation | 声明三种 strategy，实际自动选择 official | 根据协议、能力和业务模式选择启动方式 | 由 `ActivationProfile` 输出写入与 ready barrier |
-| Wi-Fi | 已有统一 handover 和 IPv4/PTP 可达判断 | BLE 启动 AP 后进入专用 Wi-Fi handover | 保留现有实现，参数和 barrier Profile 化 |
-| PTP INIT | 只尝试两个 legacy packet，成功后固定标为 legacy | Open/SDK 层存在协议与版本协商 | 候选 packet 有 ID，ACK 反向确定 transport |
-| Function 协商 | 部分 ClientState/ImageHost 操作直接写在 PTP session | Function Mode/Version 是业务连接正式阶段 | 新增 `SessionNegotiationProfile` |
-| Gallery bootstrap | 固定 legacy 函数，实验命令容易堆叠 | `initializeFirst / initialize` 组织前置状态和错误恢复 | 步骤类型化并标记 required/optional/experimental |
-| Catalog | Catalog Runtime 完整，但首次失败会使 pending activation 失败 | 图片导入模型有自身初始化、错误分类与重试 | Catalog owner 独立处理业务失败，transport loss 才回连接层 |
-| 状态语义 | Connection evidence、Runtime phase、Catalog state 部分重叠 | 连接、Function、ImportImage 初始化分别推进 | 建立 barrier ledger，并拆 Gallery Shell/Catalog Ready |
-| 诊断 | 有大量文本日志，但缺 profile 决策和首个缺失 barrier | XApp 内部有分层状态和错误结果 | 新增结构化 decision trace 与步骤终态 |
-| 扩展方式 | 修改大 service/session 文件或新增 route 条件 | 多层能力收敛到业务通道 | 新机型优先新增规则/Profile，不复制 Runtime |
+“真实 capability 和 wire 响应优先于机型名”是 CamTransfer 应采用的安全设计原则，不应写成 XApp 已被完整证明的内部实现。
 
-对比后的核心判断是：
+## 3. 当前架构保留边界
 
-> CamTransfer 已经具备较好的传输、Catalog、下载和会话所有权基础；真正缺少的是 XApp 那种“身份与能力驱动的路由层”。因此应补兼容决策层，而不是推倒现有媒体链路。
+以下组件必须保留单一所有权：
 
-## 5. 三种可选方案
+- CameraSessionRuntime：App 级相机会话、恢复和最终 presentation owner。
+- IOSCameraGalleryConnectionCoordinator：连接步骤编排。
+- IOSCameraConnectionStateMachine：连接步骤合法推进。
+- IOSCameraConnectionContext：本次连接的事实容器。
+- CameraCommandLane：所有 PTP 指令串行化。
+- CameraGalleryCatalogRuntime：Catalog generation、transaction、验证和发布。
+- Catalog owner / download owner：目录和下载互斥边界。
+- generation fence / snapshot identity：拒绝旧会话和旧 Catalog 回调。
 
-### 方案 A：继续在现有代码中按机型加条件
+兼容架构只能向这些组件提供不可变策略或增加事实字段，不能再创建平行 Runtime、Coordinator、StateMachine、Catalog owner 或 CommandLane。
 
-优点：初始改动最小，单次实验接入快。
+## 4. 方案选择
 
-缺点：
-
-- 模型、固件、BLE 能力、PTP 响应会混在一起。
-- 同一机型固件差异无法表达。
-- 每修一台相机都会扩大主链复杂度。
-- 难以回答实际选择了哪个分支。
-
-结论：只适合临时实验，不适合作为正式架构。
-
-### 方案 B：Profile + 渐进式 Resolver + 双状态机
+### 方案 A：继续在大 Service/Session 中增加机型判断
 
 优点：
 
-- 保留统一主链，只把差异放入 Profile。
-- 可以先迁移 X‑T5，不改变 wire 行为。
-- X‑M5 和 X‑E5 能在不同层独立实验。
-- 可以按能力、机型、固件和响应逐步修正选择。
-- 日志与测试可以直接绑定 Profile 和 barrier。
-
-缺点：第一阶段需要新增核心类型和适配层，并清理现有“假 evidence”的语义。
-
-结论：推荐。
-
-### 方案 C：每种协议实现完整插件式连接管线
-
-优点：协议隔离最彻底。
+- 单次实验改动最少。
 
 缺点：
 
-- 大量公共逻辑重复。
-- RED 内部仍然存在机型和固件差异。
-- 当前证据不足以一次定义三套完整管线。
-- 第一阶段改动和回归风险过大。
+- 机型、固件、characteristic 和响应条件继续混在一起。
+- 无法可靠记录选择原因。
+- 每台相机都会扩大主链复杂度。
 
-结论：当前过度设计。只有未来出现完全不同的物理传输或会话所有权时，才升级为完整插件。
+结论：只允许用于受控实验，不作为正式架构。
 
-## 6. 推荐目标架构
+### 方案 B：现有主链 + 最小兼容 Policy
+
+优点：
+
+- 保留当前所有权和状态机。
+- 第一阶段可以做到 wire 行为不变。
+- X-M5 与 X-E5 可以在不同失败层独立实验。
+- 改动量和回归面可控。
+- 不预先抽象尚未出现的差异。
+
+结论：推荐。
+
+### 方案 C：协议插件 + 七层子 Profile + 新 Orchestrator
+
+优点：
+
+- 理论隔离最彻底。
+
+缺点：
+
+- 与现有 Coordinator/StateMachine 重复。
+- 当前没有足够证据定义七类差异。
+- 容易形成双事实源和大量空壳类型。
+- RED 内部仍需局部策略，完整管线会重复公共逻辑。
+
+结论：当前属于过度设计，不实施。
+
+## 5. 推荐目标架构
 
 ~~~mermaid
 flowchart TD
-    Scan["Discovery Snapshot"] --> Resolver["CameraProfileResolver"]
-    GATT["GATT Capability Snapshot"] --> Resolver
-    Known["Remembered Identity / Model / Firmware"] --> Resolver
-    PtpResult["PTP INIT / Function Result"] --> Resolver
+    Discovery["Discovery / Advertisement Facts"] --> Context["现有 IOSCameraConnectionContext"]
+    GATT["GATT Characteristics"] --> Context
+    Identity["现有 IOSCameraIdentity / Pairing Record"] --> Context
 
-    Resolver --> Decision["CameraCompatibilityDecision"]
-    Decision --> Orchestrator["CameraConnectionOrchestrator"]
+    Context --> Resolver["CameraCompatibilityResolver"]
+    Resolver --> Policy["CameraConnectionPolicy"]
+    Resolver --> Trace["CameraCompatibilityDecision"]
 
-    Orchestrator --> Pairing["PairingProfile"]
-    Orchestrator --> Activation["ActivationProfile"]
-    Orchestrator --> Wifi["WifiHandoverProfile"]
-    Orchestrator --> Init["PtpInitProfile"]
-    Orchestrator --> Negotiate["SessionNegotiationProfile"]
-    Orchestrator --> Bootstrap["GalleryBootstrapProfile"]
+    Policy --> Coordinator["现有 IOSCameraGalleryConnectionCoordinator"]
+    Coordinator --> StateMachine["现有 IOSCameraConnectionStateMachine"]
 
-    Bootstrap --> TransportReady["GalleryTransportReady"]
-    TransportReady --> Shell["GalleryShellPresented"]
-    TransportReady --> Catalog["CatalogCoordinator"]
-    Catalog --> Content["Ready / Empty / RetryableFailed / FatalFailed"]
+    Policy --> Activation["Activation Readiness"]
+    Policy --> Init["PTP INIT Candidates"]
+    Policy --> Negotiation["Post-Open Negotiation"]
+    Policy --> CatalogStrategy["Initial Catalog Strategy"]
 
-    Catalog --> Lane["现有 CommandLane"]
-    Catalog --> Owner["现有 Catalog / Download Owner"]
+    StateMachine --> Prepared["Gallery Session Prepared"]
+    Prepared --> Runtime["现有 CameraSessionRuntime"]
+    Runtime --> Catalog["现有 CameraGalleryCatalogRuntime"]
+    Catalog --> Ready["Validated Catalog Ready"]
+    Ready --> GalleryReady["GalleryReady"]
 ~~~
 
-设计原则：
+核心原则：
 
-1. 不按机型复制整条链，只声明差异。
-2. Resolver 可以在阶段推进后重新求值，但已经完成的 barrier 不重复执行。
-3. 所有相机命令继续经过现有串行 CommandLane。
-4. `CameraSessionRuntime`、Catalog owner、download owner 和 generation fence 继续保持单一所有权。
-5. Profile 不能直接操作 UI，UI 不能根据错误字符串猜测协议分支。
-6. 未验证机型只能使用安全 fallback，不能自动堆叠多套 bootstrap。
+1. 只有一条连接执行主链。
+2. Resolver 只生成策略，不执行 BLE、socket、PTP 或 UI。
+3. Policy 不持有 mutable session state。
+4. Context 保存事实，StateMachine 保存推进规则。
+5. Policy 重新求值不允许重放已经完成的物理步骤。
+6. 新机型只新增被证实存在差异的规则，不复制 Runtime。
+7. Catalog ready 继续是 GalleryReady 的最终可用性证明。
 
-## 7. 核心领域模型
+## 6. 最小领域模型
 
-以下名称为设计建议，最终实现计划可按现有命名规范微调，但职责不能合并。
-
-### 7.1 CameraProtocolFamily
+### 6.1 CameraProtocolFamily
 
 ~~~swift
 enum CameraProtocolFamily: String, Codable {
@@ -301,50 +269,20 @@ enum CameraProtocolFamily: String, Codable {
 }
 ~~~
 
-它只表达 BLE / 注册协议世代，不直接决定 PTP 和 Gallery 全链。
+它只表达 BLE/注册协议世代，不能单独决定 PTP 和 Gallery 全链。
 
-### 7.2 CameraIdentitySnapshot
+### 6.2 CameraCompatibilityFacts
+
+第一阶段优先扩展现有 IOSCameraConnectionContext，或由一个轻量 facts 值对象包装，不创建第二套可持久化 Identity。
 
 ~~~swift
-struct CameraIdentitySnapshot: Equatable {
-  let cameraID: String
-  let displayName: String
-  let serialNumber: String?
-  let firmwareVersion: String?
+struct CameraCompatibilityFacts: Equatable {
   let protocolFamily: CameraProtocolFamily
-  let bleEndpoint: IOSCameraBleEndpoint
   let advertisedServiceUUIDs: Set<String>
-  let manufacturerDataFingerprint: String?
-}
-~~~
-
-### 7.3 CameraCapabilities
-
-~~~swift
-struct CameraCapabilities: OptionSet {
-  let rawValue: UInt64
-
-  static let officialImportImageActivation
-  static let legacyRemoteImageViewActivation
-  static let officialWifiCredential
-  static let apStateNotification
-  static let transferStateNotification
-  static let functionModeNegotiation
-  static let functionVersionNegotiation
-  static let reservedImageReceive
-  static let remoteBoot
-}
-~~~
-
-能力必须来自真实 Service / characteristic / 协商响应，不从机型名盲推。
-
-### 7.4 CameraCompatibilityEvidence
-
-~~~swift
-struct CameraCompatibilityEvidence: Equatable {
-  let identity: CameraIdentitySnapshot
-  let discoveredCharacteristics: Set<String>
-  let successfulPtpInitVariant: PtpInitVariantID?
+  let discoveredCharacteristicUUIDs: Set<String>
+  let modelName: String?
+  let firmwareVersion: String?
+  let successfulPtpInitCandidateID: PtpInitCandidateID?
   let operationTransport: CameraVendorPtpOperationTransport?
   let functionMode: UInt32?
   let cameraFunctionVersion: UInt32?
@@ -352,656 +290,665 @@ struct CameraCompatibilityEvidence: Equatable {
 }
 ~~~
 
-### 7.5 CameraProfile
+要求：
+
+- firmwareVersion 必须允许为空。
+- 未拿到 firmware 不能阻止当前已验证 baseline 连接。
+- 序列号不进入 Policy 匹配规则。
+- 日志只记录 serial hash 或尾部短标识。
+
+### 6.3 CameraConnectionPolicy
 
 ~~~swift
-struct CameraProfile {
-  let id: CameraProfileID
-  let matchConfidence: CameraProfileConfidence
-  let pairing: PairingProfile
-  let activation: ActivationProfile
-  let wifi: WifiHandoverProfile
-  let ptpInit: PtpInitProfile
-  let negotiation: SessionNegotiationProfile
-  let galleryBootstrap: GalleryBootstrapProfile
-  let catalog: InitialCatalogProfile
-  let errorPolicy: CameraProtocolErrorPolicy
+struct CameraConnectionPolicy {
+  let id: CameraConnectionPolicyID
+  let revision: Int
+  let activationReadiness: ActivationReadinessPolicy
+  let ptpInitCandidates: [PtpInitCandidate]
+  let postOpenNegotiation: PostOpenNegotiationPolicy
+  let initialCatalog: InitialCatalogStrategy
 }
 ~~~
 
-Profile 是策略组合，不持有 socket、Task、UI controller 或 Catalog snapshot。
+Policy 是四个策略的组合，不拆出 PairingProfile 和 WifiHandoverProfile。
 
-### 7.6 CameraCompatibilityDecision
+### 6.4 CameraCompatibilityDecision
 
 ~~~swift
 struct CameraCompatibilityDecision {
-  let profile: CameraProfile
-  let confidence: CameraProfileConfidence
-  let matchedRules: [CameraProfileRuleID]
-  let rejectedCandidates: [CameraProfileRejection]
+  let policyID: CameraConnectionPolicyID
+  let revision: Int
+  let confidence: CameraPolicyConfidence
+  let matchedRules: [CameraPolicyRuleID]
+  let rejectedRules: [CameraPolicyRejection]
   let unresolvedFacts: Set<CameraCompatibilityFact>
 }
 ~~~
 
-任何一次连接必须能从日志还原候选、选中原因、未知事实和后续 refine 原因。
+任何连接都必须能从日志回答：
 
-## 8. Profile Resolver
+- 当前识别为什么协议族。
+- 使用什么 Policy 和 revision。
+- 依据哪些 characteristic、机型或响应。
+- 还有哪些事实未知。
+- 哪个 barrier 首先失败。
 
-### 8.1 决策优先级
+## 7. 四个策略点
 
-从高到低：
+### 7.1 ActivationReadinessPolicy
 
-1. 当前会话真实响应：成功 INIT variant、Function Version、实际返回能力。
-2. 当前 GATT 服务和 characteristic。
-3. 已验证的机型 + 固件规则。
-4. BLE Service / Manufacturer Data 协议族。
-5. 安全 fallback。
+控制：
 
-机型名不能覆盖与真实 characteristic 或 wire 响应冲突的事实。
+- 使用哪个已验证 BLE activation strategy。
+- 必须订阅哪些 characteristic。
+- APState 什么值允许进入 Wi-Fi handover。
+- TransferState 是硬门槛、软证据还是当前不参与判断。
+- handover 前后是否保持 BLE。
 
-### 8.2 分阶段解析
+第一阶段：
 
-~~~mermaid
-sequenceDiagram
-    participant D as Discovery
-    participant R as Resolver
-    participant G as GATT
-    participant P as PTP
-    participant O as Orchestrator
+- X-T5、X-M5、X-E5 继续使用当前 officialImportImage 主链。
+- 不建立独立 PairingProfile。
+- 不加入 RemoteBoot、ReservedReceive、USB 等当前范围外能力。
+- X-E5 的 TransferState 只记录，不提升为硬门槛，直到同机对照验证。
 
-    D->>R: service + manufacturer data
-    R-->>O: discoveryProfile
-    G->>R: identity + characteristics
-    R-->>O: activationProfile
-    P->>R: INIT ACK variant + transport
-    R-->>O: sessionProfile
-    P->>R: function mode/version
-    R-->>O: galleryProfile
-~~~
-
-Resolver 允许在 `discoveryResolved`、`gattCapabilitiesResolved`、`ptpInitResolved` 和 `functionNegotiationResolved` 后 refine。
-
-若机型规则说支持 official import image，但 characteristic 缺失：
-
-- 不执行缺失 characteristic 写入。
-- 降低 Profile confidence。
-- 记录 `capability-conflict`。
-- 有已验证 fallback 时选择 fallback，否则在对应 barrier 明确失败。
-
-## 9. Profile 组成
-
-### 9.1 PairingProfile
-
-控制 Scan filter、广告解析、identity key、系统 Bond 冲突、首次注册读写顺序和 remembered endpoint 匹配。
-
-### 9.2 ActivationProfile
-
-控制 BLE activation writes、必订阅状态、AP ready barrier、TransferState 是硬门槛还是软证据，以及 handover 前后 BLE 是否保持。
-
-### 9.3 WifiHandoverProfile
-
-控制 SSID/passphrase/BSSID 来源、IPv4 ready 条件、PTP 端口可达条件和连接后的 settle 条件。
-
-等待优先基于状态；只有抓包证明必须等待且没有可观察状态时，才允许受限 delay。
-
-### 9.4 PtpInitProfile
+### 7.2 PtpInitCandidate
 
 ~~~swift
-struct PtpInitProfile {
-  let candidates: [PtpInitCandidate]
-  let socketRestartPolicy: PtpSocketRestartPolicy
-  let ackTimeoutPolicy: PtpAckTimeoutPolicy
-  let eventChannelPolicy: PtpEventChannelPolicy
+struct PtpInitCandidate {
+  let id: PtpInitCandidateID
+  let packet: Data
+  let ackTimeout: TimeInterval
+  let socketPolicy: PtpInitSocketPolicy
+  let expectedAckFamily: PtpInitAckFamily
 }
 ~~~
 
-候选 packet 必须带 ID：
+第一阶段正式 candidate 仅保留当前两项：
 
-- `vendorLegacyWithClientIPGuid`
-- `vendorLegacy`
-- `standardPtpIp`
-- 后续实机证明的新变体。
+- vendorLegacyWithClientIPGuid
+- vendorLegacy
 
-成功 ACK 的 packet 决定实际 `operationTransport`，不能在所有成功场景下硬编码为 legacy。
+standardPtpIp：
 
-### 9.5 SessionNegotiationProfile
+- builder 可以保留。
+- 默认 Policy 不启用。
+- 只能通过 X-E5 实验开关或验证后的正式 Policy 启用。
 
-控制 OpenSession 后的 ClientState、Function Mode、Function Version、App/Camera 版本选择，以及哪些结果可以降级。
+切换 candidate 时必须：
 
-### 9.6 GalleryBootstrapProfile
+1. 终止前一 socket。
+2. 创建新 socket。
+3. 重新发送 INIT。
+4. 记录 candidate ID、packet length、timeout 和 ACK 结果。
 
-~~~swift
-enum GalleryBootstrapStep {
-  case readGalleryContext
-  case setClientState(UInt32)
-  case readFunctionVersion
-  case setFunctionVersion(UInt32)
-  case readCardSlotStatus
-  case resetCompressionMode
-  case primeCurrentImage
-  case primeCurrentThumbnail
-  case readSearchModeDescriptor
-  case readCurrentObjectHandle
-}
-~~~
+operationTransport 必须由成功 ACK 和后续协议响应共同确认，不能所有成功都硬编码为 cameraVendorLegacy。
 
-每个步骤声明 `required`、`optional` 或 `experimental`。正式 Profile 不允许包含尚未经过同机型验证的 experimental 步骤。
+### 7.3 PostOpenNegotiationPolicy
 
-### 9.7 InitialCatalogProfile
+控制 OpenSession 后、首次 Catalog 前的必要会话协商：
 
-控制首次 `9053` 参数、`D620 / D621` 顺序、空目录语义、count/date group/unique handle 校验，以及 `0x2013` 的分类和恢复。
+- ClientState。
+- Function Mode。
+- Function Version。
+- App/Camera version selection。
+- Card slot status。
 
-Catalog profile 不负责 BLE/Wi-Fi/PTP 重连；只有 `transportLost` 才交回连接恢复。
+第一阶段只需要两种策略：
 
-## 10. 连接状态机
+1. currentBaseline：保持当前 X-T5 wire 行为。
+2. experimental：只允许一个明确的 wire-visible 变量。
+
+不得建立一个可以任意堆叠 D212、D226、9054、9055、9050、D22B 的通用命令 DSL。
+
+实验步骤经同机型重复验证后，才能成为新的稳定策略。
+
+### 7.4 InitialCatalogStrategy
+
+控制：
+
+- 首次 9053 请求参数。
+- D620/D621 的读取顺序。
+- 空目录语义。
+- count/date group/unique handle 校验。
+- 0x2013 的分类。
+- Catalog 业务失败是否可以在当前 session 内重试。
+
+当前 baseline：
 
 ~~~text
-idle
-→ discovering
-→ identityResolved
-→ bleRegistered
+prepare inside exclusive CommandLane mutation
+→ one unfiltered 9053
+→ D620
+→ D621
+→ validate snapshot
+→ atomically install current generation
+~~~
+
+InitialCatalogStrategy 只改变 Catalog 查询策略，不拥有 BLE/Wi-Fi/PTP 重连。
+
+只有 transportLost 才交回 CameraSessionRuntime 做连接恢复。
+
+0x2013 当前默认分类为：
+
+~~~text
+camera state / catalog protocol precondition not satisfied
+~~~
+
+在没有同机型证据前，不能默认无限重试，也不能直接升级为 transportLost。
+
+## 8. 连接步骤必要性审计
+
+| 步骤 | 第一阶段是否保留 | 必要性依据 | 调整 |
+|---|---|---|---|
+| ReconnectPairedBle | 保留，条件执行 | 需要重新确认已配对相机身份和当前 GATT | 无活动 PTP session 时执行 |
+| TransferAuthorization | 保留 | 当前 RED 成功主链依赖官方 Wi-Fi 凭据与授权 | 继续使用当前实现 |
+| ActivateCameraWifi | 保留 | 相机必须启动 AP/图片导入模式 | 由 ActivationReadinessPolicy 提供参数 |
+| WaitCameraWifiReady | 保留 | 不能在 AP 未就绪时直接 handover | 以可观察状态为主 |
+| JoinCameraWifi | 保留 | iOS 必须绑定相机 Wi-Fi 与 IPv4 路由 | 第一阶段保持共用实现 |
+| ConnectPtp | 保留 | 必须完成 TCP、INIT ACK 和 OpenSession | INIT candidate 由 Policy 提供 |
+| ConfirmGalleryMode | 不按现状保留 | 当前实现没有消费真实协议 evidence | 替换为 PostOpenNegotiation |
+| LoadGallery | 不按现状保留 | 当前实现只检查 PTP session ID，并没有加载 Catalog | Coordinator 输出 GallerySessionPrepared，Catalog 由 Runtime 启动 |
+| First Catalog | 必须 | 这是首个图库真实可用性证明 | 继续由 Catalog Runtime 验证和安装 |
+
+修订后的语义：
+
+~~~text
+Connection Coordinator 成功
+= PTP session 已建立
++ 当前 Policy 声明的必要 post-Open negotiation 已完成
+
+GalleryReady
+= 当前 session/generation 的首个 Catalog 已验证并原子安装
+~~~
+
+如果某 Policy 不要求额外 negotiation，StateMachine 必须记录 notRequired(policyID) evidence，而不是生成没有协议依据的 galleryModeConfirmed。
+
+## 9. StateMachine 与 barrier
+
+不新增 ConnectionBarrierLedger。
+
+在现有 IOSCameraConnectionContext、IOSCameraConnectionStateMachine 和 completedSteps 基础上增加：
+
+- policyID / revision
+- 当前 compatibility facts
+- 每一步的 evidence source
+- successful INIT candidate
+- firstMissingBarrier 计算
+
+建议 barrier：
+
+~~~text
+identityResolved
 → transferAuthorized
 → cameraAccessPointReady
 → wifiBound
 → ptpInitAcknowledged
 → ptpSessionOpened
-→ functionNegotiated
-→ galleryTransportReady
+→ postOpenNegotiated
+→ gallerySessionPrepared
+→ catalogReady
 ~~~
 
-每次推进必须有可验证 evidence，不能仅因函数返回而推进。
+其中：
 
-建议新增：
+- Coordinator 管理到 gallerySessionPrepared。
+- CameraSessionRuntime/Catalog Runtime 管理 catalogReady。
+- gallerySessionPrepared 不能命名为 GalleryReady。
 
-~~~swift
-struct ConnectionBarrierLedger {
-  let sessionID: UUID
-  let profileID: CameraProfileID
-  let completed: Set<ConnectionBarrier>
-  let evidence: [ConnectionBarrier: ConnectionBarrierEvidence]
-}
-~~~
+页面生命周期重入不能依靠新 Ledger 跳过步骤，而应由当前 session binding、completedSteps、generation fence 和 Runtime owner 共同决定是否仍属于同一有效会话。
 
-作用：
+## 10. GalleryReady 与页面展示
 
-1. 页面生命周期重入时不重复步骤。
-2. 日志准确指出第一个缺失 barrier。
-3. Profile refine 后只执行尚未完成且仍适用的步骤。
-
-| 首个缺失 barrier | 错误归属 | 示例 |
-|---|---|---|
-| identityResolved | 扫描 / 身份 | 协议族、endpoint、系统 Bond |
-| cameraAccessPointReady | BLE activation | 写入、APState、TransferState |
-| wifiBound | Wi-Fi | SSID、passphrase、IPv4、路由 |
-| ptpInitAcknowledged | PTP INIT | X‑E5 当前失败层 |
-| galleryTransportReady | 协商 / bootstrap | ClientState、Function Version、必要前置 |
-| catalogReady | Catalog | X‑M5 当前失败层 |
-
-错误恢复只能从第一个缺失 barrier 开始，不能默认从 BLE 全链重跑。
-
-## 11. 相册入口与 Catalog 解耦
-
-“进入页面”和“图库可用”必须分开：
+当前对外成功语义保持：
 
 ~~~text
-GalleryTransportReady
-→ GalleryShellPresented
-→ CatalogLoading
-→ CatalogReady
-   / CatalogEmpty
-   / CatalogRetryableFailed
-   / CatalogFatalFailed
-   / TransportLost
+GalleryReady = 首个已验证 Catalog snapshot 成功安装
 ~~~
 
-- `GalleryShellPresented`：导航和页面容器已建立。
-- `CatalogReady`：首个经过校验的 Catalog snapshot 已安装，才是图库业务真正可用。
+Catalog 结果为空也可以 ready；门槛是查询成功、校验成功并安装当前 snapshot，而不是必须存在照片。
 
-这样既允许先进入页面，也不把 PTP open 或假 evidence 误称为 GalleryReady。
+本兼容方案不修改以下行为：
 
-不要继续让一个 `CameraSessionPhase` 同时承担连接、导航、目录和下载四种语义。推荐目标：
+- Catalog ready 前 pending activation 不报告成功。
+- Catalog failed/unsupported/transportLost 会结束本次 pending activation。
+- Catalog identity 绑定 session epoch、generation 和 snapshot ID。
+- 旧 generation 回调不能污染新会话。
+- presentation 与 Catalog 原子发布后才完成导航回调。
 
-~~~swift
-struct CameraSessionPresentation {
-  let connection: CameraConnectionPresentationState
-  let gallery: CameraGalleryPresentationState
-  let download: CameraDownloadPresentationState
-  let catalog: CameraGalleryPresentation
-}
-~~~
+XApp 的初始化 UI 证明“页面可以显示初始化状态”，但不能单独证明 CamTransfer 应修改 activation contract。
 
-最低风险迁移方式是先增加 `galleryShellPresented` 和独立 `catalogState`，保持现有下载状态不变，后续再逐步收敛。
+如果产品决定 Catalog 前展示 Gallery Shell，需要单独技术方案覆盖：
 
-| Catalog 状态 | 页面行为 |
-|---|---|
-| loading | 显示相机相册骨架和加载进度 |
-| ready | 展示日期组和照片 |
-| empty | 展示“相机中没有可读取照片” |
-| retryableFailed | 留在页面，显示重试入口和诊断码 |
-| fatalFailed | 留在页面，提示重新连接或重新配对 |
-| transportLost | 进入 Runtime 恢复或明确断开 |
+- 导航 exactly-once。
+- loading/empty/retryable/fatal 状态。
+- 页面退出和 re-entry。
+- Catalog 失败是否留页。
+- download/recovery admission。
+- 与当前 pending activation contract 的兼容。
 
-只有 Catalog 命令失败但 transport 仍存活时，不应自动退出页面或重跑配对。
+该 UI 方案不阻塞多机型兼容架构实施。
 
-## 12. 初始 Profile
+## 11. 初始 Policy
 
-### 12.1 X-T5CurrentProfile
+### 11.1 xt5-current-baseline
 
-定位：迁移当前已成功链路，第一阶段保持 wire 行为不变。
+用途：迁移当前已验证成功链。
 
 要求：
 
-- 用适配器包装当前 BLE、Wi-Fi、PTP、bootstrap 和 Catalog 实现。
-- 记录完整 barrier 和 decision trace。
-- 不顺手增加 XApp 可选命令。
-- 迁移前后做同机型回归，证明成功率和进入时间没有明显退化。
+- wire 顺序保持不变。
+- 当前两个 vendor INIT candidate 顺序保持不变。
+- 不增加 XApp 可选命令。
+- 不改变 Catalog ready 成功门槛。
+- 记录完整 Policy decision 与 barrier。
 
-### 12.2 X-M5Profile
+只有 X-T5 迁移前后同机回归通过，才能把 Policy 机制视为没有破坏当前主链。
+
+### 11.2 xm5-red-experimental
+
+不是正式支持 Policy，只允许实验环境使用。
 
 已确认：
 
-- RED 广告 / GATT 身份可以识别。
-- official import image BLE 激活成功。
+- official RED BLE 激活成功。
 - Wi-Fi handover 成功。
 - vendor legacy + client IP GUID INIT 成功。
 - OpenSession 成功。
-- 首次 `9053` 返回 `0x2013`。
+- 首次 9053 返回 0x2013。
 
-待验证实验：
+允许实验区域：
 
-1. 在对应 XApp 顺序位置加入 `D226=0`。
-2. 只调整 `D212` 的读取次数和顺序。
-3. 分别单独加入 `9054`、`9055`、`9050`、`D22B`。
+- postOpenNegotiation
+- InitialCatalogStrategy
 
-不得一次加入整套命令后宣布根因。
+不允许修改：
 
-### 12.3 X-E5Profile
+- Pairing
+- Wi-Fi handover
+- PTP INIT transport
+- Runtime/Catalog owner
+
+每次实验只能改变一个 wire-visible 变量。
+
+### 11.3 xe5-red-experimental
+
+不是正式支持 Policy，只允许实验环境使用。
 
 已确认：
 
-- RED 广告 / GATT 身份可以识别。
-- official import image BLE 激活成功。
-- APState 进入 launched。
-- Wi-Fi 和 IPv4 成功。
-- 55740 TCP 最终可连接。
-- 当前两个 vendor legacy INIT 均未稳定得到 ACK。
+- official RED BLE 激活成功。
+- AP launched。
+- Wi-Fi、IPv4 和 TCP 55740 成功。
+- 当前两个 vendor INIT 均没有稳定 ACK。
 
-待验证：
+允许实验区域：
 
-1. 同一 X‑E5 使用 XApp，从 activation 到 INIT ACK 的完整抓包。
-2. standard PTP/IP INIT candidate。
-3. GUID / friendly name / client IP 编码差异。
-4. BLE launch writes 与 INIT 时间关系。
-5. APState 和 TransferState 是否需要组合 barrier。
+- activation readiness/timing
+- PTP INIT candidate
 
-### 12.4 UnknownRedProfile
+在取得 INIT ACK 前，不允许加入 D212、D226 或 905x。
 
-安全原则：
+### 11.4 unknown-red-diagnostic
 
-- 只执行当前 characteristic 明确支持的 activation。
-- 使用经过验证且有序的 INIT candidate set。
-- 每个 candidate 失败后关闭并重建 socket。
-- 不自动堆叠 X‑M5 experimental bootstrap。
-- Catalog 失败留在页面并输出诊断，不伪装成“所有 RED 均支持”。
+Unknown RED 不作为正式兼容承诺。
 
-## 13. 日志与诊断
+规则：
 
-每条结构化日志至少包含：
+- 只有 required characteristic 完整时，才允许执行当前 baseline activation。
+- 默认只运行当前已验证 legacy candidate set。
+- 不自动加入 standard INIT。
+- 不自动执行 X-M5 experimental negotiation/bootstrap。
+- 失败必须输出 firstMissingBarrier。
+- UI 和日志明确标记 unsupported/best-effort，而不是 supported。
 
-- `connectionSessionID`
-- `cameraID`
-- `model`
-- `serialHash`
-- `firmwareVersion`
-- `protocolFamily`
-- `profileID`
-- `profileRevision`
-- `profileConfidence`
-- `barrier`
-- `attempt`
-- `elapsedMs`
+## 12. 错误、重试与恢复
 
-序列号默认记录 hash 或末尾短标识，避免诊断文件暴露完整设备身份。
+第一阶段不新增一套完整 CameraCompatibilityError 枚举。
 
-决策日志：
+优先扩展现有：
+
+- IOSCameraConnectionIssue
+- IOSCameraConnectionRetryTarget
+- Catalog failure/state
+- transportLost
+
+每个错误至少携带：
+
+- connectionSessionID
+- policyID / revision
+- barrier
+- strategy/candidate ID
+- attempt
+- elapsedMs
+- last wire outcome
+- retry owner
+
+重试 owner：
+
+| 错误层 | Owner |
+|---|---|
+| BLE reconnect/GATT | 现有 reconnect/pairing coordinator |
+| AP activation | ActivationReadinessPolicy 执行器 |
+| Wi-Fi association | 现有 Wi-Fi handover |
+| INIT timeout/reset | PTP INIT policy |
+| Function negotiation | PostOpenNegotiation 执行器 |
+| 9053/D620/D621 | Catalog Runtime + InitialCatalogStrategy |
+| transport lost | CameraSessionRuntime recovery |
+
+规则：
+
+1. UI 不直接重跑底层协议指令。
+2. candidate 切换必须新建 socket。
+3. Catalog 业务失败不能默认回到 BLE 全链。
+4. transportLost 才能触发物理连接恢复。
+5. 每个重试必须有次数上限、取消语义和终态。
+6. XApp CommRetry 的默认值只能作为参考，不能未经验证直接复制到所有 CamTransfer 步骤。
+
+## 13. 诊断设计
+
+诊断必须在 Policy 架构之前或同步完成，不能推迟到最后。
+
+### 13.1 Policy decision
 
 ~~~text
-PROFILE_RESOLUTION
-profile=xm5-red-v1
-confidence=provisional
-matched=red-service,official-import-characteristics,model-x-m5
+CAMERA_COMPATIBILITY_DECISION
+session=...
+policy=xt5-current-baseline
+revision=1
+confidence=verified
+protocolFamily=red
+matched=red-service,official-import-characteristics,model-x-t5
 unresolved=firmware,function-version
-rejected=xt5-current:wrong-model
 ~~~
 
-协议步骤必须一一对应：
+### 13.2 Protocol step
 
 ~~~text
 PROTOCOL_STEP_BEGIN
 → PROTOCOL_STEP_SUCCEEDED
   / PROTOCOL_STEP_FAILED
   / PROTOCOL_STEP_CANCELLED
+  / PROTOCOL_STEP_NOT_REQUIRED
 ~~~
 
-失败汇总：
+### 13.3 Terminal summary
 
 ~~~text
 CONNECTION_TERMINAL
+policy=xe5-red-experimental
+revision=1
 firstMissingBarrier=ptpInitAcknowledged
-profile=xe5-red-provisional
+candidate=vendorLegacy
 transport=tcp-connected
-lastWireOutcome=init-reset-by-peer
-retryOwner=ptp-init-profile
+lastWireOutcome=connection-reset-by-peer
+retryOwner=ptp-init
 ~~~
 
-## 14. 错误、重试和恢复
+任何一次失败日志必须能直接区分：
 
-建议错误分类：
+- BLE/GATT 没成功。
+- Wi-Fi 没成功。
+- TCP 可达但 INIT 没 ACK。
+- OpenSession 成功但 negotiation 失败。
+- session 已准备但 Catalog 失败。
+- transport 已丢失。
 
-~~~swift
-enum CameraCompatibilityError {
-  case unsupportedIdentity
-  case missingCapability
-  case activationRejected
-  case wifiHandoverFailed
-  case ptpInitRejected
-  case ptpSessionFailed
-  case negotiationFailed
-  case galleryBootstrapFailed
-  case catalogRetryable
-  case catalogFatal
-  case transportLost
-}
-~~~
+## 14. 分阶段迁移
 
-| 错误 | 重试 owner |
-|---|---|
-| BLE scan / GATT | Pairing or reconnect coordinator |
-| AP activation | ActivationProfile |
-| Wi-Fi association | WifiHandoverProfile |
-| INIT packet / socket reset | PtpInitProfile |
-| Function negotiation | SessionNegotiationProfile |
-| `9053 / D620 / D621` | Catalog coordinator |
-| transport lost | CameraSessionRuntime recovery |
+### 阶段 0：冻结事实和增加诊断
 
-规则：
+必须完成：
 
-- UI 不直接重跑底层指令。
-- 每个重试有最大次数、退避、取消和终态。
-- 切换 INIT candidate 必须按 profile 规则关闭并重建 socket。
-- Catalog `0x2013` 当前不能默认定义为 retryable，先保持“协议状态不满足”的可诊断失败。
+1. 保存 X-T5 当前成功 wire 顺序。
+2. 固化 X-M5、X-E5 的首个失败 barrier。
+3. 为当前步骤顺序、INIT candidate 顺序和 Catalog success gate 增加 characterization tests。
+4. 增加 Policy/candidate/barrier 结构化日志字段。
+5. 不改变相机命令。
 
-## 15. 现有组件的保留与调整
+### 阶段 1：最小 Facts、Policy 与 Resolver
 
-### 15.1 保留
+新增或扩展：
 
-- `CameraSessionRuntime` 作为 App 级相机会话 owner。
-- `CameraCommandLane` 的 PTP 串行化。
-- Catalog generation fence。
-- Catalog owner / download owner。
-- 现有下载、缩略图、HD Preview、快速下载实现。
-- `IOSCameraGalleryConnectionCoordinator` 的步骤编排思想。
+- CameraProtocolFamily
+- CameraCompatibilityFacts
+- CameraConnectionPolicy
+- CameraCompatibilityDecision
+- CameraCompatibilityResolver
 
-### 15.2 调整
+第一版只稳定输出 xt5-current-baseline。
 
-- `IOSCameraIdentity` 扩展或由新 snapshot 包装。
-- `FujifilmXSeriesProfile` 拆分为连接 Profile 与媒体参数 Profile。
-- BLE activation 候选由 Profile 提供。
-- 全局 Gallery route policy 收敛为 Profile 策略。
-- PTP INIT candidates 由 `PtpInitProfile` 提供。
-- `performInitHandshake()` 根据成功 candidate 返回真实 transport。
-- `executeConfirmGalleryModeStep()` 接收真实 negotiation/bootstrap evidence。
-- `executeLoadGalleryStep()` 改为表达 `galleryTransportReady`，不能生成 Catalog 已加载 evidence。
-- `CameraSessionRuntime` 增加 Gallery Shell 与 Catalog 独立状态。
+unknown-red-diagnostic 只用于诊断，不作为成功支持。
 
-### 15.3 不做
+### 阶段 2：接入现有 Coordinator/StateMachine
 
-- 不重写整个 PTP 编解码器。
-- 不移除现有 CommandLane。
-- 不把每个机型做成独立 Runtime。
-- 不让 Profile 持有 mutable session state。
-- 不在第一阶段引入远程配置平台。
+要求：
 
-## 16. 分阶段迁移
+- 不创建新 Orchestrator。
+- 不创建新 BarrierLedger。
+- Coordinator 接收不可变 Policy。
+- Context 记录 Policy 和运行事实。
+- StateMachine 校验 required/notRequired evidence。
+- ConfirmGalleryMode 和 LoadGallery 的假 evidence 被移除或改成真实语义。
+- X-T5 wire 行为保持不变。
 
-### 阶段 0：冻结证据和行为
+### 阶段 3：PTP INIT candidate 机制
 
-- 保存 X‑T5 成功链 wire 顺序。
-- 固化 X‑M5、X‑E5 首个失败 barrier。
-- 为现有行为增加 characterization tests。
-- 不改变相机命令。
+要求：
 
-### 阶段 1：兼容模型与 Resolver 骨架
+- 当前 baseline candidate 不变。
+- 每个 candidate 有 ID 和独立日志。
+- candidate 切换重建 socket。
+- standard candidate 默认关闭。
+- 成功 ACK 不再无条件标记为 legacy。
 
-新增 `CameraProtocolFamily`、`CameraIdentitySnapshot`、`CameraCapabilities`、`CameraCompatibilityEvidence`、`CameraProfile`、`CameraProfileResolver` 和 `CameraCompatibilityDecision`。
+### 阶段 4：X-M5 和 X-E5 单变量实验
 
-先只解析出 `X-T5CurrentProfile` 与 `UnknownRedProfile`。
+两条实验线相互独立：
 
-### 阶段 2：迁移 X‑T5 当前成功链
+- X-M5 只调查 post-Open/Catalog 前状态。
+- X-E5 只调查 activation timing/PTP INIT。
 
-用 adapter 把现有实现接入 Profile。要求 wire 行为不变，避免“搭框架同时改协议”。
+实验结果不能直接覆盖 xt5-current-baseline。
 
-### 阶段 3：Gallery Shell 与 Catalog 解耦
+### 阶段 5：形成正式机型 Policy
 
-- `galleryTransportReady` 后允许页面容器展示。
-- Catalog 在页面内异步加载。
-- Catalog 失败不自动退出页面。
-- transport lost 仍由 Runtime 统一恢复。
+只有满足以下条件才建立正式 Policy：
 
-### 阶段 4：完整诊断
+1. 同一机型重复成功。
+2. 反向移除变量后能复现失败或明显退化。
+3. 退出重进和 App kill 重连通过。
+4. 不影响 X-T5。
+5. 日志能还原 Policy、candidate 和第一失败点。
 
-一次日志必须回答识别结果、协议族、Profile、实际步骤、首个缺失 barrier 和下一次单变量实验点。
+Gallery Shell 提前展示不属于上述迁移阶段。
 
-### 阶段 5：X‑M5 单变量协议实验
+## 15. 发布与回滚
 
-实验不进入默认 Profile，直到同机型重复验证。
+不长期维护 compatibilityArchitectureV2 与旧主链两套实现。
 
-### 阶段 6：X‑E5 INIT 实验
+推荐方式：
 
-先取得 XApp 同机型 INIT 成功对照，再加入 candidate；不能用 X‑M5 的 Catalog 逻辑推断 X‑E5。
+- 一条 Coordinator/StateMachine 主链。
+- xt5-current-baseline 保持旧 wire 行为。
+- 每个实验策略使用独立、默认关闭的实验开关。
+- 正式 Policy 通过 policyID + revision 控制。
+- 回滚某机型 Policy revision，不回滚整个 Runtime/Catalog 架构。
 
-### 16.1 改动量评估
+如果迁移期需要总开关，只用于短期回滚 Resolver 选择，不允许复制一份旧 Coordinator 和旧 PTP Session。
 
-| 模块 | 改动量 | 风险 | 原因 |
-|---|---|---|---|
-| Compatibility 新模型与 Resolver | 中 | 低到中 | 主要是新增纯类型、规则和单元测试 |
-| BLE activation 接入 Profile | 中 | 中 | 现有 service 较大，需要避免改变已成功写入顺序 |
-| PTP INIT candidate 化 | 中 | 中到高 | 触及物理会话建立，必须用 characterization test 和真机回归保护 |
-| Gallery bootstrap 步骤化 | 中 | 高 | X‑M5 问题就在此区域，不能同时做协议修复 |
-| Gallery Shell / Catalog 解耦 | 中到大 | 中到高 | 涉及 Runtime、导航和 UI 状态语义，但无需重写下载链 |
-| 日志与 barrier ledger | 中 | 低 | 以新增结构化证据为主 |
-| X‑M5 / X‑E5 正式 Profile | 未知 | 高 | 取决于同机型取证结果，不应提前估算为“只改几个指令” |
+## 16. 测试方案
 
-总体属于“中等偏大的架构升级”，但不是推倒重写。安全拆分后，阶段 0–2 可以基本不改变 wire；阶段 3 单独处理 UI/Catalog；阶段 5–6 才改变特定机型协议。
+### 16.1 自动化测试
 
-### 16.2 实施卡点与未决问题
+必须覆盖：
 
-| 卡点 | 是否阻塞搭框架 | 阻塞什么 |
-|---|---|---|
-| 最新日志没有明确 firmware | 否 | 阻塞按固件精确选择正式 Profile |
-| 缺少同一 X‑M5 的 XApp 成功抓包 | 否 | 阻塞确认 X‑M5 Catalog 根因和正式 bootstrap |
-| 缺少同一 X‑E5 的 XApp INIT 成功抓包 | 否 | 阻塞确认 X‑E5 正式 PTP INIT candidate |
-| 当前 PTP INIT 成功后固定返回 legacy | 否，是阶段 1–2 要修的结构问题 | 阻塞真实 transport 选择 |
-| Gallery evidence 命名与真实 barrier 不一致 | 否，是阶段 2–3 要迁移的问题 | 阻塞清晰状态和页面内失败 |
-| 工作区已有大量并行改动 | 不阻塞设计 | 实施时必须用独立分支/工作树或严格路径级修改 |
-| 真机矩阵设备和测试时间 | 不阻塞编码 | 阻塞“完整兼容”发布结论 |
+1. RED/Legacy/X-Half/Unknown 识别。
+2. characteristic 缺失时不能执行依赖该能力的 activation。
+3. firmware 缺失不阻塞 xt5-current-baseline。
+4. Resolver 输出稳定 policyID/revision/matchedRules。
+5. xt5-current-baseline 的步骤和 INIT candidate 顺序不变。
+6. required/notRequired evidence 推进正确。
+7. firstMissingBarrier 计算正确。
+8. Policy 重新求值不重复已经完成的物理步骤。
+9. candidate 切换会关闭并重建 socket。
+10. standard INIT 默认不进入 baseline。
+11. Catalog 0x2013 不会被自动分类为 transportLost。
+12. Catalog failure 不回退到 BLE 全链。
+13. Catalog ready 仍是 pending activation 成功门槛。
+14. 旧 generation/snapshot 回调不能污染新会话。
+15. 页面生命周期不能重放同一个 Catalog session。
 
-所以目前没有阻塞“先搭架构”的未知项；未知项主要阻塞 X‑M5、X‑E5 的最终 Profile 内容和完整兼容结论。
+### 16.2 真机矩阵
 
-## 17. 测试方案
-
-### 17.1 自动化测试
-
-1. Resolver 输入与 Profile 输出表。
-2. characteristic 缺失时不能选择不满足能力的 Profile。
-3. 同为 RED、不同机型可选择不同 PTP / Gallery 策略。
-4. 成功 INIT candidate 决定真实 transport。
-5. Profile refine 不重复已完成 barrier。
-6. first missing barrier 计算正确。
-7. Catalog failure 不回退到 BLE 全链。
-8. `galleryTransportReady` 可展示 Gallery Shell。
-9. `catalogRetryableFailed` 留在页面。
-10. `transportLost` 才触发连接恢复。
-11. 页面重现不重复启动同一个 Catalog session。
-12. 旧 generation 回调不能污染新会话。
-
-### 17.2 Profile contract
-
-每个正式 Profile 必须满足：
-
-- ID 和 revision 唯一。
-- required capability 可验证。
-- 没有 experimental step。
-- 所有重试有上限。
-- 每个 protocol step 有 BEGIN 和终态日志。
-- Catalog 与 download 共用现有 CommandLane。
-
-### 17.3 真机矩阵
-
-| 机型 | 配对 | 重连 | Wi-Fi | INIT | OpenSession | Gallery Shell | Catalog | 退出重进 |
+| 机型 | Pairing | Reconnect | Wi-Fi | INIT | OpenSession | Negotiation | First Catalog | Re-entry |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| X‑T5 | 必测 | 必测 | 必测 | 必测 | 必测 | 必测 | 必测 | 必测 |
-| X‑M5 | 必测 | 必测 | 必测 | 必测 | 必测 | 必测 | 单变量实验 | 必测 |
-| X‑E5 | 必测 | 必测 | 必测 | 单变量实验 | 未到达前不测 | 未到达前不测 | 未到达前不测 | 后续 |
-| X‑S20 | 回归 | 回归 | 回归 | 回归 | 回归 | 回归 | 回归 | 回归 |
+| X-T5 | 必测 | 必测 | 必测 | 必测 | 必测 | 必测 | 必测 | 必测 |
+| X-M5 | 回归 | 回归 | 回归 | 回归 | 回归 | 单变量实验 | 单变量实验 | 必测 |
+| X-E5 | 回归 | 回归 | 回归 | 单变量实验 | INIT 成功后测试 | 后续 | 后续 | 后续 |
+| X-S20 | 回归 | 回归 | 回归 | 回归 | 回归 | 回归 | 回归 | 回归 |
 | GFX100RF | 回归 | 回归 | 回归 | 回归 | 回归 | 回归 | 回归 | 回归 |
 
-每个“成功”至少需要同一台相机连续冷启动、退出重进、App kill 后重连、相机关闭 AP 后重试，并能从日志还原 profile、barrier 和 wire 终态。
+每个正式支持结论至少需要：
 
-## 18. X‑M5 后续取证计划
+- 同一台相机连续冷启动。
+- 退出相册再进入。
+- App kill 后重连。
+- 相机关闭 AP 后重试。
+- 可从日志还原 Policy、candidate、barrier 和 wire 终态。
 
-当前 XApp 参考顺序中，首次 `9053` 前出现：
+## 17. X-M5 取证计划
 
-~~~text
-D212
-DF01=20
-DF28 read
-D212
-DF28=3
-D244
-D226=0
-D244
-9054
-9055
-9050
-D22B
-9053
-D212
-D620
-D621
-~~~
+当前参考 XApp 流程中的命令顺序只能作为候选基线，不能直接视为 X-M5 必需链。
 
-当前 X‑M5 已观察链路与之不同，但现有 XApp 抓包不是同机型物理证明。
-
-实验规则：
+实验原则：
 
 1. 固定相机、固件、SD 卡、图片数量和启动方式。
-2. 保留一条不修改的 control。
-3. 每次只改变一个 wire-visible 变量。
-4. 记录 `D212 / D222`、顺序、间隔、返回码和 socket 状态。
-5. 单次成功不能进入正式 Profile，至少需要重复成功与反向移除验证。
+2. 先获取同一 X-M5 的 XApp 成功对照。
+3. 保留一条不修改的 CamTransfer control。
+4. 每次只改变一个 wire-visible 变量。
+5. 记录 D212/D222、顺序、间隔、返回码和 socket 状态。
+6. 单次成功不能进入正式 Policy。
+7. 必须做反向移除验证。
 
-建议顺序：先补同一 X‑M5 的 XApp 成功抓包，再依次验证 `D226=0`、`D212` 顺序、`9054`、`9055`、`9050`、`D22B`，最后才验证组合。
+建议实验顺序：
 
-## 19. X‑E5 后续取证计划
+1. D226=0。
+2. D212 的位置或次数。
+3. 9054。
+4. 9055。
+5. 9050。
+6. D22B。
+7. 最后才验证必要变量组合。
 
-X‑E5 当前首个缺失 barrier 是 `ptpInitAcknowledged`。
+任何 optional prime 都不能在未验证前进入 X-T5 首次 Catalog 阻塞路径。
+
+## 18. X-E5 取证计划
+
+X-E5 当前 firstMissingBarrier 是 ptpInitAcknowledged。
 
 优先级：
 
-1. X‑E5 使用 XApp 的 BLE activation → Wi-Fi → TCP → INIT ACK 抓包。
-2. 比较 packet length、GUID、client IP、friendly name 编码、protocol version 和 event channel。
-3. 比较 launch payload、APState、TransferState、BLE 是否断开和 INIT 时机。
-4. 将每个差异作为独立 `PtpInitCandidate` 或 `ActivationProfile` 实验。
+1. 获取同一 X-E5 使用 XApp 的 activation → Wi-Fi → TCP → INIT ACK 抓包。
+2. 比较 BLE launch payload、A68E、BD17、BLE 断开时机。
+3. 比较 INIT packet length、GUID、client IP、client name、protocol version 和超时。
+4. 验证 standard PTP/IP candidate，但只能通过实验开关。
+5. 每个差异独立实验。
 
-在 INIT ACK 前，不增加任何 `D212 / D226 / 905x` 命令。
+在 INIT ACK 前：
 
-## 20. 回滚和发布策略
+- 不执行 OpenSession 后命令。
+- 不执行 D212/D226/905x。
+- 不调查 SD 卡和 Catalog。
 
-第一阶段保留 `compatibilityArchitectureV2` 开关：
+## 19. 实施文件边界
 
-- 关闭：走现有 X‑T5 链。
-- 开启：由 Resolver 选择 Profile。
+第一阶段预计新增不超过三个职责文件：
 
-开关只用于迁移回滚，不长期维持两套实现。X‑T5 验证完成后应删除旧入口。
+- ios/Runner/CameraCompatibility/CameraCompatibilityPolicy.swift
+- ios/Runner/CameraCompatibility/CameraCompatibilityResolver.swift
+- ios/Runner/CameraCompatibility/CameraCompatibilityTrace.swift
 
-Profile ID 与 revision 分开，例如 `xm5-red / revision 1`。日志必须携带 revision。
+如果类型足够小，Policy 和 Facts 可以先放在同一文件，避免为了目录结构拆文件。
 
-发布顺序：
+预计修改：
 
-1. 先让 X‑T5 走 V2。
-2. Unknown RED 只启用诊断和安全 fallback。
-3. X‑M5、X‑E5 分别在验证后启用正式 Profile。
-4. 单个机型失败率上升时回滚该 Profile，不影响其他机型。
+- ios/Runner/CameraCore/Models/CameraCoreModels.swift
+- ios/Runner/CameraCore/Connection/CameraConnectionSteps.swift
+- ios/Runner/CameraCore/Connection/CameraConnectionStateMachine.swift
+- ios/Runner/CameraCore/Connection/CameraGalleryConnectionCoordinator.swift
+- ios/Runner/CameraVendorGalleryMainlineSessionLoader.swift
+- ios/Runner/CameraVendorBluetoothService.swift
+- ios/Runner/CameraVendorPtpSession.swift
+- ios/Runner/CameraSessionRuntime.swift
+- ios/RunnerTests/RunnerTests.swift
+- ios/project.yml，仅在新增源码文件时修改
 
-## 21. 验收标准
+明确不创建：
 
-第一阶段架构完成的标准不是“所有相机都能连上”，而是：
+- CameraConnectionOrchestrator.swift
+- CameraConnectionBarrierLedger.swift
+- PairingProfile.swift
+- WifiHandoverProfile.swift
+- 每个机型独立 Runtime
+- 每个机型独立 Coordinator
 
-1. X‑T5 当前成功链已由 Profile 驱动，wire 行为无意外变化。
-2. 同为 RED 的不同机型可以选择不同 PTP / Gallery 策略。
-3. 日志能输出 identity、capabilities、profile、revision、barrier 和 first failure。
-4. PTP INIT 成功结果能决定实际 transport，不再一律标记 legacy。
-5. `confirmGalleryMode` 不再生成无协议依据的 evidence。
-6. Gallery Shell 可以在 Catalog 完成前展示。
-7. Catalog 失败可留在页面并由 Catalog owner 重试。
-8. transport loss 与 Catalog 业务失败被明确区分。
-9. X‑M5 和 X‑E5 的实验可以分别接入，不修改 X‑T5 主链。
-10. 所有新增状态与 Resolver 分支都有自动化测试。
+实施前仍需根据最新源码确认是否能进一步减少新文件数量。
 
-多机型“完整兼容”只有在目标真机矩阵逐台通过后才能宣布，不能由架构完成自动推出。
+## 20. 验收标准
 
-## 22. 实施文件边界建议
+第一阶段架构完成必须同时满足：
 
-后续实施计划建议创建：
+1. X-T5 由 xt5-current-baseline Policy 驱动。
+2. X-T5 wire 顺序和成功率没有意外退化。
+3. 仍只有一套 Coordinator、StateMachine、Runtime 和 Catalog owner。
+4. 日志包含 policyID、revision、candidate 和 firstMissingBarrier。
+5. ConfirmGalleryMode 不再生成无协议依据的成功 evidence。
+6. LoadGallery 不再把 PTP session ID 误称为 Catalog 已加载。
+7. PTP INIT candidate 可配置，但 standard candidate 默认关闭。
+8. Catalog ready 继续作为 GalleryReady 成功门槛。
+9. X-M5 与 X-E5 实验可以独立接入，不修改 X-T5 baseline。
+10. 所有新增 Resolver 分支和状态推进都有自动化测试。
 
-- `ios/Runner/CameraCompatibility/CameraProtocolFamily.swift`
-- `ios/Runner/CameraCompatibility/CameraIdentitySnapshot.swift`
-- `ios/Runner/CameraCompatibility/CameraCapabilities.swift`
-- `ios/Runner/CameraCompatibility/CameraCompatibilityEvidence.swift`
-- `ios/Runner/CameraCompatibility/CameraProfile.swift`
-- `ios/Runner/CameraCompatibility/CameraProfileResolver.swift`
-- `ios/Runner/CameraCompatibility/CameraCompatibilityDecision.swift`
-- `ios/Runner/CameraCompatibility/CameraConnectionBarrier.swift`
-- `ios/Runner/CameraCompatibility/CameraConnectionOrchestrator.swift`
-- `ios/Runner/CameraCompatibility/Profiles/X-T5CurrentProfile.swift`
-- `ios/Runner/CameraCompatibility/Profiles/UnknownRedProfile.swift`
+以下不属于第一阶段完成标准：
 
-后续预计修改：
+- 所有 RED 相机都能连接。
+- X-M5 已修复。
+- X-E5 已修复。
+- Gallery Shell 可以提前展示。
+- Legacy/X-Half 已完整支持。
 
-- `ios/Runner/CameraVendorBluetoothService.swift`
-- `ios/Runner/CameraVendorPtpSession.swift`
-- `ios/Runner/CameraVendorGalleryMainlineSessionLoader.swift`
-- `ios/Runner/CameraCore/Connection/CameraConnectionSteps.swift`
-- `ios/Runner/CameraCore/Models/CameraCoreModels.swift`
-- `ios/Runner/CameraSessionRuntime.swift`
-- `ios/RunnerTests/RunnerTests.swift`
-- `ios/project.yml`
+多机型正式兼容只能按目标真机逐台宣布，不能由架构完成自动推出。
 
-正式实施计划必须再根据当前源码职责检查是否需要减少文件数量；本节只锁定职责边界，不授权开始编码。
-
-## 23. 最终建议
-
-最佳方案不是完整复刻 XApp，也不是只针对 X‑M5 打补丁，而是：
+## 21. 最终实施顺序
 
 ~~~text
-复制 XApp 的兼容方法
-≠ 复制 XApp 的所有命令
-
-保留 CamTransfer 的 Session / CommandLane / Catalog / Download 架构
-+ 补齐渐进式 Identity / Capability / Profile Resolver
-+ 把 PTP INIT、Function Negotiation、Gallery Bootstrap 变成可选择策略
-+ 将 Gallery Shell 与 Catalog Ready 解耦
-+ 用同机型单变量实验完善 X‑M5、X‑E5 Profile
+1. 先补诊断和 characterization tests
+2. 建最小 Facts / Policy / Resolver
+3. 接入现有 Coordinator / StateMachine，保持 X-T5 wire 不变
+4. 修正 ConfirmGalleryMode / LoadGallery 假 evidence
+5. 将 PTP INIT candidate 化，但不默认增加新 candidate
+6. 验证 X-T5 迁移没有退化
+7. 分别执行 X-M5 Catalog 前状态实验
+8. 分别执行 X-E5 PTP INIT 实验
+9. 证据充分后再形成正式机型 Policy
 ~~~
 
-这个方案的改动量属于中等偏大，但可以分阶段完成，不需要推倒重写。
+最终架构不是“为每台相机复制一条链”，也不是“先搭一个足够通用的大框架”，而是：
 
-最重要的顺序是：
+~~~text
+复用当前可靠所有权
++ 最小兼容决策
++ 真实差异策略
++ 可还原诊断
++ 同机型单变量验证
+~~~
 
-1. 先搭兼容骨架和诊断。
-2. 迁移 X‑T5 成功链，证明架构没有破坏现状。
-3. 解耦 Gallery Shell 与 Catalog。
-4. 再分别解决 X‑M5 Catalog 前置状态和 X‑E5 PTP INIT。
+每一个新类型、新步骤和新分支都必须能回答：
 
-只有这样，当前两类失败才能被放在正确的层级解决，后续新增机型也不需要继续扩大一条不可维护的固定连接链。
+1. 当前哪台相机已经证明存在这个差异？
+2. 这个抽象替代了哪一处重复或错误判断？
+3. 如果删除它，哪一个已验证场景会无法表达？
+4. 它是否引入第二份连接、会话或 Catalog 事实源？
+
+如果不能回答，就不进入第一阶段实现。
