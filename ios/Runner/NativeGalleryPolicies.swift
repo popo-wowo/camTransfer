@@ -348,7 +348,7 @@ enum NativeLogTextViewPolicy {
 }
 
 enum NativeCameraAdapterRegistry {
-  static let defaultAdapter = FujifilmCameraAdapter(profile: .xt5Current)
+  static let defaultAdapter = FujifilmCameraAdapter(profile: .currentVerifiedBaseline)
 
   static var defaultAdapterDescriptor: CameraAdapterDescriptor {
     defaultAdapter.descriptor

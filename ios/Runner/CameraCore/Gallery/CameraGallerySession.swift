@@ -222,7 +222,7 @@ final class CameraGallerySession {
     pendingCatalogSubmissionID = submissionID
     await hdPreviewPipeline.prepareForCatalogChange()
     await queryEngine.clearMembershipCache()
-    await catalogRuntime.start(initial: filterIntent, submissionID: submissionID)
+    await catalogRuntime.reload(filterIntent, submissionID: submissionID)
   }
 
   @discardableResult

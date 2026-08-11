@@ -1,4 +1,5 @@
 import CoreBluetooth
+import CryptoKit
 import Darwin
 import Foundation
 import NetworkExtension
@@ -13,6 +14,7 @@ struct CameraVendorConnectionSummary: Equatable {
   let preferredWifiNetwork: CameraVendorWifiNetworkConfiguration?
   let preferCompressedDownloads: Bool
   let verifiedConnectionSteps: [IOSCameraConnectionStep]
+  let compatibilityFacts: CameraCompatibilityFacts?
 
   init(
     deviceName: String,
@@ -20,7 +22,8 @@ struct CameraVendorConnectionSummary: Equatable {
     connectedDeviceName: String = CameraVendorHandshakeIdentityPolicy.currentConnectedDeviceName(),
     preferredWifiNetwork: CameraVendorWifiNetworkConfiguration? = nil,
     preferCompressedDownloads: Bool = false,
-    verifiedConnectionSteps: [IOSCameraConnectionStep] = []
+    verifiedConnectionSteps: [IOSCameraConnectionStep] = [],
+    compatibilityFacts: CameraCompatibilityFacts? = nil
   ) {
     self.deviceName = deviceName
     self.serialNumber = serialNumber
@@ -28,6 +31,7 @@ struct CameraVendorConnectionSummary: Equatable {
     self.preferredWifiNetwork = preferredWifiNetwork
     self.preferCompressedDownloads = preferCompressedDownloads
     self.verifiedConnectionSteps = verifiedConnectionSteps
+    self.compatibilityFacts = compatibilityFacts
   }
 
   var navigationTitle: String { deviceName }
@@ -45,7 +49,8 @@ struct CameraVendorConnectionSummary: Equatable {
       connectedDeviceName: connectedDeviceName,
       preferredWifiNetwork: preferredWifiNetwork,
       preferCompressedDownloads: preferCompressedDownloads,
-      verifiedConnectionSteps: steps
+      verifiedConnectionSteps: steps,
+      compatibilityFacts: compatibilityFacts
     )
   }
 
@@ -88,17 +93,182 @@ struct CameraVendorConnectionSummary: Equatable {
   }
 }
 
+enum CameraVendorGattActivationResolutionError: Error, Equatable, LocalizedError {
+  case alreadyAttempted
+  case missingFacts
+  case missingResolver
+  case invalidDefinition(id: ActivationStrategyID, supportStatus: CameraSupportStatus)
+
+  var errorDescription: String? {
+    switch self {
+    case .alreadyAttempted:
+      return "GATT facts may resolve Activation Strategy only once"
+    case .missingFacts:
+      return "GATT discovery completed without typed compatibility facts"
+    case .missingResolver:
+      return "GATT discovery completed without an Activation Strategy resolver"
+    case let .invalidDefinition(id, supportStatus):
+      return "GATT facts selected invalid Activation Strategy \(id.rawValue) status=\(supportStatus.rawValue)"
+    }
+  }
+}
+
+final class CameraVendorGattActivationResolutionGate {
+  private var hasAttemptedResolution = false
+
+  func resolve(
+    facts: CameraCompatibilityFacts?,
+    using resolver: ((CameraCompatibilityFacts) throws -> ActivationStrategyDefinition)?
+  ) throws -> ActivationStrategyDefinition {
+    guard !hasAttemptedResolution else {
+      throw CameraVendorGattActivationResolutionError.alreadyAttempted
+    }
+    hasAttemptedResolution = true
+    guard let facts else {
+      throw CameraVendorGattActivationResolutionError.missingFacts
+    }
+    guard let resolver else {
+      throw CameraVendorGattActivationResolutionError.missingResolver
+    }
+    let definition = try resolver(facts)
+    guard definition.supportStatus == .verified, definition.id != .unsupported else {
+      throw CameraVendorGattActivationResolutionError.invalidDefinition(
+        id: definition.id,
+        supportStatus: definition.supportStatus
+      )
+    }
+    return definition
+  }
+}
+
+enum CameraVendorRememberedGalleryTerminalFailure: Equatable {
+  case bleConnectFailed(reason: String)
+  case bleDisconnected
+  case scanTimedOut
+  case serviceDiscoveryFailed(reason: String)
+  case gattCharacteristicDiscoveryFailed(reason: String)
+  case identityMismatch
+  case activationDisconnected
+  case activationNotReady
+  case activationResolutionFailed(reason: String)
+  case missingActivationFeature
+
+  var issue: IOSCameraConnectionIssue {
+    switch self {
+    case let .bleConnectFailed(reason):
+      return IOSCameraConnectionIssue(step: .reconnectPairedBle, reason: "BLE 连接失败: \(reason)")
+    case .bleDisconnected:
+      return IOSCameraConnectionIssue(step: .reconnectPairedBle, reason: "BLE 连接意外断开")
+    case .scanTimedOut:
+      return IOSCameraConnectionIssue(step: .reconnectPairedBle, reason: "扫描已配对相机超时")
+    case let .serviceDiscoveryFailed(reason):
+      return IOSCameraConnectionIssue(step: .reconnectPairedBle, reason: "发现 BLE Service 失败: \(reason)")
+    case let .gattCharacteristicDiscoveryFailed(reason):
+      return IOSCameraConnectionIssue(step: .reconnectPairedBle, reason: "发现 BLE 特征失败: \(reason)")
+    case .identityMismatch:
+      return IOSCameraConnectionIssue(step: .reconnectPairedBle, reason: "已配对记录与当前相机身份不一致")
+    case .activationDisconnected:
+      return IOSCameraConnectionIssue(step: .activateCameraWifi, reason: "传图激活完成前 BLE 断开")
+    case .activationNotReady:
+      return IOSCameraConnectionIssue(step: .activateCameraWifi, reason: "传图激活未进入可连接状态")
+    case let .activationResolutionFailed(reason):
+      return IOSCameraConnectionIssue(step: .reconnectPairedBle, reason: reason)
+    case .missingActivationFeature:
+      return IOSCameraConnectionIssue(step: .reconnectPairedBle, reason: "相机未提供可验证的传图激活特征")
+    }
+  }
+}
+
+final class CameraVendorRememberedGalleryTerminalOwner {
+  private let targetPeripheralID: UUID
+  private let onFailure: (IOSCameraConnectionIssue) -> Void
+  private let lock = NSLock()
+  private var storedTerminalFailure: CameraVendorRememberedGalleryTerminalFailure?
+
+  var terminalFailure: CameraVendorRememberedGalleryTerminalFailure? {
+    lock.lock()
+    defer { lock.unlock() }
+    return storedTerminalFailure
+  }
+
+  init(
+    targetPeripheralID: UUID,
+    onFailure: @escaping (IOSCameraConnectionIssue) -> Void
+  ) {
+    self.targetPeripheralID = targetPeripheralID
+    self.onFailure = onFailure
+  }
+
+  func owns(callbackPeripheralID: UUID) -> Bool {
+    callbackPeripheralID == targetPeripheralID
+  }
+
+  @discardableResult
+  func fail(
+    _ failure: CameraVendorRememberedGalleryTerminalFailure,
+    intent: IOSCameraServiceWirelessIntent
+  ) -> Bool {
+    guard intent == .rememberedGallery else {
+      return false
+    }
+
+    lock.lock()
+    guard storedTerminalFailure == nil else {
+      lock.unlock()
+      return false
+    }
+    storedTerminalFailure = failure
+    lock.unlock()
+
+    onFailure(failure.issue)
+    return true
+  }
+}
+
+enum CameraVendorRememberedGalleryTerminalRouter {
+  @discardableResult
+  static func routeCharacteristicDiscoveryFailure(
+    reason: String,
+    callbackPeripheralID: UUID,
+    intent: IOSCameraServiceWirelessIntent,
+    owner: CameraVendorRememberedGalleryTerminalOwner?
+  ) -> Bool {
+    guard owner?.owns(callbackPeripheralID: callbackPeripheralID) == true else {
+      return false
+    }
+    return owner?.fail(
+      .gattCharacteristicDiscoveryFailed(reason: reason),
+      intent: intent
+    ) ?? false
+  }
+
+  @discardableResult
+  static func routeUnexpectedBleDisconnect(
+    callbackPeripheralID: UUID,
+    intent: IOSCameraServiceWirelessIntent,
+    didCompleteHandshake: Bool,
+    isExpectedWifiHandoff: Bool,
+    isRecoveryInProgress: Bool,
+    owner: CameraVendorRememberedGalleryTerminalOwner?
+  ) -> Bool {
+    guard !didCompleteHandshake,
+          !isExpectedWifiHandoff,
+          !isRecoveryInProgress,
+          owner?.owns(callbackPeripheralID: callbackPeripheralID) == true else {
+      return false
+    }
+    return owner?.fail(.bleDisconnected, intent: intent) ?? false
+  }
+}
+
 enum CameraVendorGalleryDiagnostics {
   static var externalLogHandler: ((String) -> Void)?
 
   static func log(_ message: String) {
-    let safeMessage = CamTransferDiagnosticLogRedactor.redacted(message)
-    print("CamTransferGallery \(safeMessage)")
-    NSLog("CamTransferGallery %@", safeMessage)
-    if CameraVendorFastDiagnosticLogPolicy.shouldWriteToDisk(safeMessage) {
-      CameraVendorFileLogger.log(safeMessage)
-    }
-    externalLogHandler?(safeMessage)
+    CameraDiagnosticPipeline.shared.emitLegacy(
+      message,
+      additionalObserver: externalLogHandler
+    )
   }
 
   static func observe(_ message: String) {
@@ -244,14 +414,44 @@ enum CameraVendorOfficialGalleryPtpInitPolicy {
     clientName: String,
     clientIP: String?
   ) -> [CameraVendorOfficialGalleryPtpInitAttempt] {
-    variants().map { variant in
-      CameraVendorOfficialGalleryPtpInitAttempt(
+    initAttempts(
+      packetVariants: [
+        .vendorLegacyWithClientIPv4Guid,
+        .vendorLegacyWithoutClientIPv4,
+      ],
+      clientName: clientName,
+      clientIP: clientIP,
+      timeout: initAckTimeoutSeconds
+    )
+  }
+
+  static func initAttempts(
+    packetVariants: [PtpInitPacketVariantID],
+    clientName: String,
+    clientIP: String?,
+    timeout: TimeInterval
+  ) -> [CameraVendorOfficialGalleryPtpInitAttempt] {
+    packetVariants.map { packetVariant in
+      let variant: CameraVendorOfficialGalleryPtpInitVariant
+      switch packetVariant {
+      case .vendorLegacyWithClientIPv4Guid:
+        variant = CameraVendorOfficialGalleryPtpInitVariant(
+          name: "CameraVendor legacy + client IP GUID",
+          includesClientIP: true
+        )
+      case .vendorLegacyWithoutClientIPv4:
+        variant = CameraVendorOfficialGalleryPtpInitVariant(
+          name: "CameraVendor legacy",
+          includesClientIP: false
+        )
+      }
+      return CameraVendorOfficialGalleryPtpInitAttempt(
         name: variant.name,
         packet: CameraVendorPtpPacketBuilder.buildInitCommandRequest(
           friendlyName: clientName,
           clientIP: variant.includesClientIP ? clientIP : nil
         ),
-        timeout: initAckTimeoutSeconds
+        timeout: timeout
       )
     }
   }
@@ -274,6 +474,12 @@ enum CameraVendorPtpReconnectErrorPolicy {
   static func shouldRetry(_ error: Error) -> Bool {
     let nsError = error as NSError
     if nsError.domain == "CameraVendorPtpSession", nsError.code == 0xD222 {
+      return false
+    }
+    if nsError.domain == "CameraConnectionExecutionState" {
+      return false
+    }
+    if nsError.domain == "FujifilmProtocolEngine" {
       return false
     }
     return true
@@ -805,39 +1011,328 @@ enum CameraVendorReferenceAppTransferActivationStrategy: String, CaseIterable {
   case compatibleRemoteImageView = "Legacy Remote Image View (mode 11)"
 }
 
-enum CameraVendorGalleryRouteID: String, CaseIterable {
-  case strictReferenceApp = "strict-reference-app"
-  case importImageLaunch = "import-image-launch"
-  case referenceAppLongSettle = "reference-app-long-settle"
-  case referenceAppBleDisconnectVariant = "reference-app-ble-disconnect-variant"
-}
-
-struct CameraVendorGalleryRoute: Equatable {
-  let id: CameraVendorGalleryRouteID
-  let launchRequestPayload: Data
-  let ptpStartupDelaySeconds: TimeInterval
-  let allowsUnverifiedWifiHandoffAfterRecoverableError: Bool
-}
-
-enum CameraVendorGalleryRoutePolicy {
-  // ReferenceApp's WlanConnectImageImport retry path uses InCameraViewIng = 3
-  // before handing over to Wi-Fi for camera image browsing; PTP starts as soon
-  // as Wi-Fi is available.
-  static let hiddenDiagnosticRoutes: [CameraVendorGalleryRoute] = [
-    CameraVendorGalleryRoute(
-      id: .strictReferenceApp,
-      launchRequestPayload: Data([0x03, 0x00]),
-      ptpStartupDelaySeconds: 0,
-      allowsUnverifiedWifiHandoffAfterRecoverableError: false
-    ),
-  ]
-
-  static var strictReferenceAppLaunchRequestPayload: Data {
-    hiddenDiagnosticRoutes.first?.launchRequestPayload ?? Data([0x03, 0x00])
+enum CameraVendorActivationStrategyExecutor {
+  static func execute(
+    definition: ActivationStrategyDefinition,
+    emit: (CameraVendorBleWriteRequest) -> Void
+  ) {
+    for step in definition.writeSteps {
+      emit(
+        CameraVendorBleWriteRequest(
+          characteristicUUIDString: step.characteristicUUIDString,
+          payload: step.payload
+        )
+      )
+    }
   }
 
-  static func shouldStopRouteSearch(after items: [CameraVendorGalleryItem]) -> Bool {
-    !items.isEmpty
+  static func isTrackedStatusCharacteristic(
+    uuidString: String,
+    definition: ActivationStrategyDefinition
+  ) -> Bool {
+    let normalized = uuidString.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    return definition.trackedStatusCharacteristicUUIDStrings.contains {
+      $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() == normalized
+    }
+  }
+
+  static func isComplete(
+    definition: ActivationStrategyDefinition,
+    uuidString: String,
+    value: Data
+  ) -> Bool {
+    switch definition.completionPredicate {
+    case .apStateReadyToJoinWifi:
+      let normalized = uuidString.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+      guard normalized
+        == CameraVendorReferenceAppTransferActivationPlan.apStateCharacteristicUUIDString,
+        let apState = CameraVendorReferenceAppApState(data: value)
+      else {
+        return false
+      }
+      return apState.isReadyToJoinWifi
+    }
+  }
+}
+
+enum CameraVendorActivationRetryDecision: Equatable {
+  case retryInternally(nextAttempt: Int)
+  case failClosed(owner: CameraConnectionRetryOwner)
+  case attemptBudgetExhausted
+}
+
+enum CameraVendorActivationRetryExecutor {
+  static func decision(
+    retryTiming: ActivationRetryTimingPolicy,
+    completedAttempts: Int
+  ) -> CameraVendorActivationRetryDecision {
+    guard completedAttempts < retryTiming.maxAttempts else {
+      return .attemptBudgetExhausted
+    }
+    guard retryTiming.retryOwner == .activationStrategy else {
+      return .failClosed(owner: retryTiming.retryOwner)
+    }
+    return .retryInternally(nextAttempt: completedAttempts + 1)
+  }
+}
+
+enum CameraVendorActivationAttemptResponse: Equatable {
+  case responded
+  case noResponse
+}
+
+enum CameraVendorActivationAttemptDecision: Equatable {
+  case proceedToGallery
+  case retryInternally(nextAttempt: Int)
+  case failClosed(owner: CameraConnectionRetryOwner)
+  case terminateNotReady(response: CameraVendorActivationAttemptResponse)
+}
+
+enum CameraVendorActivationAttemptExecutor {
+  static func decision(
+    observedChange: Bool,
+    cameraResponded: Bool,
+    retryDecision: CameraVendorActivationRetryDecision
+  ) -> CameraVendorActivationAttemptDecision {
+    if observedChange {
+      return .proceedToGallery
+    }
+    switch retryDecision {
+    case .retryInternally(let nextAttempt):
+      return .retryInternally(nextAttempt: nextAttempt)
+    case .failClosed(let owner):
+      return .failClosed(owner: owner)
+    case .attemptBudgetExhausted:
+      return .terminateNotReady(response: cameraResponded ? .responded : .noResponse)
+    }
+  }
+}
+
+struct CameraVendorActivationAttemptToken: Equatable {
+  let peripheralID: UUID
+  let generation: UInt64
+}
+
+struct CameraVendorBluetoothResetToken: Equatable {
+  let peripheralID: UUID
+  let peripheralIdentity: ObjectIdentifier
+  let generation: UInt64
+  let resetNonce: UUID
+}
+
+final class CameraVendorBluetoothFullResetGate {
+  typealias TimeoutCancellation = () -> Void
+  typealias TimeoutScheduler = (
+    TimeInterval,
+    @escaping () -> Void
+  ) -> TimeoutCancellation
+
+  private final class PendingReset {
+    let token: CameraVendorBluetoothResetToken
+    var continuation: CheckedContinuation<CameraCompatibilityLabResetResult, Never>?
+    var cancelTimeout: TimeoutCancellation?
+
+    init(
+      token: CameraVendorBluetoothResetToken,
+      continuation: CheckedContinuation<CameraCompatibilityLabResetResult, Never>
+    ) {
+      self.token = token
+      self.continuation = continuation
+    }
+  }
+
+  private let lock = NSLock()
+  private let timeoutScheduler: TimeoutScheduler
+  private var unresolvedReset: PendingReset?
+
+  init(
+    timeoutScheduler: @escaping TimeoutScheduler = { timeoutSeconds, handler in
+      let workItem = DispatchWorkItem(block: handler)
+      DispatchQueue.main.asyncAfter(
+        deadline: .now() + timeoutSeconds,
+        execute: workItem
+      )
+      return { workItem.cancel() }
+    }
+  ) {
+    self.timeoutScheduler = timeoutScheduler
+  }
+
+  var hasUnresolvedDisconnect: Bool {
+    lock.withLock { unresolvedReset != nil }
+  }
+
+  func reset(
+    token: CameraVendorBluetoothResetToken?,
+    timeoutSeconds: TimeInterval,
+    cancelConnection: @escaping () -> Void
+  ) async -> CameraCompatibilityLabResetResult {
+    guard let token else {
+      return hasUnresolvedDisconnect ? .failed : .succeeded
+    }
+
+    return await withCheckedContinuation { continuation in
+      let pending = PendingReset(token: token, continuation: continuation)
+      let accepted: Bool
+      lock.lock()
+      if unresolvedReset == nil {
+        unresolvedReset = pending
+        accepted = true
+      } else {
+        accepted = false
+      }
+      lock.unlock()
+      guard accepted else {
+        continuation.resume(returning: .failed)
+        return
+      }
+
+      let cancelTimeout = timeoutScheduler(timeoutSeconds) { [weak self] in
+        self?.timeout(resetNonce: pending.token.resetNonce)
+      }
+      var shouldCancelTimeout = false
+      lock.lock()
+      if unresolvedReset === pending, pending.continuation != nil {
+        pending.cancelTimeout = cancelTimeout
+      } else {
+        shouldCancelTimeout = true
+      }
+      lock.unlock()
+      if shouldCancelTimeout {
+        cancelTimeout()
+      }
+
+      cancelConnection()
+    }
+  }
+
+  @discardableResult
+  func completeDisconnect(
+    peripheralID: UUID,
+    peripheralIdentity: ObjectIdentifier
+  ) -> CameraVendorBluetoothResetToken? {
+    let pending: PendingReset?
+    lock.lock()
+    if unresolvedReset?.token.peripheralID == peripheralID,
+       unresolvedReset?.token.peripheralIdentity == peripheralIdentity {
+      pending = unresolvedReset
+      unresolvedReset = nil
+    } else {
+      pending = nil
+    }
+    lock.unlock()
+    guard let pending else { return nil }
+    pending.cancelTimeout?()
+    pending.continuation?.resume(returning: .succeeded)
+    pending.continuation = nil
+    return pending.token
+  }
+
+  private func timeout(resetNonce: UUID) {
+    let continuation: CheckedContinuation<CameraCompatibilityLabResetResult, Never>?
+    lock.lock()
+    if unresolvedReset?.token.resetNonce == resetNonce {
+      continuation = unresolvedReset?.continuation
+      unresolvedReset?.continuation = nil
+      unresolvedReset?.cancelTimeout = nil
+    } else {
+      continuation = nil
+    }
+    lock.unlock()
+    continuation?.resume(returning: .failed)
+  }
+}
+
+struct CameraVendorActivationWriteToken: Equatable {
+  let attempt: CameraVendorActivationAttemptToken
+  let characteristicIdentity: ObjectIdentifier
+}
+
+enum CameraVendorActivationAttemptCallbackDecision: Equatable {
+  case accept
+  case ignoreMissingToken
+  case ignoreMismatch
+}
+
+enum CameraVendorActivationAttemptCallbackGate {
+  static func decision(
+    callbackToken: CameraVendorActivationWriteToken?,
+    activeToken: CameraVendorActivationAttemptToken?,
+    callbackCharacteristicIdentity: ObjectIdentifier
+  ) -> CameraVendorActivationAttemptCallbackDecision {
+    guard let callbackToken else {
+      return .ignoreMissingToken
+    }
+    guard callbackToken.attempt == activeToken,
+          callbackToken.characteristicIdentity == callbackCharacteristicIdentity else {
+      return .ignoreMismatch
+    }
+    return .accept
+  }
+}
+
+struct CameraVendorActivationStepAcknowledgement: Equatable {
+  let role: ActivationWriteStepRole
+  let postWriteDelaySeconds: TimeInterval
+}
+
+struct CameraVendorActivationStepDriver {
+  private let definition: ActivationStrategyDefinition
+  private var currentStepIndex = 0
+
+  init(definition: ActivationStrategyDefinition) {
+    self.definition = definition
+  }
+
+  var currentWriteRequest: CameraVendorBleWriteRequest? {
+    guard definition.writeSteps.indices.contains(currentStepIndex) else {
+      return nil
+    }
+    let step = definition.writeSteps[currentStepIndex]
+    return CameraVendorBleWriteRequest(
+      characteristicUUIDString: step.characteristicUUIDString,
+      payload: step.payload
+    )
+  }
+
+  var acknowledgementTimeoutSeconds: TimeInterval {
+    definition.retryTiming.acknowledgementTimeoutSeconds
+  }
+
+  var responseProgressTimeoutSeconds: TimeInterval {
+    definition.retryTiming.responseProgressTimeoutSeconds
+  }
+
+  var maxAttempts: Int {
+    definition.retryTiming.maxAttempts
+  }
+
+  var isComplete: Bool {
+    currentStepIndex >= definition.writeSteps.count
+  }
+
+  func isCurrentWriteCharacteristic(uuidString: String) -> Bool {
+    guard let currentWriteRequest else { return false }
+    return currentWriteRequest.characteristicUUIDString.uppercased()
+      == uuidString.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+  }
+
+  mutating func acknowledgeCurrentWrite(
+    characteristicUUIDString: String
+  ) -> CameraVendorActivationStepAcknowledgement? {
+    guard isCurrentWriteCharacteristic(uuidString: characteristicUUIDString),
+          definition.writeSteps.indices.contains(currentStepIndex)
+    else {
+      return nil
+    }
+    let role = definition.writeSteps[currentStepIndex].role
+    currentStepIndex += 1
+    return CameraVendorActivationStepAcknowledgement(
+      role: role,
+      postWriteDelaySeconds: role == .imageResizeSetting
+        ? CameraVendorTransferActivationResizePolicy.postWriteDelaySeconds
+        : 0
+    )
   }
 }
 
@@ -954,27 +1449,17 @@ enum CameraVendorReferenceAppTransferActivationPlan {
     "7170FD5A-56D9-4C19-B043-7A7047D8E1A0",
   ]
 
-  static func writes(for strategy: CameraVendorReferenceAppTransferActivationStrategy) -> [CameraVendorBleWriteRequest] {
+  static func writes(
+    for strategy: CameraVendorReferenceAppTransferActivationStrategy,
+    activationDefinition: ActivationStrategyDefinition
+  ) -> [CameraVendorBleWriteRequest] {
     switch strategy {
     case .officialImportImage:
-      return [
-        CameraVendorBleWriteRequest(
-          characteristicUUIDString: imageTransferSettingCharacteristicUUIDString,
-          payload: Data([0x00])
-        ),
-        CameraVendorBleWriteRequest(
-          characteristicUUIDString: imageTransferSettingExCharacteristicUUIDString,
-          payload: Data([0x01])
-        ),
-        CameraVendorBleWriteRequest(
-          characteristicUUIDString: imageResizeSettingCharacteristicUUIDString,
-          payload: CameraVendorTransferActivationResizePolicy.resizeDisabledPayload
-        ),
-        CameraVendorBleWriteRequest(
-          characteristicUUIDString: launchRequestCharacteristicUUIDString,
-          payload: CameraVendorGalleryRoutePolicy.strictReferenceAppLaunchRequestPayload
-        )
-      ]
+      var requests: [CameraVendorBleWriteRequest] = []
+      CameraVendorActivationStrategyExecutor.execute(definition: activationDefinition) {
+        requests.append($0)
+      }
+      return requests
     case .preferredRemoteImageView:
       return legacyWrites(ptpMode: 20)
     case .compatibleRemoteImageView:
@@ -1887,6 +2372,10 @@ struct CameraVendorGalleryState: Equatable {
 
 protocol CameraVendorGalleryService {
   func fetchInitialCameraCatalog() async throws -> CameraVendorCatalogSnapshot
+  func fetchInitialCameraCatalog(
+    query: CameraVendorCatalogQuery?
+  ) async throws -> CameraVendorCatalogSnapshot
+  func fetchExpandedCameraCatalog() async throws -> CameraVendorCatalogSnapshot
   func fetchCameraCatalog(query: CameraVendorCatalogQuery) async throws -> CameraVendorCatalogSnapshot
   func fetchThumbnail(for handle: Int) async throws -> Data
   func fetchThumbnailWithInfo(for handle: Int) async throws -> CameraVendorGalleryThumbnail
@@ -1941,11 +2430,28 @@ struct CameraVendorGalleryWifiHandoffStepResult {
 }
 
 extension CameraVendorGalleryService {
+  func fetchInitialCameraCatalog(
+    query: CameraVendorCatalogQuery?
+  ) async throws -> CameraVendorCatalogSnapshot {
+    if let query {
+      return try await fetchCameraCatalog(query: query)
+    }
+    return try await fetchInitialCameraCatalog()
+  }
+
   func fetchInitialCameraCatalog() async throws -> CameraVendorCatalogSnapshot {
     throw NSError(
       domain: "CameraVendorGalleryService",
       code: NSURLErrorUnsupportedURL,
       userInfo: [NSLocalizedDescriptionKey: "当前相机服务不支持读取初始目录"]
+    )
+  }
+
+  func fetchExpandedCameraCatalog() async throws -> CameraVendorCatalogSnapshot {
+    throw NSError(
+      domain: "CameraVendorGalleryService",
+      code: NSURLErrorUnsupportedURL,
+      userInfo: [NSLocalizedDescriptionKey: "当前相机服务不支持读取普通全量目录"]
     )
   }
 
@@ -2017,8 +2523,11 @@ enum CameraVendorCameraWifiConnector {
     diagnosticHandler: ((String) -> Void)? = nil
   ) async throws {
     let report: (String) -> Void = { message in
-      CameraVendorGalleryDiagnostics.log(message)
-      diagnosticHandler?(message)
+      if let diagnosticHandler {
+        diagnosticHandler(message)
+      } else {
+        CameraVendorGalleryDiagnostics.log(message)
+      }
     }
     let hotspotConfiguration = NEHotspotConfiguration(
       ssid: configuration.ssid,
@@ -2310,6 +2819,27 @@ struct CameraVendorDiscoveredCamera: Equatable {
   let pairingToken: Data?
   let matchDetails: String
   let admission: CameraVendorAdvertisementAdmission
+  let advertisedServiceUUIDs: Set<String>
+
+  init(
+    id: UUID,
+    name: String,
+    rssi: Int,
+    appVariant: CameraVendorAppVariant,
+    pairingToken: Data?,
+    matchDetails: String,
+    admission: CameraVendorAdvertisementAdmission,
+    advertisedServiceUUIDs: Set<String> = []
+  ) {
+    self.id = id
+    self.name = name
+    self.rssi = rssi
+    self.appVariant = appVariant
+    self.pairingToken = pairingToken
+    self.matchDetails = matchDetails
+    self.admission = admission
+    self.advertisedServiceUUIDs = advertisedServiceUUIDs
+  }
 }
 
 enum CameraVendorAdvertisementAdmission: Equatable {
@@ -2348,10 +2878,6 @@ enum CameraVendorDeviceMatcher {
     var reasons: [String] = []
     var appVariant: CameraVendorAppVariant = .unknown
 
-    if let matchedName = normalizedName, isLikelyCameraVendorCameraName(matchedName) {
-      reasons.append("name")
-    }
-
     for uuid in normalizedServiceUUIDs {
       if let variant = knownServiceUUIDs[uuid] {
         reasons.append("service:\(variant.rawValue)")
@@ -2364,8 +2890,11 @@ enum CameraVendorDeviceMatcher {
       reasons.append("manufacturer-token")
     }
 
-    let hasPositivePrimaryMatch = reasons.contains("name")
-      || reasons.contains(where: { $0.hasPrefix("service:") })
+    let hasKnownServiceMatch = reasons.contains(where: { $0.hasPrefix("service:") })
+    let hasVerifiedManufacturerFraming = manufacturerData.map {
+      $0.count >= 7 && $0[0] == 0xD8 && $0[1] == 0x04 && $0[2] == 0x02
+    } ?? false
+    let hasPositivePrimaryMatch = hasKnownServiceMatch || hasVerifiedManufacturerFraming
 
     guard hasPositivePrimaryMatch else {
       return nil
@@ -2453,28 +2982,6 @@ enum CameraVendorDeviceMatcher {
     name?.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
-  private static func isLikelyCameraVendorCameraName(_ name: String) -> Bool {
-    guard !name.isEmpty else {
-      return false
-    }
-
-    let uppercase = name.uppercased()
-    return uppercase.contains("CAMERA_VENDOR")
-      || uppercase.hasPrefix("CAMERA-")
-      || isLikelyFujifilmModelName(uppercase)
-  }
-
-  private static func isLikelyFujifilmModelName(_ uppercaseName: String) -> Bool {
-    uppercaseName == "X-T5"
-      || uppercaseName.hasPrefix("X-T")
-      || uppercaseName.hasPrefix("X-H")
-      || uppercaseName.hasPrefix("X-S")
-      || uppercaseName.hasPrefix("X-E")
-      || uppercaseName.hasPrefix("X-PRO")
-      || uppercaseName.hasPrefix("GFX")
-      || uppercaseName.contains("FUJIFILM")
-  }
-
   private static func normalize(uuid: String) -> String {
     uuid.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
   }
@@ -2487,6 +2994,59 @@ enum CameraVendorDeviceMatcher {
       return candidate
     }
     return current
+  }
+}
+
+extension CameraDiagnosticPayloadSummary {
+  static func manufacturerAdvertisement(_ manufacturerData: Data?) -> String {
+    guard let manufacturerData else {
+      return "family=absent length=0 redacted=true fingerprint=none"
+    }
+
+    let family: String
+    if manufacturerData.count < 3 {
+      family = "truncated"
+    } else if manufacturerData[0] == 0xD8,
+              manufacturerData[1] == 0x04,
+              manufacturerData[2] == 0x02 {
+      family = "fujifilm-pairing"
+    } else if manufacturerData[0] == 0x02 {
+      family = "legacy-pairing"
+    } else if manufacturerData[0] == 0xD8,
+              manufacturerData[1] == 0x04 {
+      family = "fujifilm-other"
+    } else {
+      family = "unknown"
+    }
+
+    var fingerprintInput = Data("family=\(family)|length=\(manufacturerData.count)|".utf8)
+    switch family {
+    case "fujifilm-pairing":
+      var structuralData = manufacturerData
+      for index in 3..<min(7, structuralData.count) {
+        structuralData[index] = 0
+      }
+      fingerprintInput.append(structuralData)
+    case "legacy-pairing":
+      var structuralData = manufacturerData
+      for index in 1..<min(5, structuralData.count) {
+        structuralData[index] = 0
+      }
+      fingerprintInput.append(structuralData)
+    case "fujifilm-other":
+      fingerprintInput.append(contentsOf: manufacturerData.prefix(3))
+    case "truncated", "unknown":
+      break
+    default:
+      break
+    }
+
+    let fingerprint = SHA256.hash(data: fingerprintInput)
+      .prefix(8)
+      .map { String(format: "%02x", $0) }
+      .joined()
+    return "family=\(family) length=\(manufacturerData.count) " +
+      "redacted=true fingerprint=\(fingerprint)"
   }
 }
 
@@ -2677,6 +3237,8 @@ final class CameraVendorBluetoothService: NSObject {
   private var transferActivationTimeoutSetAt: CFAbsoluteTime = 0
   private var discoveredName: String?
   private var discoveredSerialNumber: String?
+  private var discoveredFirmwareVersion: String?
+  private var discoveredServiceUUIDStrings: Set<String> = []
   private var pendingRememberedRedReconnectIdentityRejectionReason:
     CameraVendorRememberedRedReconnectIdentityRejectionReason?
   private var handshakeCoordinator = CameraVendorHandshakeCoordinator()
@@ -2689,12 +3251,23 @@ final class CameraVendorBluetoothService: NSObject {
   private var lastLoggedWifiConfiguration: CameraVendorWifiNetworkConfiguration?
   private var pendingPostHandshakeProbeReads: Set<String> = []
   private var isRunningPostHandshakeProbe = false
-  private var pendingTransferActivationStrategies: [CameraVendorReferenceAppTransferActivationStrategy] = []
-  private var pendingTransferActivationWrites: [CameraVendorBleWriteRequest] = []
+  private var transferActivationStepDriver: CameraVendorActivationStepDriver?
   private var currentTransferActivationStrategy: CameraVendorReferenceAppTransferActivationStrategy?
+  private var activeActivationDefinition: ActivationStrategyDefinition?
+  private var activeActivationResolver: (
+    (CameraCompatibilityFacts) throws -> ActivationStrategyDefinition
+  )?
+  private var rememberedGalleryTerminalOwner: CameraVendorRememberedGalleryTerminalOwner?
+  private var activationResolutionGate = CameraVendorGattActivationResolutionGate()
   private var transferActivationWritePayloadsByUUID: [String: Data] = [:]
   private var isRunningTransferActivation = false
   private var hasAttemptedAutomaticTransferActivation = false
+  private var transferActivationAttemptCount = 0
+  private var activationAttemptGeneration: UInt64 = 0
+  private var activeActivationAttemptToken: CameraVendorActivationAttemptToken?
+  private var transferActivationWriteAttemptTokensByCharacteristicIdentity: [ObjectIdentifier: CameraVendorActivationWriteToken] = [:]
+  private let fullResetGate = CameraVendorBluetoothFullResetGate()
+  private var wirelessConnectionGeneration: UInt64 = 0
   private var hadAutomaticTransferActivationFeature = false
   private var transferActivationObservedChange = false
   private var transferActivationObservedWifiLaunch = false
@@ -2757,7 +3330,7 @@ final class CameraVendorBluetoothService: NSObject {
   }
 
   var logFileURL: URL {
-    logStore.currentFileURL
+    CameraVendorFileLogger.logFileURL
   }
 
   var rememberedCameraSummary: CameraVendorConnectionSummary? {
@@ -2782,6 +3355,7 @@ final class CameraVendorBluetoothService: NSObject {
 
   func clearLogs() {
     logStore.clear()
+    CameraVendorGalleryDiagnostics.clearLogFile()
   }
 
   @discardableResult
@@ -2997,7 +3571,13 @@ final class CameraVendorBluetoothService: NSObject {
   }
 
   @discardableResult
-  func startRememberedCameraConnection(peripheralID: UUID) -> Bool {
+  func startRememberedCameraConnection(
+    peripheralID: UUID,
+    activationResolver: @escaping (
+      CameraCompatibilityFacts
+    ) throws -> ActivationStrategyDefinition,
+    onRememberedGalleryFailure: @escaping (IOSCameraConnectionIssue) -> Void
+  ) -> Bool {
     let startDecision = IOSCameraRememberedConnectionFlowDriver.startRememberedConnection(
       cleanupBlocked: publishSystemBluetoothCleanupBlockIfNeeded(),
       order: IOSCameraConnectionStep.officialGalleryOrder
@@ -3008,9 +3588,61 @@ final class CameraVendorBluetoothService: NSObject {
     appendLog("用户点击进入相机相册，按 Android 主链路编排执行: \(orderDescription)")
     updateStatus("准备进入相机相册", isBusy: true)
     resetWirelessCameraFlow()
+    activeActivationResolver = activationResolver
+    rememberedGalleryTerminalOwner = CameraVendorRememberedGalleryTerminalOwner(
+      targetPeripheralID: peripheralID,
+      onFailure: onRememberedGalleryFailure
+    )
     isNextRememberedCameraConnectionUserApproved = true
     activeWirelessIntent = .rememberedGallery
     return connectPairedCamera(peripheralID: peripheralID)
+  }
+
+  func rememberedCompatibilityFacts(peripheralID: UUID) -> CameraCompatibilityFacts? {
+    var record = rememberedPairedCameras.first(where: { $0.peripheralID == peripheralID })
+    var recordSource = "memory"
+    if record == nil {
+      let persistedRecords = pairingStore.loadAll()
+      rememberedPairedCameras = persistedRecords
+      rememberedPairedCamera = persistedRecords.first
+      record = persistedRecords.first(where: { $0.peripheralID == peripheralID })
+      recordSource = "store-refresh"
+    }
+    guard let record else {
+      appendObservation(
+        "REMEMBERED_COMPATIBILITY_FACTS recordFound=false recordSource=\(recordSource) " +
+        "bleEndpointEvidence=none"
+      )
+      return nil
+    }
+    let observedCamera = discoveredCameras.first(where: { $0.id == peripheralID })
+    let observedServices = observedCamera?.advertisedServiceUUIDs ?? []
+    let advertisedServices = Set(observedServices.map {
+      $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    })
+    let family: CameraCompatibilityFamily?
+    if advertisedServices.contains(FujifilmCompatibilityUUID.securePairService) {
+      family = .red
+    } else if advertisedServices.contains(FujifilmCompatibilityUUID.legacyPairService) {
+      family = .legacy
+    } else {
+      family = nil
+    }
+    appendObservation(
+      "REMEMBERED_COMPATIBILITY_FACTS recordFound=true recordSource=\(recordSource) " +
+      "bleEndpointEvidence=rememberedPairedPeripheral " +
+      "compatibilityFamily=\(family?.rawValue ?? "unknown") " +
+      "advertisedServiceCount=\(advertisedServices.count)"
+    )
+    return CameraCompatibilityFacts(
+      observedIdentity: CameraObservedIdentity(modelName: record.deviceName, firmwareVersion: nil),
+      protocolFacts: CameraProtocolFacts(
+        compatibilityFamily: family,
+        advertisedServices: advertisedServices,
+        discoveredCharacteristics: [],
+        bleEndpointEvidence: .rememberedPairedPeripheral
+      )
+    )
   }
 
   var requiresSystemBluetoothPairingCleanup: Bool {
@@ -3079,9 +3711,14 @@ final class CameraVendorBluetoothService: NSObject {
     transferActivationTimeoutWorkItem?.cancel()
     pendingHandshakeSummary = nil
     pendingPostHandshakeProbeReads = []
-    pendingTransferActivationStrategies = []
-    pendingTransferActivationWrites = []
+    transferActivationStepDriver = nil
+    activeActivationAttemptToken = nil
+    transferActivationWriteAttemptTokensByCharacteristicIdentity.removeAll()
     currentTransferActivationStrategy = nil
+    activeActivationDefinition = nil
+    activeActivationResolver = nil
+    rememberedGalleryTerminalOwner = nil
+    activationResolutionGate = CameraVendorGattActivationResolutionGate()
     didCompletePairingCallback = false
     didCompleteHandshakeCallback = false
     hasCompletedPairing = false
@@ -3123,8 +3760,9 @@ final class CameraVendorBluetoothService: NSObject {
     activeWirelessIntent = .idle
     awaitingPairingReadyRediscovery = false
     isRunningTransferActivation = false
-    pendingTransferActivationWrites = []
-    pendingTransferActivationStrategies = []
+    transferActivationStepDriver = nil
+    activeActivationAttemptToken = nil
+    transferActivationWriteAttemptTokensByCharacteristicIdentity.removeAll()
     currentTransferActivationStrategy = nil
     transferActivationTimeoutWorkItem?.cancel()
     postHandshakeProbeTimeoutWorkItem?.cancel()
@@ -3231,7 +3869,9 @@ final class CameraVendorBluetoothService: NSObject {
 
     appendLog("手机确认后自动重新连接相机，回写已配对识别号完成相机端确认")
     updateStatus("正在向相机确认配对结果", isBusy: true)
-    prepareConnectionAttempt(peripheral: peripheral, camera: camera)
+    guard prepareConnectionAttempt(peripheral: peripheral, camera: camera) else {
+      return false
+    }
     appendLog("开始连接 \(camera.name) [\(camera.appVariant.rawValue)]")
     if peripheral.state == .connected {
       appendLog("相机 BLE 已连接，直接重新发现服务完成配对确认")
@@ -3343,6 +3983,8 @@ final class CameraVendorBluetoothService: NSObject {
     observedCharacteristicValues = [:]
     discoveredName = nil
     discoveredSerialNumber = nil
+    discoveredFirmwareVersion = nil
+    discoveredServiceUUIDStrings = []
     pendingRememberedRedReconnectIdentityRejectionReason = nil
     handshakeCoordinator = CameraVendorHandshakeCoordinator()
     lastHandshakeWaitReason = nil
@@ -3352,8 +3994,9 @@ final class CameraVendorBluetoothService: NSObject {
     pendingHandshakeSummary = nil
     pendingPostHandshakeProbeReads = []
     isRunningPostHandshakeProbe = false
-    pendingTransferActivationStrategies = []
-    pendingTransferActivationWrites = []
+    transferActivationStepDriver = nil
+    activeActivationAttemptToken = nil
+    transferActivationWriteAttemptTokensByCharacteristicIdentity.removeAll()
     currentTransferActivationStrategy = nil
     isRunningTransferActivation = false
     hasAttemptedAutomaticTransferActivation = false
@@ -3409,7 +4052,9 @@ final class CameraVendorBluetoothService: NSObject {
       return
     }
 
-    prepareConnectionAttempt(peripheral: peripheral, camera: camera)
+    guard prepareConnectionAttempt(peripheral: peripheral, camera: camera) else {
+      return
+    }
     appendLog("开始连接 \(camera.name) [\(camera.appVariant.rawValue)]")
     updateStatus("连接相机中", isBusy: true)
     central.connect(peripheral, options: nil)
@@ -3425,6 +4070,34 @@ final class CameraVendorBluetoothService: NSObject {
 
   func resetWirelessCameraFlow(force: Bool = true) {
     resetForNewConnectionAttempt(force: force)
+  }
+
+  func resetWirelessCameraFlowAndWait(
+    timeoutSeconds: TimeInterval = 3
+  ) async -> CameraCompatibilityLabResetResult {
+    guard !fullResetGate.hasUnresolvedDisconnect else {
+      appendObservation("BLE_FULL_RESET_BLOCKED unresolvedDisconnect=true")
+      return .failed
+    }
+    guard let peripheral = selectedPeripheral,
+          peripheral.state != .disconnected else {
+      resetForNewConnectionAttempt(force: true)
+      return .succeeded
+    }
+
+    let token = CameraVendorBluetoothResetToken(
+      peripheralID: peripheral.identifier,
+      peripheralIdentity: ObjectIdentifier(peripheral),
+      generation: wirelessConnectionGeneration,
+      resetNonce: UUID()
+    )
+    return await fullResetGate.reset(
+      token: token,
+      timeoutSeconds: timeoutSeconds,
+      cancelConnection: { [weak self] in
+        self?.resetForNewConnectionAttempt(force: true)
+      }
+    )
   }
 
   private func beginScan() {
@@ -3486,9 +4159,18 @@ final class CameraVendorBluetoothService: NSObject {
   private func prepareConnectionAttempt(
     peripheral: CBPeripheral,
     camera: CameraVendorDiscoveredCamera
-  ) {
+  ) -> Bool {
+    guard !fullResetGate.hasUnresolvedDisconnect else {
+      appendObservation(
+        "BLE_CONNECTION_ATTEMPT_BLOCKED unresolvedDisconnect=true " +
+        "peripheralID=\(peripheral.identifier.uuidString)"
+      )
+      updateStatus("等待上一条蓝牙连接完全断开", isBusy: false)
+      return false
+    }
     scanTimeoutWorkItem?.cancel()
     central.stopScan()
+    wirelessConnectionGeneration &+= 1
     selectedPeripheral = peripheral
     selectedCamera = camera
     pairingCharacteristic = nil
@@ -3500,6 +4182,8 @@ final class CameraVendorBluetoothService: NSObject {
     observedCharacteristicValues = [:]
     discoveredName = nil
     discoveredSerialNumber = nil
+    discoveredFirmwareVersion = nil
+    discoveredServiceUUIDStrings = []
     pendingRememberedRedReconnectIdentityRejectionReason = nil
     handshakeCoordinator = CameraVendorHandshakeCoordinator()
     lastHandshakeWaitReason = nil
@@ -3509,8 +4193,9 @@ final class CameraVendorBluetoothService: NSObject {
     pendingHandshakeSummary = nil
     pendingPostHandshakeProbeReads = []
     isRunningPostHandshakeProbe = false
-    pendingTransferActivationStrategies = []
-    pendingTransferActivationWrites = []
+    transferActivationStepDriver = nil
+    activeActivationAttemptToken = nil
+    transferActivationWriteAttemptTokensByCharacteristicIdentity.removeAll()
     currentTransferActivationStrategy = nil
     isRunningTransferActivation = false
     hasAttemptedAutomaticTransferActivation = false
@@ -3536,6 +4221,7 @@ final class CameraVendorBluetoothService: NSObject {
     autoReconnectTargetPeripheralID = nil
     postHandshakeProbeTimeoutWorkItem?.cancel()
     transferActivationTimeoutWorkItem?.cancel()
+    return true
   }
 
   private func attemptAutoReconnect(using record: CameraVendorPairedCameraRecord) {
@@ -3559,7 +4245,9 @@ final class CameraVendorBluetoothService: NSObject {
         discoveredCameras = [camera]
         notifyDevicesChanged()
         appendLog("系统已取回上次配对的相机外设，直接发起连接: \(record.deviceName) [\(record.peripheralID.uuidString)]")
-        prepareConnectionAttempt(peripheral: peripheral, camera: camera)
+        guard prepareConnectionAttempt(peripheral: peripheral, camera: camera) else {
+          return
+        }
         updateStatus("连接上次配对的相机", isBusy: true)
         central.connect(peripheral, options: nil)
         return
@@ -3589,6 +4277,11 @@ final class CameraVendorBluetoothService: NSObject {
       guard let self else { return }
       self.central.stopScan()
       self.autoReconnectTargetPeripheralID = nil
+      if self.terminateRememberedGallery(.scanTimedOut) {
+        self.appendLog("未找到上次配对的相机，remembered gallery 本次连接已终止")
+        self.updateStatus("未找到上次配对的相机", isBusy: false)
+        return
+      }
       guard CameraVendorRememberedReconnectPolicy.shouldStartNormalDiscoveryAfterTargetTimeout else {
         self.appendLog("未找到上次配对的相机，等待手动搜索")
         self.updateStatus("未找到上次配对的相机", isBusy: false)
@@ -3630,6 +4323,8 @@ final class CameraVendorBluetoothService: NSObject {
     observedCharacteristicValues = [:]
     discoveredName = nil
     discoveredSerialNumber = nil
+    discoveredFirmwareVersion = nil
+    discoveredServiceUUIDStrings = []
     pendingRememberedRedReconnectIdentityRejectionReason = nil
     handshakeCoordinator = CameraVendorHandshakeCoordinator()
     lastHandshakeWaitReason = nil
@@ -3637,8 +4332,9 @@ final class CameraVendorBluetoothService: NSObject {
     pendingHandshakeSummary = nil
     pendingPostHandshakeProbeReads = []
     isRunningPostHandshakeProbe = false
-    pendingTransferActivationStrategies = []
-    pendingTransferActivationWrites = []
+    transferActivationStepDriver = nil
+    activeActivationAttemptToken = nil
+    transferActivationWriteAttemptTokensByCharacteristicIdentity.removeAll()
     currentTransferActivationStrategy = nil
     isRunningTransferActivation = false
     hasAttemptedAutomaticTransferActivation = false
@@ -3738,12 +4434,46 @@ final class CameraVendorBluetoothService: NSObject {
     let safeMessage = CamTransferDiagnosticLogRedactor.redacted(message)
     let line = "[\(formatter.string(from: Date()))] \(safeMessage)"
     NSLog("%@", line)
-    let shouldWriteToDisk = CameraVendorFastDiagnosticLogPolicy.shouldWriteToDisk(safeMessage)
-    if shouldWriteToDisk {
-      CameraVendorFileLogger.log(safeMessage)
-    }
-    logStore.append(line, writesToDisk: shouldWriteToDisk)
+    CameraDiagnosticPipeline.shared.emitLegacy(safeMessage)
+    logStore.append(line, writesToDisk: false)
     delegate?.cameraVendorBluetoothService(self, didAppendLog: line)
+  }
+
+  private func appendObservedGalleryLog(_ message: String) {
+    let formatter = DateFormatter()
+    formatter.dateFormat = "HH:mm:ss.SSS"
+    let safeMessage = CamTransferDiagnosticLogRedactor.redacted(message)
+    let line = "[\(formatter.string(from: Date()))] \(safeMessage)"
+    logStore.append(line, writesToDisk: false)
+    delegate?.cameraVendorBluetoothService(self, didAppendLog: line)
+  }
+
+  private func writeBleControlValue(
+    _ payload: Data,
+    to characteristic: CBCharacteristic,
+    on peripheral: CBPeripheral,
+    kind: String
+  ) {
+    let payloadSummary = CameraDiagnosticSensitivityPolicy.isSensitiveBLEControl(
+      kind: kind,
+      characteristicUUID: characteristic.uuid.uuidString
+    )
+      ? CameraDiagnosticPayloadSummary.sensitiveControlSignal(
+          name: "payload",
+          direction: .appToCamera,
+          data: payload
+        )
+      : CameraDiagnosticPayloadSummary.controlSignal(
+          name: "payload",
+          direction: .appToCamera,
+          data: payload
+        )
+    appendObservation(
+      "BLE_WRITE_REQUEST direction=appToCamera kind=\(kind) " +
+      "uuid=\(characteristic.uuid.uuidString) " +
+      payloadSummary
+    )
+    peripheral.writeValue(payload, for: characteristic, type: .withResponse)
   }
 
   private func appendObservation(_ message: String) {
@@ -3831,7 +4561,7 @@ final class CameraVendorBluetoothService: NSObject {
       secureHandshakePhase = .awaitingDeviceNameWrite
       appendLog("按 ReferenceApp 顺序先写入已连接设备名称: \(deviceName)")
       let payload = CameraVendorSecureHandshakeCodec.identifierPayload(deviceName)
-      peripheral.writeValue(payload, for: connectedDeviceNameCharacteristic, type: .withResponse)
+      writeBleControlValue(payload, to: connectedDeviceNameCharacteristic, on: peripheral, kind: "device-name")
     case .legacy, .undetermined:
       guard let connectedDeviceNameCharacteristic,
             let camera = selectedCamera else {
@@ -3840,21 +4570,22 @@ final class CameraVendorBluetoothService: NSObject {
 
       if let pairingCharacteristic, let token = camera.pairingToken {
         let payload = CameraVendorSecureHandshakeCodec.pairingPayload(token)
-        appendLog("写入配对 token: \(hexString(payload))")
-        peripheral.writeValue(payload, for: pairingCharacteristic, type: .withResponse)
+        appendLog("写入配对 token: payload-redacted bytes=\(payload.count)")
+        writeBleControlValue(payload, to: pairingCharacteristic, on: peripheral, kind: "pairing-token")
         return
       }
 
       let deviceName = connectedDeviceNameToWrite
       appendLog("未拿到配对 token，直接尝试写入已连接设备名称: \(deviceName)")
       let payload = CameraVendorSecureHandshakeCodec.identifierPayload(deviceName)
-      peripheral.writeValue(payload, for: connectedDeviceNameCharacteristic, type: .withResponse)
+      writeBleControlValue(payload, to: connectedDeviceNameCharacteristic, on: peripheral, kind: "device-name")
     }
   }
 
   private func upsertCamera(
     peripheral: CBPeripheral,
     match: CameraVendorAdvertisementMatch,
+    serviceUUIDs: [String],
     rssi: Int
   ) -> CameraVendorDiscoveredCamera {
     let camera = CameraVendorDiscoveredCamera(
@@ -3864,7 +4595,10 @@ final class CameraVendorBluetoothService: NSObject {
       appVariant: match.appVariant,
       pairingToken: match.pairingToken,
       matchDetails: match.reasons.joined(separator: ", "),
-      admission: match.admission
+      admission: match.admission,
+      advertisedServiceUUIDs: Set(serviceUUIDs.map {
+        $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+      })
     )
 
     if let index = discoveredCameras.firstIndex(where: { $0.id == camera.id }) {
@@ -4016,11 +4750,25 @@ final class CameraVendorBluetoothService: NSObject {
       appendLog("finishHandshake guard 未通过: callback=\(didCompleteHandshakeCallback) probe=\(isRunningPostHandshakeProbe) paired=\(hasCompletedPairing) transfer=\(hasUserInitiatedTransfer) summary=\(pendingHandshakeSummary != nil)")
       return
     case .beginTransferActivation(let strategies, let availableCharacteristicUUIDStrings):
+      do {
+        activeActivationDefinition = try activationResolutionGate.resolve(
+          facts: summary.compatibilityFacts,
+          using: activeActivationResolver
+        )
+        self.activeActivationResolver = nil
+      } catch {
+        terminateRememberedGallery(
+          .activationResolutionFailed(reason: error.localizedDescription)
+        )
+        return
+      }
       hasAttemptedAutomaticTransferActivation = true
-      pendingTransferActivationStrategies = strategies.compactMap {
+      transferActivationAttemptCount = 0
+      let resolvedActivationStrategies = strategies.compactMap {
         CameraVendorReferenceAppTransferActivationStrategy(rawValue: $0.rawValue)
       }
-      hadAutomaticTransferActivationFeature = !strategies.isEmpty
+      currentTransferActivationStrategy = resolvedActivationStrategies.first
+      hadAutomaticTransferActivationFeature = currentTransferActivationStrategy != nil
 
       if let peripheral = selectedPeripheral {
         appendObservation(
@@ -4033,11 +4781,13 @@ final class CameraVendorBluetoothService: NSObject {
       appendObservation("ACTIVATION_PLAN empty availableCharacteristics=\(availableCharacteristicUUIDStrings.joined(separator: ","))")
       appendLog("未发现 ReferenceApp 传图命令特征，停止传图激活流程")
       updateStatus("相机未提供传图启动特征，请重新连接后重试", isBusy: false)
+      terminateRememberedGallery(.missingActivationFeature)
       return
     case .failMissingActivationFeature(let availableCharacteristicUUIDStrings):
       appendObservation("ACTIVATION_PLAN empty availableCharacteristics=\(availableCharacteristicUUIDStrings.joined(separator: ","))")
       appendLog("未发现 ReferenceApp 传图命令特征，停止传图激活流程")
       updateStatus("相机未提供传图启动特征，请重新连接后重试", isBusy: false)
+      terminateRememberedGallery(.missingActivationFeature)
       return
     case .failActivationNotReady:
       appendObservation(
@@ -4047,11 +4797,27 @@ final class CameraVendorBluetoothService: NSObject {
       )
       appendLog("传图激活未进入可连接状态，阻止进入图库")
       updateStatus("相机未进入传图模式，请重新连接后重试", isBusy: false)
+      terminateRememberedGallery(.activationNotReady)
       return
     case .complete(.gallery):
       completeHandshake(summary: summary, reason: "gallery")
       return
     }
+  }
+
+  @discardableResult
+  private func terminateRememberedGallery(
+    _ failure: CameraVendorRememberedGalleryTerminalFailure
+  ) -> Bool {
+    activeActivationResolver = nil
+    let didTerminate = rememberedGalleryTerminalOwner?.fail(
+      failure,
+      intent: activeWirelessIntent
+    ) ?? false
+    if didTerminate {
+      appendObservation("REMEMBERED_GALLERY_TERMINAL_FAILURE reason=\(failure.issue.reason)")
+    }
+    return didTerminate
   }
 
   private func completeHandshake(summary: CameraVendorConnectionSummary, reason: String) {
@@ -4068,6 +4834,7 @@ final class CameraVendorBluetoothService: NSObject {
       )
       appendLog("已配对记录和本次连接相机身份不一致，已阻止进入图库。请清除旧配对后重新配对。")
       updateStatus("请清除旧配对后重新配对", isBusy: false)
+      terminateRememberedGallery(.identityMismatch)
       return
     }
 
@@ -4082,13 +4849,15 @@ final class CameraVendorBluetoothService: NSObject {
         hasTransferAuthorization: summary.preferredWifiNetwork != nil,
         hasActivationCommand: hasAttemptedAutomaticTransferActivation && hadAutomaticTransferActivationFeature,
         hasCameraWifiReady: transferActivationObservedChange
-      )
+      ),
+      compatibilityFacts: summary.compatibilityFacts
     )
 
     didCompleteHandshakeCallback = true
     pendingHandshakeSummary = nil
+    rememberedGalleryTerminalOwner = nil
     CameraVendorGalleryDiagnostics.externalLogHandler = { [weak self] message in
-      self?.appendLog("图库: \(message)")
+      self?.appendObservedGalleryLog(message)
     }
     appendLog(
       "握手完成，设备名称 \(verifiedSummary.deviceName), " +
@@ -4132,7 +4901,10 @@ final class CameraVendorBluetoothService: NSObject {
       serialNumber: discoveredSerialNumber ?? "-",
       connectedDeviceName: connectedDeviceNameToWrite,
       preferredWifiNetwork: preferredWifiNetwork,
-      preferCompressedDownloads: CameraVendorTransferActivationResizePolicy.preferCompressedDownloads
+      preferCompressedDownloads: CameraVendorTransferActivationResizePolicy.preferCompressedDownloads,
+      compatibilityFacts: currentCompatibilityFacts(
+        modelName: discoveredName ?? selectedCamera?.name ?? peripheral.name
+      )
     )
 
     if let preferredWifiNetwork,
@@ -4145,6 +4917,33 @@ final class CameraVendorBluetoothService: NSObject {
         appendLog("这是隐藏网络；如果列表里看不到，请在 Wi‑Fi 的“其他...”里手动输入。")
       }
     }
+  }
+
+  private func currentCompatibilityFacts(modelName: String?) -> CameraCompatibilityFacts {
+    let normalizedServices = Set(discoveredServiceUUIDStrings.map {
+      $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+    })
+    let family: CameraCompatibilityFamily?
+    if normalizedServices.contains(FujifilmCompatibilityUUID.securePairService) {
+      family = .red
+    } else if normalizedServices.contains(FujifilmCompatibilityUUID.legacyPairService) {
+      family = .legacy
+    } else {
+      family = nil
+    }
+    return CameraCompatibilityFacts(
+      observedIdentity: CameraObservedIdentity(
+        modelName: modelName,
+        firmwareVersion: discoveredFirmwareVersion
+      ),
+      protocolFacts: CameraProtocolFacts(
+        compatibilityFamily: family,
+        advertisedServices: normalizedServices,
+        discoveredCharacteristics: Set(discoveredCharacteristicsByUUID.keys.map {
+          $0.uuidString.uppercased()
+        })
+      )
+    )
   }
 
   private func maybeFinishHandshakeAfterReceivingWifiConfiguration() {
@@ -4171,14 +4970,33 @@ final class CameraVendorBluetoothService: NSObject {
       return
     }
 
-    guard !pendingTransferActivationStrategies.isEmpty else {
+    guard let activationDefinition = activeActivationDefinition else {
+      terminateRememberedGallery(
+        .activationResolutionFailed(reason: "No activation definition is bound to this attempt")
+      )
+      return
+    }
+    guard let strategy = currentTransferActivationStrategy else {
       finishHandshakeIfPossible()
       return
     }
-
-    let strategy = pendingTransferActivationStrategies.removeFirst()
-    currentTransferActivationStrategy = strategy
-    pendingTransferActivationWrites = CameraVendorReferenceAppTransferActivationPlan.writes(for: strategy)
+    guard transferActivationAttemptCount < activationDefinition.retryTiming.maxAttempts else {
+      finishHandshakeIfPossible()
+      return
+    }
+    activationAttemptGeneration &+= 1
+    activeActivationAttemptToken = CameraVendorActivationAttemptToken(
+      peripheralID: peripheral.identifier,
+      generation: activationAttemptGeneration
+    )
+    transferActivationAttemptCount += 1
+    transferActivationStepDriver = CameraVendorActivationStepDriver(
+      definition: activationDefinition
+    )
+    var activationWrites: [CameraVendorBleWriteRequest] = []
+    CameraVendorActivationStrategyExecutor.execute(definition: activationDefinition) {
+      activationWrites.append($0)
+    }
     transferActivationWritePayloadsByUUID.removeAll()
     isRunningTransferActivation = true
     transferActivationObservedChange = false
@@ -4191,7 +5009,9 @@ final class CameraVendorBluetoothService: NSObject {
     appendLog("尝试触发相机进入传图模式: \(strategy.rawValue)")
     appendObservation(
       "ACTIVATION_START strategy=\(strategy.rawValue) " +
-      "writes=\(pendingTransferActivationWrites.map { "\($0.characteristicUUIDString)=\(hexString($0.payload))" }.joined(separator: ","))"
+      "attempt=\(transferActivationAttemptCount)/\(activationDefinition.retryTiming.maxAttempts) " +
+      "retryOwner=\(activationDefinition.retryTiming.retryOwner.rawValue) " +
+      "writes=\(activationWrites.map { "\($0.characteristicUUIDString)=\(hexString($0.payload))" }.joined(separator: ","))"
     )
     writeNextTransferActivationStep(on: peripheral)
   }
@@ -4200,13 +5020,24 @@ final class CameraVendorBluetoothService: NSObject {
     guard isRunningTransferActivation else {
       return
     }
+    guard let activationTiming = activeActivationDefinition?.retryTiming else {
+      terminateRememberedGallery(
+        .activationResolutionFailed(reason: "No activation timing is bound to this attempt")
+      )
+      return
+    }
 
-    guard !pendingTransferActivationWrites.isEmpty else {
+    guard let stepDriver = transferActivationStepDriver else {
+      terminateRememberedGallery(
+        .activationResolutionFailed(reason: "No activation step driver is bound to this attempt")
+      )
+      return
+    }
+    guard let request = stepDriver.currentWriteRequest else {
       appendLog("传图命令已写入，读取状态特征等待相机切换")
 
-      let trackedStatusUUIDStrings = currentTransferActivationStrategy.map {
-        CameraVendorReferenceAppTransferActivationPlan.trackedStatusCharacteristicUUIDStrings(for: $0)
-      } ?? []
+      let trackedStatusUUIDStrings = activeActivationDefinition?
+        .trackedStatusCharacteristicUUIDStrings ?? []
 
       for uuidString in trackedStatusUUIDStrings {
         let uuid = CBUUID(string: uuidString)
@@ -4219,49 +5050,66 @@ final class CameraVendorBluetoothService: NSObject {
 
       scheduleBleStateSampling(on: peripheral)
 
-      if let strategy = currentTransferActivationStrategy,
-         CameraVendorTransferActivationCompletionPolicy.shouldFastHandoffAfterCommandWrites(for: strategy) {
-        appendObservation("ACTIVATION_FAST_HANDOFF_AFTER_WRITES strategy=\(strategy.rawValue)")
-        appendLog("传图命令已写入，跳过 BLE ready 等待，直接切换到 Wi‑Fi/PTP 流程")
-        transferActivationObservedChange = true
-        transferActivationObservedWifiLaunch = true
-        completeCurrentTransferActivationAttempt(on: peripheral, source: "fast-handoff-after-writes")
-        return
-      }
-
       guard !transferActivationCameraResponded else {
-        appendLog("相机已响应过状态变化，保留现有 15 秒超时")
+        appendLog(
+          "相机已响应过状态变化，保留现有 " +
+          "\(String(format: "%.0f", activationTiming.responseProgressTimeoutSeconds)) 秒超时"
+        )
         return
       }
       transferActivationTimeoutWorkItem?.cancel()
       transferActivationTimeoutSetAt = CFAbsoluteTimeGetCurrent()
-      appendLog("[DIAG] 设置 8 秒超时 at \(String(format: "%.3f", transferActivationTimeoutSetAt))")
+      appendLog(
+        "[DIAG] 设置 \(String(format: "%.0f", activationTiming.acknowledgementTimeoutSeconds)) 秒超时 " +
+        "at \(String(format: "%.3f", transferActivationTimeoutSetAt))"
+      )
       let timeout = DispatchWorkItem { [weak self] in
         guard let self else { return }
         let elapsed = CFAbsoluteTimeGetCurrent() - self.transferActivationTimeoutSetAt
         self.appendLog("[DIAG] 超时 DispatchWorkItem 触发, elapsed=\(String(format: "%.3f", elapsed))s")
-        self.completeCurrentTransferActivationAttempt(on: peripheral, source: "12s-timeout")
+        self.completeCurrentTransferActivationAttempt(
+          on: peripheral,
+          source: "activation-acknowledgement-timeout"
+        )
       }
       transferActivationTimeoutWorkItem = timeout
       // Camera needs time to start WiFi AP after receiving activation command.
       // 2s was too short — DEVICE-A typically needs 5-10s to launch the AP.
-      DispatchQueue.main.asyncAfter(deadline: .now() + 12, execute: timeout)
+      DispatchQueue.main.asyncAfter(
+        deadline: .now() + activationTiming.acknowledgementTimeoutSeconds,
+        execute: timeout
+      )
       return
     }
 
-    let request = pendingTransferActivationWrites.removeFirst()
     let uuid = CBUUID(string: request.characteristicUUIDString)
     guard let characteristic = discoveredCharacteristicsByUUID[uuid] else {
       appendLog("缺少传图命令特征 \(request.characteristicUUIDString)")
       isRunningTransferActivation = false
-      beginNextTransferActivationAttempt(on: peripheral)
+      transferActivationStepDriver = nil
+      activeActivationAttemptToken = nil
+      if !retryCurrentTransferActivationIfOwned(
+        on: peripheral,
+        source: "missing-write-characteristic"
+      ) {
+        finishHandshakeIfPossible()
+      }
+      return
+    }
+    guard let activationAttemptToken = activeActivationAttemptToken else {
+      terminateRememberedGallery(
+        .activationResolutionFailed(reason: "No activation attempt token is bound to this write")
+      )
       return
     }
 
     appendLog("写入传图命令 \(request.characteristicUUIDString): \(hexString(request.payload))")
-    appendObservation("BLE_WRITE_REQUEST uuid=\(request.characteristicUUIDString) payload=\(hexString(request.payload))")
     transferActivationWritePayloadsByUUID[request.characteristicUUIDString.uppercased()] = request.payload
-    peripheral.writeValue(request.payload, for: characteristic, type: .withResponse)
+    transferActivationWriteAttemptTokensByCharacteristicIdentity[ObjectIdentifier(characteristic)] = CameraVendorActivationWriteToken(
+      attempt: activationAttemptToken,
+      characteristicIdentity: ObjectIdentifier(characteristic)
+    )
+    writeBleControlValue(request.payload, to: characteristic, on: peripheral, kind: "transfer-activation")
   }
 
   private func scheduleBleStateSampling(on peripheral: CBPeripheral) {
@@ -4333,7 +5181,7 @@ final class CameraVendorBluetoothService: NSObject {
     appendObservation(
       "RESERVED_IMAGE_RECEIVE_PROBE stage=\(stage) uuid=\(request.characteristicUUIDString) payload=\(hexString(request.payload))"
     )
-    peripheral.writeValue(request.payload, for: characteristic, type: .withResponse)
+    writeBleControlValue(request.payload, to: characteristic, on: peripheral, kind: "reserved-image-receive-probe")
   }
 
   private func sampleBleState(on peripheral: CBPeripheral, delay: TimeInterval) {
@@ -4354,6 +5202,76 @@ final class CameraVendorBluetoothService: NSObject {
     }
   }
 
+  private func terminateCurrentTransferActivationNotReady(
+    response: CameraVendorActivationAttemptResponse
+  ) {
+    transferActivationTimeoutWorkItem?.cancel()
+    transferActivationTimeoutWorkItem = nil
+    cancelBleStateSampling()
+    transferActivationStepDriver = nil
+    currentTransferActivationStrategy = nil
+    activeActivationDefinition = nil
+    activeActivationAttemptToken = nil
+    transferActivationWriteAttemptTokensByCharacteristicIdentity.removeAll()
+    isRunningTransferActivation = false
+    transferActivationAttemptCount = 0
+    transferActivationObservedChange = false
+    transferActivationCameraResponded = false
+    transferActivationObservedWifiLaunch = false
+    awaitingTransferActivationStateChange = false
+    awaitingTransferActivationStateChangeSince = nil
+    transferActivationWritePayloadsByUUID.removeAll()
+
+    switch response {
+    case .responded:
+      appendObservation("ACTIVATION_ABORT_NO_AP_READY response=responded")
+      updateStatus(CameraVendorTransferActivationFailureStatusPolicy.activationFailedStatus, isBusy: false)
+    case .noResponse:
+      appendObservation("ACTIVATION_ABORT_NO_AP_READY response=no-response")
+      updateStatus("相机未确认进入传图模式，请重试连接", isBusy: false)
+    }
+    terminateRememberedGallery(.activationNotReady)
+  }
+
+  @discardableResult
+  private func retryCurrentTransferActivationIfOwned(
+    on peripheral: CBPeripheral,
+    source: String
+  ) -> Bool {
+    guard let activationDefinition = activeActivationDefinition else {
+      return false
+    }
+
+    switch CameraVendorActivationRetryExecutor.decision(
+      retryTiming: activationDefinition.retryTiming,
+      completedAttempts: transferActivationAttemptCount
+    ) {
+    case .retryInternally(let nextAttempt):
+      appendObservation(
+        "ACTIVATION_RETRY source=\(source) nextAttempt=\(nextAttempt)/" +
+        "\(activationDefinition.retryTiming.maxAttempts) " +
+        "retryOwner=\(activationDefinition.retryTiming.retryOwner.rawValue)"
+      )
+      beginNextTransferActivationAttempt(on: peripheral)
+      return true
+    case .failClosed(let owner):
+      let reason = "Activation retry owner \(owner.rawValue) has no executor in BluetoothService"
+      appendObservation(
+        "ACTIVATION_RETRY_FAIL_CLOSED source=\(source) retryOwner=\(owner.rawValue) " +
+        "reason=owner-executor-unavailable"
+      )
+      appendLog("传图激活重试归属 \(owner.rawValue)，BluetoothService 不得代为重试，终止当前连接")
+      currentTransferActivationStrategy = nil
+      awaitingTransferActivationStateChange = false
+      awaitingTransferActivationStateChangeSince = nil
+      updateStatus("传图激活重试执行器不可用，请重新连接后重试", isBusy: false)
+      terminateRememberedGallery(.activationResolutionFailed(reason: reason))
+      return true
+    case .attemptBudgetExhausted:
+      return false
+    }
+  }
+
   private func completeCurrentTransferActivationAttempt(on peripheral: CBPeripheral, source: String = "unknown") {
     let elapsed = CFAbsoluteTimeGetCurrent() - transferActivationTimeoutSetAt
     appendLog("[DIAG] completeCurrentTransferActivationAttempt source=\(source), elapsed=\(String(format: "%.3f", elapsed))s, isRunning=\(isRunningTransferActivation)")
@@ -4365,138 +5283,64 @@ final class CameraVendorBluetoothService: NSObject {
 
     let strategy = currentTransferActivationStrategy
     let strategyName = strategy?.rawValue ?? "Unknown"
-    currentTransferActivationStrategy = nil
-    pendingTransferActivationWrites = []
+    transferActivationStepDriver = nil
+    activeActivationAttemptToken = nil
     isRunningTransferActivation = false
 
-    if transferActivationObservedChange {
-      if let strategy,
-         CameraVendorTransferActivationCompletionPolicy.shouldWaitForBluetoothDisconnect(
-           afterObservedChangeFor: strategy
-         ) {
-        appendObservation("ACTIVATION_COMPLETE source=\(source) result=waitBluetoothDisconnect strategy=\(strategyName)")
-        appendLog("传图模式 \(strategyName) 已观察到状态变化，等待相机断开 BLE 后再连接 Wi‑Fi")
-        awaitingBluetoothDisconnectForWifiHandoff = true
-        updateStatus("等待相机切换 Wi‑Fi", isBusy: true)
-
-        // For strategies where the camera won't disconnect BLE on its own,
-        // actively disconnect from the app side so PTP/IP can proceed.
-        if CameraVendorTransferActivationCompletionPolicy.shouldActivelyDisconnectBluetooth(for: strategy),
-           let peripheral = selectedPeripheral {
-          appendLog("主动断开 BLE 连接以释放相机 PTP 通道 (策略: \(strategyName))")
-          central.cancelPeripheralConnection(peripheral)
-        }
-
-        let timeout = DispatchWorkItem { [weak self] in
-          guard let self else { return }
-          guard self.awaitingBluetoothDisconnectForWifiHandoff else {
-            return
-          }
-          self.awaitingBluetoothDisconnectForWifiHandoff = false
-          self.appendLog("等待相机断开 BLE 超时，暂不进入图库")
-          self.updateStatus("等待相机切换 Wi‑Fi 超时，请重试", isBusy: false)
-        }
-        bluetoothDisconnectHandoffTimeoutWorkItem?.cancel()
-        bluetoothDisconnectHandoffTimeoutWorkItem = timeout
-        DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: timeout)
-        return
-      }
-
-      if let strategy,
-         CameraVendorTransferActivationCompletionPolicy.shouldActivelyDisconnectBluetooth(for: strategy),
-         let peripheral = selectedPeripheral {
-        appendLog("传图模式 \(strategyName) 已观察到状态变化，主动断开 BLE 后进入图库")
-        awaitingBluetoothDisconnectForWifiHandoff = true
-        updateStatus("断开 BLE 准备连接 Wi‑Fi", isBusy: true)
-        central.cancelPeripheralConnection(peripheral)
-      } else {
-        appendObservation("ACTIVATION_COMPLETE source=\(source) result=proceedToGallery strategy=\(strategyName)")
-        appendLog("传图模式 \(strategyName) 已观察到状态变化，按 ReferenceApp 保持 BLE 并进入图库")
-        pendingTransferActivationStrategies.removeAll()
-        awaitingTransferActivationStateChange = false
-        awaitingTransferActivationStateChangeSince = nil
-        finishHandshakeIfPossible()
-      }
-      return
-    }
-
-    if CameraVendorTransferActivationCompletionPolicy.shouldTryNextStrategy(
+    let retryDecision = activeActivationDefinition.map {
+      CameraVendorActivationRetryExecutor.decision(
+        retryTiming: $0.retryTiming,
+        completedAttempts: transferActivationAttemptCount
+      )
+    } ?? .attemptBudgetExhausted
+    let attemptDecision = CameraVendorActivationAttemptExecutor.decision(
       observedChange: transferActivationObservedChange,
-      hasMoreStrategies: !pendingTransferActivationStrategies.isEmpty
-    ) {
+      cameraResponded: transferActivationCameraResponded,
+      retryDecision: retryDecision
+    )
+
+    switch attemptDecision {
+    case .proceedToGallery:
+      let handoffPolicy = activeActivationDefinition?.wifiHandoffPolicy.rawValue ?? "unbound"
+      appendObservation(
+        "ACTIVATION_COMPLETE source=\(source) result=proceedToGallery " +
+        "strategy=\(strategyName) wifiHandoffPolicy=\(handoffPolicy)"
+      )
+      appendLog("传图模式 \(strategyName) 已满足 Definition 完成谓词，保持 BLE 并进入图库")
+      currentTransferActivationStrategy = nil
+      awaitingTransferActivationStateChange = false
+      awaitingTransferActivationStateChangeSince = nil
+      finishHandshakeIfPossible()
+      return
+    case .retryInternally:
       if transferActivationCameraResponded {
-        appendLog("传图模式 \(strategyName) 只启动了相机热点，未进入图库保留状态，尝试下一种模式")
+        appendLog("传图模式 \(strategyName) 已响应但未满足完成谓词，重试当前 Definition")
       } else {
-        appendLog("传图模式 \(strategyName) 未观察到状态变化，尝试下一种模式")
+        appendLog("传图模式 \(strategyName) 未满足完成谓词，重试当前 Definition")
       }
-      beginNextTransferActivationAttempt(on: peripheral)
-      return
-    }
-
-    if transferActivationCameraResponded && !transferActivationObservedChange {
-      if CameraVendorTransferActivationCompletionPolicy.shouldFallbackToWifiLaunchAfterCameraResponse(
-        observedChange: transferActivationObservedChange,
-        observedWifiLaunch: transferActivationObservedWifiLaunch
-      ) {
-        appendObservation("ACTIVATION_COMPLETE source=\(source) result=fallbackToWifiLaunch strategy=\(strategyName)")
-        appendLog("传图模式 \(strategyName) 未进入保留状态，但热点已启动，回退到 Wi‑Fi/PTP 图库流程")
-        if let strategy,
-           CameraVendorTransferActivationCompletionPolicy.shouldActivelyDisconnectBluetooth(for: strategy),
-           let peripheral = selectedPeripheral {
-          awaitingBluetoothDisconnectForWifiHandoff = true
-          updateStatus("断开 BLE 准备连接 Wi‑Fi", isBusy: true)
-          central.cancelPeripheralConnection(peripheral)
-        } else {
-          pendingTransferActivationStrategies.removeAll()
-          awaitingTransferActivationStateChange = false
-          awaitingTransferActivationStateChangeSince = nil
-          finishHandshakeIfPossible()
-        }
+      if retryCurrentTransferActivationIfOwned(on: peripheral, source: source) {
         return
       }
-      appendLog("相机已响应但未进入传图保留模式，暂不进入 Wi‑Fi/PTP")
-      pendingTransferActivationStrategies.removeAll()
-      awaitingTransferActivationStateChange = false
-      awaitingTransferActivationStateChangeSince = nil
-      updateStatus(CameraVendorTransferActivationFailureStatusPolicy.activationFailedStatus, isBusy: false)
+      terminateCurrentTransferActivationNotReady(
+        response: transferActivationCameraResponded ? .responded : .noResponse
+      )
       return
-    }
-
-    if CameraVendorTransferActivationCompletionPolicy.shouldProceedToGallery(
-      observedChange: transferActivationObservedChange,
-      hasMoreStrategies: !pendingTransferActivationStrategies.isEmpty
-    ) {
-      appendLog("传图命令已完成，继续进入图库")
-      finishHandshakeIfPossible()
+    case .failClosed:
+      if retryCurrentTransferActivationIfOwned(on: peripheral, source: source) {
+        return
+      }
+      terminateCurrentTransferActivationNotReady(
+        response: transferActivationCameraResponded ? .responded : .noResponse
+      )
       return
-    }
-
-    if !CameraVendorTransferActivationCompletionPolicy.shouldAttemptWifiHandoffAfterExhaustedStrategies(
-      observedChange: transferActivationObservedChange,
-      observedWifiLaunch: transferActivationObservedWifiLaunch
-    ) {
-      appendObservation("ACTIVATION_ABORT_NO_AP_READY strategy=\(strategyName)")
-      appendLog("传图模式 \(strategyName) 未观察到 AP_STATE_READY，暂不进入 Wi‑Fi/PTP 图库流程")
-      pendingTransferActivationStrategies.removeAll()
-      awaitingTransferActivationStateChange = false
-      awaitingTransferActivationStateChangeSince = nil
-      updateStatus("相机未确认进入传图模式，请重试连接", isBusy: false)
+    case .terminateNotReady(let response):
+      if response == .responded {
+        appendLog("相机已响应但未进入传图保留模式，终止当前激活 attempt")
+      } else {
+        appendLog("传图模式 \(strategyName) 未满足 Definition 完成谓词，终止当前激活 attempt")
+      }
+      terminateCurrentTransferActivationNotReady(response: response)
       return
-    }
-
-    // All strategies exhausted after observing AP readiness.
-    // Keep waiting briefly for late BLE notifications, then continue the Wi-Fi handoff.
-    awaitingTransferActivationStateChange = true
-    awaitingTransferActivationStateChangeSince = Date()
-    appendLog("已观察到相机 AP ready，保持 BLE 并尝试进入图库。")
-    if let strategy,
-       CameraVendorTransferActivationCompletionPolicy.shouldActivelyDisconnectBluetooth(for: strategy),
-       let peripheral = selectedPeripheral {
-      awaitingBluetoothDisconnectForWifiHandoff = true
-      updateStatus("断开 BLE 准备连接相机 Wi‑Fi", isBusy: true)
-      central.cancelPeripheralConnection(peripheral)
-    } else {
-      finishHandshakeIfPossible()
     }
   }
 }
@@ -4553,6 +5397,7 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
     let serviceUUIDs = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? [])
       .map(\.uuidString)
     let manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data
+    let manufacturerSummary = CameraDiagnosticPayloadSummary.manufacturerAdvertisement(manufacturerData)
 
     let name = localName ?? peripheral.name
     let rememberedRedReconnectMatch =
@@ -4574,20 +5419,25 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
         peripheral: peripheral,
         name: name,
         serviceUUIDs: serviceUUIDs,
-        manufacturerData: manufacturerData,
+        manufacturerSummary: manufacturerSummary,
         rssi: RSSI.intValue
       )
       return
     }
 
     discoveredPeripherals[peripheral.identifier] = peripheral
-    let camera = upsertCamera(peripheral: peripheral, match: match, rssi: RSSI.intValue)
+    let camera = upsertCamera(
+      peripheral: peripheral,
+      match: match,
+      serviceUUIDs: serviceUUIDs,
+      rssi: RSSI.intValue
+    )
 
     appendLog(
       "发现相机: \(camera.name) RSSI \(camera.rssi) | " +
       "variant \(camera.appVariant.rawValue) | " +
       "services \(serviceUUIDs.joined(separator: ",")) | " +
-      "mfg \(hexString(manufacturerData)) | " +
+      "mfg \(manufacturerSummary) | " +
       "match \(camera.matchDetails)"
     )
 
@@ -4610,7 +5460,9 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
       scanTimeoutWorkItem?.cancel()
       central.stopScan()
       appendLog("已找到上次配对的相机，自动发起连接")
-      prepareConnectionAttempt(peripheral: peripheral, camera: camera)
+      guard prepareConnectionAttempt(peripheral: peripheral, camera: camera) else {
+        return
+      }
       updateStatus("连接上次配对的相机", isBusy: true)
       central.connect(peripheral, options: nil)
       return
@@ -4626,7 +5478,10 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
       awaitingPairingReadyRediscovery = false
       scanTimeoutWorkItem?.cancel()
       central.stopScan()
-      appendLog("已捕获可配对广播，自动重新连接 | services \(serviceUUIDs.joined(separator: ",")) | mfg \(hexString(manufacturerData))")
+      appendLog(
+        "已捕获可配对广播，自动重新连接 | " +
+        "services \(serviceUUIDs.joined(separator: ",")) | mfg \(manufacturerSummary)"
+      )
       updateStatus("重新连接相机中", isBusy: true)
       central.connect(peripheral, options: nil)
     }
@@ -4636,14 +5491,14 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
     peripheral: CBPeripheral,
     name: String?,
     serviceUUIDs: [String],
-    manufacturerData: Data?,
+    manufacturerSummary: String,
     rssi: Int
   ) {
     let key = [
       peripheral.identifier.uuidString,
       name ?? "nil",
       serviceUUIDs.joined(separator: ","),
-      hexString(manufacturerData),
+      manufacturerSummary,
     ].joined(separator: "|")
     guard !unmatchedAdvertisementSampleKeys.contains(key) else {
       return
@@ -4662,7 +5517,7 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
       "name=\(name ?? "nil") peripheral=\(peripheral.name ?? "nil") " +
       "id=\(peripheral.identifier.uuidString.prefix(8)) rssi=\(rssi) " +
       "services=\(serviceUUIDs.joined(separator: ",").isEmpty ? "-" : serviceUUIDs.joined(separator: ",")) " +
-      "mfg=\(hexString(manufacturerData))"
+      "mfg=\(manufacturerSummary)"
     )
   }
 
@@ -4701,6 +5556,9 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
 
     let errorDescription = error?.localizedDescription
     appendLog("连接失败: \(errorDescription ?? "unknown")")
+    terminateRememberedGallery(
+      .bleConnectFailed(reason: errorDescription ?? "unknown")
+    )
     if CameraVendorBluetoothConnectFailurePolicy.requiresSystemBluetoothPairingCleanup(for: errorDescription) {
       requireSystemBluetoothPairingCleanup(reason: errorDescription ?? "didFailToConnect", peripheral: peripheral)
       return
@@ -4718,6 +5576,24 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
     didDisconnectPeripheral peripheral: CBPeripheral,
     error: Error?
   ) {
+    if let resetToken = fullResetGate.completeDisconnect(
+      peripheralID: peripheral.identifier,
+      peripheralIdentity: ObjectIdentifier(peripheral)
+    ) {
+      appendObservation(
+        "BLE_FULL_RESET_DISCONNECT_CONSUMED peripheralID=\(peripheral.identifier.uuidString) " +
+        "generation=\(resetToken.generation)"
+      )
+      return
+    }
+    guard !fullResetGate.hasUnresolvedDisconnect else {
+      appendObservation(
+        "BLE_FULL_RESET_DISCONNECT_UNPROVEN peripheralID=" +
+        peripheral.identifier.uuidString
+      )
+      return
+    }
+
     // Pairing probe: if the probe peripheral disconnected, the probe failed.
     if pairingProbeState.targetPeripheralID == peripheral.identifier {
       if let error, CameraVendorPairingProbePolicy.isPairingInvalidError(error) {
@@ -4736,11 +5612,19 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
       appendObservation("BLE_DISCONNECTED error=nil")
     }
 
+    let wasExpectedWifiHandoff = awaitingBluetoothDisconnectForWifiHandoff
+    let wasRecoveryInProgress =
+      CameraVendorSecureHandshakeRecoveryPolicy.shouldReconnectAfterUnexpectedDisconnect(
+        phase: secureHandshakePhase,
+        retryCount: secureHandshakeReconnectCount
+      ) || encryptionRecoveryPolicy.isAwaitingReconnect
+
     if selectedPeripheral?.identifier == peripheral.identifier,
        let rejectionReason = pendingRememberedRedReconnectIdentityRejectionReason {
       pendingRememberedRedReconnectIdentityRejectionReason = nil
       appendLog("已配对 RED 重连身份校验拒绝后断开 reason=\(rejectionReason.rawValue)")
       updateStatus("相机身份校验失败，请重新配对", isBusy: false)
+      terminateRememberedGallery(.identityMismatch)
       return
     }
 
@@ -4767,8 +5651,8 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
         transferActivationTimeoutWorkItem?.cancel()
         transferActivationTimeoutWorkItem = nil
         isRunningTransferActivation = false
-        pendingTransferActivationWrites = []
-        pendingTransferActivationStrategies.removeAll()
+        transferActivationStepDriver = nil
+        activeActivationAttemptToken = nil
         currentTransferActivationStrategy = nil
         if didReachTransferReadyState {
           appendLog("触发传图后 BLE 已断开，按相机切换 Wi‑Fi 继续流程")
@@ -4776,6 +5660,7 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
         } else {
           appendLog("触发传图期间 BLE 已断开，但尚未观察到传图保留模式，暂不进入 Wi‑Fi/PTP")
           updateStatus(CameraVendorTransferActivationFailureStatusPolicy.activationFailedStatus, isBusy: false)
+          terminateRememberedGallery(.activationDisconnected)
         }
         return
       }
@@ -4799,6 +5684,7 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
         awaitingTransferActivationStateChangeSince = nil
         transferActivationObservedChange = false
         updateStatus("相机未确认传图，请重试", isBusy: false)
+        terminateRememberedGallery(.activationDisconnected)
         return
       }
 
@@ -4826,6 +5712,20 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
       }
     }
 
+    let didTerminateRememberedGallery =
+      CameraVendorRememberedGalleryTerminalRouter.routeUnexpectedBleDisconnect(
+        callbackPeripheralID: peripheral.identifier,
+        intent: activeWirelessIntent,
+        didCompleteHandshake: didCompleteHandshakeCallback,
+        isExpectedWifiHandoff: wasExpectedWifiHandoff,
+        isRecoveryInProgress: wasRecoveryInProgress,
+        owner: rememberedGalleryTerminalOwner
+      )
+    if didTerminateRememberedGallery {
+      appendObservation(
+        "REMEMBERED_GALLERY_TERMINAL_FAILURE reason=\(CameraVendorRememberedGalleryTerminalFailure.bleDisconnected.issue.reason)"
+      )
+    }
     updateStatus("连接已断开", isBusy: false)
   }
 }
@@ -4861,11 +5761,15 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
     if let error {
       appendLog("发现服务失败: \(error.localizedDescription)")
       updateStatus("读取服务失败", isBusy: false)
+      terminateRememberedGallery(
+        .serviceDiscoveryFailed(reason: error.localizedDescription)
+      )
       return
     }
 
     appendLog("发现服务数量: \(peripheral.services?.count ?? 0)")
     for service in peripheral.services ?? [] {
+      discoveredServiceUUIDStrings.insert(service.uuid.uuidString.uppercased())
       appendLog("服务 UUID: \(service.uuid.uuidString)")
       if service.uuid == pairServiceUUID {
         handshakeMode = .legacy
@@ -4915,6 +5819,19 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
     if let error {
       appendLog("发现特征失败: \(error.localizedDescription)")
       updateStatus("读取特征失败", isBusy: false)
+      let didTerminateRememberedGallery =
+        CameraVendorRememberedGalleryTerminalRouter.routeCharacteristicDiscoveryFailure(
+          reason: error.localizedDescription,
+          callbackPeripheralID: peripheral.identifier,
+          intent: activeWirelessIntent,
+          owner: rememberedGalleryTerminalOwner
+        )
+      if didTerminateRememberedGallery {
+        appendObservation(
+          "REMEMBERED_GALLERY_TERMINAL_FAILURE " +
+          "reason=\(CameraVendorRememberedGalleryTerminalFailure.gattCharacteristicDiscoveryFailed(reason: error.localizedDescription).issue.reason)"
+        )
+      }
       return
     }
 
@@ -5015,6 +5932,27 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
 
     recordBackgroundHardwareActivity()
 
+    if let data = characteristic.value {
+      let payloadSummary = CameraDiagnosticSensitivityPolicy.isSensitiveBLEControl(
+        kind: nil,
+        characteristicUUID: characteristic.uuid.uuidString
+      )
+        ? CameraDiagnosticPayloadSummary.sensitiveControlSignal(
+            name: "payload",
+            direction: .cameraToApp,
+            data: data
+          )
+        : CameraDiagnosticPayloadSummary.controlSignal(
+            name: "payload",
+            direction: .cameraToApp,
+            data: data
+          )
+      appendObservation(
+        "BLE_VALUE_UPDATE direction=cameraToApp uuid=\(characteristic.uuid.uuidString) " +
+        payloadSummary
+      )
+    }
+
     if characteristic.uuid == serialNumberCharacteristicUUID,
        let data = characteristic.value,
        let serial = String(data: data, encoding: .utf8)?
@@ -5037,9 +5975,21 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
       return
     }
 
+    if characteristic.uuid == firmwareRevisionCharacteristicUUID,
+       let data = characteristic.value,
+       let firmware = String(data: data, encoding: .utf8)?
+       .trimmingCharacters(in: CharacterSet(charactersIn: "\0")) {
+      handshakeCoordinator.completeMetadataRead(characteristic.uuid.uuidString)
+      discoveredFirmwareVersion = firmware.trimmingCharacters(in: .whitespacesAndNewlines)
+      appendLog("相机固件版本: \(discoveredFirmwareVersion ?? "-")")
+      refreshPendingHandshakeSummary(using: peripheral)
+      maybeStartPairing(on: peripheral)
+      return
+    }
+
     if characteristic.uuid == connectedDeviceIdentificationCharacteristicUUID {
       if let data = characteristic.value {
-        appendLog("读取到已连接设备识别号: \(hexString(data))")
+        appendLog("读取到已连接设备识别号: payload-redacted bytes=\(data.count)")
         secureIdentificationNumberAlreadyPaired =
           CameraVendorReferenceAppPairingCodec.isAlreadyPairedIdentificationNumber(data)
         if secureIdentificationNumberAlreadyPaired {
@@ -5061,10 +6011,10 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
           return
         }
 
-        appendLog("回写识别号 ACK: \(hexString(ackPayload))")
+        appendLog("回写识别号 ACK: payload-redacted bytes=\(ackPayload.count)")
         secureHandshakePhase = .awaitingIdentificationNumberWrite
         updateStatus("等待相机确认安全配对", isBusy: true)
-        peripheral.writeValue(ackPayload, for: characteristic, type: .withResponse)
+        writeBleControlValue(ackPayload, to: characteristic, on: peripheral, kind: "identification-ack")
       } else {
         appendLog("已连接设备识别号为空")
         updateStatus("握手失败", isBusy: false)
@@ -5077,18 +6027,20 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
       let previousValue = observedCharacteristicValues[characteristicKey]
       observedCharacteristicValues[characteristic.uuid.uuidString.uppercased()] = data
       refreshPendingHandshakeSummary(using: peripheral)
-      let readyForCurrentTransferActivation = currentTransferActivationStrategy.map {
-        CameraVendorReferenceAppTransferActivationPlan.isReadyToJoinWifi(
+      let readyForCurrentTransferActivation = activeActivationDefinition.map {
+        CameraVendorActivationStrategyExecutor.isComplete(
+          definition: $0,
           uuidString: characteristicKey,
-          value: data,
-          for: $0
+          value: data
         )
       } ?? false
       if isRunningTransferActivation,
-         CameraVendorReferenceAppTransferActivationPlan.isTrackedStatusCharacteristic(
-           uuidString: characteristicKey,
-           for: currentTransferActivationStrategy
-         ),
+         activeActivationDefinition.map({
+           CameraVendorActivationStrategyExecutor.isTrackedStatusCharacteristic(
+             uuidString: characteristicKey,
+             definition: $0
+           )
+         }) ?? false,
          CameraVendorTransferActivationStateUpdatePolicy.shouldHandleTrackedStatusUpdate(
            previousValue: previousValue,
            newValue: data,
@@ -5164,7 +6116,12 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
             self?.completeCurrentTransferActivationAttempt(on: peripheral, source: "extended-timeout")
           }
           transferActivationTimeoutWorkItem = extendedTimeout
-          DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: extendedTimeout)
+          let responseProgressTimeoutSeconds = activeActivationDefinition?
+            .retryTiming.responseProgressTimeoutSeconds ?? 15
+          DispatchQueue.main.asyncAfter(
+            deadline: .now() + responseProgressTimeoutSeconds,
+            execute: extendedTimeout
+          )
           appendLog("相机已响应，延长等待至 15 秒")
           transferActivationCameraResponded = true
         }
@@ -5208,9 +6165,10 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
       }
       if pendingPostHandshakeProbeReads.contains(characteristic.uuid.uuidString.uppercased()) {
         let serviceUUID = characteristic.service?.uuid.uuidString ?? "-"
-        appendLog("探测返回 \(characteristic.uuid.uuidString) @ \(serviceUUID): \(hexString(data))")
-      } else {
-        appendLog("收到特征更新 \(characteristic.uuid.uuidString): \(hexString(data))")
+        appendObservation(
+          "BLE_PROBE_RESULT direction=cameraToApp uuid=\(characteristic.uuid.uuidString) " +
+          "service=\(serviceUUID) bytes=\(data.count)"
+        )
       }
     } else if isMetadataCharacteristic {
       appendLog("元数据特征返回空值 \(characteristic.uuid.uuidString)")
@@ -5243,18 +6201,59 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
     didWriteValueFor characteristic: CBCharacteristic,
     error: Error?
   ) {
+    let characteristicKey = characteristic.uuid.uuidString.uppercased()
+    let isActivationWriteCallback = isRunningTransferActivation
+      && activeActivationDefinition?.writeSteps.contains(where: {
+        $0.characteristicUUIDString.uppercased() == characteristicKey
+      }) == true
+    if isActivationWriteCallback {
+      let characteristicIdentity = ObjectIdentifier(characteristic)
+      let callbackToken = transferActivationWriteAttemptTokensByCharacteristicIdentity
+        .removeValue(forKey: characteristicIdentity)
+      switch CameraVendorActivationAttemptCallbackGate.decision(
+        callbackToken: callbackToken,
+        activeToken: activeActivationAttemptToken,
+        callbackCharacteristicIdentity: characteristicIdentity
+      ) {
+      case .accept:
+        break
+      case .ignoreMissingToken:
+        appendObservation(
+          "ACTIVATION_WRITE_CALLBACK_IGNORED reason=missing-token " +
+          "uuid=\(characteristic.uuid.uuidString) " +
+          "peripheral=\(peripheral.identifier.uuidString)"
+        )
+        return
+      case .ignoreMismatch:
+        appendObservation(
+          "ACTIVATION_WRITE_CALLBACK_IGNORED reason=token-mismatch " +
+          "uuid=\(characteristic.uuid.uuidString) " +
+          "callbackPeripheral=\(callbackToken?.attempt.peripheralID.uuidString ?? "none") " +
+          "callbackGeneration=\(callbackToken.map { String($0.attempt.generation) } ?? "none") " +
+          "activePeripheral=\(activeActivationAttemptToken?.peripheralID.uuidString ?? "none") " +
+          "activeGeneration=\(activeActivationAttemptToken.map { String($0.generation) } ?? "none")"
+        )
+        return
+      }
+    }
+
     if let error = error as NSError? {
       if isRunningTransferActivation,
-         CameraVendorReferenceAppTransferActivationPlan.isActivationCommandCharacteristic(
+         transferActivationStepDriver?.isCurrentWriteCharacteristic(
            uuidString: characteristic.uuid.uuidString
-         ) {
+         ) == true {
         appendLog("传图命令写入失败 \(characteristic.uuid.uuidString): \(error.localizedDescription)")
         isRunningTransferActivation = false
-        pendingTransferActivationWrites = []
-        currentTransferActivationStrategy = nil
+        transferActivationStepDriver = nil
+        activeActivationAttemptToken = nil
         transferActivationTimeoutWorkItem?.cancel()
         transferActivationTimeoutWorkItem = nil
-        beginNextTransferActivationAttempt(on: peripheral)
+        if !retryCurrentTransferActivationIfOwned(
+          on: peripheral,
+          source: "write-error"
+        ) {
+          finishHandshakeIfPossible()
+        }
         return
       }
 
@@ -5278,13 +6277,14 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
     }
 
     if isRunningTransferActivation,
-       CameraVendorReferenceAppTransferActivationPlan.isActivationCommandCharacteristic(
-         uuidString: characteristic.uuid.uuidString
+       var stepDriver = transferActivationStepDriver,
+       let acknowledgement = stepDriver.acknowledgeCurrentWrite(
+         characteristicUUIDString: characteristic.uuid.uuidString
        ) {
+      transferActivationStepDriver = stepDriver
       appendLog("传图命令写入成功 \(characteristic.uuid.uuidString)")
       appendObservation("BLE_WRITE_ACK uuid=\(characteristic.uuid.uuidString) result=success")
-      if characteristic.uuid.uuidString.uppercased()
-          == CameraVendorReferenceAppTransferActivationPlan.imageResizeSettingCharacteristicUUIDString {
+      if acknowledgement.role == .imageResizeSetting {
         let payload = transferActivationWritePayloadsByUUID[characteristic.uuid.uuidString.uppercased()]
           ?? CameraVendorTransferActivationResizePolicy.resizeDisabledPayload
         appendObservation(
@@ -5294,8 +6294,10 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
         if characteristic.properties.contains(.read) {
           peripheral.readValue(for: characteristic)
         }
+      }
+      if acknowledgement.postWriteDelaySeconds > 0 {
         DispatchQueue.main.asyncAfter(
-          deadline: .now() + CameraVendorTransferActivationResizePolicy.postWriteDelaySeconds
+          deadline: .now() + acknowledgement.postWriteDelaySeconds
         ) { [weak self, weak peripheral] in
           guard let self, let peripheral else { return }
           self.writeNextTransferActivationStep(on: peripheral)
@@ -5316,7 +6318,7 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
       let deviceName = connectedDeviceNameToWrite
       let payload = CameraVendorSecureHandshakeCodec.identifierPayload(deviceName)
       appendLog("配对 token 写入成功，继续写入已连接设备名称: \(deviceName)")
-      peripheral.writeValue(payload, for: connectedDeviceNameCharacteristic, type: .withResponse)
+      writeBleControlValue(payload, to: connectedDeviceNameCharacteristic, on: peripheral, kind: "device-name")
       return
     }
 

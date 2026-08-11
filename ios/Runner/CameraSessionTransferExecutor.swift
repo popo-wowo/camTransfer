@@ -8,6 +8,10 @@ protocol CameraSessionRuntimeTransport: AnyObject {
   func fetchThumbnailWithInfo(for handle: Int) async throws -> CameraVendorGalleryThumbnail
   func fetchPreviewImage(for handle: Int) async throws -> Data
   func fetchInitialCameraCatalog() async throws -> CameraVendorCatalogSnapshot
+  func fetchInitialCameraCatalog(
+    query: CameraVendorCatalogQuery?
+  ) async throws -> CameraVendorCatalogSnapshot
+  func fetchExpandedCameraCatalog() async throws -> CameraVendorCatalogSnapshot
   func fetchCameraCatalog(query: CameraVendorCatalogQuery) async throws -> CameraVendorCatalogSnapshot
   func fetchObjectInfo(for handle: Int) async throws -> CameraVendorCameraObjectInfo
   func beginVisibleThumbnailBatch(handles: [Int])
@@ -22,6 +26,15 @@ protocol CameraSessionRuntimeTransport: AnyObject {
 }
 
 extension CameraSessionRuntimeTransport {
+  func fetchInitialCameraCatalog(
+    query: CameraVendorCatalogQuery?
+  ) async throws -> CameraVendorCatalogSnapshot {
+    if let query {
+      return try await fetchCameraCatalog(query: query)
+    }
+    return try await fetchInitialCameraCatalog()
+  }
+
   func fetchPreviewImageWithInfo(for handle: Int) async throws -> CameraVendorGalleryPreview {
     CameraVendorGalleryPreview(data: try await fetchPreviewImage(for: handle), item: nil)
   }
@@ -31,6 +44,14 @@ extension CameraSessionRuntimeTransport {
       domain: "CameraSessionRuntimeTransport",
       code: NSURLErrorUnsupportedURL,
       userInfo: [NSLocalizedDescriptionKey: "当前传输层不支持读取相机初始目录"]
+    )
+  }
+
+  func fetchExpandedCameraCatalog() async throws -> CameraVendorCatalogSnapshot {
+    throw NSError(
+      domain: "CameraSessionRuntimeTransport",
+      code: NSURLErrorUnsupportedURL,
+      userInfo: [NSLocalizedDescriptionKey: "当前传输层不支持读取普通全量目录"]
     )
   }
 
@@ -115,6 +136,18 @@ final class CameraSessionRuntimeDeferredTransport: CameraSessionRuntimeTransport
     return try await transport.fetchInitialCameraCatalog()
   }
 
+  func fetchInitialCameraCatalog(
+    query: CameraVendorCatalogQuery?
+  ) async throws -> CameraVendorCatalogSnapshot {
+    guard let transport else { throw CancellationError() }
+    return try await transport.fetchInitialCameraCatalog(query: query)
+  }
+
+  func fetchExpandedCameraCatalog() async throws -> CameraVendorCatalogSnapshot {
+    guard let transport else { throw CancellationError() }
+    return try await transport.fetchExpandedCameraCatalog()
+  }
+
   func fetchCameraCatalog(query: CameraVendorCatalogQuery) async throws -> CameraVendorCatalogSnapshot {
     guard let transport else { throw CancellationError() }
     return try await transport.fetchCameraCatalog(query: query)
@@ -191,6 +224,30 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
   func loadExpandedCatalog() async throws -> CameraGalleryCatalogSnapshot {
     try generationFence.checkActive()
     do {
+      let snapshot = try await transport.fetchExpandedCameraCatalog()
+      try generationFence.checkActive()
+      return CameraGalleryCatalogSnapshot(
+        snapshotID: CameraGallerySnapshotID(),
+        dateGroups: snapshot.dateGroups,
+        orderedHandles: snapshot.orderedHandles,
+        items: snapshot.items
+      )
+    } catch is CancellationError {
+      throw CancellationError()
+    } catch let failure as CameraGalleryCatalogTransactionFailure {
+      throw failure
+    } catch {
+      throw CameraGalleryCatalogTransactionFailure(
+        primaryMessage: error.localizedDescription,
+        restorationMessage: nil,
+        provesTransportLost: false
+      )
+    }
+  }
+
+  func loadInitialExpandedCatalog() async throws -> CameraGalleryCatalogSnapshot {
+    try generationFence.checkActive()
+    do {
       let snapshot = try await transport.fetchInitialCameraCatalog()
       try generationFence.checkActive()
       return CameraGalleryCatalogSnapshot(
@@ -198,6 +255,31 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
         dateGroups: snapshot.dateGroups,
         orderedHandles: snapshot.orderedHandles,
         items: snapshot.items
+      )
+    } catch is CancellationError {
+      throw CancellationError()
+    } catch let failure as CameraGalleryCatalogTransactionFailure {
+      throw failure
+    } catch {
+      throw CameraGalleryCatalogTransactionFailure(
+        primaryMessage: error.localizedDescription,
+        restorationMessage: nil,
+        provesTransportLost: false
+      )
+    }
+  }
+
+  func loadInitialExactCatalog(for format: CameraMediaFormat) async throws -> CameraGalleryCatalogSnapshot {
+    try generationFence.checkActive()
+    let query = cameraCatalogQuery(for: format)
+    do {
+      let snapshot = try await transport.fetchInitialCameraCatalog(query: query)
+      try generationFence.checkActive()
+      return CameraGalleryCatalogSnapshot(
+        snapshotID: CameraGallerySnapshotID(),
+        dateGroups: snapshot.dateGroups,
+        orderedHandles: snapshot.orderedHandles,
+        items: formatTaggedItems(snapshot.items, format: format)
       )
     } catch is CancellationError {
       throw CancellationError()
@@ -242,6 +324,33 @@ final class CameraSessionGalleryCatalogRuntimeSource: CameraGalleryCatalogRuntim
     let query = subtractBaselineCatalogQuery(for: format)
     do {
       let snapshot = try await transport.fetchCameraCatalog(query: query)
+      try generationFence.checkActive()
+      return CameraGalleryCatalogSnapshot(
+        snapshotID: CameraGallerySnapshotID(),
+        dateGroups: snapshot.dateGroups,
+        orderedHandles: snapshot.orderedHandles,
+        items: formatTaggedItems(snapshot.items, format: format)
+      )
+    } catch is CancellationError {
+      throw CancellationError()
+    } catch let failure as CameraGalleryCatalogTransactionFailure {
+      throw failure
+    } catch {
+      throw CameraGalleryCatalogTransactionFailure(
+        primaryMessage: error.localizedDescription,
+        restorationMessage: nil,
+        provesTransportLost: false
+      )
+    }
+  }
+
+  func loadInitialSubtractBaselineCatalog(
+    for format: CameraMediaFormat
+  ) async throws -> CameraGalleryCatalogSnapshot {
+    try generationFence.checkActive()
+    let query = subtractBaselineCatalogQuery(for: format)
+    do {
+      let snapshot = try await transport.fetchInitialCameraCatalog(query: query)
       try generationFence.checkActive()
       return CameraGalleryCatalogSnapshot(
         snapshotID: CameraGallerySnapshotID(),
@@ -437,14 +546,14 @@ final class CameraSessionRuntimePhotoLibraryFileSaver: CameraSessionRuntimeFileS
 enum CameraVendorOriginalDownloadTimingLogPolicy {
   static func completedMessage(
     handle: UInt32,
-    filename: String,
+    filename _: String,
     mode: CameraVendorTransferDownloadMode,
     timing: CameraVendorOriginalFileTransferTiming,
     photoSaveMs: Int,
     totalMs: Int
   ) -> String {
     "[OBS] ORIGINAL_DOWNLOAD_TIMING " +
-      "handle=0x\(String(format: "%08X", handle)) filename=\(filename) mode=\(mode) " +
+      "handle=0x\(String(format: "%08X", handle)) mode=\(mode) " +
       "bytes=\(timing.byteCount) prepareMs=\(timing.prepareMs) " +
       "requestToFirstByteMs=\(timing.requestToFirstByteMs) socketReceiveMs=\(timing.socketReceiveMs) " +
       "fileWriteMs=\(timing.fileWriteMs) commandGapMs=\(timing.commandGapMs) " +
@@ -456,6 +565,7 @@ enum CameraVendorOriginalDownloadTimingLogPolicy {
 @MainActor
 final class CameraVendorGallerySessionRuntimeTransport: CameraSessionRuntimeTransport {
   private let galleryService: CameraVendorGalleryService
+  private let fujifilmSession: FujifilmCameraSession?
   private let fileSaver: CameraSessionRuntimeFileSaving
   private let diagnosticHandler: ((String) -> Void)?
   private var onTransferFinished: ((UInt32) -> Void)?
@@ -470,9 +580,11 @@ final class CameraVendorGallerySessionRuntimeTransport: CameraSessionRuntimeTran
   private var activeTransferID: UUID?
   private var activeTransferCommitGate: CameraSessionRuntimeTransferCommitGate?
   private var exclusiveDownloadWindowOwnerID: CameraVendorExclusiveDownloadWindowOwnerID?
+  private var didNotifyRuntimeTermination = false
 
   init(
     galleryService: CameraVendorGalleryService,
+    fujifilmSession: FujifilmCameraSession? = nil,
     fileSaver: CameraSessionRuntimeFileSaving,
     diagnosticHandler: ((String) -> Void)? = nil,
     onTransferFinished: ((UInt32) -> Void)? = nil,
@@ -482,6 +594,7 @@ final class CameraVendorGallerySessionRuntimeTransport: CameraSessionRuntimeTran
     onRuntimeTermination: (() -> Void)? = nil
   ) {
     self.galleryService = galleryService
+    self.fujifilmSession = fujifilmSession
     self.fileSaver = fileSaver
     self.diagnosticHandler = diagnosticHandler
     self.onTransferFinished = onTransferFinished
@@ -617,6 +730,16 @@ final class CameraVendorGallerySessionRuntimeTransport: CameraSessionRuntimeTran
     try await galleryService.fetchInitialCameraCatalog()
   }
 
+  func fetchInitialCameraCatalog(
+    query: CameraVendorCatalogQuery?
+  ) async throws -> CameraVendorCatalogSnapshot {
+    try await galleryService.fetchInitialCameraCatalog(query: query)
+  }
+
+  func fetchExpandedCameraCatalog() async throws -> CameraVendorCatalogSnapshot {
+    try await galleryService.fetchExpandedCameraCatalog()
+  }
+
   func fetchCameraCatalog(query: CameraVendorCatalogQuery) async throws -> CameraVendorCatalogSnapshot {
     try await galleryService.fetchCameraCatalog(query: query)
   }
@@ -672,8 +795,20 @@ final class CameraVendorGallerySessionRuntimeTransport: CameraSessionRuntimeTran
 
   func terminateCameraCommunication(reason: String) {
     cancelActiveTransfer(reason: reason)
-    (galleryService as? CameraVendorGalleryConnectionTerminating)?
-      .terminateCameraCommunication(reason: reason)
+    if let fujifilmSession {
+      if fujifilmSession.terminate(reason: reason) {
+        notifyRuntimeTerminationIfNeeded()
+      }
+    } else {
+      (galleryService as? CameraVendorGalleryConnectionTerminating)?
+        .terminateCameraCommunication(reason: reason)
+      notifyRuntimeTerminationIfNeeded()
+    }
+  }
+
+  private func notifyRuntimeTerminationIfNeeded() {
+    guard !didNotifyRuntimeTermination else { return }
+    didNotifyRuntimeTermination = true
     onRuntimeTermination?()
   }
 

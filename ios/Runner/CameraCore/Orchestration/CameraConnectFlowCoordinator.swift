@@ -5,7 +5,7 @@ enum IOSCameraConnectFlowState: Equatable {
   case waitingForPairingConfirmation
   case paired(IOSCameraPairingRecord)
   case connecting(IOSCameraConnectionStep)
-  case galleryReady(IOSCameraGallerySession)
+  case gallerySessionPrepared(IOSCameraGallerySession)
   case failed(IOSCameraConnectionIssue)
 }
 
@@ -51,7 +51,6 @@ final class IOSCameraConnectFlowCoordinator {
 
   func enterRememberedGallery(cameraID: String) async throws {
     resetTransientState()
-    publishConnectionStep(.reconnectPairedBle)
     var didEnterGalleryLoader = false
     do {
       let context = try await appFlow.enterCameraGallery(cameraID: cameraID)
@@ -60,12 +59,12 @@ final class IOSCameraConnectFlowCoordinator {
         self?.publishConnectionStep(step)
       }
       activeConnectionStep = nil
-      state = .galleryReady(session)
+      state = .gallerySessionPrepared(session)
       navigationEvent = .enterGallery(session)
     } catch {
       let fallbackStep: IOSCameraConnectionStep
       if didEnterGalleryLoader, activeConnectionStep == .reconnectPairedBle {
-        fallbackStep = .loadGallery
+        fallbackStep = .gallerySessionPrepared
       } else {
         fallbackStep = activeConnectionStep ?? .reconnectPairedBle
       }

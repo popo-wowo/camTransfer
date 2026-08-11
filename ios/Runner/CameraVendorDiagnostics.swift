@@ -75,33 +75,71 @@ enum CamTransferDiagnosticLogExporter {
 final class CameraVendorFileLogger {
   static let shared = CameraVendorFileLogger()
   private let fileURL: URL
-  private let queue = DispatchQueue(label: "com.camtransfer.fileLogger")
-  private init() {
+  private let queue: DispatchQueue
+
+  private convenience init() {
     let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-    fileURL = docs.appendingPathComponent("camtransfer_debug.log")
-    // Append separator instead of overwriting — appendLog also writes to this file
-    let separator = "\n=== CamTransfer Log \(Date()) ===\n"
-    if let data = separator.data(using: .utf8),
-       let h = try? FileHandle(forWritingTo: fileURL) {
-      h.seekToEndOfFile(); h.write(data); h.closeFile()
-    } else {
-      try? separator.write(to: fileURL, atomically: true, encoding: .utf8)
+    self.init(fileURL: docs.appendingPathComponent("camtransfer_debug.log"))
+  }
+
+  init(fileURL: URL) {
+    self.fileURL = fileURL
+    queue = DispatchQueue(label: "com.camtransfer.fileLogger")
+    queue.sync {
+      appendOnQueue("\n=== CamTransfer Log \(Date()) ===\n")
     }
   }
+
   static func log(_ message: String) {
-    shared.queue.async {
+    CameraDiagnosticPipeline.shared.emitLegacy(message)
+  }
+
+  static func persist(_ message: String) {
+    shared.persist(message)
+  }
+
+  func persist(_ message: String) {
+    queue.async {
       let safeMessage = CamTransferDiagnosticLogRedactor.redacted(message)
       let line = "[\(ISO8601DateFormatter().string(from: Date()))] \(safeMessage)\n"
       os_log("%{public}@", line)
       if let data = line.data(using: .utf8) {
-        shared.trimAndRotateIfNeeded(addingBytes: data.count)
-        if let h = try? FileHandle(forWritingTo: shared.fileURL) {
-          h.seekToEndOfFile(); h.write(data); h.closeFile()
-        }
+        self.trimAndRotateIfNeeded(addingBytes: data.count)
+        self.appendDataOnQueue(data)
       }
     }
   }
+
+  func flushForTesting() {
+    queue.sync {}
+  }
+
   static var logFileURL: URL { shared.fileURL }
+
+  private func appendOnQueue(_ text: String) {
+    guard let data = text.data(using: .utf8) else { return }
+    appendDataOnQueue(data)
+  }
+
+  private func appendDataOnQueue(_ data: Data) {
+    ensurePrimaryFileExistsOnQueue()
+    guard let handle = try? FileHandle(forWritingTo: fileURL) else { return }
+    handle.seekToEndOfFile()
+    handle.write(data)
+    handle.closeFile()
+  }
+
+  private func ensurePrimaryFileExistsOnQueue() {
+    let fileManager = FileManager.default
+    let directoryURL = fileURL.deletingLastPathComponent()
+    try? fileManager.createDirectory(
+      at: directoryURL,
+      withIntermediateDirectories: true
+    )
+    if !fileManager.fileExists(atPath: fileURL.path) {
+      fileManager.createFile(atPath: fileURL.path, contents: nil)
+    }
+  }
 
   private func trimAndRotateIfNeeded(addingBytes: Int) {
     let fileManager = FileManager.default
@@ -127,7 +165,7 @@ final class CameraVendorFileLogger {
     if fileManager.fileExists(atPath: fileURL.path) {
       try? fileManager.moveItem(at: fileURL, to: firstArchiveURL)
     }
-    try? "".write(to: fileURL, atomically: true, encoding: .utf8)
+    ensurePrimaryFileExistsOnQueue()
   }
 
   private func archivedFileURL(index: Int) -> URL {

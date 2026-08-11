@@ -55,6 +55,7 @@ actor CameraCatalogQueryEngine {
     rule: CameraMediaFilterRule,
     owner: CameraCatalogAccessOwner,
     downloadedHandles: Set<Int>,
+    usesInitialCatalogStrategy: Bool = false,
     onProgress: (@MainActor @Sendable (CameraCatalogQueryProgress) -> Void)? = nil
   ) async throws -> CameraCatalogResolution {
     try checkActive()
@@ -83,19 +84,22 @@ actor CameraCatalogQueryEngine {
       case .allCatalog:
         resolution = try await resolveAllCatalog(
           rule: rule,
-          downloadedHandles: downloadedHandles
+          downloadedHandles: downloadedHandles,
+          usesInitialCatalogStrategy: usesInitialCatalogStrategy
         )
       case .exactFormats(let formats):
         resolution = try await resolveExactFormats(
           formats,
           rule: rule,
-          downloadedHandles: downloadedHandles
+          downloadedHandles: downloadedHandles,
+          usesInitialCatalogStrategy: usesInitialCatalogStrategy
         )
       case .subtractBaseline(let requestedFormats):
         resolution = try await resolveSubtractBaseline(
           requestedFormats: requestedFormats,
           rule: rule,
-          downloadedHandles: downloadedHandles
+          downloadedHandles: downloadedHandles,
+          usesInitialCatalogStrategy: usesInitialCatalogStrategy
         )
       }
       try checkActive()
@@ -110,9 +114,12 @@ actor CameraCatalogQueryEngine {
 
   private func resolveAllCatalog(
     rule: CameraMediaFilterRule,
-    downloadedHandles: Set<Int>
+    downloadedHandles: Set<Int>,
+    usesInitialCatalogStrategy: Bool
   ) async throws -> CameraCatalogResolution {
-    let snapshot = try await source.loadExpandedCatalog()
+    let snapshot = try await usesInitialCatalogStrategy
+      ? source.loadInitialExpandedCatalog()
+      : source.loadExpandedCatalog()
     try checkActive()
     return makeResolution(
       membershipItems: snapshot.items,
@@ -124,12 +131,20 @@ actor CameraCatalogQueryEngine {
   private func resolveExactFormats(
     _ formats: Set<CameraMediaFormat>,
     rule: CameraMediaFilterRule,
-    downloadedHandles: Set<Int>
+    downloadedHandles: Set<Int>,
+    usesInitialCatalogStrategy: Bool
   ) async throws -> CameraCatalogResolution {
     var orderedItems: [CameraGalleryCatalogItem] = []
     var seenHandles: Set<Int> = []
+    var isFirstCatalogRequest = usesInitialCatalogStrategy
     for format in [CameraMediaFormat.jpg, .raw] where formats.contains(format) {
-      let snapshot = try await source.loadExactCatalog(for: format)
+      let snapshot: CameraGalleryCatalogSnapshot
+      if isFirstCatalogRequest {
+        snapshot = try await source.loadInitialExactCatalog(for: format)
+        isFirstCatalogRequest = false
+      } else {
+        snapshot = try await source.loadExactCatalog(for: format)
+      }
       try checkActive()
       for item in snapshot.items where seenHandles.insert(item.handle).inserted {
         orderedItems.append(item)
@@ -145,17 +160,25 @@ actor CameraCatalogQueryEngine {
   private func resolveSubtractBaseline(
     requestedFormats: Set<CameraMediaFormat>,
     rule: CameraMediaFilterRule,
-    downloadedHandles: Set<Int>
+    downloadedHandles: Set<Int>,
+    usesInitialCatalogStrategy: Bool
   ) async throws -> CameraCatalogResolution {
     // For HEIF (and video), the camera supports a fast PTP set-difference query:
     // (D604=format result) minus (ALL baseline) = format-only handles.
     // This avoids per-handle ObjectInfo and completes in one PTP round-trip.
     var orderedItems: [CameraGalleryCatalogItem] = []
     var seenHandles: Set<Int> = []
+    var isFirstCatalogRequest = usesInitialCatalogStrategy
 
     // Collect exact-format handles for JPG/RAW if also requested
     for format in [CameraMediaFormat.jpg, .raw] where requestedFormats.contains(format) {
-      let snapshot = try await source.loadExactCatalog(for: format)
+      let snapshot: CameraGalleryCatalogSnapshot
+      if isFirstCatalogRequest {
+        snapshot = try await source.loadInitialExactCatalog(for: format)
+        isFirstCatalogRequest = false
+      } else {
+        snapshot = try await source.loadExactCatalog(for: format)
+      }
       try checkActive()
       for item in snapshot.items where seenHandles.insert(item.handle).inserted {
         orderedItems.append(item)
@@ -164,7 +187,12 @@ actor CameraCatalogQueryEngine {
 
     // Collect HEIF handles via subtractBaseline
     if requestedFormats.contains(.heif) {
-      let snapshot = try await source.loadSubtractBaselineCatalog(for: .heif)
+      let snapshot: CameraGalleryCatalogSnapshot
+      if isFirstCatalogRequest {
+        snapshot = try await source.loadInitialSubtractBaselineCatalog(for: .heif)
+      } else {
+        snapshot = try await source.loadSubtractBaselineCatalog(for: .heif)
+      }
       try checkActive()
       for item in snapshot.items where seenHandles.insert(item.handle).inserted {
         orderedItems.append(item)

@@ -2,293 +2,538 @@ import Foundation
 
 struct CameraVendorGalleryMainlineLoadResult {
   let confirmedSteps: [IOSCameraConnectionStep]
-  let ptpSessionID: String
+  let connectionSummary: CameraVendorConnectionSummary
+  let fujifilmSession: FujifilmCameraSession
+
+  var ptpSessionID: String { fujifilmSession.sessionID }
+}
+
+final class CameraVendorCompatibilityLabAttemptFailure: Error {
+  let issue: IOSCameraConnectionIssue
+  let formalRouteFailure: CameraCompatibilityLabFormalRouteFailure
+  let diagnosticHandler: CameraCompatibilityLab.DiagnosticHandler
+
+  init(
+    issue: IOSCameraConnectionIssue,
+    formalRouteFailure: CameraCompatibilityLabFormalRouteFailure,
+    diagnosticHandler: @escaping CameraCompatibilityLab.DiagnosticHandler
+  ) {
+    self.issue = issue
+    self.formalRouteFailure = formalRouteFailure
+    self.diagnosticHandler = diagnosticHandler
+  }
 }
 
 final class CameraVendorGalleryMainlineSessionLoader {
-  private let galleryService: CameraVendorRealtimeGalleryService
+  typealias CompatibilityLabAttemptExecutor = (
+    CameraCompatibilityLabCandidate,
+    CameraConnectionPlan
+  ) async throws -> CameraVendorGalleryMainlineLoadResult
 
-  init(galleryService: CameraVendorRealtimeGalleryService) {
+  private let galleryService: CameraVendorRealtimeGalleryService
+  private let compatibilityEnvironment: FujifilmCompatibilityEnvironment
+  private let compatibilityLabCandidateProvider: CameraCompatibilityLabCandidateProvider
+
+  init(
+    galleryService: CameraVendorRealtimeGalleryService,
+    compatibilityEnvironment: FujifilmCompatibilityEnvironment = .production,
+    compatibilityLabCandidateProvider: CameraCompatibilityLabCandidateProvider = .production
+  ) {
     self.galleryService = galleryService
+    self.compatibilityEnvironment = compatibilityEnvironment
+    self.compatibilityLabCandidateProvider = compatibilityLabCandidateProvider
   }
 
   func loadGallerySession(
     context: IOSCameraConnectionContext,
-    publishStep: @escaping (IOSCameraConnectionStep) -> Void
+    publishStep: @escaping (IOSCameraConnectionStep) -> Void,
+    performBleConnection: @escaping (
+      @escaping (CameraCompatibilityFacts) throws -> ActivationStrategyDefinition
+    ) async throws -> CameraVendorConnectionSummary,
+    compatibilityLabReset: @escaping CameraCompatibilityLab.ResetHandler
   ) async throws -> CameraVendorGalleryMainlineLoadResult {
-    let fetchGeneration = try galleryService.beginMainlineGalleryFetch()
-    defer { galleryService.finishMainlineGalleryFetch(generation: fetchGeneration) }
+    do {
+      return try await loadGallerySessionAttempt(
+        context: context,
+        publishStep: publishStep,
+        performBleConnection: performBleConnection,
+        forcedLabCandidate: nil,
+        allowCompatibilityLab: true
+      )
+    } catch let failure as CameraVendorCompatibilityLabAttemptFailure {
+      return try await recoverWithCompatibilityLab(
+        failure: failure,
+        context: context,
+        publishStep: publishStep,
+        performBleConnection: performBleConnection,
+        compatibilityLabReset: compatibilityLabReset
+      )
+    }
+  }
 
+  private func loadGallerySessionAttempt(
+    context: IOSCameraConnectionContext,
+    publishStep: @escaping (IOSCameraConnectionStep) -> Void,
+    performBleConnection: @escaping (
+      @escaping (CameraCompatibilityFacts) throws -> ActivationStrategyDefinition
+    ) async throws -> CameraVendorConnectionSummary,
+    forcedLabCandidate: CameraCompatibilityLabCandidate?,
+    allowCompatibilityLab: Bool
+  ) async throws -> CameraVendorGalleryMainlineLoadResult {
+    let connectionSessionID = UUID()
+    try galleryService.beginConnectionPlanAttempt()
+    let attemptEnvironment: FujifilmCompatibilityEnvironment
+    if let forcedLabCandidate {
+      attemptEnvironment = try compatibilityEnvironment.addingCompatibilityLabCandidate(
+        forcedLabCandidate
+      )
+    } else {
+      attemptEnvironment = compatibilityEnvironment
+    }
+    let protocolEngine = FujifilmProtocolEngine(
+      galleryService: galleryService,
+      environment: attemptEnvironment
+    )
+    let compatibilityFacts = context.compatibilityFacts ?? .unknown
+    var observedIdentity = compatibilityFacts.observedIdentity
+    let initialDecision = try Self.makeInitialDecision(
+      connectionSessionID: connectionSessionID,
+      compatibilityFacts: compatibilityFacts,
+      attemptEnvironment: attemptEnvironment
+    )
+    let executionState = CameraConnectionExecutionState(
+      connectionSessionID: connectionSessionID,
+      plan: initialDecision.plan,
+      onBarrierEvent: { event in
+        protocolEngine.appendRuntimeMessage(self.barrierDiagnostic(event: event))
+      }
+    )
+    protocolEngine.appendRuntimeMessage(planResolutionDiagnostic(
+      decision: initialDecision,
+      connectionSessionID: connectionSessionID.uuidString,
+      observedIdentity: observedIdentity
+    ))
+    guard initialDecision.plan.supportStatus != .unsupported else {
+      let issue = IOSCameraConnectionIssue(
+        step: .reconnectPairedBle,
+        reason: "当前 remembered Session 缺少可验证的兼容家族/Service 事实，不能启动 Fujifilm BLE 主链"
+      )
+      executionState.recordFailure(issue)
+      protocolEngine.appendRuntimeMessage(terminalDiagnostic(
+        connectionSessionID: connectionSessionID,
+        plan: initialDecision.plan,
+        firstMissingBarrier: .reconnectPairedBle,
+        error: issue
+      ))
+      throw issue
+    }
+    try protocolEngine.bind(plan: executionState.plan)
+    var sessionContext = context
+    sessionContext.connectionPlan = executionState.plan
+
+    var connectionSummary: CameraVendorConnectionSummary?
+    var fetchGeneration: UInt64?
+    defer {
+      if let fetchGeneration {
+        protocolEngine.finishMainlineGalleryFetch(generation: fetchGeneration)
+      }
+    }
     var didCompleteWifiHandoff = false
-    let prePtpCoordinator = IOSCameraGalleryConnectionCoordinator(
+    let orchestrator = CameraConnectionOrchestrator(
+      executionState: executionState,
       onStepStarted: publishStep,
+      onStepCompleted: { step, _ in
+        guard step == .reconnectPairedBle else { return }
+        guard connectionSummary?.compatibilityFacts != nil else {
+          throw IOSCameraConnectionIssue(
+            step: .reconnectPairedBle,
+            reason: "BLE reconnect completed without typed GATT compatibility facts"
+          )
+        }
+      },
       runners: [
-        IOSCameraConnectionStepRunner(step: .reconnectPairedBle) { [weak self] stepContext in
-          guard let self else {
-            throw CancellationError()
-          }
-          return try await self.executeReconnectPairedBleStep(context: stepContext)
-        },
-        IOSCameraConnectionStepRunner(step: .transferAuthorization) { [weak self] stepContext in
-          guard let self else {
-            throw CancellationError()
-          }
-          return try await self.executeTransferAuthorizationStep(context: stepContext)
-        },
-        IOSCameraConnectionStepRunner(step: .activateCameraWifi) { [weak self] stepContext in
-          guard let self else {
-            throw CancellationError()
-          }
-          return try await self.executeActivateCameraWifiStep(context: stepContext)
-        },
-        IOSCameraConnectionStepRunner(step: .waitCameraWifiReady) { [weak self] stepContext in
-          guard let self else {
-            throw CancellationError()
-          }
-          return try await self.executeWaitCameraWifiReadyStep(context: stepContext)
-        },
-        IOSCameraConnectionStepRunner(step: .joinCameraWifi) { [weak self] stepContext in
-          guard let self else {
-            throw CancellationError()
-          }
-          let result = try await executeJoinCameraWifiStep(
+        IOSCameraConnectionStepRunner(step: .reconnectPairedBle) { stepContext in
+          let result = try await protocolEngine.executeReconnectPairedBleStep(
             context: stepContext,
-            communicationGeneration: fetchGeneration,
-            route: CameraVendorGalleryRoutePolicy.hiddenDiagnosticRoutes.first
+            onGattFacts: { facts in
+              observedIdentity = facts.observedIdentity
+              let gattDecision = attemptEnvironment.resolve(
+                protocolFacts: facts.protocolFacts,
+                revising: executionState.plan.version
+              )
+              guard gattDecision.plan.supportStatus != .unsupported else {
+                protocolEngine.appendRuntimeMessage(self.planResolutionDiagnostic(
+                  decision: gattDecision,
+                  connectionSessionID: connectionSessionID.uuidString,
+                  observedIdentity: observedIdentity,
+                  revisionReason: .gattDiscoveryCompleted
+                ))
+                throw IOSCameraConnectionIssue(
+                  step: .transferAuthorization,
+                  reason: "当前相机的 Service/Characteristic 事实未匹配安全连接 Plan"
+                )
+              }
+              let gattRevision = try executionState.applyRevision(
+                gattDecision.plan,
+                reason: .gattDiscoveryCompleted
+              )
+              protocolEngine.appendRuntimeMessage(self.planResolutionDiagnostic(
+                decision: gattDecision,
+                connectionSessionID: connectionSessionID.uuidString,
+                observedIdentity: observedIdentity,
+                revisionReason: .gattDiscoveryCompleted,
+                revisionSummary: gattRevision
+              ))
+              return executionState.plan
+            },
+            performConnection: performBleConnection
+          )
+          connectionSummary = result.summary
+          return result.execution
+        },
+        IOSCameraConnectionStepRunner(step: .transferAuthorization) { stepContext in
+          try await protocolEngine.executeTransferAuthorizationStep(context: stepContext)
+        },
+        IOSCameraConnectionStepRunner(step: .activateCameraWifi) { stepContext in
+          try await protocolEngine.executeActivateCameraWifiStep(context: stepContext)
+        },
+        IOSCameraConnectionStepRunner(step: .waitCameraWifiReady) { stepContext in
+          try await protocolEngine.executeWaitCameraWifiReadyStep(context: stepContext)
+        },
+        IOSCameraConnectionStepRunner(step: .joinCameraWifi) { stepContext in
+          let generation = try protocolEngine.beginMainlineGalleryFetch()
+          fetchGeneration = generation
+          let result = try await protocolEngine.executeJoinCameraWifiStep(
+            context: stepContext,
+            communicationGeneration: generation
           )
           didCompleteWifiHandoff = result.didCompleteWifiHandoff
           return result.execution
         },
       ]
     )
-    let prePtpContext = try await prePtpCoordinator.connect(context: context)
-    let confirmedConnectionSteps = prePtpCoordinator.confirmedSteps()
-    galleryService.appendGalleryRuntimeMessage(
+    do {
+      _ = try await orchestrator.connect(context: sessionContext)
+    } catch {
+      let issue = orchestrator.recordFailure(error)
+      protocolEngine.appendRuntimeMessage(
+        terminalDiagnostic(
+          connectionSessionID: connectionSessionID,
+          plan: orchestrator.currentPlan,
+          firstMissingBarrier: orchestrator.firstMissingBarrier,
+          error: issue
+        )
+      )
+      if allowCompatibilityLab {
+        throw CameraVendorCompatibilityLabAttemptFailure(
+          issue: issue,
+          formalRouteFailure: CameraCompatibilityLabFormalRouteFailure(
+            firstMissingBarrier: orchestrator.firstMissingBarrier ?? issue.step,
+            failedPlan: orchestrator.currentPlan
+          ),
+          diagnosticHandler: { message in
+            protocolEngine.appendRuntimeMessage(message)
+          }
+        )
+      }
+      throw issue
+    }
+    guard let connectionSummary, let fetchGeneration else {
+      throw IOSCameraConnectionIssue(
+        step: orchestrator.firstMissingBarrier ?? .joinCameraWifi,
+        reason: "Fujifilm connection owner did not retain BLE summary or communication generation"
+      )
+    }
+    let confirmedConnectionSteps = orchestrator.confirmedSteps()
+    protocolEngine.appendRuntimeMessage(
       "[OBS] IOS_OFFICIAL_GALLERY_PRE_PTP_CONFIRMED steps=" +
       confirmedConnectionSteps.map(\.androidDisplayName).joined(separator: "->")
     )
 
-    let diagnosticRoutes = CameraVendorGalleryRoutePolicy.hiddenDiagnosticRoutes
-    var lastRouteError: Error?
-    var didEstablishGallerySession = false
-    var galleryReadyConfirmedSteps = confirmedConnectionSteps
-    var galleryReadyPTPSessionID: String?
-
-    for (routeIndex, route) in diagnosticRoutes.enumerated() {
-      var diagnostics: [String] = []
-      let recorder: (String) -> Void = { [weak self] message in
-        diagnostics.append(message)
-        self?.galleryService.appendGalleryRuntimeMessage(message)
-      }
-
-      do {
-        galleryService.prepareGalleryRouteAttempt(
-          route,
-          didCompleteWifiHandoff: didCompleteWifiHandoff,
-          recorder: recorder
-        )
-        let routeCoordinator = IOSCameraGalleryConnectionCoordinator(
-          initialConfirmedSteps: confirmedConnectionSteps,
-          onStepStarted: publishStep,
-          runners: [
-            IOSCameraConnectionStepRunner(step: .connectPtp) { [weak self] stepContext in
-              guard let self else {
-                throw CancellationError()
-              }
-              return try executeConnectPtpStep(
-                context: stepContext,
-                communicationGeneration: fetchGeneration,
-                recorder: recorder
-              )
-            },
-            IOSCameraConnectionStepRunner(step: .confirmGalleryMode) { [weak self] stepContext in
-              guard let self else {
-                throw CancellationError()
-              }
-              return try self.executeConfirmGalleryModeStep(context: stepContext)
-            },
-            IOSCameraConnectionStepRunner(step: .loadGallery) { [weak self] stepContext in
-              guard let self else {
-                throw CancellationError()
-              }
-              return try executeLoadGalleryStep(context: stepContext)
-            },
-          ]
-        )
-        let galleryReadyContext = try await routeCoordinator.connect(context: prePtpContext)
-        guard let ptpSessionID = galleryReadyContext.ptpSessionID,
-              !ptpSessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-          throw IOSCameraConnectionIssue(
-            step: .loadGallery,
-            reason: "Gallery 主链完成后缺少有效的 PTP session"
+    var diagnostics: [String] = []
+    let recorder: (String) -> Void = { message in
+      diagnostics.append(message)
+      protocolEngine.appendRuntimeMessage(message)
+    }
+    let preparedFujifilmSession: FujifilmCameraSession
+    do {
+      preparedFujifilmSession = try await protocolEngine.connectGallerySession(
+        executionState: executionState,
+        cameraID: context.cameraID,
+        observedIdentity: observedIdentity,
+        communicationGeneration: fetchGeneration,
+        didCompleteWifiHandoff: didCompleteWifiHandoff,
+        recorder: recorder,
+        onBarrierProgress: { event in
+          try orchestrator.recordProgress(event)
+          guard case let .ptpInitAcknowledged(strategy, _, transport) = event.evidence else {
+            return
+          }
+          let currentPlan = orchestrator.currentPlan
+          let revisedProtocolFacts = currentPlan.protocolFacts.updating(
+            successfulInitStrategy: strategy,
+            operationTransport: transport
           )
+          guard revisedProtocolFacts != currentPlan.protocolFacts else { return }
+          let revisedDecision = attemptEnvironment.resolve(
+            protocolFacts: revisedProtocolFacts,
+            revising: currentPlan.version
+          )
+          let revisionSummary = try orchestrator.applyRevision(
+            revisedDecision.plan,
+            reason: .ptpInitAcknowledged
+          )
+          try protocolEngine.applyRevision(
+            orchestrator.currentPlan,
+            reason: .ptpInitAcknowledged
+          )
+          protocolEngine.appendRuntimeMessage(self.planResolutionDiagnostic(
+            decision: revisedDecision,
+            connectionSessionID: connectionSessionID.uuidString,
+            observedIdentity: observedIdentity,
+            revisionReason: .ptpInitAcknowledged,
+            revisionSummary: revisionSummary
+          ))
+        },
+        onFunctionFactsInspected: { functionFacts in
+          let currentPlan = orchestrator.currentPlan
+          let revisedProtocolFacts = currentPlan.protocolFacts.updating(functionFacts: functionFacts)
+          guard revisedProtocolFacts != currentPlan.protocolFacts else { return currentPlan }
+          let revisedDecision = attemptEnvironment.resolve(
+            protocolFacts: revisedProtocolFacts,
+            revising: currentPlan.version
+          )
+          let revisionSummary = try orchestrator.applyRevision(
+            revisedDecision.plan,
+            reason: .functionFactsInspected
+          )
+          protocolEngine.appendRuntimeMessage(self.planResolutionDiagnostic(
+            decision: revisedDecision,
+            connectionSessionID: connectionSessionID.uuidString,
+            observedIdentity: observedIdentity,
+            revisionReason: .functionFactsInspected,
+            revisionSummary: revisionSummary
+          ))
+          return orchestrator.currentPlan
         }
-        galleryReadyConfirmedSteps = routeCoordinator.confirmedSteps()
-        galleryReadyPTPSessionID = ptpSessionID
-        galleryService.appendGalleryRuntimeMessage(
-          "[OBS] IOS_OFFICIAL_GALLERY_CONFIRMED steps=" +
-          galleryReadyConfirmedSteps.map(\.androidDisplayName).joined(separator: "->")
+      )
+    } catch {
+      let routeError = protocolEngine.buildGalleryRouteFailure(
+        didCompleteWifiHandoff: didCompleteWifiHandoff,
+        diagnostics: diagnostics,
+        error: error
+      )
+      protocolEngine.appendRuntimeMessage("[OBS] FUJIFILM_PROTOCOL_ENGINE_FAILED error=\(error.localizedDescription)")
+      let issue = orchestrator.recordFailure(routeError)
+      protocolEngine.appendRuntimeMessage(
+        terminalDiagnostic(
+          connectionSessionID: connectionSessionID,
+          plan: orchestrator.currentPlan,
+          firstMissingBarrier: orchestrator.firstMissingBarrier,
+          error: issue
         )
-        galleryService.appendGalleryRuntimeMessage("[ROUTE \(route.id.rawValue)] PTP 与 GalleryMode 就绪，目录交由 Catalog Runtime")
-        galleryService.completeSuccessfulGalleryRouteSearch()
-        didEstablishGallerySession = true
-        break
-      } catch {
-        lastRouteError = galleryService.buildGalleryRouteFailure(
-          didCompleteWifiHandoff: didCompleteWifiHandoff,
-          diagnostics: diagnostics,
-          error: error
+      )
+      if allowCompatibilityLab {
+        throw CameraVendorCompatibilityLabAttemptFailure(
+          issue: issue,
+          formalRouteFailure: CameraCompatibilityLabFormalRouteFailure(
+            firstMissingBarrier: orchestrator.firstMissingBarrier ?? issue.step,
+            failedPlan: orchestrator.currentPlan
+          ),
+          diagnosticHandler: { message in
+            protocolEngine.appendRuntimeMessage(message)
+          }
         )
-        galleryService.appendGalleryRuntimeMessage("[ROUTE \(route.id.rawValue)] 失败: \(error.localizedDescription)")
       }
-
-      if routeIndex < diagnosticRoutes.count - 1 {
-        try await Task.sleep(nanoseconds: 1_500_000_000)
-      }
+      throw issue
     }
 
-    guard didEstablishGallerySession, let galleryReadyPTPSessionID else {
-      throw lastRouteError ?? NSError(
-        domain: "CameraVendorRealtimeGalleryService",
-        code: 4,
-        userInfo: [NSLocalizedDescriptionKey: "所有 ReferenceApp 路线均未建立可用的 Gallery PTP 会话"]
+    let ptpSessionID = preparedFujifilmSession.sessionID
+    guard !ptpSessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      throw IOSCameraConnectionIssue(
+        step: .gallerySessionPrepared,
+        reason: "Gallery Session 准备完成后缺少有效的 PTP session"
       )
     }
+    let preparedConfirmedSteps = orchestrator.confirmedSteps()
+    protocolEngine.appendRuntimeMessage(
+      "[OBS] IOS_GALLERY_SESSION_PREPARED steps=" +
+      preparedConfirmedSteps.map(\.androidDisplayName).joined(separator: "->")
+    )
+    protocolEngine.appendRuntimeMessage("[OBS] FUJIFILM_GALLERY_SESSION_PREPARED firstCatalogOwner=CatalogRuntime")
+    protocolEngine.completeSuccessfulGalleryRouteSearch()
 
     return CameraVendorGalleryMainlineLoadResult(
-      confirmedSteps: galleryReadyConfirmedSteps,
-      ptpSessionID: galleryReadyPTPSessionID
+      confirmedSteps: preparedConfirmedSteps,
+      connectionSummary: connectionSummary,
+      fujifilmSession: preparedFujifilmSession
     )
   }
 
-  func executeReconnectPairedBleStep(
-    context: IOSCameraConnectionContext
-  ) async throws -> IOSCameraConnectionStepExecution {
-    guard galleryService.hasVerifiedConnectionStep(.reconnectPairedBle) else {
-      throw IOSCameraConnectionIssue(
-        step: .reconnectPairedBle,
-        reason: "必须先完成已配对相机 BLE 重连，不能从页面重试进入相册"
+  static func makeInitialDecision(
+    connectionSessionID: UUID,
+    compatibilityFacts: CameraCompatibilityFacts,
+    compatibilityEnvironment: FujifilmCompatibilityEnvironment,
+    forcedLabCandidate: CameraCompatibilityLabCandidate?
+  ) throws -> CameraConnectionPlanDecision {
+    let attemptEnvironment: FujifilmCompatibilityEnvironment
+    if let forcedLabCandidate {
+      attemptEnvironment = try compatibilityEnvironment.addingCompatibilityLabCandidate(
+        forcedLabCandidate
       )
+    } else {
+      attemptEnvironment = compatibilityEnvironment
     }
-    return IOSCameraConnectionStepExecution(
-      context: context,
-      evidence: .bleIdentityVerified(cameraID: context.cameraID)
+    return try makeInitialDecision(
+      connectionSessionID: connectionSessionID,
+      compatibilityFacts: compatibilityFacts,
+      attemptEnvironment: attemptEnvironment
     )
   }
 
-  func executeTransferAuthorizationStep(
-    context: IOSCameraConnectionContext
-  ) async throws -> IOSCameraConnectionStepExecution {
-    guard galleryService.hasVerifiedConnectionStep(.transferAuthorization) else {
-      throw IOSCameraConnectionIssue(
-        step: .transferAuthorization,
-        reason: "相机没有返回本次官方 Wi-Fi 名称和密码，已停止进入 PTP"
+  private static func makeInitialDecision(
+    connectionSessionID: UUID,
+    compatibilityFacts: CameraCompatibilityFacts,
+    attemptEnvironment: FujifilmCompatibilityEnvironment
+  ) throws -> CameraConnectionPlanDecision {
+    return attemptEnvironment.resolve(
+      protocolFacts: compatibilityFacts.protocolFacts,
+      revising: CameraConnectionPlanVersion(
+        id: CameraConnectionPlanID(
+          rawValue: "connection-session-\(connectionSessionID.uuidString)"
+        ),
+        revision: 0
       )
-    }
-    guard let wifiCredential = galleryService.currentOfficialWifiCredential() else {
-      throw IOSCameraConnectionIssue(
-        step: .transferAuthorization,
-        reason: "当前官方 Wi-Fi 凭据不完整，已停止进入 PTP"
-      )
-    }
-    var updatedContext = context
-    updatedContext.wifiCredential = wifiCredential
-    return IOSCameraConnectionStepExecution(
-      context: updatedContext,
-      evidence: .officialWifiCredential(wifiCredential)
     )
   }
 
-  func executeActivateCameraWifiStep(
-    context: IOSCameraConnectionContext
-  ) async throws -> IOSCameraConnectionStepExecution {
-    guard galleryService.hasVerifiedConnectionStep(.activateCameraWifi) else {
-      throw IOSCameraConnectionIssue(
-        step: .activateCameraWifi,
-        reason: "未确认传图激活命令已按官方流程写入相机"
-      )
-    }
-    return IOSCameraConnectionStepExecution(
-      context: context,
-      evidence: .cameraWifiActivationAcknowledged
-    )
+  private func planResolutionDiagnostic(
+    decision: CameraConnectionPlanDecision,
+    connectionSessionID: String,
+    observedIdentity: CameraObservedIdentity,
+    revisionReason: CameraPlanRevisionReason? = nil,
+    revisionSummary: CameraPlanRevisionSummary? = nil
+  ) -> String {
+    let plan = decision.plan
+    return "[OBS] CAMERA_PLAN_RESOLUTION " +
+      "connectionSessionID=\(connectionSessionID) planID=\(plan.id.rawValue) " +
+      "revision=\(plan.revision) revisionReason=\(revisionReason?.rawValue ?? "initial") " +
+      "fromRevision=\(revisionSummary.map { String($0.fromVersion.revision) } ?? "none") " +
+      "changedStages=\(revisionSummary?.changedStages.map(\.rawValue).joined(separator: ",") ?? "none") " +
+      "preservedLockedStages=\(revisionSummary?.preservedLockedStages.map(\.rawValue).joined(separator: ",") ?? "none") " +
+      "supportStatus=\(plan.supportStatus.rawValue) " +
+      "compatibilityFamily=\(plan.protocolFacts.compatibilityFamily?.rawValue ?? "unknown") " +
+      "model=\(observedIdentity.modelName ?? "unknown") " +
+      "firmware=\(observedIdentity.firmwareVersion ?? "unknown") " +
+      "matchedRules=\(decision.matchedRuleIDs.map(\.rawValue).joined(separator: ",")) " +
+      "unresolvedFacts=\(decision.unresolvedFacts.map(\.rawValue).joined(separator: ","))"
   }
 
-  func executeWaitCameraWifiReadyStep(
-    context: IOSCameraConnectionContext
-  ) async throws -> IOSCameraConnectionStepExecution {
-    guard galleryService.hasVerifiedConnectionStep(.waitCameraWifiReady) else {
-      throw IOSCameraConnectionIssue(
-        step: .waitCameraWifiReady,
-        reason: "未收到相机进入可连接传图状态的正向信号"
-      )
+  private func barrierDiagnostic(event: CameraConnectionBarrierLifecycleEvent) -> String {
+    let outcome: String
+    switch event.outcome {
+    case .began: outcome = "BEGIN"
+    case .succeeded: outcome = "SUCCEEDED"
+    case .notRequired: outcome = "NOT_REQUIRED"
+    case .failed: outcome = "FAILED"
+    case .cancelled: outcome = "CANCELLED"
     }
-    return IOSCameraConnectionStepExecution(
-      context: context,
-      evidence: .cameraWifiReady
-    )
+    return "[OBS] CONNECTION_BARRIER_\(outcome) " +
+      "connectionSessionID=\(event.connectionSessionID.uuidString) " +
+      "planID=\(event.planVersion.id.rawValue) revision=\(event.planVersion.revision) " +
+      "step=\(event.step.rawValue)"
   }
 
-  func executeJoinCameraWifiStep(
+  private func terminalDiagnostic(
+    connectionSessionID: UUID,
+    plan: CameraConnectionPlan,
+    firstMissingBarrier: IOSCameraConnectionStep?,
+    error: Error
+  ) -> String {
+    let firstMissingBarrier = firstMissingBarrier ?? .gallerySessionPrepared
+    return "[OBS] CONNECTION_TERMINAL " +
+      "connectionSessionID=\(connectionSessionID.uuidString) " +
+      "firstMissingBarrier=\(firstMissingBarrier.rawValue) " +
+      "planID=\(plan.id.rawValue) revision=\(plan.revision) " +
+      "strategyID=\(strategyID(for: firstMissingBarrier, plan: plan)) " +
+      "lastWireOutcome=\(diagnosticValue(error.localizedDescription)) " +
+      "retryOwner=\(retryOwner(for: firstMissingBarrier).rawValue)"
+  }
+
+  private func diagnosticValue(_ value: String) -> String {
+    var allowed = CharacterSet.alphanumerics
+    allowed.insert(charactersIn: "-._")
+    return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? "encoding-failed"
+  }
+
+  func recoverWithCompatibilityLab(
+    failure: CameraVendorCompatibilityLabAttemptFailure,
     context: IOSCameraConnectionContext,
-    communicationGeneration: UInt64,
-    route: CameraVendorGalleryRoute?
-  ) async throws -> CameraVendorGalleryWifiHandoffStepResult {
-    let handoff = try await galleryService.joinCameraWifi(
-      context: context,
-      communicationGeneration: communicationGeneration,
-      route: route
+    publishStep: @escaping (IOSCameraConnectionStep) -> Void,
+    performBleConnection: @escaping (
+      @escaping (CameraCompatibilityFacts) throws -> ActivationStrategyDefinition
+    ) async throws -> CameraVendorConnectionSummary,
+    compatibilityLabReset: @escaping CameraCompatibilityLab.ResetHandler,
+    compatibilityLabAttempt: CompatibilityLabAttemptExecutor? = nil
+  ) async throws -> CameraVendorGalleryMainlineLoadResult {
+    let lab = try CameraCompatibilityLab(
+      buildChannel: .current,
+      candidateProvider: compatibilityLabCandidateProvider,
+      diagnosticHandler: failure.diagnosticHandler
     )
-    return CameraVendorGalleryWifiHandoffStepResult(
-      execution: IOSCameraConnectionStepExecution(
-        context: context,
-        evidence: .joinedCameraWifi(ssid: handoff.joinedSSID)
-      ),
-      didCompleteWifiHandoff: handoff.didCompleteWifiHandoff
+    var recoveredResult: CameraVendorGalleryMainlineLoadResult?
+    _ = await lab.run(
+      formalRouteFailure: failure.formalRouteFailure,
+      reset: compatibilityLabReset,
+      executeProductionRoute: { candidate, revisedPlan in
+        do {
+          if let compatibilityLabAttempt {
+            recoveredResult = try await compatibilityLabAttempt(candidate, revisedPlan)
+          } else {
+            recoveredResult = try await self.loadGallerySessionAttempt(
+              context: context,
+              publishStep: publishStep,
+              performBleConnection: performBleConnection,
+              forcedLabCandidate: candidate,
+              allowCompatibilityLab: false
+            )
+          }
+          return .succeeded
+        } catch {
+          return .failed
+        }
+      }
     )
+    guard let recoveredResult else { throw failure.issue }
+    return recoveredResult
   }
 
-  func executeConnectPtpStep(
-    context: IOSCameraConnectionContext,
-    communicationGeneration: UInt64,
-    recorder: @escaping (String) -> Void
-  ) throws -> IOSCameraConnectionStepExecution {
-    let ptpEvidence = try galleryService.connectGalleryPtp(
-      communicationGeneration: communicationGeneration,
-      recorder: recorder
-    )
-    var updatedContext = context
-    updatedContext.ptpSessionID = ptpEvidence.sessionID
-    return IOSCameraConnectionStepExecution(
-      context: updatedContext,
-      evidence: .ptpConnected(ptpEvidence)
-    )
-  }
-
-  func executeConfirmGalleryModeStep(
-    context: IOSCameraConnectionContext
-  ) throws -> IOSCameraConnectionStepExecution {
-    return IOSCameraConnectionStepExecution(
-      context: context,
-      evidence: .galleryModeConfirmed
-    )
-  }
-
-  func executeLoadGalleryStep(
-    context: IOSCameraConnectionContext
-  ) throws -> IOSCameraConnectionStepExecution {
-    guard let ptpSessionID = context.ptpSessionID,
-          !ptpSessionID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-      throw IOSCameraConnectionIssue(
-        step: .loadGallery,
-        reason: "Catalog Runtime 启动前缺少有效的 PTP session"
-      )
+  private func strategyID(
+    for step: IOSCameraConnectionStep,
+    plan: CameraConnectionPlan
+  ) -> String {
+    switch CameraConnectionPlanStage.stage(for: step) {
+    case .pairing: return plan.pairingStrategy.rawValue
+    case .activation: return plan.activationStrategy.rawValue
+    case .ptpInit: return plan.ptpInitStrategy.rawValue
+    case .openSession: return "fujifilm-open-session"
+    case .negotiation: return plan.negotiationStrategy.rawValue
+    case .bootstrap: return plan.galleryBootstrapStrategy.rawValue
+    case .initialCatalog: return plan.initialCatalogStrategy.rawValue
+    case nil: return "unknown"
     }
-    return IOSCameraConnectionStepExecution(
-      context: context,
-      evidence: .galleryLoaded(
-        IOSCameraGalleryReadyEvidence(ptpSessionID: ptpSessionID)
-      )
-    )
   }
+
+  private func retryOwner(
+    for step: IOSCameraConnectionStep
+  ) -> CameraConnectionRetryOwner {
+    switch CameraConnectionPlanStage.stage(for: step) {
+    case .pairing, .activation, .openSession, nil: return .protocolEngine
+    case .ptpInit: return .ptpInitStrategy
+    case .negotiation: return .negotiationStrategy
+    case .bootstrap: return .galleryBootstrapStrategy
+    case .initialCatalog: return .catalogRuntime
+    }
+  }
+
 }

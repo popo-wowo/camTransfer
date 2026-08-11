@@ -121,10 +121,6 @@ struct CameraVendorReservedReceiveDiagnosticResult: Equatable {
   }
 }
 
-protocol CameraVendorReservedReceiveDiagnosticService: AnyObject {
-  func probeReservedReceive() async throws -> CameraVendorReservedReceiveDiagnosticResult
-}
-
 protocol CameraVendorGalleryDiagnosticReporting: AnyObject {
   var diagnosticHandler: ((String) -> Void)? { get set }
 }
@@ -133,32 +129,89 @@ protocol CameraVendorGalleryConfigurable: AnyObject {
   func configure(connectionSummary: CameraVendorConnectionSummary)
 }
 
-protocol CameraVendorGalleryReadySummaryProviding {
-  func galleryReadyConnectionSummary(
+protocol CameraVendorGallerySessionPreparedSummaryProviding {
+  func gallerySessionPreparedConnectionSummary(
     from summary: CameraVendorConnectionSummary
   ) -> CameraVendorConnectionSummary
 
-  func galleryReadyConnectionSummary(
+  func gallerySessionPreparedConnectionSummary(
     from summary: CameraVendorConnectionSummary,
     confirmedSteps: [IOSCameraConnectionStep]
   ) -> CameraVendorConnectionSummary
 }
 
-extension CameraVendorGalleryReadySummaryProviding {
-  func galleryReadyConnectionSummary(
+extension CameraVendorGallerySessionPreparedSummaryProviding {
+  func gallerySessionPreparedConnectionSummary(
     from summary: CameraVendorConnectionSummary
   ) -> CameraVendorConnectionSummary {
     summary
   }
 
-  func galleryReadyConnectionSummary(
+  func gallerySessionPreparedConnectionSummary(
     from summary: CameraVendorConnectionSummary,
     confirmedSteps: [IOSCameraConnectionStep]
   ) -> CameraVendorConnectionSummary {
     guard !confirmedSteps.isEmpty else {
-      return galleryReadyConnectionSummary(from: summary)
+      return gallerySessionPreparedConnectionSummary(from: summary)
     }
     return summary.updatingVerifiedConnectionSteps(confirmedSteps)
+  }
+}
+
+enum FujifilmInitialCatalogStrategyExecutor {
+  static func execute(
+    definition: InitialCatalogStrategyDefinition,
+    fetch: () throws -> CameraVendorCatalogSnapshot,
+    recover: () throws -> Void
+  ) throws -> CameraVendorCatalogSnapshot {
+    switch definition.action {
+    case .directSpecifiedCatalog:
+      return try fetch()
+    case .storeNotAvailableRecovery:
+      try recover()
+      return try fetch()
+    }
+  }
+}
+
+enum FujifilmInitialCatalogResponseClassifier {
+  static func facts(after error: Error) -> CameraCatalogResponseFacts? {
+    let evidence: CameraGalleryCatalogResponseEvidence?
+    if let failure = error as? CameraGalleryCatalogTransactionFailure {
+      guard failure.restorationMessage == nil else { return nil }
+      evidence = failure.responseEvidence
+    } else {
+      evidence = CameraGalleryCatalogResponseEvidence(error: error)
+    }
+    guard let evidence,
+          evidence.domain == "CameraVendorPtpSession",
+          evidence.responseCode == 0x2013 else {
+      return nil
+    }
+    return CameraCatalogResponseFacts.classify(
+      operationCode: evidence.operationCode,
+      responseCode: evidence.responseCode
+    )
+  }
+}
+
+enum FujifilmResponseDrivenInitialCatalogExecutor {
+  static func execute(
+    directFetch: () throws -> CameraVendorCatalogSnapshot,
+    revise: (CameraCatalogResponseFacts) throws -> Void,
+    recover: () throws -> Void,
+    recoveryFetch: () throws -> CameraVendorCatalogSnapshot
+  ) throws -> CameraVendorCatalogSnapshot {
+    do {
+      return try directFetch()
+    } catch {
+      guard let facts = FujifilmInitialCatalogResponseClassifier.facts(after: error) else {
+        throw error
+      }
+      try revise(facts)
+      try recover()
+      return try recoveryFetch()
+    }
   }
 }
 
@@ -256,7 +309,7 @@ final class CameraVendorPtpSessionRuntime {
 
   init(
     session: CameraVendorPtpSession,
-    commandLane: CameraCommandLane = CameraCommandLane(),
+    commandLane: CameraCommandLane,
     diagnosticHandler: @escaping (String) -> Void,
     communicationGeneration: @escaping () -> UInt64
   ) {
@@ -504,16 +557,36 @@ final class CameraVendorPtpSessionRuntime {
     }
   }
 
-  func fetchInitialCameraCatalog() async throws -> CameraVendorCatalogSnapshot {
+  func fetchInitialCameraCatalog(
+    definition: InitialCatalogStrategyDefinition,
+    query: CameraVendorCatalogQuery? = nil,
+    revise: (CameraCatalogResponseFacts) throws -> Void
+  ) async throws -> CameraVendorCatalogSnapshot {
     try await commandLane.runExclusiveSessionMutation {
-      do {
-        return try self.session.cameraVendorInitialCatalogSnapshot()
-      } catch {
-        guard CameraVendorInitialCatalogBootstrapRecoveryPolicy.shouldRecover(after: error) else {
-          throw error
+      let fetch = {
+        if let query {
+          return try self.session.cameraVendorCatalogSnapshot(query: query)
         }
-        try self.session.recoverInitialCameraCatalogAfterStoreNotAvailable()
         return try self.session.cameraVendorInitialCatalogSnapshot()
+      }
+      switch definition.action {
+      case .directSpecifiedCatalog:
+        return try FujifilmResponseDrivenInitialCatalogExecutor.execute(
+          directFetch: fetch,
+          revise: revise,
+          recover: {
+            try self.session.recoverInitialCameraCatalogAfterStoreNotAvailable()
+          },
+          recoveryFetch: fetch
+        )
+      case .storeNotAvailableRecovery:
+        return try FujifilmInitialCatalogStrategyExecutor.execute(
+          definition: definition,
+          fetch: fetch,
+          recover: {
+            try self.session.recoverInitialCameraCatalogAfterStoreNotAvailable()
+          }
+        )
       }
     }
   }
@@ -521,6 +594,12 @@ final class CameraVendorPtpSessionRuntime {
   func fetchCameraCatalog(query: CameraVendorCatalogQuery) async throws -> CameraVendorCatalogSnapshot {
     try await commandLane.runExclusiveSessionMutation {
       try self.session.cameraVendorCatalogSnapshot(query: query)
+    }
+  }
+
+  func fetchExpandedCameraCatalog() async throws -> CameraVendorCatalogSnapshot {
+    try await commandLane.runExclusiveSessionMutation {
+      try self.session.cameraVendorInitialCatalogSnapshot()
     }
   }
 
@@ -646,21 +725,123 @@ final class CameraVendorPtpSessionRuntime {
   }
 }
 
+final class CameraVendorPhysicalSessionTerminationWaitGate {
+  typealias TimeoutCancellation = () -> Void
+  typealias TimeoutScheduler = (
+    TimeInterval,
+    @escaping () -> Void
+  ) -> TimeoutCancellation
+
+  private final class PendingWait {
+    let id = UUID()
+    let continuation: CheckedContinuation<CameraCompatibilityLabResetResult, Never>
+    var cancelTimeout: TimeoutCancellation?
+
+    init(
+      continuation: CheckedContinuation<CameraCompatibilityLabResetResult, Never>
+    ) {
+      self.continuation = continuation
+    }
+  }
+
+  private let lock = NSLock()
+  private let timeoutScheduler: TimeoutScheduler
+  private var isTerminationInFlight = false
+  private var pendingWaits: [UUID: PendingWait] = [:]
+
+  init(
+    timeoutScheduler: @escaping TimeoutScheduler = { timeoutSeconds, handler in
+      let workItem = DispatchWorkItem(block: handler)
+      DispatchQueue.main.asyncAfter(
+        deadline: .now() + timeoutSeconds,
+        execute: workItem
+      )
+      return { workItem.cancel() }
+    }
+  ) {
+    self.timeoutScheduler = timeoutScheduler
+  }
+
+  func beginTermination() {
+    lock.lock()
+    isTerminationInFlight = true
+    lock.unlock()
+  }
+
+  func completeTermination() {
+    let waits: [PendingWait]
+    lock.lock()
+    isTerminationInFlight = false
+    waits = Array(pendingWaits.values)
+    pendingWaits.removeAll(keepingCapacity: false)
+    lock.unlock()
+    waits.forEach { wait in
+      wait.cancelTimeout?()
+      wait.continuation.resume(returning: .succeeded)
+    }
+  }
+
+  func wait(
+    timeoutSeconds: TimeInterval
+  ) async -> CameraCompatibilityLabResetResult {
+    await withCheckedContinuation { continuation in
+      let pending = PendingWait(continuation: continuation)
+      let shouldWait: Bool
+      lock.lock()
+      if isTerminationInFlight {
+        pendingWaits[pending.id] = pending
+        shouldWait = true
+      } else {
+        shouldWait = false
+      }
+      lock.unlock()
+      guard shouldWait else {
+        continuation.resume(returning: .succeeded)
+        return
+      }
+
+      let cancelTimeout = timeoutScheduler(timeoutSeconds) { [weak self] in
+        self?.timeout(waitID: pending.id)
+      }
+      var shouldCancelTimeout = false
+      lock.lock()
+      if pendingWaits[pending.id] === pending {
+        pending.cancelTimeout = cancelTimeout
+      } else {
+        shouldCancelTimeout = true
+      }
+      lock.unlock()
+      if shouldCancelTimeout {
+        cancelTimeout()
+      }
+    }
+  }
+
+  private func timeout(waitID: UUID) {
+    let wait: PendingWait?
+    lock.lock()
+    wait = pendingWaits.removeValue(forKey: waitID)
+    lock.unlock()
+    wait?.continuation.resume(returning: .failed)
+  }
+}
+
 final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, CameraVendorGalleryBackgroundKeepAlive, CameraVendorGalleryObjectInfoSource, CameraVendorExclusiveDownloadWindowControlling, CameraVendorActiveDownloadInterrupting, CameraVendorActiveDownloadCancellationRequesting, CameraVendorVisibleThumbnailLaneCoordinating {
   private let session = CameraVendorPtpSession()
-  private lazy var ptpRuntime = CameraVendorPtpSessionRuntime(
-    session: session,
-    diagnosticHandler: { [weak self] message in
-      self?.report(message)
-    },
-    communicationGeneration: { [weak self] in
-      self?.currentCommunicationGeneration() ?? 0
-    }
-  )
+  private var commandLane = CameraCommandLane()
+  private var ptpRuntime: CameraVendorPtpSessionRuntime! = nil
   private var objectInfoCache = CameraVendorObjectInfoCache()
   var diagnosticHandler: ((String) -> Void)?
   private var wifiConfigurations: [CameraVendorWifiNetworkConfiguration] = []
   private var verifiedConnectionSteps: [IOSCameraConnectionStep] = []
+  private var activeConnectionPlan: CameraConnectionPlan?
+  private var activeStrategySnapshot: FujifilmProtocolStrategySnapshot?
+  private var activePhysicalSession: FujifilmCameraSession?
+  private let physicalSessionTerminationCondition = NSCondition()
+  private let physicalSessionTerminationWaitGate =
+    CameraVendorPhysicalSessionTerminationWaitGate()
+  private var didCommitPhysicalSessionTermination = false
+  private var isPhysicalSessionTerminationInFlight = false
   private var ptpClientName = CameraVendorHandshakeIdentityPolicy.fallbackConnectedDeviceName
   private var prefersManualWifiRecovery = false
   private var manualWifiPromptBaselineIP: String?
@@ -675,10 +856,46 @@ final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, C
   private var hasStartedPriorityDownloadBatch = false
 #if DEBUG
   var exclusiveDownloadWindowEndStateDidCommitForTesting: (() -> Void)?
+  var physicalSessionTerminationDidCommitForTesting: (() -> Void)?
+  var physicalSessionTransportDidCloseForTesting: (() -> Void)?
+  var connectionPlanBindDidStartForTesting: (() -> Void)?
 #endif
+
+  init() {
+    installCommandRuntime(commandLane: commandLane)
+  }
+
+  var currentCommandLane: CameraCommandLane {
+    commandLane
+  }
+
+  func beginConnectionPlanAttempt() throws {
+    waitForPhysicalSessionTerminationToFinish()
+    guard activePhysicalSession == nil else {
+      throw NSError(
+        domain: "CameraVendorRealtimeGalleryService",
+        code: 31,
+        userInfo: [
+          NSLocalizedDescriptionKey: "An active physical camera session must terminate before a new connection plan attempt"
+        ]
+      )
+    }
+    if let activeConnectionPlan {
+      report(
+        "[OBS] CAMERA_PLAN_ATTEMPT_RESET previousPlanID=\(activeConnectionPlan.id.rawValue) " +
+        "previousRevision=\(activeConnectionPlan.revision)"
+      )
+    }
+    activeConnectionPlan = nil
+    activeStrategySnapshot = nil
+  }
 
   func configure(connectionSummary: CameraVendorConnectionSummary) {
     terminateCameraCommunication(reason: "configure-gallery-connection")
+    waitForPhysicalSessionTerminationToFinish()
+    resetPhysicalSessionTerminationLatch()
+    commandLane = CameraCommandLane()
+    installCommandRuntime(commandLane: commandLane)
     session.configureTransferProfile(cameraSerialNumber: connectionSummary.serialNumber)
     wifiConfigurations = connectionSummary.wifiConfigurations
     verifiedConnectionSteps = connectionSummary.verifiedConnectionSteps
@@ -687,13 +904,13 @@ final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, C
     manualWifiPromptBaselineIP = nil
   }
 
-  func galleryReadyConnectionSummary(
+  func gallerySessionPreparedConnectionSummary(
     from summary: CameraVendorConnectionSummary
   ) -> CameraVendorConnectionSummary {
     summary
   }
 
-  func galleryReadyConnectionSummary(
+  func gallerySessionPreparedConnectionSummary(
     from summary: CameraVendorConnectionSummary,
     confirmedSteps: [IOSCameraConnectionStep]
   ) -> CameraVendorConnectionSummary {
@@ -704,6 +921,40 @@ final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, C
   }
 
   func terminateCameraCommunication(reason: String) {
+    if let activePhysicalSession {
+      _ = activePhysicalSession.terminate(reason: reason)
+      return
+    }
+    performPhysicalSessionTermination(reason: reason)
+  }
+
+  func terminateCameraCommunicationAndWait(
+    reason: String,
+    timeoutSeconds: TimeInterval = 3
+  ) async -> CameraCompatibilityLabResetResult {
+    terminateCameraCommunication(reason: reason)
+    return await waitForPhysicalSessionTerminationToFinishAsync(
+      timeoutSeconds: timeoutSeconds
+    )
+  }
+
+  func installPhysicalSession(_ physicalSession: FujifilmCameraSession) {
+    precondition(
+      physicalSession.commandLane === commandLane,
+      "The physical Fujifilm session must own the service command lane"
+    )
+    if let activePhysicalSession, activePhysicalSession !== physicalSession {
+      _ = activePhysicalSession.terminate(reason: "physical-session-superseded")
+    }
+    resetPhysicalSessionTerminationLatch()
+    activePhysicalSession = physicalSession
+  }
+
+  func performPhysicalSessionTermination(reason: String) {
+    guard claimPhysicalSessionTermination() else { return }
+#if DEBUG
+    physicalSessionTerminationDidCommitForTesting?()
+#endif
     report("[OBS] GALLERY_COMMUNICATION_TERMINATE_REQUESTED reason=\(reason)")
     forceEndExclusiveDownloadWindows()
     objectInfoCache.resetForPhysicalSession()
@@ -711,7 +962,160 @@ final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, C
     communicationTerminationGeneration += 1
     isFetching = false
     fetchLock.unlock()
+    commandLane.terminateAfterDrainingActiveOperation { [weak self] in
+      self?.completePhysicalSessionTransportClose()
+    }
+  }
+
+  private func claimPhysicalSessionTermination() -> Bool {
+    physicalSessionTerminationCondition.lock()
+    guard !didCommitPhysicalSessionTermination else {
+      physicalSessionTerminationCondition.unlock()
+      return false
+    }
+    didCommitPhysicalSessionTermination = true
+    isPhysicalSessionTerminationInFlight = true
+    physicalSessionTerminationWaitGate.beginTermination()
+    physicalSessionTerminationCondition.unlock()
+    return true
+  }
+
+  private func completePhysicalSessionTransportClose() {
     session.disconnect()
+#if DEBUG
+    physicalSessionTransportDidCloseForTesting?()
+#endif
+    activeConnectionPlan = nil
+    activeStrategySnapshot = nil
+    activePhysicalSession = nil
+    physicalSessionTerminationCondition.lock()
+    isPhysicalSessionTerminationInFlight = false
+    physicalSessionTerminationCondition.broadcast()
+    physicalSessionTerminationCondition.unlock()
+    physicalSessionTerminationWaitGate.completeTermination()
+  }
+
+  private func waitForPhysicalSessionTerminationToFinish() {
+    physicalSessionTerminationCondition.lock()
+    while isPhysicalSessionTerminationInFlight {
+      physicalSessionTerminationCondition.wait()
+    }
+    physicalSessionTerminationCondition.unlock()
+  }
+
+  private func waitForPhysicalSessionTerminationToFinishAsync(
+    timeoutSeconds: TimeInterval
+  ) async -> CameraCompatibilityLabResetResult {
+    await physicalSessionTerminationWaitGate.wait(
+      timeoutSeconds: timeoutSeconds
+    )
+  }
+
+  private func resetPhysicalSessionTerminationLatch() {
+    physicalSessionTerminationCondition.lock()
+    didCommitPhysicalSessionTermination = false
+    physicalSessionTerminationCondition.unlock()
+  }
+
+  private func installCommandRuntime(commandLane: CameraCommandLane) {
+    ptpRuntime = CameraVendorPtpSessionRuntime(
+      session: session,
+      commandLane: commandLane,
+      diagnosticHandler: { [weak self] message in
+        self?.report(message)
+      },
+      communicationGeneration: { [weak self] in
+        self?.currentCommunicationGeneration() ?? 0
+      }
+    )
+  }
+
+  func bindConnectionPlan(
+    _ plan: CameraConnectionPlan,
+    strategySnapshot: FujifilmProtocolStrategySnapshot
+  ) throws {
+#if DEBUG
+    connectionPlanBindDidStartForTesting?()
+#endif
+    guard plan.supportStatus != .unsupported else {
+      throw NSError(
+        domain: "FujifilmProtocolEngine",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "Unsupported camera plan cannot bind to a Fujifilm session"]
+      )
+    }
+    if let activeConnectionPlan {
+      if activeConnectionPlan == plan {
+        guard activeStrategySnapshot == strategySnapshot else {
+          throw NSError(
+            domain: "FujifilmProtocolEngine",
+            code: 10,
+            userInfo: [NSLocalizedDescriptionKey: "Bound plan cannot change its Strategy definitions"]
+          )
+        }
+        return
+      }
+      guard activeConnectionPlan.id == plan.id,
+            plan.revision == activeConnectionPlan.revision + 1 else {
+        throw NSError(
+          domain: "FujifilmProtocolEngine",
+          code: 2,
+          userInfo: [NSLocalizedDescriptionKey: "Only an adjacent revision of the bound session plan is allowed"]
+        )
+      }
+    }
+    activeConnectionPlan = plan
+    activeStrategySnapshot = strategySnapshot
+    reportStrategySnapshotBindings(plan: plan, snapshot: strategySnapshot)
+  }
+
+  private func reportStrategySnapshotBindings(
+    plan: CameraConnectionPlan,
+    snapshot: FujifilmProtocolStrategySnapshot
+  ) {
+    var bindings: [(stage: String, strategyID: String, fingerprint: String)] = [
+      (
+        stage: "activation",
+        strategyID: plan.activationStrategy.rawValue,
+        fingerprint: FujifilmStrategyDefinitionFingerprint.hex(snapshot.activation)
+      )
+    ]
+    if let definition = snapshot.ptpInit {
+      bindings.append((
+        stage: "ptpInit",
+        strategyID: plan.ptpInitStrategy.rawValue,
+        fingerprint: FujifilmStrategyDefinitionFingerprint.hex(definition)
+      ))
+    }
+    if let definition = snapshot.negotiation {
+      bindings.append((
+        stage: "negotiation",
+        strategyID: plan.negotiationStrategy.rawValue,
+        fingerprint: FujifilmStrategyDefinitionFingerprint.hex(definition)
+      ))
+    }
+    if let definition = snapshot.galleryBootstrap {
+      bindings.append((
+        stage: "galleryBootstrap",
+        strategyID: plan.galleryBootstrapStrategy.rawValue,
+        fingerprint: FujifilmStrategyDefinitionFingerprint.hex(definition)
+      ))
+    }
+    if let definition = snapshot.initialCatalog {
+      bindings.append((
+        stage: "initialCatalog",
+        strategyID: plan.initialCatalogStrategy.rawValue,
+        fingerprint: FujifilmStrategyDefinitionFingerprint.hex(definition)
+      ))
+    }
+
+    for binding in bindings {
+      report(
+        "[OBS] CAMERA_STRATEGY_BIND planID=\(plan.id.rawValue) " +
+          "revision=\(plan.revision) stage=\(binding.stage) " +
+          "strategyID=\(binding.strategyID) fingerprint=\(binding.fingerprint)"
+      )
+    }
   }
 
   private func currentCommunicationGeneration() -> UInt64 {
@@ -941,10 +1345,6 @@ final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, C
     )
   }
 
-  func hasExplicitGalleryModeEvidence() -> Bool {
-    session.hasExplicitGalleryModeEvidence
-  }
-
   func currentOfficialWifiCredential() -> IOSCameraWifiCredential? {
     guard let preferredWifi = wifiConfigurations.first else {
       return nil
@@ -959,29 +1359,6 @@ final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, C
 
   func completeSuccessfulGalleryRouteSearch() {
     prefersManualWifiRecovery = false
-  }
-
-  func prepareGalleryRouteAttempt(
-    _ route: CameraVendorGalleryRoute,
-    didCompleteWifiHandoff: Bool,
-    recorder: (String) -> Void
-  ) {
-    recorder("[ROUTE \(route.id.rawValue)] 开始读取相机图库")
-    recorder(
-      "[ROUTE \(route.id.rawValue)] handoff=\(didCompleteWifiHandoff), " +
-      "launchPayload=\(route.launchRequestPayload.map { String(format: "%02x", $0) }.joined())"
-    )
-    recorder(
-      "[OBS] PTP_ROUTE_START id=\(route.id.rawValue) handoff=\(didCompleteWifiHandoff) " +
-      "launchPayload=\(route.launchRequestPayload.map { String(format: "%02x", $0) }.joined())"
-    )
-    let startupDelay = route.ptpStartupDelaySeconds
-    if startupDelay > 0 {
-      recorder("[ROUTE \(route.id.rawValue)] 等待 \(Int(startupDelay)) 秒让相机 PTP 服务就绪...")
-      Thread.sleep(forTimeInterval: startupDelay)
-    } else {
-      recorder("[ROUTE \(route.id.rawValue)] 跳过额外 PTP 启动等待")
-    }
   }
 
   func buildGalleryRouteFailure(
@@ -1007,7 +1384,7 @@ final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, C
   func joinCameraWifi(
     context: IOSCameraConnectionContext,
     communicationGeneration: UInt64,
-    route: CameraVendorGalleryRoute?
+    allowUnverifiedAssociationAfterRecoverableError: Bool
   ) async throws -> CameraVendorGalleryWifiHandoffResult {
     var lastWifiJoinError: Error?
     var didJoinWifiAutomatically = false
@@ -1041,7 +1418,7 @@ final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, C
           try await CameraVendorCameraWifiConnector.join(
             configuration: configuration,
             allowUnverifiedAssociationAfterRecoverableError:
-              route?.allowsUnverifiedWifiHandoffAfterRecoverableError ?? false,
+              allowUnverifiedAssociationAfterRecoverableError,
             diagnosticHandler: diagnosticHandler
           )
           didJoinWifiAutomatically = true
@@ -1188,11 +1565,34 @@ final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, C
 
   func connectGalleryPtp(
     communicationGeneration: UInt64,
-    recorder: @escaping (String) -> Void
+    recorder: @escaping (String) -> Void,
+    plan: CameraConnectionPlan,
+    progressHandler: ((IOSCameraConnectionStep, IOSCameraConnectionStepEvidence) throws -> Void)? = nil
   ) throws -> IOSCameraPtpSessionEvidence {
     try ensureCommunicationGenerationIsCurrent(communicationGeneration)
+    guard activeConnectionPlan == plan else {
+      throw NSError(
+        domain: "FujifilmProtocolEngine",
+        code: 5,
+        userInfo: [NSLocalizedDescriptionKey: "PTP connect plan does not match the bound session plan"]
+      )
+    }
+    let strategySnapshot = try requireActiveStrategySnapshot(for: plan)
+    guard let ptpInitDefinition = strategySnapshot.ptpInit else {
+      throw NSError(
+        domain: "FujifilmProtocolEngine",
+        code: 12,
+        userInfo: [NSLocalizedDescriptionKey: "PTP INIT Strategy is not available in the active plan"]
+      )
+    }
     let connectStartedAt = Date()
-    try connectWithRetry(recorder: recorder, communicationGeneration: communicationGeneration)
+    try session.connectTransportAndOpenSession(
+      clientName: ptpClientName,
+      diagnosticHandler: recorder,
+      ptpInitDefinition: ptpInitDefinition,
+      progressHandler: progressHandler
+    )
+    try ensureCommunicationGenerationIsCurrent(communicationGeneration)
     recorder(
       "[OBS] GALLERY_TIMING_CONNECT seconds=" +
       String(format: "%.3f", Date().timeIntervalSince(connectStartedAt))
@@ -1200,20 +1600,191 @@ final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, C
     return IOSCameraPtpSessionEvidence(sessionID: "\(ptpClientName)-ptp")
   }
 
+  func negotiateGalleryFunction(
+    plan: CameraConnectionPlan,
+    progressHandler: ((IOSCameraConnectionStep, IOSCameraConnectionStepEvidence) throws -> Void)? = nil
+  ) throws {
+    guard activeConnectionPlan == plan else {
+      throw NSError(
+        domain: "FujifilmProtocolEngine",
+        code: 6,
+        userInfo: [NSLocalizedDescriptionKey: "Function negotiation plan does not match the active session plan"]
+      )
+    }
+    guard let definition = try requireActiveStrategySnapshot(for: plan).negotiation else {
+      throw NSError(
+        domain: "FujifilmProtocolEngine",
+        code: 13,
+        userInfo: [NSLocalizedDescriptionKey: "Function negotiation Strategy is not available"]
+      )
+    }
+    try session.negotiateGalleryFunction(
+      definition: definition,
+      connectionPlanID: plan.id,
+      progressHandler: progressHandler
+    )
+  }
+
+  func inspectGalleryFunction(
+    plan: CameraConnectionPlan
+  ) throws -> CameraGalleryFunctionFacts {
+    guard activeConnectionPlan == plan else {
+      throw NSError(
+        domain: "FujifilmProtocolEngine",
+        code: 8,
+        userInfo: [NSLocalizedDescriptionKey: "Function inspection plan does not match the active session plan"]
+      )
+    }
+    guard let definition = try requireActiveStrategySnapshot(for: plan).negotiation else {
+      throw NSError(
+        domain: "FujifilmProtocolEngine",
+        code: 13,
+        userInfo: [NSLocalizedDescriptionKey: "Function inspection Strategy is not available"]
+      )
+    }
+    switch definition.inspectionAction {
+    case .noFacts:
+      report("[OBS] PTP_FUNCTION_INSPECTION strategy=\(definition.id.rawValue) facts=none")
+      return .currentBaseline
+    }
+  }
+
+  func prepareGallerySession(
+    plan: CameraConnectionPlan,
+    progressHandler: ((IOSCameraConnectionStep, IOSCameraConnectionStepEvidence) throws -> Void)? = nil
+  ) throws {
+    guard activeConnectionPlan == plan else {
+      throw NSError(
+        domain: "FujifilmProtocolEngine",
+        code: 7,
+        userInfo: [NSLocalizedDescriptionKey: "Gallery bootstrap plan does not match the active session plan"]
+      )
+    }
+    guard let definition = try requireActiveStrategySnapshot(for: plan).galleryBootstrap else {
+      throw NSError(
+        domain: "FujifilmProtocolEngine",
+        code: 14,
+        userInfo: [NSLocalizedDescriptionKey: "Gallery bootstrap Strategy is not available"]
+      )
+    }
+    try session.prepareGallerySession(
+      definition: definition,
+      connectionPlanID: plan.id,
+      progressHandler: progressHandler
+    )
+  }
+
+  func resetFailedGalleryPtpAttempt() {
+    session.disconnect()
+  }
+
   func fetchCameraCatalog(query: CameraVendorCatalogQuery) async throws -> CameraVendorCatalogSnapshot {
     try await ptpRuntime.fetchCameraCatalog(query: query)
   }
 
   func fetchInitialCameraCatalog() async throws -> CameraVendorCatalogSnapshot {
-    try await ptpRuntime.fetchInitialCameraCatalog()
+    try await fetchInitialCameraCatalog(query: nil)
+  }
+
+  func fetchExpandedCameraCatalog() async throws -> CameraVendorCatalogSnapshot {
+    try await ptpRuntime.fetchExpandedCameraCatalog()
+  }
+
+  func fetchInitialCameraCatalog(
+    query: CameraVendorCatalogQuery?
+  ) async throws -> CameraVendorCatalogSnapshot {
+    guard let currentPlan = activeConnectionPlan else {
+      throw NSError(
+        domain: "FujifilmProtocolEngine",
+        code: 3,
+        userInfo: [NSLocalizedDescriptionKey: "Initial Catalog requires a bound connection plan"]
+      )
+    }
+    guard let strategySnapshot = activeStrategySnapshot else {
+      throw NSError(
+        domain: "FujifilmProtocolEngine",
+        code: 4,
+        userInfo: [NSLocalizedDescriptionKey: "Initial Catalog requires bound Strategy definitions"]
+      )
+    }
+    guard let initialCatalogDefinition = strategySnapshot.initialCatalog else {
+      throw NSError(
+        domain: "FujifilmProtocolEngine",
+        code: 4,
+        userInfo: [NSLocalizedDescriptionKey: "Initial Catalog Strategy is not available"]
+      )
+    }
+    guard initialCatalogDefinition.id == currentPlan.initialCatalogStrategy else {
+      throw NSError(
+        domain: "FujifilmProtocolEngine",
+        code: 4,
+        userInfo: [NSLocalizedDescriptionKey: "Initial Catalog Strategy does not match the bound plan"]
+      )
+    }
+    guard let physicalSession = activePhysicalSession else {
+      throw NSError(
+        domain: "FujifilmProtocolEngine",
+        code: 5,
+        userInfo: [NSLocalizedDescriptionKey: "Initial Catalog requires an active physical session"]
+      )
+    }
+    let queryLabel = query?.label ?? "expanded-all"
+    report(
+      "[OBS] INITIAL_CATALOG_STRATEGY_BEGIN planID=\(currentPlan.id.rawValue) " +
+        "revision=\(currentPlan.revision) strategyID=\(initialCatalogDefinition.id.rawValue) " +
+        "queryLabel=\(queryLabel)"
+    )
+    let snapshot = try await ptpRuntime.fetchInitialCameraCatalog(
+      definition: initialCatalogDefinition,
+      query: query,
+      revise: { responseFacts in
+        let revisedFacts = physicalSession.facts.updating(
+          catalogResponseFacts: responseFacts
+        )
+        guard let revision = try physicalSession.applyInitialCatalogResponseRevision(
+          facts: revisedFacts
+        ) else {
+          throw NSError(
+            domain: "FujifilmProtocolEngine",
+            code: 6,
+            userInfo: [NSLocalizedDescriptionKey: "Catalog response did not produce a plan revision"]
+          )
+        }
+        activeConnectionPlan = revision.plan
+        activeStrategySnapshot = revision.strategySnapshot
+        report(
+          "[OBS] CAMERA_PLAN_REVISION planID=\(revision.plan.id.rawValue) " +
+            "revision=\(revision.plan.revision) reason=\(revision.summary.reason.rawValue) " +
+            "changedStages=\(revision.summary.changedStages.map(\.rawValue).joined(separator: ",")) " +
+            "preservedLockedStages=" +
+            revision.summary.preservedLockedStages.map(\.rawValue).joined(separator: ",")
+        )
+      }
+    )
+    report(
+      "[OBS] INITIAL_CATALOG_STRATEGY_END planID=\(activeConnectionPlan?.id.rawValue ?? currentPlan.id.rawValue) " +
+        "revision=\(activeConnectionPlan?.revision ?? currentPlan.revision) " +
+        "strategyID=\(activeConnectionPlan?.initialCatalogStrategy.rawValue ?? initialCatalogDefinition.id.rawValue) " +
+        "queryLabel=\(queryLabel) handles=\(snapshot.orderedHandles.count)"
+    )
+    return snapshot
+  }
+
+  private func requireActiveStrategySnapshot(
+    for plan: CameraConnectionPlan
+  ) throws -> FujifilmProtocolStrategySnapshot {
+    guard activeConnectionPlan == plan, let activeStrategySnapshot else {
+      throw NSError(
+        domain: "FujifilmProtocolEngine",
+        code: 11,
+        userInfo: [NSLocalizedDescriptionKey: "Protocol Strategy definitions are not bound to this plan"]
+      )
+    }
+    return activeStrategySnapshot
   }
 
   func executeCountSweepExperiment() async throws -> CameraVendorCountSweepResult {
     try await ptpRuntime.executeCountSweepExperiment()
-  }
-
-  func prepareCameraVendorLegacyGalleryLoadIfNeeded() throws {
-    try session.prepareCameraVendorLegacyGalleryLoadIfNeeded()
   }
 
   private func waitForManualCameraWifiIfNeeded(
@@ -1414,42 +1985,6 @@ final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, C
     )
   }
 
-  func probeReservedReceive() async throws -> CameraVendorReservedReceiveDiagnosticResult {
-    report("[OBS] RESERVED_RECEIVE_DIAGNOSTIC_START")
-    let shouldDisconnectSession = fetchLock.withLock { () -> Bool in
-      let wasFetching = isFetching
-      isFetching = true
-      return wasFetching
-    }
-    if shouldDisconnectSession {
-      session.disconnect()
-    }
-
-    defer {
-      fetchLock.withLock {
-        isFetching = false
-      }
-    }
-
-    let clientName = ptpClientName
-    let result = try await Task.detached(priority: .userInitiated) {
-      let diagnosticSession = CameraVendorPtpSession()
-      defer {
-        diagnosticSession.disconnect()
-      }
-      try diagnosticSession.connect(
-        clientName: clientName,
-        diagnosticHandler: { [weak self] message in
-          self?.report(message)
-        },
-        purpose: .reservedReceiveDiagnostic
-      )
-      return try diagnosticSession.reservedReceiveDiagnosticObject()
-    }.value
-    report("[OBS] RESERVED_RECEIVE_DIAGNOSTIC_RESULT \(result.summary)")
-    return result
-  }
-
   private func cacheObjectInfos(_ infos: [CameraVendorCameraObjectInfo]) {
     for info in infos {
       objectInfoCache.store(info)
@@ -1486,45 +2021,6 @@ final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, C
     )
   }
 
-  private func connectWithRetry(
-    maxAttempts: Int = CameraVendorPtpConnectionStartupPolicy.maxAttempts,
-    recorder: ((String) -> Void)? = nil,
-    communicationGeneration: UInt64
-  ) throws {
-    var lastError: Error?
-    let startedAt = Date()
-    for attempt in 1...maxAttempts {
-      try ensureCommunicationGenerationIsCurrent(communicationGeneration)
-      do {
-        try session.connect(clientName: ptpClientName, diagnosticHandler: recorder)
-        try ensureCommunicationGenerationIsCurrent(communicationGeneration)
-        return
-      } catch {
-        session.disconnect()
-        try ensureCommunicationGenerationIsCurrent(communicationGeneration)
-        if CameraVendorPtpReconnectErrorPolicy.shouldRetry(error) == false {
-          throw error
-        }
-
-        lastError = error
-        let elapsed = Date().timeIntervalSince(startedAt)
-        if attempt < maxAttempts {
-          let delay = CameraVendorPtpConnectionStartupPolicy.retryDelaySeconds(afterFailedAttempt: attempt)
-          recorder?(
-            "PTP 连接失败 (第 \(attempt) 次，已等待 \(String(format: "%.1f", elapsed))s/" +
-            "最多 \(maxAttempts) 次)，\(String(format: "%.1f", delay))s 后重试: \(error.localizedDescription)"
-          )
-          Thread.sleep(forTimeInterval: delay)
-        }
-      }
-    }
-    throw lastError ?? NSError(
-      domain: "CameraVendorRealtimeGalleryService",
-      code: 3,
-      userInfo: [NSLocalizedDescriptionKey: "PTP 连接多次失败"]
-    )
-  }
-
   private func waitForPtpReachability(
     timeout: TimeInterval = 10,
     interval: TimeInterval = 0.5,
@@ -1544,7 +2040,10 @@ final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, C
 
   private func report(_ message: String) {
     guard CameraVendorPtpDiagnosticLogPolicy.shouldEmit(message) else { return }
-    CameraVendorGalleryDiagnostics.log(message)
-    diagnosticHandler?(message)
+    if let diagnosticHandler {
+      diagnosticHandler(message)
+    } else {
+      CameraVendorGalleryDiagnostics.log(message)
+    }
   }
 }

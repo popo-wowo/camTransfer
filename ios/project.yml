@@ -32,14 +32,11 @@ targets:
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         NSLocalNetworkUsageDescription: CamTransfer 需要访问本地网络以连接相机
-        NSLocationWhenInUseUsageDescription: CamTransfer 需要定位权限来确认当前连接的 Wi-Fi 网络名称，以便自动切换到相机热点
-        NSLocationAlwaysAndWhenInUseUsageDescription: CamTransfer 需要在相机相册会话期间继续确认相机 Wi-Fi 状态，以便锁屏或切到后台时保持相机传输连接
         NSPhotoLibraryAddUsageDescription: CamTransfer 需要把下载的照片保存到你的相册
         NSPhotoLibraryUsageDescription: CamTransfer 需要读取系统相册，以显示和确认已下载的照片
         NSSupportsLiveActivities: true
         UIBackgroundModes:
           - bluetooth-central
-          - location
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

@@ -102,7 +102,8 @@ enum CameraVendorCatalogTransactionExecutor {
       throw CameraGalleryCatalogTransactionFailure(
         primaryMessage: error.localizedDescription,
         restorationMessage: nil,
-        provesTransportLost: CameraVendorCatalogTransportEvidencePolicy.provesTransportLost(error)
+        provesTransportLost: CameraVendorCatalogTransportEvidencePolicy.provesTransportLost(error),
+        responseEvidence: CameraGalleryCatalogResponseEvidence(error: error)
       )
     }
 
@@ -134,13 +135,15 @@ enum CameraVendorCatalogTransactionExecutor {
       throw CameraGalleryCatalogTransactionFailure(
         primaryMessage: primaryError.localizedDescription,
         restorationMessage: nil,
-        provesTransportLost: CameraVendorCatalogTransportEvidencePolicy.provesTransportLost(primaryError)
+        provesTransportLost: CameraVendorCatalogTransportEvidencePolicy.provesTransportLost(primaryError),
+        responseEvidence: CameraGalleryCatalogResponseEvidence(error: primaryError)
       )
     case let (.failure(primaryError), restorationError?):
       throw CameraGalleryCatalogTransactionFailure(
         primaryMessage: primaryError.localizedDescription,
         restorationMessage: restorationError.localizedDescription,
-        provesTransportLost: true
+        provesTransportLost: true,
+        responseEvidence: CameraGalleryCatalogResponseEvidence(error: primaryError)
       )
     }
   }
@@ -298,8 +301,11 @@ enum CameraVendorSpecifiedObjectEmptySnapshotRecoveryPolicy {
 
 enum CameraVendorReferenceAppCurrentImageContextPolicy {
   static let currentImageHandle: UInt32 = 0x10000001
-  static let shouldPrimeBeforeImageHandleList = true
-  static let shouldPrimeThumbnailBeforeSearchDescription = true
+  // These are optional XApp context probes, not GalleryReady prerequisites.
+  // Keeping them off the blocking bootstrap avoids poisoning the serialized
+  // command socket when a camera does not answer the synthetic latest handle.
+  static let shouldPrimeBeforeImageHandleList = false
+  static let shouldPrimeThumbnailBeforeSearchDescription = false
 
   static func shouldAttemptCurrentImagePrime(galleryReadyMarker: UInt32?) -> Bool {
     return shouldPrimeBeforeImageHandleList

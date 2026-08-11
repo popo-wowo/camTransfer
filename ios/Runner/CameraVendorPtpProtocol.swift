@@ -37,12 +37,46 @@ enum CameraVendorDataCommandTimingLogPolicy {
 enum CameraVendorPtpResponsePolicy {
   static let okResponseCode: UInt16 = 0x2001
 
-  static func validateOK(responseCode: UInt16, operationName: String) throws {
+  static func validateTransactionID(
+    response: UInt32,
+    expected: UInt32
+  ) throws {
+    guard response == expected else {
+      throw NSError(
+        domain: "CameraVendorPtpSession",
+        code: 15,
+        userInfo: [
+          NSLocalizedDescriptionKey:
+            "PTP response transaction \(response) does not match request transaction \(expected)",
+          "expectedTransactionID": NSNumber(value: expected),
+          "responseTransactionID": NSNumber(value: response),
+        ]
+      )
+    }
+  }
+
+  static func validateOK(
+    responseCode: UInt16,
+    operationName: String,
+    operationCode: UInt16? = nil,
+    transactionID: UInt32? = nil
+  ) throws {
     guard responseCode == okResponseCode else {
-      throw NSError(domain: "CameraVendorPtpSession", code: Int(responseCode), userInfo: [
+      var userInfo: [String: Any] = [
         NSLocalizedDescriptionKey:
-          "\(operationName) 返回 PTP 响应码 0x\(String(format: "%04X", responseCode))"
-      ])
+          "\(operationName) 返回 PTP 响应码 0x\(String(format: "%04X", responseCode))",
+      ]
+      if let operationCode {
+        userInfo["operationCode"] = NSNumber(value: operationCode)
+      }
+      if let transactionID {
+        userInfo["transactionID"] = NSNumber(value: transactionID)
+      }
+      throw NSError(
+        domain: "CameraVendorPtpSession",
+        code: Int(responseCode),
+        userInfo: userInfo
+      )
     }
   }
 }
@@ -536,4 +570,3 @@ enum CameraVendorPtpDataParser {
     return b0 | b1 | b2 | b3
   }
 }
-

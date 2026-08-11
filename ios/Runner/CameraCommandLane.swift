@@ -11,6 +11,7 @@ enum CameraCommandPriority: Int, Sendable {
 
 enum CameraCommandLaneError: Error {
   case waitTimeout
+  case terminated
 }
 
 final class CameraCommandLease: @unchecked Sendable {
@@ -36,6 +37,7 @@ final class CameraCommandLease: @unchecked Sendable {
 }
 
 final class CameraCommandLane {
+  let identity = UUID()
   private final class WaiterToken {
     private let lock = NSLock()
     private var waiterID: Int?
@@ -98,6 +100,8 @@ final class CameraCommandLane {
   private var serializedFinalizers: [() -> Void] = []
   private var idleWaiters: [IdleWaiter] = []
   private var nextIdleWaiterID = 0
+  private var terminated = false
+  private var terminationFinalizer: (() -> Void)?
   private let onWaiterQueued: ((CameraCommandPriority) -> Void)?
   private let waitTimeout: TimeInterval?
 
@@ -107,6 +111,56 @@ final class CameraCommandLane {
   ) {
     self.waitTimeout = waitTimeout
     self.onWaiterQueued = onWaiterQueued
+  }
+
+  var isTerminated: Bool {
+    lock.withLock { terminated }
+  }
+
+  @discardableResult
+  func terminate() -> Bool {
+    terminateAfterDrainingActiveOperation {}
+  }
+
+  @discardableResult
+  func terminateAfterDrainingActiveOperation(
+    _ finalizer: @escaping () -> Void
+  ) -> Bool {
+    let commandWaiters: [Waiter]
+    let idleWaitersToCancel: [IdleWaiter]
+    let finalizerToRun: (() -> Void)?
+    lock.lock()
+    guard !terminated else {
+      lock.unlock()
+      return false
+    }
+    terminated = true
+    commandWaiters = waiters
+    idleWaitersToCancel = idleWaiters
+    waiters.removeAll(keepingCapacity: false)
+    idleWaiters.removeAll(keepingCapacity: false)
+    exclusiveDownloadLeaseIDs.removeAll(keepingCapacity: false)
+    isExclusiveSessionMutationBarrierActive = false
+    if isCommandActive {
+      terminationFinalizer = finalizer
+      finalizerToRun = nil
+    } else if let serializedFinalizer = takeNextSerializedFinalizerLocked() {
+      isCommandActive = true
+      terminationFinalizer = finalizer
+      finalizerToRun = serializedFinalizer
+    } else {
+      finalizerToRun = finalizer
+    }
+    lock.unlock()
+    commandWaiters.forEach { $0.continuation.resume(throwing: CameraCommandLaneError.terminated) }
+    idleWaitersToCancel.forEach {
+      $0.continuation.resume(throwing: CameraCommandLaneError.terminated)
+    }
+    if let finalizerToRun {
+      finalizerToRun()
+      releaseNext()
+    }
+    return true
   }
 
   func run<T>(
@@ -136,7 +190,7 @@ final class CameraCommandLane {
 
   func acquireExclusiveDownloadLease() async throws -> CameraCommandLease {
     try Task.checkCancellation()
-    let leaseID = beginExclusiveDownloadBarrier()
+    let leaseID = try beginExclusiveDownloadBarrier()
     do {
       try await waitUntilIdle()
       try Task.checkCancellation()
@@ -155,10 +209,12 @@ final class CameraCommandLane {
     try await withTaskCancellationHandler {
       try await withCheckedThrowingContinuation { continuation in
         var shouldResumeImmediately = false
-        var shouldResumeCancelled = false
+        var resumeError: Error?
         lock.lock()
-        if Task.isCancelled {
-          shouldResumeCancelled = true
+        if terminated {
+          resumeError = CameraCommandLaneError.terminated
+        } else if Task.isCancelled {
+          resumeError = CancellationError()
         } else if isIdleLocked {
           shouldResumeImmediately = true
         } else {
@@ -167,14 +223,14 @@ final class CameraCommandLane {
           idleWaiters.append(IdleWaiter(id: waiterID, continuation: continuation))
           if token.register(waiterID: waiterID) {
             idleWaiters.removeAll { $0.id == waiterID }
-            shouldResumeCancelled = true
+            resumeError = CancellationError()
           }
         }
         lock.unlock()
         if shouldResumeImmediately {
           continuation.resume()
-        } else if shouldResumeCancelled {
-          continuation.resume(throwing: CancellationError())
+        } else if let resumeError {
+          continuation.resume(throwing: resumeError)
         }
       }
     } onCancel: { [weak self] in
@@ -184,10 +240,14 @@ final class CameraCommandLane {
     try Task.checkCancellation()
   }
 
-  private func beginExclusiveDownloadBarrier() -> Int {
+  private func beginExclusiveDownloadBarrier() throws -> Int {
     let cancelledWaiters: [Waiter]
     let idleWaitersToResume: [IdleWaiter]
     lock.lock()
+    guard !terminated else {
+      lock.unlock()
+      throw CameraCommandLaneError.terminated
+    }
     let leaseID = nextExclusiveDownloadLeaseID
     nextExclusiveDownloadLeaseID += 1
     exclusiveDownloadLeaseIDs.insert(leaseID)
@@ -274,15 +334,17 @@ final class CameraCommandLane {
     try await withTaskCancellationHandler {
       try await withCheckedThrowingContinuation { continuation in
         var shouldAcquireImmediately = false
-        var shouldResumeCancelled = false
+        var resumeError: Error?
         var queuedPriority: CameraCommandPriority?
         var registeredWaiterID: Int?
         lock.lock()
-        if Task.isCancelled {
-          shouldResumeCancelled = true
+        if terminated {
+          resumeError = CameraCommandLaneError.terminated
+        } else if Task.isCancelled {
+          resumeError = CancellationError()
         } else if isExclusiveDownloadBarrierActive
           && !canRunDuringExclusiveDownloadBarrier(priority: priority) {
-          shouldResumeCancelled = true
+          resumeError = CancellationError()
         } else if !isCommandActive
           && canRunImmediatelyLocked(priority: priority)
           && (waiters.isEmpty || isExclusiveDownloadBarrierActive) {
@@ -304,7 +366,7 @@ final class CameraCommandLane {
           registeredWaiterID = waiterID
           if token.register(waiterID: waiterID) {
             waiters.removeAll { $0.id == waiterID }
-            shouldResumeCancelled = true
+            resumeError = CancellationError()
             queuedPriority = nil
             registeredWaiterID = nil
           }
@@ -316,8 +378,8 @@ final class CameraCommandLane {
         }
         if shouldAcquireImmediately {
           continuation.resume()
-        } else if shouldResumeCancelled {
-          continuation.resume(throwing: CancellationError())
+        } else if let resumeError {
+          continuation.resume(throwing: resumeError)
         } else if let waiterID = registeredWaiterID, let timeout = waitTimeout {
           scheduleWaitTimeout(waiterID: waiterID, timeout: timeout)
         }
@@ -333,7 +395,18 @@ final class CameraCommandLane {
     let finalizerToRun: (() -> Void)?
     let idleWaitersToResume: [IdleWaiter]
     lock.lock()
-    if let finalizer = takeNextSerializedFinalizerLocked() {
+    if terminated {
+      if let serializedFinalizer = takeNextSerializedFinalizerLocked() {
+        isCommandActive = true
+        finalizerToRun = serializedFinalizer
+      } else {
+        isCommandActive = false
+        finalizerToRun = terminationFinalizer
+        terminationFinalizer = nil
+      }
+      next = nil
+      idleWaitersToResume = []
+    } else if let finalizer = takeNextSerializedFinalizerLocked() {
       finalizerToRun = finalizer
       next = nil
       idleWaitersToResume = []

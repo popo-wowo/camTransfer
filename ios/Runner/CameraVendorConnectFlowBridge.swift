@@ -5,6 +5,62 @@ struct IOSCameraGalleryDestination {
   let summary: CameraVendorConnectionSummary
   let galleryService: CameraGalleryTransportSession
   let bluetoothKeepAliveService: CameraVendorBleBackgroundKeepAlive
+  let fujifilmSession: FujifilmCameraSession
+}
+
+final class CameraVendorRememberedGalleryAttempt {
+  private let lock = NSLock()
+  private var continuation: CheckedContinuation<CameraVendorConnectionSummary, Error>?
+  private var terminalResult: Result<CameraVendorConnectionSummary, Error>?
+  private var didBeginWait = false
+
+  func wait(
+    start: (@escaping (IOSCameraConnectionIssue) -> Void) -> Bool
+  ) async throws -> CameraVendorConnectionSummary {
+    try await withCheckedThrowingContinuation { continuation in
+      lock.lock()
+      precondition(!didBeginWait, "Remembered gallery attempt may wait only once")
+      didBeginWait = true
+      if let terminalResult {
+        lock.unlock()
+        continuation.resume(with: terminalResult)
+        return
+      }
+      self.continuation = continuation
+      lock.unlock()
+
+      let started = start { [weak self] issue in
+        self?.fail(issue)
+      }
+      if !started {
+        fail(
+          IOSCameraConnectionIssue(
+            step: .reconnectPairedBle,
+            reason: "Remembered gallery flow could not start"
+          )
+        )
+      }
+    }
+  }
+
+  func succeed(_ summary: CameraVendorConnectionSummary) {
+    finish(.success(summary))
+  }
+
+  func fail(_ error: Error) {
+    finish(.failure(error))
+  }
+
+  private func finish(_ result: Result<CameraVendorConnectionSummary, Error>) {
+    let continuation: CheckedContinuation<CameraVendorConnectionSummary, Error>? = lock.withLock {
+      guard terminalResult == nil else { return nil }
+      terminalResult = result
+      let continuation = self.continuation
+      self.continuation = nil
+      return continuation
+    }
+    continuation?.resume(with: result)
+  }
 }
 
 /// Runtime-owned adapter from a completed connect flow to the one active PTP
@@ -39,12 +95,14 @@ final class CameraVendorRuntimeGallerySessionActivator: CameraSessionRuntimeGall
     }
     let transport = CameraVendorGallerySessionRuntimeTransport(
       galleryService: destination.galleryService,
+      fujifilmSession: destination.fujifilmSession,
       fileSaver: CameraSessionRuntimePhotoLibraryFileSaver(),
       diagnosticHandler: { CameraVendorGalleryDiagnostics.log($0) },
       onRuntimeTermination: { [weak bridge] in
         bridge?.finishRuntimeCameraTermination()
       }
     )
+    runtime.installFujifilmCameraSession(destination.fujifilmSession)
     let binding = runtime.beginTransportBinding(
       identity: CameraSessionIdentity(
         cameraName: destination.summary.navigationTitle,
@@ -83,10 +141,9 @@ final class CameraVendorConnectFlowBridge: NSObject, IOSCameraConnectFlowRuntime
     galleryService: galleryRuntimeService
   )
   private var pendingPairingConfirmation: CheckedContinuation<IOSCameraPairingResult, Error>?
-  private var pendingGalleryConnection: CheckedContinuation<IOSCameraConnectionContext, Error>?
+  private var pendingGalleryConnection: CameraVendorRememberedGalleryAttempt?
   private var pendingPairingPeripheralID: UUID?
   private var pendingGalleryPeripheralID: UUID?
-  private var activeHandshakeSummaryByPeripheralID: [UUID: CameraVendorConnectionSummary] = [:]
   private var activeGalleryDestinationByPeripheralID: [UUID: IOSCameraGalleryDestination] = [:]
 
   var onSnapshotChanged: ((IOSCameraHomeSnapshot) -> Void)?
@@ -229,38 +286,48 @@ final class CameraVendorConnectFlowBridge: NSObject, IOSCameraConnectFlowRuntime
   }
 
   func enterRememberedGallery(record: IOSCameraRememberedCameraRecord) async throws -> IOSCameraConnectionContext {
-    try await withCheckedThrowingContinuation { continuation in
-      pendingGalleryPeripheralID = record.peripheralID
-      pendingGalleryConnection = continuation
-      let started = service.startRememberedCameraConnection(peripheralID: record.peripheralID)
-      guard started else {
-        pendingGalleryPeripheralID = nil
-        pendingGalleryConnection = nil
-        continuation.resume(
-          throwing: IOSCameraConnectionIssue(
-            step: .reconnectPairedBle,
-            reason: "Remembered gallery flow could not start"
-          )
-        )
-        return
-      }
+    let pairingRecord = record.wifiCredential.map {
+      IOSCameraPairingRecord(identity: record.identity, wifiCredential: $0)
     }
+    return IOSCameraConnectionContext(
+      cameraID: record.identity.cameraID,
+      pairingRecord: pairingRecord,
+      wifiCredential: record.wifiCredential,
+      ptpSessionID: nil,
+      rememberedPeripheralID: record.peripheralID,
+      compatibilityFacts: service.rememberedCompatibilityFacts(
+        peripheralID: record.peripheralID
+      )
+    )
   }
 
   func loadGallerySession(
     from context: IOSCameraConnectionContext,
     publishStep: @escaping (IOSCameraConnectionStep) -> Void
   ) async throws -> IOSCameraGallerySession {
-    guard let rememberedPeripheralID = context.rememberedPeripheralID,
-          let summary = activeHandshakeSummaryByPeripheralID[rememberedPeripheralID] else {
+    guard let rememberedPeripheralID = context.rememberedPeripheralID else {
       throw IOSCameraConnectFlowRuntimeError.invalidRememberedPairing
     }
-    galleryService.configure(connectionSummary: summary)
     let galleryLoadResult = try await gallerySessionLoader.loadGallerySession(
       context: context,
-      publishStep: publishStep
+      publishStep: publishStep,
+      performBleConnection: { [weak self] activationResolver in
+        guard let self else { throw CancellationError() }
+        return try await self.performRememberedBluetoothConnection(
+          peripheralID: rememberedPeripheralID,
+          activationResolver: activationResolver
+        )
+      },
+      compatibilityLabReset: { [weak self] _ in
+        guard let self else { return .failed }
+        guard await self.galleryRuntimeService.terminateCameraCommunicationAndWait(
+          reason: "compatibility-lab-full-connection-reset"
+        ) == .succeeded else { return .failed }
+        return await self.service.resetWirelessCameraFlowAndWait()
+      }
     )
-    let galleryReadySummary = galleryService.galleryReadyConnectionSummary(
+    let summary = galleryLoadResult.connectionSummary
+    let gallerySessionPreparedSummary = galleryService.gallerySessionPreparedConnectionSummary(
       from: summary,
       confirmedSteps: galleryLoadResult.confirmedSteps
     )
@@ -269,19 +336,46 @@ final class CameraVendorConnectFlowBridge: NSObject, IOSCameraConnectFlowRuntime
       rememberedPeripheralID: rememberedPeripheralID,
       ptpSessionID: galleryLoadResult.ptpSessionID,
       presentation: IOSCameraGalleryPresentation(
-        deviceName: galleryReadySummary.deviceName,
-        serialNumber: galleryReadySummary.serialNumber,
-        connectedDeviceName: galleryReadySummary.connectedDeviceName,
-        preferCompressedDownloads: galleryReadySummary.preferCompressedDownloads
-      )
+        deviceName: gallerySessionPreparedSummary.deviceName,
+        serialNumber: gallerySessionPreparedSummary.serialNumber,
+        connectedDeviceName: gallerySessionPreparedSummary.connectedDeviceName,
+        preferCompressedDownloads: gallerySessionPreparedSummary.preferCompressedDownloads
+      ),
+      fujifilmSession: galleryLoadResult.fujifilmSession
     )
     activeGalleryDestinationByPeripheralID[rememberedPeripheralID] = IOSCameraGalleryDestination(
       rememberedPeripheralID: rememberedPeripheralID,
-      summary: galleryReadySummary,
+      summary: gallerySessionPreparedSummary,
       galleryService: galleryService,
-      bluetoothKeepAliveService: service
+      bluetoothKeepAliveService: service,
+      fujifilmSession: galleryLoadResult.fujifilmSession
     )
     return session
+  }
+
+  private func performRememberedBluetoothConnection(
+    peripheralID: UUID,
+    activationResolver: @escaping (
+      CameraCompatibilityFacts
+    ) throws -> ActivationStrategyDefinition
+  ) async throws -> CameraVendorConnectionSummary {
+    let attempt = CameraVendorRememberedGalleryAttempt()
+    pendingGalleryPeripheralID = peripheralID
+    pendingGalleryConnection = attempt
+    defer {
+      if pendingGalleryConnection === attempt {
+        pendingGalleryConnection = nil
+        pendingGalleryPeripheralID = nil
+      }
+    }
+    return try await attempt.wait { [weak self] fail in
+      guard let self else { return false }
+      return self.service.startRememberedCameraConnection(
+        peripheralID: peripheralID,
+        activationResolver: activationResolver,
+        onRememberedGalleryFailure: fail
+      )
+    }
   }
 
   func cancelActiveFlow() {
@@ -291,7 +385,7 @@ final class CameraVendorConnectFlowBridge: NSObject, IOSCameraConnectFlowRuntime
     }
     if let pendingGalleryConnection {
       self.pendingGalleryConnection = nil
-      pendingGalleryConnection.resume(throwing: CancellationError())
+      pendingGalleryConnection.fail(CancellationError())
     }
     pendingPairingPeripheralID = nil
     pendingGalleryPeripheralID = nil
@@ -306,11 +400,10 @@ final class CameraVendorConnectFlowBridge: NSObject, IOSCameraConnectFlowRuntime
     }
     if let pendingGalleryConnection {
       self.pendingGalleryConnection = nil
-      pendingGalleryConnection.resume(throwing: CancellationError())
+      pendingGalleryConnection.fail(CancellationError())
     }
     pendingPairingPeripheralID = nil
     pendingGalleryPeripheralID = nil
-    activeHandshakeSummaryByPeripheralID.removeAll()
     activeGalleryDestinationByPeripheralID.removeAll()
     galleryRuntimeService.terminateCameraCommunication(reason: reason)
     service.resetWirelessCameraFlow()
@@ -322,7 +415,6 @@ final class CameraVendorConnectFlowBridge: NSObject, IOSCameraConnectFlowRuntime
   func finishRuntimeCameraTermination() {
     pendingPairingPeripheralID = nil
     pendingGalleryPeripheralID = nil
-    activeHandshakeSummaryByPeripheralID.removeAll()
     activeGalleryDestinationByPeripheralID.removeAll()
     service.resetWirelessCameraFlow()
     publishSnapshot()
@@ -467,36 +559,18 @@ extension CameraVendorConnectFlowBridge: CameraVendorBluetoothServiceDelegate {
       guard let self else { return }
       MainActor.assumeIsolated {
         let rememberedRecords = self.service.rememberedCameraRecords
-        guard let continuation = self.pendingGalleryConnection,
+        guard let attempt = self.pendingGalleryConnection,
               let pendingGalleryPeripheralID = self.pendingGalleryPeripheralID,
               let record = rememberedRecords.first(where: { $0.peripheralID == pendingGalleryPeripheralID }) else {
           return
         }
         self.pendingGalleryConnection = nil
         self.pendingGalleryPeripheralID = nil
-        let coreRecord = self.makeCoreRememberedCameraRecord(from: record)
-        guard let pairingRecord = coreRecord.wifiCredential.map({
-          IOSCameraPairingRecord(identity: coreRecord.identity, wifiCredential: $0)
-        }) else {
-          continuation.resume(throwing: IOSCameraConnectFlowRuntimeError.invalidRememberedPairing)
+        guard self.makeCoreRememberedCameraRecord(from: record).wifiCredential != nil else {
+          attempt.fail(IOSCameraConnectFlowRuntimeError.invalidRememberedPairing)
           return
         }
-        self.activeHandshakeSummaryByPeripheralID[pendingGalleryPeripheralID] = summary
-        continuation.resume(
-          returning: IOSCameraConnectionContext(
-            cameraID: coreRecord.identity.cameraID,
-            pairingRecord: pairingRecord,
-            wifiCredential: pairingRecord.wifiCredential,
-            ptpSessionID: nil,
-            presentation: IOSCameraGalleryPresentation(
-              deviceName: summary.deviceName,
-              serialNumber: summary.serialNumber,
-              connectedDeviceName: summary.connectedDeviceName,
-              preferCompressedDownloads: summary.preferCompressedDownloads
-            ),
-            rememberedPeripheralID: pendingGalleryPeripheralID
-          )
-        )
+        attempt.succeed(summary)
         self.publishSnapshot()
       }
     }

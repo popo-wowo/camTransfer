@@ -85,7 +85,7 @@ final class CameraSessionRuntimeAppContainer {
           return
         }
         runtime.startRememberedGalleryConnection(record: record) { state in
-          if case .galleryReady = state {
+          if case .gallerySessionPrepared = state {
             completion(true)
           } else {
             completion(false)

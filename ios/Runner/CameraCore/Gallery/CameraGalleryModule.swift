@@ -5,17 +5,28 @@ struct IOSCameraGallerySession: Equatable {
   let rememberedPeripheralID: UUID?
   let ptpSessionID: String
   let presentation: IOSCameraGalleryPresentation?
+  let fujifilmSession: FujifilmCameraSession?
 
   init(
     cameraID: String,
     rememberedPeripheralID: UUID? = nil,
     ptpSessionID: String,
-    presentation: IOSCameraGalleryPresentation? = nil
+    presentation: IOSCameraGalleryPresentation? = nil,
+    fujifilmSession: FujifilmCameraSession? = nil
   ) {
     self.cameraID = cameraID
     self.rememberedPeripheralID = rememberedPeripheralID
     self.ptpSessionID = ptpSessionID
     self.presentation = presentation
+    self.fujifilmSession = fujifilmSession
+  }
+
+  static func == (lhs: IOSCameraGallerySession, rhs: IOSCameraGallerySession) -> Bool {
+    lhs.cameraID == rhs.cameraID
+      && lhs.rememberedPeripheralID == rhs.rememberedPeripheralID
+      && lhs.ptpSessionID == rhs.ptpSessionID
+      && lhs.presentation == rhs.presentation
+      && lhs.fujifilmSession === rhs.fujifilmSession
   }
 }
 
