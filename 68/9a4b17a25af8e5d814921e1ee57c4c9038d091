@@ -1,0 +1,52 @@
+app/src/main/java/com/camtransfer/runtime/connection/CameraConnectionExecutionState.kt
+  2e9d5f20480379e5 36-54,213-224
+app/src/main/java/com/camtransfer/runtime/CameraRuntimeSnapshot.kt
+  2e9d5f20480379e5 3,76,95
+app/src/test/java/com/camtransfer/runtime/DefaultCameraSessionRuntimeTest.kt
+  2e9d5f20480379e5 29-32,67-171,366-387
+app/src/main/java/com/camtransfer/runtime/CameraSessionFactory.kt
+  2e9d5f20480379e5 4,19,32-36
+app/src/test/java/com/camtransfer/runtime/CameraRuntimeSnapshotTest.kt
+  2e9d5f20480379e5 4,8-11,15-41
+app/src/main/java/com/camtransfer/ui/ConnectScreen.kt
+  2e9d5f20480379e5 83-86
+app/src/test/java/com/camtransfer/viewmodel/CameraRuntimeViewModelTest.kt
+  2e9d5f20480379e5 1-74
+app/src/main/java/com/camtransfer/runtime/DefaultCameraSessionRuntime.kt
+  2e9d5f20480379e5 150,172-174,186,205,266-267
+app/src/main/java/com/camtransfer/media/wifi/VendorWifiCameraSessionFactory.kt
+  2e9d5f20480379e5 106
+app/src/main/java/com/camtransfer/runtime/connection/CameraConnectionOrchestrator.kt
+  2e9d5f20480379e5 47,72,134,141,145,154,169,174,183,666,669-670,732,833
+app/src/test/java/com/camtransfer/runtime/SessionMutationCoordinatorTest.kt
+  2e9d5f20480379e5 29-53,322-335
+app/src/main/java/com/camtransfer/runtime/CameraRuntimeReducer.kt
+  2e9d5f20480379e5 3,7,10-11,24-36,43-50,68-86
+app/src/test/java/com/camtransfer/media/wifi/VendorWifiCameraSessionFactoryTest.kt
+  2e9d5f20480379e5 63
+app/src/main/java/com/camtransfer/viewmodel/CameraRuntimeViewModel.kt
+  2e9d5f20480379e5 16-18,29-32,47-128,141-174,357
+app/src/main/java/com/camtransfer/runtime/SessionMutationCoordinator.kt
+  2e9d5f20480379e5 7,57,72
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "689a4b17a25af8e5d814921e1ee57c4c9038d091",
+  "prompts": {
+    "2e9d5f20480379e5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff489-0e64-7751-8b3b-c980d9947855",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 526,
+      "total_deletions": 153,
+      "accepted_lines": 73629,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/96f2b021f1e2d2166ba6b17bdc9ec845e396cdec659f8500adf555f8d61484e3"
+    }
+  }
+}
