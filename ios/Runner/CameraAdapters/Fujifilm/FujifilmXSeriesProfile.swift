@@ -6,8 +6,8 @@ struct FujifilmXSeriesProfile: Equatable {
   let fileDownloadReadSize: UInt32
   let fileDownloadFallbackReadSize: UInt32
 
-  static let xt5Current = FujifilmXSeriesProfile(
-    id: "fujifilm-x-series-xt5-current",
+  static let currentVerifiedBaseline = FujifilmXSeriesProfile(
+    id: "fujifilm-x-series-current-verified-baseline",
     ptpStartupDelaySeconds: CameraVendorGalleryPtpStartupPolicy.startupDelaySeconds(
       didCompleteWifiHandoff: true
     ),

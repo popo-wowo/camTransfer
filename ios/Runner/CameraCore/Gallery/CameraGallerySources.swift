@@ -66,10 +66,69 @@ struct CameraGalleryDetailsSourceResult: Equatable {
   }
 }
 
+struct CameraGalleryCatalogResponseEvidence: Equatable, Sendable {
+  let domain: String
+  let responseCode: UInt16
+  let operationCode: UInt16
+  let transactionID: UInt32
+
+  init?(error: Error) {
+    let responseError = error as NSError
+    guard let responseCode = UInt16(exactly: responseError.code),
+          let operationNumber = responseError.userInfo["operationCode"] as? NSNumber,
+          let transactionNumber = responseError.userInfo["transactionID"] as? NSNumber,
+          let operationCode = Self.exactUInt16(operationNumber),
+          let transactionID = Self.exactUInt32(transactionNumber) else {
+      return nil
+    }
+    domain = responseError.domain
+    self.responseCode = responseCode
+    self.operationCode = operationCode
+    self.transactionID = transactionID
+  }
+
+  private static func exactUInt16(_ number: NSNumber) -> UInt16? {
+    exactUnsignedInteger(number, maximum: UInt64(UInt16.max)).map(UInt16.init)
+  }
+
+  private static func exactUInt32(_ number: NSNumber) -> UInt32? {
+    exactUnsignedInteger(number, maximum: UInt64(UInt32.max)).map(UInt32.init)
+  }
+
+  private static func exactUnsignedInteger(
+    _ number: NSNumber,
+    maximum: UInt64
+  ) -> UInt64? {
+    let value = number.doubleValue
+    guard value.isFinite,
+          value >= 0,
+          value <= Double(maximum),
+          value.rounded(.towardZero) == value else {
+      return nil
+    }
+    let converted = UInt64(value)
+    guard Double(converted) == value else { return nil }
+    return converted
+  }
+}
+
 struct CameraGalleryCatalogTransactionFailure: Error, Equatable, Sendable {
   let primaryMessage: String
   let restorationMessage: String?
   let provesTransportLost: Bool
+  let responseEvidence: CameraGalleryCatalogResponseEvidence?
+
+  init(
+    primaryMessage: String,
+    restorationMessage: String?,
+    provesTransportLost: Bool,
+    responseEvidence: CameraGalleryCatalogResponseEvidence? = nil
+  ) {
+    self.primaryMessage = primaryMessage
+    self.restorationMessage = restorationMessage
+    self.provesTransportLost = provesTransportLost
+    self.responseEvidence = responseEvidence
+  }
 
   var catalogFailure: CameraGalleryCatalogFailure {
     CameraGalleryCatalogFailure(
@@ -83,8 +142,27 @@ struct CameraGalleryCatalogTransactionFailure: Error, Equatable, Sendable {
 @MainActor
 protocol CameraCatalogQuerySource: AnyObject {
   func loadExpandedCatalog() async throws -> CameraGalleryCatalogSnapshot
+  func loadInitialExpandedCatalog() async throws -> CameraGalleryCatalogSnapshot
   func loadExactCatalog(for format: CameraMediaFormat) async throws -> CameraGalleryCatalogSnapshot
   func loadSubtractBaselineCatalog(for format: CameraMediaFormat) async throws -> CameraGalleryCatalogSnapshot
+  func loadInitialExactCatalog(for format: CameraMediaFormat) async throws -> CameraGalleryCatalogSnapshot
+  func loadInitialSubtractBaselineCatalog(for format: CameraMediaFormat) async throws -> CameraGalleryCatalogSnapshot
+}
+
+extension CameraCatalogQuerySource {
+  func loadInitialExpandedCatalog() async throws -> CameraGalleryCatalogSnapshot {
+    try await loadExpandedCatalog()
+  }
+
+  func loadInitialExactCatalog(for format: CameraMediaFormat) async throws -> CameraGalleryCatalogSnapshot {
+    try await loadExactCatalog(for: format)
+  }
+
+  func loadInitialSubtractBaselineCatalog(
+    for format: CameraMediaFormat
+  ) async throws -> CameraGalleryCatalogSnapshot {
+    try await loadSubtractBaselineCatalog(for: format)
+  }
 }
 
 @MainActor

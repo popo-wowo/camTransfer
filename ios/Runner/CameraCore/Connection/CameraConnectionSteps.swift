@@ -1,6 +1,6 @@
 import Foundation
 
-enum IOSCameraConnectionStep: String, CaseIterable, Equatable {
+enum IOSCameraConnectionStep: String, CaseIterable, Equatable, Hashable {
   case environmentCheck
   case staleBondCheck
   case registrationConsistencyCheck
@@ -15,9 +15,11 @@ enum IOSCameraConnectionStep: String, CaseIterable, Equatable {
   case activateCameraWifi
   case waitCameraWifiReady
   case joinCameraWifi
-  case connectPtp
-  case confirmGalleryMode
-  case loadGallery
+  case ptpTransportConnected
+  case ptpInitAcknowledged
+  case ptpSessionOpened
+  case functionNegotiated
+  case gallerySessionPrepared
 
   static let officialGalleryOrder: [IOSCameraConnectionStep] = [
     .reconnectPairedBle,
@@ -25,9 +27,11 @@ enum IOSCameraConnectionStep: String, CaseIterable, Equatable {
     .activateCameraWifi,
     .waitCameraWifiReady,
     .joinCameraWifi,
-    .connectPtp,
-    .confirmGalleryMode,
-    .loadGallery,
+    .ptpTransportConnected,
+    .ptpInitAcknowledged,
+    .ptpSessionOpened,
+    .functionNegotiated,
+    .gallerySessionPrepared,
   ]
 
   static func officialGalleryOrderPrefix(through step: IOSCameraConnectionStep) -> [IOSCameraConnectionStep] {
@@ -67,12 +71,16 @@ enum IOSCameraConnectionStep: String, CaseIterable, Equatable {
       return "WaitCameraWifiReady"
     case .joinCameraWifi:
       return "JoinCameraWifi"
-    case .connectPtp:
-      return "ConnectPtp"
-    case .confirmGalleryMode:
-      return "ConfirmGalleryMode"
-    case .loadGallery:
-      return "LoadGallery"
+    case .ptpTransportConnected:
+      return "PtpTransportConnected"
+    case .ptpInitAcknowledged:
+      return "PtpInitAcknowledged"
+    case .ptpSessionOpened:
+      return "PtpSessionOpened"
+    case .functionNegotiated:
+      return "FunctionNegotiated"
+    case .gallerySessionPrepared:
+      return "GallerySessionPrepared"
     }
   }
 }
@@ -102,14 +110,84 @@ enum IOSCameraConnectionStepEvidence: Equatable {
   case cameraWifiActivationAcknowledged
   case cameraWifiReady
   case joinedCameraWifi(ssid: String)
-  case ptpConnected(IOSCameraPtpSessionEvidence)
-  case galleryModeConfirmed
-  case galleryLoaded(IOSCameraGalleryReadyEvidence)
+  case ptpTransportConnected(host: String, port: Int)
+  case ptpInitAcknowledged(
+    strategy: PtpInitStrategyID,
+    connectionNumber: UInt32?,
+    transport: CameraPtpTransport
+  )
+  case ptpSessionOpened(sessionID: String)
+  case functionNegotiated(
+    planID: CameraConnectionPlanID,
+    strategy: SessionNegotiationStrategyID
+  )
+  case gallerySessionPrepared(
+    planID: CameraConnectionPlanID,
+    strategy: GalleryBootstrapStrategyID
+  )
+}
+
+struct CameraConnectionBarrierEvent: Equatable {
+  let connectionSessionID: UUID
+  let planVersion: CameraConnectionPlanVersion
+  let step: IOSCameraConnectionStep
+  let evidence: IOSCameraConnectionStepEvidence
+}
+
+enum CameraConnectionBarrierOutcome: String, Codable, Equatable {
+  case began
+  case succeeded
+  case notRequired
+  case failed
+  case cancelled
+}
+
+struct CameraConnectionBarrierLifecycleEvent: Equatable {
+  let connectionSessionID: UUID
+  let planVersion: CameraConnectionPlanVersion
+  let step: IOSCameraConnectionStep
+  let outcome: CameraConnectionBarrierOutcome
+}
+
+struct CameraPlanRevisionSummary: Equatable {
+  let fromVersion: CameraConnectionPlanVersion
+  let toVersion: CameraConnectionPlanVersion
+  let reason: CameraPlanRevisionReason
+  let changedStages: [CameraConnectionPlanStage]
+  let preservedLockedStages: [CameraConnectionPlanStage]
+}
+
+enum CameraConnectionPlanStage: String, Codable, Equatable, CaseIterable {
+  case pairing
+  case activation
+  case ptpInit
+  case openSession
+  case negotiation
+  case bootstrap
+  case initialCatalog
+
+  static func stage(for step: IOSCameraConnectionStep) -> CameraConnectionPlanStage? {
+    switch step {
+    case .reconnectPairedBle, .transferAuthorization:
+      return .pairing
+    case .activateCameraWifi, .waitCameraWifiReady, .joinCameraWifi:
+      return .activation
+    case .ptpTransportConnected, .ptpInitAcknowledged:
+      return .ptpInit
+    case .ptpSessionOpened:
+      return .openSession
+    case .functionNegotiated:
+      return .negotiation
+    case .gallerySessionPrepared:
+      return .bootstrap
+    default:
+      return nil
+    }
+  }
 }
 
 struct IOSCameraConnectionAdvanceDecision: Equatable {
   let nextStep: IOSCameraConnectionStep?
-  let hasGalleryReadyEvidence: Bool
 }
 
 struct IOSCameraConnectionStepExecution: Equatable {
@@ -124,6 +202,8 @@ struct IOSCameraConnectionContext: Equatable {
   var ptpSessionID: String?
   var presentation: IOSCameraGalleryPresentation?
   var rememberedPeripheralID: UUID? = nil
+  var compatibilityFacts: CameraCompatibilityFacts? = nil
+  var connectionPlan: CameraConnectionPlan? = nil
 }
 
 struct IOSCameraConnectionIssue: Error, Equatable {
@@ -158,9 +238,10 @@ enum IOSCameraConnectionRetryPolicy {
       return .pairingConfirmation
     case .joinCameraWifi:
       return .wifiHandoffWithoutBle
-    case .loadGallery:
+    case .gallerySessionPrepared:
       return .galleryEntryWithBle
-    case .connectPtp, .registrationConsistencyCheck:
+    case .ptpTransportConnected, .ptpInitAcknowledged, .ptpSessionOpened,
+         .functionNegotiated, .registrationConsistencyCheck:
       return .resetConnection
     case .staleBondCheck, .bleScan, .bleHandshake, .environmentCheck, nil:
       return .pairingScan

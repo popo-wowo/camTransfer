@@ -100,6 +100,15 @@ actor CameraGalleryCatalogRuntime {
     await submit(intent, forceCameraTransaction: true, sourceOperation: .initial)
   }
 
+  func reload(
+    _ intent: CameraGalleryFilterIntent,
+    submissionID: CameraGalleryIntentSubmissionID
+  ) async {
+    guard submissionID > latestIntentSubmissionID else { return }
+    latestIntentSubmissionID = submissionID
+    await submit(intent, forceCameraTransaction: true, sourceOperation: .filtered)
+  }
+
   func submit(
     _ intent: CameraGalleryFilterIntent,
     submissionID: CameraGalleryIntentSubmissionID,
@@ -345,7 +354,8 @@ actor CameraGalleryCatalogRuntime {
       let resolution = try await queryEngine.resolve(
         rule: transaction.intent.rule,
         owner: queryOwner,
-        downloadedHandles: downloadedHandles
+        downloadedHandles: downloadedHandles,
+        usesInitialCatalogStrategy: transaction.sourceOperation == .initial
       )
       let snapshot = resolution.membershipSnapshot
       CameraVendorFileLogger.log(

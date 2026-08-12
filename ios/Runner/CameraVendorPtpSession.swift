@@ -12,6 +12,102 @@ enum CameraVendorPtpSessionPurpose {
   case reservedReceiveDiagnostic
 }
 
+enum CameraVendorPtpStrategyDispatcher {
+  static func validatePtpInitStrategy(_ strategy: PtpInitStrategyID) throws {
+    _ = try ptpInitDefinition(for: strategy)
+  }
+
+  static func ptpInitDefinition(
+    for strategy: PtpInitStrategyID,
+    environment: FujifilmCompatibilityEnvironment = .production
+  ) throws -> PtpInitStrategyDefinition {
+    try environment.strategyRegistry.ptpInitDefinition(for: strategy)
+  }
+
+  static func validateSessionNegotiationStrategy(
+    _ strategy: SessionNegotiationStrategyID
+  ) throws {
+    _ = try sessionNegotiationDefinition(for: strategy)
+  }
+
+  static func sessionNegotiationDefinition(
+    for strategy: SessionNegotiationStrategyID,
+    environment: FujifilmCompatibilityEnvironment = .production
+  ) throws -> SessionNegotiationStrategyDefinition {
+    try environment.strategyRegistry.sessionNegotiationDefinition(
+      for: strategy
+    )
+  }
+
+  static func validateGalleryBootstrapStrategy(
+    _ strategy: GalleryBootstrapStrategyID
+  ) throws {
+    _ = try galleryBootstrapDefinition(for: strategy)
+  }
+
+  static func galleryBootstrapDefinition(
+    for strategy: GalleryBootstrapStrategyID,
+    environment: FujifilmCompatibilityEnvironment = .production
+  ) throws -> GalleryBootstrapStrategyDefinition {
+    try environment.strategyRegistry.galleryBootstrapDefinition(
+      for: strategy
+    )
+  }
+}
+
+enum FujifilmSessionNegotiationStrategyExecutor {
+  static func execute(
+    definition: SessionNegotiationStrategyDefinition,
+    performNotRequired: () throws -> Void
+  ) rethrows {
+    switch definition.action {
+    case .notRequired:
+      try performNotRequired()
+    }
+  }
+}
+
+enum FujifilmGalleryBootstrapStrategyExecutorError: Swift.Error, Equatable {
+  case completionPredicateNotSatisfied(
+    strategyID: GalleryBootstrapStrategyID,
+    predicate: GalleryBootstrapCompletionPredicate
+  )
+}
+
+enum FujifilmGalleryBootstrapStrategyExecutor {
+  enum CompletionEvidence: Equatable {
+    case legacyReferenceAppGalleryModeConfirmed
+
+    func satisfies(_ predicate: GalleryBootstrapCompletionPredicate) -> Bool {
+      switch (self, predicate) {
+      case (.legacyReferenceAppGalleryModeConfirmed, .legacyReferenceAppGalleryModeConfirmed):
+        return true
+      case (.legacyReferenceAppGalleryModeConfirmed, .standardGalleryHandshakeCompleted):
+        return false
+      }
+    }
+  }
+
+  static func execute(
+    definition: GalleryBootstrapStrategyDefinition,
+    performCurrentLegacyReferenceAppGalleryMode: () throws -> Void
+  ) throws -> CompletionEvidence {
+    let evidence: CompletionEvidence
+    switch definition.action {
+    case .currentLegacyReferenceAppGalleryMode:
+      try performCurrentLegacyReferenceAppGalleryMode()
+      evidence = .legacyReferenceAppGalleryModeConfirmed
+    }
+    guard evidence.satisfies(definition.completionPredicate) else {
+      throw FujifilmGalleryBootstrapStrategyExecutorError.completionPredicateNotSatisfied(
+        strategyID: definition.id,
+        predicate: definition.completionPredicate
+      )
+    }
+    return evidence
+  }
+}
+
 struct CameraVendorSpecifiedObjectSnapshot {
   let declaredCount: UInt32?
   let dateGroups: [CameraVendorSpecifiedObjectDateGroup]
@@ -232,6 +328,7 @@ final class CameraVendorPtpSession {
   private let eventSocket = CameraVendorPtpSocket()
   private let originalTransferWorker = CameraVendorOriginalTransferWorker()
   private let commandLock = NSLock()
+  private let lifecycleLock = NSLock()
   private var connectionNumber: UInt32 = 0
   private var transactionID: UInt32 = 0
   private var isConnected = false
@@ -305,18 +402,31 @@ final class CameraVendorPtpSession {
   private var cameraVendorCurrentSlotStatus: UInt8?
   private var didConfirmGalleryMode = false
   private var didPrepareLegacyGalleryLoad = false
+  private var boundPtpInitDefinition: PtpInitStrategyDefinition?
+  private var boundNegotiationDefinition: SessionNegotiationStrategyDefinition?
+  private var boundGalleryBootstrapDefinition: GalleryBootstrapStrategyDefinition?
+  private var boundConnectionPlanID: CameraConnectionPlanID?
 
   var hasExplicitGalleryModeEvidence: Bool {
     didConfirmGalleryMode
   }
 
-  func connect(
+  func connectTransportAndOpenSession(
     host: String = CameraVendorPtpConstants.defaultHost,
     clientName: String = CameraVendorHandshakeIdentityPolicy.fallbackConnectedDeviceName,
     commandConnectTimeout: TimeInterval = CameraVendorPtpConnectionStartupPolicy.commandConnectTimeoutSeconds,
     diagnosticHandler: ((String) -> Void)? = nil,
-    purpose: CameraVendorPtpSessionPurpose = .gallery
+    purpose: CameraVendorPtpSessionPurpose = .gallery,
+    ptpInitDefinition: PtpInitStrategyDefinition,
+    progressHandler: ((IOSCameraConnectionStep, IOSCameraConnectionStepEvidence) throws -> Void)? = nil
   ) throws {
+    let ptpInitStrategy = ptpInitDefinition.id
+    _ = try FujifilmProtocolStrategyRegistry(ptpInitDefinitions: [ptpInitDefinition])
+    boundPtpInitDefinition = ptpInitDefinition
+    boundNegotiationDefinition = nil
+    boundGalleryBootstrapDefinition = nil
+    boundConnectionPlanID = nil
+
     disconnect()
     transactionID = 0
     didConfirmGalleryMode = false
@@ -340,12 +450,28 @@ final class CameraVendorPtpSession {
       socketBufferProfile: socketBufferProfile,
       tcpNoDelayPolicy: tcpNoDelayPolicy
     )
-    let initResult = try performInitHandshake(host: host, clientName: clientName)
+    try progressHandler?(
+      .ptpTransportConnected,
+      .ptpTransportConnected(host: host, port: CameraVendorPtpConstants.commandPort)
+    )
+    let initResult = try performInitHandshake(
+      host: host,
+      clientName: clientName,
+      strategy: ptpInitDefinition
+    )
     connectionNumber = initResult.connectionNumber
     operationTransport = initResult.operationTransport
     report("收到 PTP INIT_COMMAND_ACK，连接号 \(connectionNumber)")
-    report("[OBS] PTP_INIT_ACK connectionNumber=\(connectionNumber) transport=\(operationTransport == .cameraVendorLegacy ? "cameraVendorLegacy" : "standard")")
+    report("[OBS] PTP_INIT_ACK direction=cameraToApp connectionNumber=\(connectionNumber) transport=\(operationTransport == .cameraVendorLegacy ? "cameraVendorLegacy" : "standard")")
     report("PTP 命令格式: \(operationTransport == .cameraVendorLegacy ? "CameraVendor legacy" : "standard PTP/IP")")
+    try progressHandler?(
+      .ptpInitAcknowledged,
+      .ptpInitAcknowledged(
+        strategy: ptpInitStrategy,
+        connectionNumber: connectionNumber,
+        transport: operationTransport == .cameraVendorLegacy ? .cameraVendorLegacy : .standardPtpIp
+      )
+    )
 
     // CameraVendor does NOT use standard InitEventRequest before OpenSession.
     // NewCameraVendorInitEventRequestPacket returns nil in the Go implementation.
@@ -358,11 +484,78 @@ final class CameraVendorPtpSession {
     )
     report("PTP Session 已打开")
     report("[OBS] PTP_OPEN_SESSION_OK")
+    try progressHandler?(
+      .ptpSessionOpened,
+      .ptpSessionOpened(sessionID: "\(connectedClientName)-ptp")
+    )
 
-    switch (operationTransport, purpose) {
+    isConnected = true
+    #if DEBUG
+    physicalSessionSequence &+= 1
+    #endif
+    report("PTP transport and OpenSession complete, purpose=\(purpose)")
+  }
+
+  func negotiateGalleryFunction(
+    definition: SessionNegotiationStrategyDefinition,
+    connectionPlanID: CameraConnectionPlanID?,
+    progressHandler: ((IOSCameraConnectionStep, IOSCameraConnectionStepEvidence) throws -> Void)? = nil
+  ) throws {
+    guard isConnected else {
+      throw NSError(
+        domain: "CameraVendorPtpSession",
+        code: NSURLErrorNotConnectedToInternet,
+        userInfo: [NSLocalizedDescriptionKey: "Function negotiation requires an open PTP session"]
+      )
+    }
+    try FujifilmSessionNegotiationStrategyExecutor.execute(
+      definition: definition,
+      performNotRequired: {
+      report("[OBS] PTP_FUNCTION_NEGOTIATION strategy=\(definition.id.rawValue)")
+      if let connectionPlanID {
+        try progressHandler?(
+          .functionNegotiated,
+          .functionNegotiated(planID: connectionPlanID, strategy: definition.id)
+        )
+      }
+      }
+    )
+    boundNegotiationDefinition = definition
+    boundConnectionPlanID = connectionPlanID
+  }
+
+  func prepareGallerySession(
+    definition: GalleryBootstrapStrategyDefinition,
+    connectionPlanID: CameraConnectionPlanID?,
+    progressHandler: ((IOSCameraConnectionStep, IOSCameraConnectionStepEvidence) throws -> Void)? = nil
+  ) throws {
+    guard isConnected else {
+      throw NSError(
+        domain: "CameraVendorPtpSession",
+        code: NSURLErrorNotConnectedToInternet,
+        userInfo: [NSLocalizedDescriptionKey: "Gallery bootstrap requires an open PTP session"]
+      )
+    }
+    switch (operationTransport, connectedPurpose) {
     case (.cameraVendorLegacy, .gallery):
-      try confirmCameraVendorLegacyReferenceAppGalleryMode()
-      didConfirmGalleryMode = true
+      let completionEvidence = try FujifilmGalleryBootstrapStrategyExecutor.execute(
+        definition: definition,
+        performCurrentLegacyReferenceAppGalleryMode: {
+          try confirmCameraVendorLegacyReferenceAppGalleryMode()
+        }
+      )
+      if let connectionPlanID {
+        try progressHandler?(
+          .gallerySessionPrepared,
+          .gallerySessionPrepared(
+            planID: connectionPlanID,
+            strategy: definition.id
+          )
+        )
+      }
+      didConfirmGalleryMode = completionEvidence.satisfies(definition.completionPredicate)
+      boundGalleryBootstrapDefinition = definition
+      boundConnectionPlanID = connectionPlanID
     case (.cameraVendorLegacy, .reservedReceiveDiagnostic):
       try performCameraVendorReservedReceiveDiagnosticHandshake()
     case (.standardPtpIp, .gallery):
@@ -375,13 +568,8 @@ final class CameraVendorPtpSession {
         userInfo: [NSLocalizedDescriptionKey: "Reserved Receive 诊断需要 CameraVendor legacy PTP 连接"]
       )
     }
-
-    isConnected = true
-    #if DEBUG
-    physicalSessionSequence &+= 1
-    #endif
-    report("PTP 连接完成，purpose=\(purpose)")
-    report("[OBS] PTP_HANDSHAKE_OK purpose=\(purpose)")
+    report("PTP 连接完成，purpose=\(connectedPurpose)")
+    report("[OBS] PTP_HANDSHAKE_OK purpose=\(connectedPurpose)")
   }
 
   func interruptInFlightOperationForPriorityDownload() {
@@ -467,18 +655,44 @@ final class CameraVendorPtpSession {
 
   func ensureConnectedForPriorityDownload() throws {
     guard !isConnected else { return }
+    guard let ptpInitDefinition = boundPtpInitDefinition,
+          let negotiationDefinition = boundNegotiationDefinition,
+          let galleryBootstrapDefinition = boundGalleryBootstrapDefinition else {
+      throw NSError(
+        domain: "CameraVendorPtpSession",
+        code: 15,
+        userInfo: [
+          NSLocalizedDescriptionKey:
+            "Priority download reconnect requires an explicitly bound Strategy snapshot"
+        ]
+      )
+    }
+    let connectionPlanID = boundConnectionPlanID
+    let reconnectDiagnosticHandler = diagnosticHandler
     var lastError: Error?
-    for attempt in 1...CameraVendorPtpConnectionStartupPolicy.maxAttempts {
+    for attempt in 1...ptpInitDefinition.retryTiming.connectionMaxAttempts {
       report("[OBS] PTP_PRIORITY_DOWNLOAD_RECONNECT_BEGIN clientName=\(connectedClientName) attempt=\(attempt)")
       commandLock.lock()
       commandLock.unlock()
       guard !isConnected else { return }
       do {
-        try connect(
+        if ptpInitDefinition.startupDelaySeconds > 0 {
+          Thread.sleep(forTimeInterval: ptpInitDefinition.startupDelaySeconds)
+        }
+        try connectTransportAndOpenSession(
           host: connectedHost,
           clientName: connectedClientName,
-          diagnosticHandler: diagnosticHandler,
-          purpose: connectedPurpose
+          diagnosticHandler: reconnectDiagnosticHandler,
+          purpose: connectedPurpose,
+          ptpInitDefinition: ptpInitDefinition
+        )
+        try negotiateGalleryFunction(
+          definition: negotiationDefinition,
+          connectionPlanID: connectionPlanID
+        )
+        try prepareGallerySession(
+          definition: galleryBootstrapDefinition,
+          connectionPlanID: connectionPlanID
         )
         report("[OBS] PTP_PRIORITY_DOWNLOAD_RECONNECT_COMPLETE attempt=\(attempt)")
         return
@@ -491,11 +705,14 @@ final class CameraVendorPtpSession {
         }
 
         lastError = error
-        guard CameraVendorPtpConnectionStartupPolicy.shouldRetry(afterFailedAttempt: attempt) else {
+        guard attempt < ptpInitDefinition.retryTiming.connectionMaxAttempts else {
           break
         }
 
-        let delay = CameraVendorPtpConnectionStartupPolicy.retryDelaySeconds(afterFailedAttempt: attempt)
+        let delay = retryDelaySeconds(
+          afterFailedAttempt: attempt,
+          backoff: ptpInitDefinition.retryTiming.connectionRetryBackoff
+        )
         report(
           "[OBS] PTP_PRIORITY_DOWNLOAD_RECONNECT_RETRY " +
           "attempt=\(attempt) delay=\(String(format: "%.1f", delay)) " +
@@ -509,6 +726,18 @@ final class CameraVendorPtpSession {
       code: 12,
       userInfo: [NSLocalizedDescriptionKey: "优先下载重连多次失败"]
     )
+  }
+
+  private func retryDelaySeconds(
+    afterFailedAttempt attempt: Int,
+    backoff: CameraConnectionRetryBackoffID
+  ) -> TimeInterval {
+    switch backoff {
+    case .currentLinearHalfSecond:
+      return CameraVendorPtpConnectionStartupPolicy.retryDelaySeconds(
+        afterFailedAttempt: attempt
+      )
+    }
   }
 
   private func performStandardGalleryHandshake() throws {
@@ -611,29 +840,16 @@ final class CameraVendorPtpSession {
       code: CameraVendorDevicePropCode.referenceAppGalleryObjectContext,
       name: "CameraVendor/ReferenceApp factory D212 #2 (14 bytes)"
     )
-    let galleryReadyMarker = CameraVendorPtpDataParser.cameraVendorGalleryContextValue(
-      for: CameraVendorDevicePropCode.referenceAppGalleryReadyMarker,
-      in: initialContext
-    )
     reportCameraVendorGalleryContextMarker(initialContext)
     report("[OBS] PTP_FACTORY_D212_2 bytes=\(initialContext.count) hex=\(initialContext.map { String(format: "%02x", $0) }.joined())")
 
     try requestCameraVendorCardSlotStatus()
 
-    report("[OBS] PTP_GALLERY_BOOTSTRAP_9054")
-    let didPrimeCurrentImage = primeCameraVendorCurrentImageContextIfNeeded(
-      stage: "gallery-bootstrap",
-      galleryReadyMarker: galleryReadyMarker
-    )
-    report("[OBS] PTP_GALLERY_BOOTSTRAP_9055")
-    primeCameraVendorCurrentThumbnailContextIfNeeded(
-      stage: "gallery-bootstrap",
-      imagePrimeSucceeded: didPrimeCurrentImage
-    )
-    report("[OBS] PTP_GALLERY_BOOTSTRAP_9050")
-    try requestCameraVendorSearchModeDescAll()
+    report("[OBS] PTP_GALLERY_BOOTSTRAP_9054_SKIPPED reason=optional-current-image-prime")
+    report("[OBS] PTP_GALLERY_BOOTSTRAP_9055_SKIPPED reason=optional-current-thumbnail-prime")
+    report("[OBS] PTP_GALLERY_BOOTSTRAP_9050_SKIPPED reason=unused-search-mode-description")
     report("[OBS] PTP_GALLERY_BOOTSTRAP_D22B")
-    requestCameraVendorCurrentObjectHandleSnapshot(stage: "gallery-bootstrap")
+    try requestCameraVendorCurrentObjectHandleSnapshot(stage: "gallery-bootstrap")
 
     let context3 = try readCameraVendorDeviceProperty(
       code: CameraVendorDevicePropCode.referenceAppGalleryObjectContext,
@@ -1466,11 +1682,12 @@ final class CameraVendorPtpSession {
     }
   }
 
-  private func requestCameraVendorCurrentObjectHandleSnapshot(stage: String) {
-    if CameraVendorCatalogWireRequestPolicy.shouldReadCurrentObjectHandleViaObjectPropList,
-       let objectPropListHandle = try? readCameraVendorCurrentObjectHandleViaObjectPropList(),
-       objectPropListHandle != 0 {
-      report("[OBS] PTP_CURRENT_OBJECT_HANDLE_SNAPSHOT stage=\(stage) source=objectPropList value=0x\(String(format: "%08X", objectPropListHandle))")
+  private func requestCameraVendorCurrentObjectHandleSnapshot(stage: String) throws {
+    if CameraVendorCatalogWireRequestPolicy.shouldReadCurrentObjectHandleViaObjectPropList {
+      let objectPropListHandle = try readCameraVendorCurrentObjectHandleViaObjectPropList()
+      if let objectPropListHandle, objectPropListHandle != 0 {
+        report("[OBS] PTP_CURRENT_OBJECT_HANDLE_SNAPSHOT stage=\(stage) source=objectPropList value=0x\(String(format: "%08X", objectPropListHandle))")
+      }
     }
     do {
       if let propHandle = try readCameraVendorCurrentObjectHandle(), propHandle != 0 {
@@ -1478,6 +1695,7 @@ final class CameraVendorPtpSession {
       }
     } catch {
       report("[OBS] PTP_CURRENT_OBJECT_HANDLE_SNAPSHOT_FAILED stage=\(stage) error=\(error.localizedDescription)")
+      throw error
     }
   }
 
@@ -1742,7 +1960,7 @@ final class CameraVendorPtpSession {
       Thread.sleep(forTimeInterval: CameraVendorSpecifiedObjectEmptySnapshotRecoveryPolicy.retryDelaySeconds)
       try requestCameraVendorSearchModeDescAll()
       if CameraVendorCatalogWireRequestPolicy.shouldReadCurrentObjectHandleBeforeSpecifiedList {
-        requestCameraVendorCurrentObjectHandleSnapshot(stage: "\(stage)-empty-recovery")
+        try requestCameraVendorCurrentObjectHandleSnapshot(stage: "\(stage)-empty-recovery")
       }
     }
   }
@@ -1778,13 +1996,14 @@ final class CameraVendorPtpSession {
       code: CameraVendorDevicePropCode.specifiedObjectHandles,
       name: "CameraVendor/ReferenceApp SpecifiedObjectHandles (0xD621)"
     )
-    let hex = data.map { String(format: "%02x", $0) }.joined(separator: "")
     let handles = CameraVendorPtpDataParser.uint32Array(from: data)
     cameraVendorSpecifiedObjectHandles = handles
     report(
-      "[OBS] PTP_SPECIFIED_OBJECT_HANDLES stage=\(stage) bytes=\(data.count) handles=" +
-      handles.map { String(format: "0x%08X", $0) }.joined(separator: ",") +
-      " hex=\(hex)"
+      CameraDiagnosticPayloadSummary.specifiedHandles(
+        stage: stage,
+        rawData: data,
+        handles: handles
+      )
     )
     return handles
   }
@@ -1800,7 +2019,17 @@ final class CameraVendorPtpSession {
       parameters: [code],
       timingHandler: timingHandler
     )
-    report("\(name): \(data.map { String(format: "%02x", $0) }.joined(separator: " "))")
+    if code != CameraVendorDevicePropCode.specifiedObjectHandles {
+      report(
+        "[OBS] PTP_DEVICE_PROPERTY_DATA direction=cameraToApp " +
+        "code=\(String(format: "0x%08X", code)) name=\(name) " +
+        CameraDiagnosticPayloadSummary.controlSignal(
+          name: "payload",
+          direction: .cameraToApp,
+          data: data
+        )
+      )
+    }
     return data
   }
 
@@ -1876,7 +2105,8 @@ final class CameraVendorPtpSession {
 
   private func performInitHandshake(
     host: String,
-    clientName: String
+    clientName: String,
+    strategy: PtpInitStrategyDefinition
   ) throws -> (connectionNumber: UInt32, operationTransport: CameraVendorPtpOperationTransport) {
     let clientIP = getWifiIPv4Address()
     report("客户端 IP: \(clientIP ?? "nil")")
@@ -1884,13 +2114,15 @@ final class CameraVendorPtpSession {
     report("[OBS] PTP_INIT_CONTEXT clientIP=\(clientIP ?? "nil") clientName=\(clientName)")
 
     let attempts = CameraVendorOfficialGalleryPtpInitPolicy.initAttempts(
+      packetVariants: strategy.packetVariants,
       clientName: clientName,
-      clientIP: clientIP
+      clientIP: clientIP,
+      timeout: strategy.retryTiming.perPacketAckTimeoutSeconds
     )
 
     var lastError: Error?
     for (index, attempt) in attempts.enumerated() {
-      if index > 0 {
+      if index > 0, strategy.retryTiming.reconnectSocketBetweenPacketVariants {
         report("重新建立 PTP socket，尝试 \(attempt.name) INIT")
         commandSocket.close()
         try commandSocket.connect(
@@ -1908,7 +2140,8 @@ final class CameraVendorPtpSession {
         let connectionNumber = try sendInitCommandRequest(
           packet: attempt.packet,
           variantName: attempt.name,
-          timeout: attempt.timeout
+          timeout: attempt.timeout,
+          ackParser: strategy.ackParser
         )
         return (connectionNumber, .cameraVendorLegacy)
       } catch {
@@ -1927,15 +2160,34 @@ final class CameraVendorPtpSession {
   private func sendInitCommandRequest(
     packet: Data,
     variantName: String,
-    timeout: TimeInterval
+    timeout: TimeInterval,
+    ackParser: PtpInitAckParserID = .currentLegacyTypeAndConnectionNumber
   ) throws -> UInt32 {
     report("发送 \(variantName) PTP INIT_COMMAND_REQUEST (\(packet.count) bytes)")
-    report("\(variantName) INIT hex: \(packet.map { String(format: "%02x", $0) }.joined(separator: " "))")
-    report("[OBS] PTP_INIT_REQUEST variant=\(variantName) bytes=\(packet.count)")
+    report(
+      "[OBS] PTP_INIT_REQUEST direction=appToCamera variant=\(variantName) " +
+      CameraDiagnosticPayloadSummary.controlSignal(
+        name: "packet",
+        direction: .appToCamera,
+        data: packet
+      )
+    )
     try commandSocket.write(packet)
     Thread.sleep(forTimeInterval: 0.05)
     report("等待 \(variantName) PTP INIT_COMMAND_ACK (超时 \(Int(timeout))s)")
     let initAck = try readPacket(from: commandSocket, timeout: timeout)
+    report(
+      "[OBS] PTP_INIT_ACK_PACKET direction=cameraToApp variant=\(variantName) type=\(initAck.type) " +
+      CameraDiagnosticPayloadSummary.controlSignal(
+        name: "payload",
+        direction: .cameraToApp,
+        data: initAck.payload
+      )
+    )
+    switch ackParser {
+    case .currentLegacyTypeAndConnectionNumber:
+      break
+    }
     if initAck.type == CameraVendorPtpPacketType.initFail {
       let reason = initAck.payload.count >= 4
         ? "0x\(String(initAck.payload.withUnsafeBytes { $0.load(as: UInt32.self).littleEndian }, radix: 16))"
@@ -3346,6 +3598,7 @@ final class CameraVendorPtpSession {
   }
 
   func disconnect() {
+    lifecycleLock.lock()
     if isConnected {
       _ = try? sendCommand(operationCode: UInt16(CameraVendorPtpOperationCode.closeSession))
     }
@@ -3355,6 +3608,7 @@ final class CameraVendorPtpSession {
     didConfirmGalleryMode = false
     transferModeCoordinator.invalidate()
     diagnosticHandler = nil
+    lifecycleLock.unlock()
   }
 
   func keepAlive(readTimeout: TimeInterval = 3) throws {
@@ -3405,8 +3659,16 @@ final class CameraVendorPtpSession {
           parameters: parameters
         )
       }
+      reportPtpCommandSend(
+        operationCode: operationCode,
+        parameters: parameters,
+        transactionID: transactionID,
+        packet: packet
+      )
       try commandSocket.write(packet)
-      return try readCameraVendorOperationResponse(validatesOK: false)
+      let response = try readCameraVendorOperationResponse(validatesOK: false)
+      reportPtpCommandResponse(operationCode: operationCode, response: response)
+      return response
     }
   }
 
@@ -3417,41 +3679,53 @@ final class CameraVendorPtpSession {
   ) throws -> CameraVendorOperationResponse {
     try withSerializedCommand {
       transactionID += 1
+      let commandPacket: Data
+      let dataPacket: Data
       switch operationTransport {
       case .standardPtpIp:
-        // First packet: command with DataPhase = DataOut.
-        try commandSocket.write(
-          CameraVendorPtpPacketBuilder.buildOperationRequest(
-            operationCode: operationCode,
-            transactionID: transactionID,
-            parameters: parameters,
-            dataPhase: 2
-          )
+        commandPacket = CameraVendorPtpPacketBuilder.buildOperationRequest(
+          operationCode: operationCode,
+          transactionID: transactionID,
+          parameters: parameters,
+          dataPhase: 2
         )
-        try commandSocket.write(
-          CameraVendorPtpPacketBuilder.buildCameraVendorDataOutRequest(
-            operationCode: operationCode,
-            transactionID: transactionID,
-            data: data
-          )
+        dataPacket = CameraVendorPtpPacketBuilder.buildCameraVendorDataOutRequest(
+          operationCode: operationCode,
+          transactionID: transactionID,
+          data: data
         )
       case .cameraVendorLegacy:
-        try commandSocket.write(
-          CameraVendorPtpPacketBuilder.buildCameraVendorLegacyOperationRequest(
-            operationCode: operationCode,
-            transactionID: transactionID,
-            parameters: parameters
-          )
+        commandPacket = CameraVendorPtpPacketBuilder.buildCameraVendorLegacyOperationRequest(
+          operationCode: operationCode,
+          transactionID: transactionID,
+          parameters: parameters
         )
-        try commandSocket.write(
-          CameraVendorPtpPacketBuilder.buildCameraVendorLegacyDataOutRequest(
-            operationCode: operationCode,
-            transactionID: transactionID,
-            data: data
-          )
+        dataPacket = CameraVendorPtpPacketBuilder.buildCameraVendorLegacyDataOutRequest(
+          operationCode: operationCode,
+          transactionID: transactionID,
+          data: data
         )
       }
-      return try readCameraVendorOperationResponse()
+      reportPtpCommandSend(
+        operationCode: operationCode,
+        parameters: parameters,
+        transactionID: transactionID,
+        packet: commandPacket
+      )
+      report(
+        "[OBS] PTP_DATA_OUT_SEND direction=appToCamera operation=0x\(String(format: "%04X", operationCode)) " +
+        "transaction=\(transactionID) " +
+        CameraDiagnosticPayloadSummary.controlSignal(
+          name: "packet",
+          direction: .appToCamera,
+          data: dataPacket
+        )
+      )
+      try commandSocket.write(commandPacket)
+      try commandSocket.write(dataPacket)
+      let response = try readCameraVendorOperationResponse()
+      reportPtpCommandResponse(operationCode: operationCode, response: response)
+      return response
     }
   }
 
@@ -3622,6 +3896,12 @@ final class CameraVendorPtpSession {
           parameters: parameters
         )
       }
+      reportPtpCommandSend(
+        operationCode: operationCode,
+        parameters: parameters,
+        transactionID: transactionID,
+        packet: request
+      )
       try commandSocket.write(request)
 
       switch operationTransport {
@@ -3650,6 +3930,7 @@ final class CameraVendorPtpSession {
             }
           case CameraVendorPtpPacketType.operationResponse:
             let response = try parseOperationResponsePayload(packet.payload)
+            reportPtpCommandResponse(operationCode: operationCode, response: response)
             try CameraVendorPtpResponsePolicy.validateOK(
               responseCode: response.responseCode,
               operationName: String(format: "PTP operation 0x%04X", operationCode)
@@ -3696,6 +3977,7 @@ final class CameraVendorPtpSession {
             continue
           case CameraVendorPtpPacketType.operationResponse:
             let response = try parseOperationResponsePayload(controlPacket.payload)
+            reportPtpCommandResponse(operationCode: operationCode, response: response)
             try CameraVendorPtpResponsePolicy.validateOK(
               responseCode: response.responseCode,
               operationName: String(format: "PTP operation 0x%04X", operationCode)
@@ -3748,6 +4030,12 @@ final class CameraVendorPtpSession {
           parameters: parameters
         )
       }
+      reportPtpCommandSend(
+        operationCode: operationCode,
+        parameters: parameters,
+        transactionID: transactionID,
+        packet: request
+      )
       try commandSocket.write(request)
 
       var received = Data()
@@ -3771,10 +4059,17 @@ final class CameraVendorPtpSession {
           report("收到数据包 type=\(packet.type), 当前数据大小=\(received.count)")
         case CameraVendorPtpPacketType.operationResponse:
           let response = try parseOperationResponsePayload(packet.payload)
+          reportPtpCommandResponse(operationCode: operationCode, response: response)
           report("操作响应: responseCode=0x\(String(response.responseCode, radix: 16)), 总数据大小=\(received.count)")
+          try CameraVendorPtpResponsePolicy.validateTransactionID(
+            response: response.transactionID,
+            expected: transactionID
+          )
           try CameraVendorPtpResponsePolicy.validateOK(
             responseCode: response.responseCode,
-            operationName: String(format: "PTP operation 0x%04X", operationCode)
+            operationName: String(format: "PTP operation 0x%04X", operationCode),
+            operationCode: operationCode,
+            transactionID: response.transactionID
           )
           let responseCompleteAt = Date()
           if let timingHandler {
@@ -3842,6 +4137,42 @@ final class CameraVendorPtpSession {
       )
     }
     return response
+  }
+
+  private func reportPtpCommandSend(
+    operationCode: UInt16,
+    parameters: [UInt32],
+    transactionID: UInt32,
+    packet: Data
+  ) {
+    let parameterText = parameters.isEmpty
+      ? "none"
+      : parameters.map { String(format: "0x%08X", $0) }.joined(separator: ",")
+    report(
+      "[OBS] PTP_COMMAND_SEND direction=appToCamera " +
+      "operation=0x\(String(format: "%04X", operationCode)) " +
+      "transaction=\(transactionID) parameters=\(parameterText) " +
+      CameraDiagnosticPayloadSummary.controlSignal(
+        name: "packet",
+        direction: .appToCamera,
+        data: packet
+      )
+    )
+  }
+
+  private func reportPtpCommandResponse(
+    operationCode: UInt16,
+    response: CameraVendorOperationResponse
+  ) {
+    let parameterText = response.params.isEmpty
+      ? "none"
+      : response.params.map { String(format: "0x%08X", $0) }.joined(separator: ",")
+    report(
+      "[OBS] PTP_COMMAND_RESPONSE direction=cameraToApp " +
+      "operation=0x\(String(format: "%04X", operationCode)) " +
+      "transaction=\(response.transactionID) response=0x\(String(format: "%04X", response.responseCode)) " +
+      "parameters=\(parameterText)"
+    )
   }
 
   private func readOperationPacket(
@@ -4088,7 +4419,10 @@ final class CameraVendorPtpSession {
 
   private func report(_ message: String) {
     guard CameraVendorPtpDiagnosticLogPolicy.shouldEmit(message) else { return }
-    CameraVendorGalleryDiagnostics.log(message)
-    diagnosticHandler?(message)
+    if let diagnosticHandler {
+      diagnosticHandler(message)
+    } else {
+      CameraVendorGalleryDiagnostics.log(message)
+    }
   }
 }

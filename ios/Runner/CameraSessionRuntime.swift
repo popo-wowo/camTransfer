@@ -80,6 +80,7 @@ struct CameraSessionRuntimeBinding: Equatable {
 
 enum CameraSessionPhase: Equatable {
   case idle
+  case sessionPrepared
   case galleryLoading
   case galleryReady
   case downloadingForeground
@@ -180,10 +181,11 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   private var hasBackgroundExecutionAuthority = false
   private var activitySessionID: UUID?
   private var activeTransportBinding: CameraSessionRuntimeBinding?
+  private(set) var activeFujifilmCameraSession: FujifilmCameraSession?
   private var isCatalogTransportUsable = false
   private(set) var galleryPresentationPayload: CameraSessionRuntimeGalleryPresentationPayload?
   private var isQuickDownloadQuerySession = false
-  private var quickDownloadGalleryReadySession: IOSCameraGallerySession?
+  private var quickDownloadPreparedSession: IOSCameraGallerySession?
   private var galleryItemCount = 0
   private var gallerySession: CameraGallerySession?
   private var catalogQueryEngine: CameraCatalogQueryEngine?
@@ -242,6 +244,13 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   }
 
   var activeCameraIdentity: CameraSessionIdentity? { identity }
+
+  func installFujifilmCameraSession(_ session: FujifilmCameraSession) {
+    if let activeFujifilmCameraSession, activeFujifilmCameraSession !== session {
+      activeFujifilmCameraSession.terminate(reason: "physical-session-superseded")
+    }
+    activeFujifilmCameraSession = session
+  }
 
   func submitGalleryFilter(
     rule: CameraMediaFilterRule,
@@ -513,6 +522,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   }
 
   private func installCatalogPresentation(_ catalog: CameraGalleryPresentation) {
+    let wasGalleryLoading = presentation.phase == .galleryLoading
     if case .ready(let generation, let snapshotID) = catalog.state,
        let sessionEpoch = catalogSessionID {
       galleryCatalogIdentity = CameraGalleryCatalogIdentity(
@@ -541,6 +551,13 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
       uniqueKeysWithValues: catalog.items.map { (UInt32($0.handle), $0) }
     )
     galleryItemCount = catalog.items.count
+    if wasGalleryLoading,
+       case .ready(let generation, let snapshotID) = catalog.state {
+      CameraVendorFileLogger.log(
+        "[OBS] GALLERY_READY generation=\(generation.rawValue) " +
+          "snapshotID=\(snapshotID.rawValue.uuidString) items=\(catalog.items.count)"
+      )
+    }
     publishPresentation()
     if case .ready = catalog.state, wasRecovering {
       send(.resumeRecoveredDownload(availableHandles: Set(catalog.items.map { UInt32($0.handle) })))
@@ -675,10 +692,10 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     record: IOSCameraRememberedCameraRecord,
     completion: @escaping (IOSCameraConnectFlowState) -> Void
   ) {
-    quickDownloadGalleryReadySession = nil
+    quickDownloadPreparedSession = nil
     connectionWorker?.enterRememberedGallery(record: record) { [weak self] state in
       guard let self else { return }
-      guard case .galleryReady = state else {
+      guard case .gallerySessionPrepared = state else {
         completion(state)
         return
       }
@@ -697,7 +714,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
         )
       } catch {
         completion(.failed(IOSCameraConnectionIssue(
-          step: .loadGallery,
+          step: .gallerySessionPrepared,
           reason: error.localizedDescription
         )))
       }
@@ -708,20 +725,20 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     record: IOSCameraRememberedCameraRecord,
     completion: @escaping (IOSCameraConnectFlowState) -> Void
   ) {
-    quickDownloadGalleryReadySession = nil
+    quickDownloadPreparedSession = nil
     connectionWorker?.enterRememberedGallery(record: record) { [weak self] state in
       guard let self else { return }
-      guard case let .galleryReady(session) = state else {
+      guard case let .gallerySessionPrepared(session) = state else {
         completion(state)
         return
       }
       do {
         self.galleryPresentationPayload = try self.activateRememberedQuickDownloadSession()
-        self.quickDownloadGalleryReadySession = session
+        self.quickDownloadPreparedSession = session
         completion(state)
       } catch {
         completion(.failed(IOSCameraConnectionIssue(
-          step: .loadGallery,
+          step: .gallerySessionPrepared,
           reason: error.localizedDescription
         )))
       }
@@ -733,7 +750,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   }
 
   /// Activates the transport only after the runtime-owned connection worker has
-  /// produced a GalleryReady navigation event. Home receives the returned
+  /// produced a GallerySessionPrepared navigation event. Home receives the returned
   /// presentation payload solely to render the gallery.
   func activateRememberedGallerySession() throws -> CameraSessionRuntimeGalleryPresentationPayload {
     let (payload, identity) = try activateRememberedTransportSession()
@@ -746,7 +763,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     let (payload, identity) = try activateRememberedTransportSession()
     beginFreshConnectedSession(
       identity: identity,
-      phase: .galleryReady,
+      phase: .sessionPrepared,
       startsGalleryCatalog: false
     )
     galleryPresentationPayload = payload
@@ -877,6 +894,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
       logLifecycleTransition(event: "will-resign-active")
       guard identity != nil else { return }
       let needsFiniteBackgroundTask = isDownloadingPhase
+        || presentation.phase == .sessionPrepared
         || presentation.phase == .galleryLoading
         || presentation.phase == .galleryReady
       guard needsFiniteBackgroundTask else { return }
@@ -895,7 +913,8 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
       isApplicationTransitioningToBackground = false
       logLifecycleTransition(event: "entered-background")
       guard identity != nil,
-            presentation.phase == .galleryLoading || presentation.phase == .galleryReady || isDownloadingPhase else {
+            presentation.phase == .sessionPrepared || presentation.phase == .galleryLoading ||
+              presentation.phase == .galleryReady || isDownloadingPhase else {
         return
       }
       backgroundMaintainer?.start(
@@ -937,7 +956,8 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
       backgroundMaintainer?.stop(reason: "application-became-active")
       releaseBackgroundExecution(reason: "download-foreground")
       if identity != nil,
-         presentation.phase == .galleryLoading || presentation.phase == .galleryReady || isDownloadingPhase {
+         presentation.phase == .sessionPrepared || presentation.phase == .galleryLoading ||
+           presentation.phase == .galleryReady || isDownloadingPhase {
         (backgroundMaintainer as? CameraSessionRuntimeBackgroundExecutionPreparing)?
           .prepareBackgroundExecution()
       }
@@ -994,7 +1014,8 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
           reason: "transport-failed",
           transportMessage: error.localizedDescription
         )
-      } else if presentation.phase == .galleryLoading || presentation.phase == .galleryReady {
+      } else if presentation.phase == .sessionPrepared || presentation.phase == .galleryLoading ||
+                  presentation.phase == .galleryReady {
         let gallerySession = gallerySession
         let catalogSessionID = catalogSessionID
         let transportBinding = activeTransportBinding
@@ -1137,7 +1158,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
       identity = nil
       galleryPresentationPayload = nil
       isQuickDownloadQuerySession = false
-      quickDownloadGalleryReadySession = nil
+      quickDownloadPreparedSession = nil
       activeDownloadSubmission = nil
       recoveredSnapshot = nil
       hasInterruptedRecoverably = false
@@ -1158,8 +1179,9 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   @discardableResult
   func submitDownload(_ submission: CameraDownloadSubmission) -> Bool {
     let isRecoverySubmission = submission.origin == .recovery && presentation.phase == .recovering
+    let isPreparedQuickDownload = isQuickDownloadQuerySession && presentation.phase == .sessionPrepared
     guard identity != nil,
-          presentation.phase == .galleryReady || isRecoverySubmission,
+          presentation.phase == .galleryReady || isPreparedQuickDownload || isRecoverySubmission,
           pendingTransportFailureCleanup == nil,
           activeDownloadSubmission == nil else {
       return false
@@ -1285,8 +1307,10 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     completionPolicy: CameraDownloadCompletionPolicy,
     reason: String
   ) async -> Bool {
+    let canRouteQuickDownloadTerminal = presentation.phase == .galleryReady ||
+      (isQuickDownloadQuerySession && presentation.phase == .sessionPrepared)
     guard identity != nil,
-          presentation.phase == .galleryReady,
+          canRouteQuickDownloadTerminal,
           activeDownloadSubmission == nil else {
       return false
     }
@@ -1465,7 +1489,8 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     identity != nil &&
       isCatalogTransportUsable &&
       catalogSessionID != nil &&
-      presentation.phase == .galleryReady &&
+      (presentation.phase == .galleryReady ||
+        (isQuickDownloadQuerySession && presentation.phase == .sessionPrepared)) &&
       !hasDownloadLease
   }
 
@@ -1850,6 +1875,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     catalogGenerationFence = nil
     previousGenerationFence?.invalidate()
     transport.terminateCameraCommunication(reason: reason)
+    activeFujifilmCameraSession = nil
     activeTransportBinding = nil
     isCatalogTransportUsable = false
     let terminationTask = Task { @MainActor in
@@ -1901,7 +1927,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
       identity = nil
       galleryPresentationPayload = nil
       isQuickDownloadQuerySession = false
-      quickDownloadGalleryReadySession = nil
+      quickDownloadPreparedSession = nil
       pendingGalleryActivation = nil
       recoveredSnapshot = nil
       hasInterruptedRecoverably = false
@@ -1934,13 +1960,13 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   private func beginGalleryActivationAfterQuickDownload() -> Bool {
     guard let payload = galleryPresentationPayload,
           identity != nil,
-          let session = quickDownloadGalleryReadySession else {
+          let session = quickDownloadPreparedSession else {
       return false
     }
     isQuickDownloadQuerySession = false
-    quickDownloadGalleryReadySession = nil
+    quickDownloadPreparedSession = nil
     pendingGalleryActivation = PendingGalleryActivation(
-      resultState: .galleryReady(session),
+      resultState: .gallerySessionPrepared(session),
       destination: .gallery(payload),
       completion: { _ in }
     )
@@ -1979,7 +2005,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     identity = nil
     galleryPresentationPayload = nil
     isQuickDownloadQuerySession = false
-    quickDownloadGalleryReadySession = nil
+    quickDownloadPreparedSession = nil
     activeDownloadSubmission = nil
     recoveredSnapshot = nil
     hasInterruptedRecoverably = false
@@ -2003,7 +2029,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     guard let pendingGalleryActivation else { return }
     self.pendingGalleryActivation = nil
     pendingGalleryActivation.completion(.failed(IOSCameraConnectionIssue(
-      step: .loadGallery,
+      step: .gallerySessionPrepared,
       reason: message
     )))
   }

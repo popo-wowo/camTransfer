@@ -10,8 +10,7 @@ protocol CameraGalleryTransportSession: CameraVendorGalleryService,
   CameraVendorGalleryConnectionTerminating,
   CameraVendorGalleryDiagnosticReporting,
   CameraVendorGalleryConfigurable,
-  CameraVendorGalleryReadySummaryProviding,
-  CameraVendorReservedReceiveDiagnosticService {}
+  CameraVendorGallerySessionPreparedSummaryProviding {}
 
 protocol CameraAdapter {
   var descriptor: CameraAdapterDescriptor { get }

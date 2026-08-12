@@ -1,7 +1,6 @@
 import UIKit
 import Photos
 import ImageIO
-import CoreLocation
 
 enum NativeHomeQuickDownloadEntryAction: Equatable {
   case configure
@@ -319,8 +318,8 @@ enum NativeConnectFlowResultLogPolicy {
     peripheralID: UUID
   ) -> String {
     switch state {
-    case .galleryReady(let session):
-      return "[BEGIN_USER_GALLERY_FLOW_RESULT] state=galleryReady cameraID=\(session.cameraID) ptpSessionID=\(session.ptpSessionID) peripheralID=\(peripheralID)"
+    case .gallerySessionPrepared(let session):
+      return "[BEGIN_USER_GALLERY_FLOW_RESULT] state=gallerySessionPrepared cameraID=\(session.cameraID) ptpSessionID=\(session.ptpSessionID) peripheralID=\(peripheralID)"
     default:
       return "[BEGIN_USER_GALLERY_FLOW_RESULT] state=\(String(describing: state)) peripheralID=\(peripheralID)"
     }
@@ -1684,7 +1683,7 @@ final class NativeConnectViewController: UIViewController {
         )
       )
       switch state {
-      case .galleryReady:
+      case .gallerySessionPrepared:
         if purpose == .quickDownload {
           self.executeQuickDownload()
         }
