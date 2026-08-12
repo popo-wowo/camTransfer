@@ -1,0 +1,70 @@
+app/src/main/java/com/camtransfer/ui/GalleryUiPolicy.kt
+  2e9d5f20480379e5 3-8,80-99,120-136,138-143,145-151
+app/src/test/java/com/camtransfer/quickdownload/QuickDownloadUseCaseTest.kt
+  2e9d5f20480379e5 1-137
+app/src/main/java/com/camtransfer/catalog/CameraCatalogRuntime.kt
+  2e9d5f20480379e5 99-104
+app/src/test/java/com/camtransfer/catalog/CameraMediaFilterEngineTest.kt
+  2e9d5f20480379e5 1-82
+app/src/test/java/com/camtransfer/viewmodel/CameraRuntimeViewModelTest.kt
+  2e9d5f20480379e5 80-81,85,91,128,222
+app/src/main/java/com/camtransfer/runtime/CameraRuntimeReducer.kt
+  2e9d5f20480379e5 4,24-29,49,57,86-87,93
+app/src/main/java/com/camtransfer/runtime/service/CameraRuntimeService.kt
+  2e9d5f20480379e5 64
+app/src/test/java/com/camtransfer/ui/ConnectionLiveGuidancePolicyTest.kt
+  2e9d5f20480379e5 128-129
+docs/verification/2026-08-13-android-dynamic-multimodel-runtime-final.md
+  2e9d5f20480379e5 1-87
+app/src/main/java/com/camtransfer/service/CameraService.kt
+  2e9d5f20480379e5 19-20,152-155
+app/src/main/java/com/camtransfer/viewmodel/CameraRuntimeViewModel.kt
+  2e9d5f20480379e5 93,326-332,464-467
+app/src/test/java/com/camtransfer/catalog/CameraCatalogRuntimeTest.kt
+  2e9d5f20480379e5 96-111
+app/src/main/java/com/camtransfer/runtime/CameraRuntimeSnapshot.kt
+  2e9d5f20480379e5 4,51,84,104
+app/src/test/java/com/camtransfer/runtime/DefaultCameraSessionRuntimeTest.kt
+  2e9d5f20480379e5 13-16,37-38,45,47,159-160,165,174-237,446-743,967,970-972,980-981,983,999
+app/src/test/java/com/camtransfer/service/CameraConnectionFlowTest.kt
+  2e9d5f20480379e5 13-25,186-215
+app/src/main/java/com/camtransfer/service/CameraConnectionFlow.kt
+  2e9d5f20480379e5 42,60,131-141,159,161,211-243,268,299-300,326-327,347
+app/src/main/java/com/camtransfer/service/pairing/CameraPairingService.kt
+  2e9d5f20480379e5 13-15,22,39-40,42-61,64,66-70,81-86,88-103
+app/src/main/java/com/camtransfer/quickdownload/QuickDownloadUseCase.kt
+  2e9d5f20480379e5 1-63
+app/src/test/java/com/camtransfer/runtime/CameraRuntimeSnapshotTest.kt
+  2e9d5f20480379e5 14,18-37,250-256
+app/src/main/java/com/camtransfer/runtime/CameraRuntimeCommand.kt
+  2e9d5f20480379e5 3-4,10,15,29-32,54-61
+app/src/main/java/com/camtransfer/catalog/CameraMediaFilterEngine.kt
+  2e9d5f20480379e5 1-91
+app/src/main/java/com/camtransfer/runtime/DefaultCameraSessionRuntime.kt
+  2e9d5f20480379e5 19-20,53-55,58,74-75,193,197-202,213-220,226-232,244-247,252,268-271,273,322-382,434-440,450-451,468-469,481-482,494-495,514-515,530-562,615
+app/src/main/java/com/camtransfer/ui/ConnectScreen.kt
+  2e9d5f20480379e5 269,967,1504,1527,1531-1535,1575-1583
+app/src/test/java/com/camtransfer/ui/GalleryUiPolicyTest.kt
+  2e9d5f20480379e5 182-205
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "67fde72c8d42c064edaa55c4b0a20b6872187110",
+  "prompts": {
+    "2e9d5f20480379e5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff489-0e64-7751-8b3b-c980d9947855",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 1437,
+      "total_deletions": 114,
+      "accepted_lines": 74539,
+      "overriden_lines": 1,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/6f63b1cb9adf44df1af74b8d295626be4c44a633a123b401c092349a2d58d86a"
+    }
+  }
+}
