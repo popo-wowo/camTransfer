@@ -1,0 +1,22 @@
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "a52da2b128757b1f46b055175636e98e371e8e7f",
+  "prompts": {
+    "2e9d5f20480379e5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff489-0e64-7751-8b3b-c980d9947855",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 73185,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/6f63b1cb9adf44df1af74b8d295626be4c44a633a123b401c092349a2d58d86a"
+    }
+  }
+}
