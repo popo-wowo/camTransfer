@@ -1,0 +1,24 @@
+docs/superpowers/specs/2026-08-12-android-dynamic-multimodel-terminal-architecture-design.md
+  2e9d5f20480379e5 1-762
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "e079befc28b28db79e7208571f05e6210a654e24",
+  "prompts": {
+    "2e9d5f20480379e5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff489-0e64-7751-8b3b-c980d9947855",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 763,
+      "total_deletions": 1,
+      "accepted_lines": 762,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/fe70a753e84cd1c8758f71b303164b58340cb3332b7f8fd57a694deeb8ba2b1c"
+    }
+  }
+}
