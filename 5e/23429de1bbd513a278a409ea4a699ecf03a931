@@ -1,0 +1,40 @@
+app/src/test/java/com/camtransfer/runtime/connection/CameraConnectionOrchestratorTest.kt
+  2e9d5f20480379e5 142-161,528,534,637-649
+app/src/main/java/com/camtransfer/runtime/connection/CameraConnectionPlan.kt
+  2e9d5f20480379e5 91
+app/src/main/java/com/camtransfer/runtime/connection/FujifilmProtocolEngine.kt
+  2e9d5f20480379e5 68,245-249,324-339,491,503-505,507-510,531-536,568,570-573,617-625,629-632,634,639,676,705-707
+app/src/test/java/com/camtransfer/runtime/connection/ProductionFujifilmProtocolEngineAdapterTest.kt
+  2e9d5f20480379e5 64-97,346,357-361
+app/src/main/java/com/camtransfer/runtime/connection/CameraConnectionExecutionState.kt
+  2e9d5f20480379e5 4-14,35,51-63,74,220-222
+app/src/main/java/com/camtransfer/runtime/connection/CameraConnectionOrchestrator.kt
+  2e9d5f20480379e5 12,140,327-380,495-496
+app/src/main/java/com/camtransfer/protocol/PtpConnection.kt
+  2e9d5f20480379e5 125-129
+app/src/main/java/com/camtransfer/protocol/CameraVendorPtpInitPolicy.kt
+  2e9d5f20480379e5 33-43
+app/src/test/java/com/camtransfer/protocol/CameraVendorPtpInitPolicyTest.kt
+  2e9d5f20480379e5 43-54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "5e23429de1bbd513a278a409ea4a699ecf03a931",
+  "prompts": {
+    "2e9d5f20480379e5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff489-0e64-7751-8b3b-c980d9947855",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 256,
+      "total_deletions": 39,
+      "accepted_lines": 73359,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/c03f886a3cbdef4cffc5a68263f6883cfcba7f6d4d4ce6d8e63813aca9d557ec"
+    }
+  }
+}
