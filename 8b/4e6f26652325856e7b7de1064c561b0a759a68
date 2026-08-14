@@ -1,0 +1,194 @@
+app/src/main/java/com/camtransfer/protocol/PtpCommands.kt
+  2e9d5f20480379e5 8-9,264-265,292,381-382,436-437
+app/src/main/java/com/camtransfer/runtime/CameraSessionRuntime.kt
+  2e9d5f20480379e5 33-34
+app/src/main/java/com/camtransfer/runtime/service/CameraRuntimeServicePolicy.kt
+  2e9d5f20480379e5 4-8,10,29-32,44-80
+app/src/main/java/com/camtransfer/gallery/CameraGalleryHDPreviewPipeline.kt
+  2e9d5f20480379e5 1-233
+app/src/main/java/com/camtransfer/quickdownload/QuickDownloadUseCase.kt
+  2e9d5f20480379e5 12,53-61
+app/src/main/java/com/camtransfer/runtime/CameraRuntimeSnapshot.kt
+  2e9d5f20480379e5 18-23,83,104
+app/src/main/java/com/camtransfer/media/wifi/VendorWifiTransportOperations.kt
+  2e9d5f20480379e5 17-18,23,30-36,50-52,111-115,122-123,127-130
+app/src/test/java/com/camtransfer/download/MediaStoreCollectionPolicyTest.kt
+  2e9d5f20480379e5 27-42
+app/src/test/java/com/camtransfer/runtime/service/CameraRuntimeServicePolicyTest.kt
+  2e9d5f20480379e5 10-15,17-18,85-140
+app/src/main/java/com/camtransfer/runtime/CameraRuntimeCommand.kt
+  2e9d5f20480379e5 13,42-43
+app/src/main/java/com/camtransfer/runtime/connection/CameraConnectionBarrier.kt
+  2e9d5f20480379e5 137-140,161-164,173-176
+app/src/test/java/com/camtransfer/ble/CameraVendorBleConnectionLifecyclePolicyTest.kt
+  2e9d5f20480379e5 1-28
+app/src/main/java/com/camtransfer/download/MediaStoreCollectionPolicy.kt
+  2e9d5f20480379e5 17,19,21,27-29
+app/src/main/java/com/camtransfer/ble/CameraVendorBleProfile.kt
+  2e9d5f20480379e5 3,52-55,58-62,75-90,94-98
+app/src/main/java/com/camtransfer/viewmodel/CameraRuntimeViewModel.kt
+  2e9d5f20480379e5 12,16,47-48,53-63,66-69,74-115,133-136,138-139,141-144,151-152,155-157,159-162,169,179-180,196-204,245-253,301-302,311,371,375-376,378-382,387,391-392,394-403,412-416,422-427,432,538-546,550,553,560-563,566
+app/src/test/java/com/camtransfer/gallery/CameraGallerySessionTest.kt
+  2e9d5f20480379e5 77-111
+app/src/main/java/com/camtransfer/runtime/SessionMutationCoordinator.kt
+  2e9d5f20480379e5 6,19-20,85-89
+app/src/main/java/com/camtransfer/wifi/CameraVendorWifiJoinPolicy.kt
+  2e9d5f20480379e5 12-22,30,32-34,37-42
+app/src/test/java/com/camtransfer/ble/CameraVendorBondedDeviceSelectionPolicyTest.kt
+  2e9d5f20480379e5 1-64
+app/src/main/java/com/camtransfer/service/CameraService.kt
+  2e9d5f20480379e5 11,15,32,160,163-165,168-175,181,219,224-268
+app/src/main/java/com/camtransfer/media/wifi/VendorWifiMediaPort.kt
+  2e9d5f20480379e5 12,36
+app/src/test/java/com/camtransfer/wifi/CameraVendorWifiJoinPolicyTest.kt
+  2e9d5f20480379e5 19,30,41-107
+app/src/main/java/com/camtransfer/ui/GalleryUiPolicy.kt
+  2e9d5f20480379e5 84,120,136-155
+app/src/main/java/com/camtransfer/protocol/CameraVendorGalleryDiscoveryPolicy.kt
+  2e9d5f20480379e5 23-44
+app/src/test/java/com/camtransfer/runtime/connection/CameraConnectionOrchestratorTest.kt
+  2e9d5f20480379e5 721-792,1019-1022,1032,1085-1088,1114-1125
+app/src/main/java/com/camtransfer/protocol/PtpConnection.kt
+  2e9d5f20480379e5 378,387-389,395,399-404,407-408,505-506,508,579,581
+app/src/main/java/com/camtransfer/download/DownloadRecoveryPolicy.kt
+  2e9d5f20480379e5 25-36
+app/src/main/java/com/camtransfer/wifi/WifiConnector.kt
+  2e9d5f20480379e5 9,21,25-34,38,55-76,82,98-103,108,118,124-128,137-138,153-155,159-170,183-184,187,215-223,241,257-262,283-286,320-324,337-371
+app/src/test/java/com/camtransfer/download/DownloadSinkReconciliationTest.kt
+  2e9d5f20480379e5 64-88,101,128-130
+app/src/main/java/com/camtransfer/catalog/CameraCatalogRuntime.kt
+  2e9d5f20480379e5 5,14-18,105-164,174-250,260-262
+app/src/main/java/com/camtransfer/gallery/CameraGalleryHDPreviewLruCache.kt
+  2e9d5f20480379e5 1-31
+app/src/main/java/com/camtransfer/gallery/CameraGallerySession.kt
+  2e9d5f20480379e5 5,8-11,22-23,26,28-32,42-74,88-137,174-176
+app/src/main/java/com/camtransfer/runtime/connection/CameraConnectionPlan.kt
+  2e9d5f20480379e5 13-16,27-31,37-42,68-75,161-163,166
+app/src/main/java/com/camtransfer/ui/ConnectScreen.kt
+  2e9d5f20480379e5 147-151,297-301,309-312,316,432-433,1127-1128,1541,1593,1608
+app/src/test/java/com/camtransfer/gallery/CameraGalleryThumbnailPipelineTest.kt
+  2e9d5f20480379e5 1-293
+app/src/main/java/com/camtransfer/media/ActiveCameraSession.kt
+  2e9d5f20480379e5 90,93,100,108
+app/src/test/java/com/camtransfer/protocol/CameraVendorGalleryDiscoveryPolicyTest.kt
+  2e9d5f20480379e5 96-124
+docs/superpowers/specs/2026-08-13-android-pairing-regression-repair-design.md
+  2e9d5f20480379e5 1-39
+docs/superpowers/specs/2026-08-13-android-dynamic-terminal-closure-design.md
+  2e9d5f20480379e5 1-111
+app/src/test/java/com/camtransfer/viewmodel/CameraRuntimeViewModelTest.kt
+  2e9d5f20480379e5 5,17,22-42,212-252,256-308,310-317,320-346,348-350,354,358-361,364-368
+app/src/main/java/com/camtransfer/download/DownloadSink.kt
+  2e9d5f20480379e5 20,70,122,129-131
+app/src/main/java/com/camtransfer/media/CameraTransportOperations.kt
+  2e9d5f20480379e5 4-7,30-43
+docs/superpowers/plans/2026-08-13-android-dynamic-terminal-closure.md
+  2e9d5f20480379e5 1-96
+app/src/main/java/com/camtransfer/download/MediaStoreDownloadSink.kt
+  2e9d5f20480379e5 8,13-59,63,66-67,75-88,92-93,98,101-103,113,123,131,133-140,145,149-166,179,185-186,190-197,199,206
+app/src/main/java/com/camtransfer/gallery/CameraGalleryThumbnailPipeline.kt
+  2e9d5f20480379e5 1-247
+app/src/test/java/com/camtransfer/catalog/CameraCatalogRuntimeTest.kt
+  2e9d5f20480379e5 15,17,24,115-336,365
+app/src/test/java/com/camtransfer/runtime/service/CameraRuntimeClientTest.kt
+  2e9d5f20480379e5 18-33
+app/src/main/java/com/camtransfer/protocol/CameraVendorOfficialGalleryStartupPolicy.kt
+  2e9d5f20480379e5 28-34
+app/src/main/java/com/camtransfer/runtime/connection/CameraConnectionOrchestrator.kt
+  2e9d5f20480379e5 342,721-724,757-776,781-784,792-795
+docs/superpowers/plans/2026-08-13-android-pairing-regression-repair.md
+  2e9d5f20480379e5 1-57
+app/src/test/java/com/camtransfer/quickdownload/QuickDownloadUseCaseTest.kt
+  2e9d5f20480379e5 20,103-142
+app/src/test/java/com/camtransfer/protocol/CameraVendorPtpDataParserImageTest.kt
+  2e9d5f20480379e5 11-69
+app/src/test/java/com/camtransfer/download/DownloadRecoveryPolicyTest.kt
+  2e9d5f20480379e5 1-29
+app/src/test/java/com/camtransfer/media/CameraMediaOperationArbiterTest.kt
+  2e9d5f20480379e5 44-65
+app/src/test/java/com/camtransfer/runtime/DefaultCameraSessionRuntimeTest.kt
+  2e9d5f20480379e5 40,48-50,182-408,435,464-466,548-647,1114-1259,1344,1441-1442,1451-1455,1482-1488,1492-1495,1507-1519,1533,1544-1559,1576-1593
+app/src/main/java/com/camtransfer/download/CameraDownloadRuntime.kt
+  2e9d5f20480379e5 398
+app/src/test/java/com/camtransfer/ble/CameraVendorBleHandshakeCoordinatorTest.kt
+  2e9d5f20480379e5 4,26-50
+app/src/test/java/com/camtransfer/viewmodel/BrowseViewModelSnapshotTest.kt
+  2e9d5f20480379e5 1-143
+app/src/test/java/com/camtransfer/protocol/CameraVendorOfficialGalleryStartupPolicyTest.kt
+  2e9d5f20480379e5 38,40-45
+app/src/test/java/com/camtransfer/gallery/CameraGalleryHDPreviewPipelineTest.kt
+  2e9d5f20480379e5 1-260
+app/src/main/java/com/camtransfer/ble/CameraVendorBleHandshake.kt
+  2e9d5f20480379e5 35-37,53-60,138,164,187-188,344,347-351,566-572,574,898-901,1008,1037-1059
+app/src/main/java/com/camtransfer/media/CameraMediaScheduler.kt
+  2e9d5f20480379e5 6,33,36,39-41,48-49,52-55,60-61,64-67,72-73,76-79,109-120,124-127,139-142,150,159,167-169,176-177,186-194,196-197
+app/src/main/java/com/camtransfer/runtime/CameraRuntimeReducer.kt
+  2e9d5f20480379e5 4,9-10,26-30,45-54,61,73,104-115,123-127
+app/src/main/java/com/camtransfer/catalog/CameraCatalogModels.kt
+  2e9d5f20480379e5 20-24
+app/src/test/java/com/camtransfer/ui/GalleryUiPolicyTest.kt
+  2e9d5f20480379e5 263-275
+app/src/main/java/com/camtransfer/media/wifi/VendorWifiCameraSessionFactory.kt
+  2e9d5f20480379e5 16,22-23,30-31,45-49,52,72-73,77-78,89,100-104,150,155-160,186-188,200-232
+app/src/main/java/com/camtransfer/protocol/CameraVendorPtpDataParser.kt
+  2e9d5f20480379e5 8-66,593-606
+app/src/main/java/com/camtransfer/media/CameraPreviewPayloadValidator.kt
+  2e9d5f20480379e5 1-45
+app/src/test/java/com/camtransfer/ui/ConnectionLiveGuidancePolicyTest.kt
+  2e9d5f20480379e5 17-30,194,202-210
+app/src/test/java/com/camtransfer/wifi/WifiNetworkCallbackStateTest.kt
+  2e9d5f20480379e5 1-68
+app/src/main/java/com/camtransfer/viewmodel/BrowseViewModel.kt
+  2e9d5f20480379e5 6-8,22,26-28,31,56-62,68-95,106-109,120-124,146-158,167-172,179,185-191
+app/src/main/java/com/camtransfer/media/CameraMediaModels.kt
+  2e9d5f20480379e5 4,63-64,81-83
+app/src/main/java/com/camtransfer/gallery/CameraGalleryHDPreviewModels.kt
+  2e9d5f20480379e5 1-51
+app/src/test/java/com/camtransfer/catalog/CameraCatalogHydrationTest.kt
+  2e9d5f20480379e5 1-115
+app/src/test/java/com/camtransfer/media/CameraMediaSchedulerTest.kt
+  2e9d5f20480379e5 8,12,56-88,95-101,104,109-119,151-152,155,160-161,174-176,196-198,225,233-279,289-290,295
+app/src/main/java/com/camtransfer/media/CameraMediaGateways.kt
+  2e9d5f20480379e5 22-23
+app/src/main/java/com/camtransfer/runtime/connection/FujifilmProtocolEngine.kt
+  2e9d5f20480379e5 17,361-364,426-436,441,446,448-450,453-458,524-529,536,588-611,716,720-725,783-795,823-826,845-853,887-899,971-976,1034-1037,1093
+app/src/main/java/com/camtransfer/runtime/DefaultCameraSessionRuntime.kt
+  2e9d5f20480379e5 16-20,25-27,34,36,41,67-69,93-96,116-117,121-122,147-169,171,179-181,187,207-233,235-247,331-338,341-345,347,349,359-372,374,388-393,398-402,405-406,409,423,425,434-435,442-453,459,467,469,473-481,486,503,510-525,535-550,556,564,566,578,590,607-616,623-646,653,655,666,673-679,724-749,761-762,775-779,833-839,846-858,861,867-886
+app/src/test/java/com/camtransfer/runtime/CameraRuntimeOwnerGraphTest.kt
+  2e9d5f20480379e5 83-105,157,163-170
+app/src/test/java/com/camtransfer/runtime/connection/ProductionFujifilmProtocolEngineAdapterTest.kt
+  2e9d5f20480379e5 3,310,630-631,633-635,640-642,691-694,865-868
+app/src/main/java/com/camtransfer/media/CameraMediaAdmission.kt
+  2e9d5f20480379e5 92,94-96,106,112
+app/src/main/java/com/camtransfer/runtime/service/CameraRuntimeClient.kt
+  2e9d5f20480379e5 113,115-117
+app/src/main/java/com/camtransfer/runtime/service/CameraRuntimeService.kt
+  2e9d5f20480379e5 62-71,73,101-104,118-124,138
+app/src/test/java/com/camtransfer/media/CameraPreviewPayloadValidatorTest.kt
+  2e9d5f20480379e5 1-52
+app/src/test/java/com/camtransfer/runtime/connection/DynamicProductionStrategyClosureTest.kt
+  2e9d5f20480379e5 1-223
+app/src/test/java/com/camtransfer/media/wifi/VendorWifiTransportOperationsTest.kt
+  2e9d5f20480379e5 8,22,36-38,41,55-58,62-65,74,83-102,116,122-126,132-135
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "8b4e6f26652325856e7b7de1064c561b0a759a68",
+  "prompts": {
+    "2e9d5f20480379e5": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff489-0e64-7751-8b3b-c980d9947855",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 6906,
+      "total_deletions": 608,
+      "accepted_lines": 92659,
+      "overriden_lines": 66,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/f486d57e96b8d4aaa6c7afba69369334a904ae0a29ba6f85eb2f94667a23418c"
+    }
+  }
+}
