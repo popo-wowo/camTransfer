@@ -1,0 +1,24 @@
+app/src/test/java/com/camtransfer/viewmodel/GalleryModularArchitectureTest.kt
+  a45c7ac0441e9b3f 29-36,38-57
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "9941d959955fcb56ec3f461fc43f5e806cc13891",
+  "prompts": {
+    "a45c7ac0441e9b3f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fff92-39b0-7cd0-a416-4dad373071e0",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 28,
+      "total_deletions": 11,
+      "accepted_lines": 28,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/903381f21152ef76d8b3db02003cefc796e30333889c58ac5ba30b9fc82c5f82"
+    }
+  }
+}
