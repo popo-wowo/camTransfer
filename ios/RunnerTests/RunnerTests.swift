@@ -23326,6 +23326,7 @@ final class RunnerTests: XCTestCase {
     await flow.waitUntilRememberedGalleryStarts()
     flow.finishRememberedGallery()
     await fulfillment(of: [routed], timeout: 1)
+    await waitForStartedHandleCount(1, transport: transport)
 
     XCTAssertEqual(transport.startedHandles, [101])
     XCTAssertEqual(runtime.presentation.phase, .downloadingForeground)
@@ -24303,6 +24304,7 @@ private final class CameraSessionRuntimeHomeCommandSpy: CameraSessionRuntimeConn
   }
   func probePairing(peripheralID _: UUID) async -> CameraVendorPairingProbeResult { .bluetoothOff }
   func cancelPairingProbe(reason _: String) {}
+  func cancelPairingProbeAndWait(reason _: String) async -> Bool { true }
 }
 
 @MainActor
@@ -29606,6 +29608,34 @@ extension RunnerTests {
     XCTAssertEqual(decision.plan.initialCatalogStrategy, .unsupported)
   }
 
+  func testRememberedEndpointAllowsUnclassifiedAdvertisementServiceToResolveVerifiedBleOnly() throws {
+    let startupService = "804DAA8E-FFEB-4AB3-8E75-6EDD7303208D"
+    let facts = CameraProtocolFacts(
+      compatibilityFamily: nil,
+      advertisedServices: [startupService],
+      discoveredCharacteristics: [],
+      bleEndpointEvidence: .rememberedPairedPeripheral
+    )
+
+    let decision = FujifilmCompatibilityEnvironment.production.resolve(
+      protocolFacts: facts,
+      revising: CameraConnectionPlanVersion(
+        id: CameraConnectionPlanID(rawValue: "remembered-endpoint-unclassified-advertisement"),
+        revision: 0
+      )
+    )
+
+    XCTAssertEqual(decision.plan.supportStatus, .verified)
+    XCTAssertEqual(decision.confidence, .verified)
+    XCTAssertEqual(decision.plan.protocolFacts.advertisedServices, [startupService])
+    XCTAssertEqual(decision.plan.pairingStrategy, .currentBaseline)
+    XCTAssertEqual(decision.plan.activationStrategy, .currentBaseline)
+    XCTAssertEqual(decision.plan.ptpInitStrategy, .unsupported)
+    XCTAssertEqual(decision.plan.negotiationStrategy, .unsupported)
+    XCTAssertEqual(decision.plan.galleryBootstrapStrategy, .unsupported)
+    XCTAssertEqual(decision.plan.initialCatalogStrategy, .unsupported)
+  }
+
   func testUnknownPreGattFactsWithoutRememberedEndpointRemainUnsupported() {
     let decision = FujifilmCompatibilityEnvironment.production.resolve(
       protocolFacts: CameraProtocolFacts(
@@ -29783,6 +29813,57 @@ extension RunnerTests {
 
     XCTAssertTrue(didStartBleConnection)
     XCTAssertTrue(generatedWrites.isEmpty)
+  }
+
+  func testLoaderStartsRememberedEndpointWithUnclassifiedAdvertisementBeforeGatt() async throws {
+    enum ExpectedGattError: Error { case unsupported }
+    let loader = CameraVendorGalleryMainlineSessionLoader(
+      galleryService: CameraVendorRealtimeGalleryService()
+    )
+    let initialFacts = CameraCompatibilityFacts(
+      observedIdentity: CameraObservedIdentity(modelName: "X-T5", firmwareVersion: nil),
+      protocolFacts: CameraProtocolFacts(
+        compatibilityFamily: nil,
+        advertisedServices: ["804DAA8E-FFEB-4AB3-8E75-6EDD7303208D"],
+        discoveredCharacteristics: [],
+        bleEndpointEvidence: .rememberedPairedPeripheral
+      )
+    )
+    var didStartBleConnection = false
+
+    do {
+      _ = try await loader.loadGallerySession(
+        context: IOSCameraConnectionContext(
+          cameraID: "remembered-camera",
+          pairingRecord: nil,
+          wifiCredential: nil,
+          ptpSessionID: nil,
+          rememberedPeripheralID: UUID(),
+          compatibilityFacts: initialFacts
+        ),
+        publishStep: { _ in },
+        performBleConnection: { activationResolver in
+          didStartBleConnection = true
+          let mismatchedGattFacts = CameraCompatibilityFacts(
+            observedIdentity: .unknown,
+            protocolFacts: CameraProtocolFacts(
+              compatibilityFamily: nil,
+              advertisedServices: [],
+              discoveredCharacteristics: []
+            )
+          )
+          _ = try activationResolver(mismatchedGattFacts)
+          XCTFail("Mismatched GATT facts must not resolve an Activation Strategy")
+          throw ExpectedGattError.unsupported
+        },
+        compatibilityLabReset: { _ in .failed }
+      )
+      XCTFail("Mismatched post-GATT facts must stop the remembered route")
+    } catch {
+      XCTAssertTrue(error is IOSCameraConnectionIssue || error is ExpectedGattError)
+    }
+
+    XCTAssertTrue(didStartBleConnection)
   }
 
   func testLoaderStartsASecondRememberedAttemptAfterTheFirstFailsBeforeGatt() async throws {
@@ -30861,6 +30942,114 @@ extension RunnerTests {
     XCTAssertEqual(result, .succeeded)
     XCTAssertEqual(cancelCount, 0)
     XCTAssertFalse(timeoutScheduled)
+  }
+
+  func testBluetoothPairingProbeTeardownConsumesMatchingLateDisconnect() async {
+    let peripheralID = UUID()
+    let peripheral = NSObject()
+    let token = CameraVendorPairingProbeTeardownToken(
+      peripheralID: peripheralID,
+      peripheralIdentity: ObjectIdentifier(peripheral),
+      generation: 3,
+      teardownNonce: UUID()
+    )
+    let teardownStarted = AsyncTestGate()
+    let gate = CameraVendorPairingProbeTeardownGate(
+      timeoutScheduler: { _, _ in {} }
+    )
+
+    let resultTask = Task {
+      await gate.teardown(token: token, timeoutSeconds: 30) {
+        Task { await teardownStarted.open() }
+      }
+    }
+    await teardownStarted.wait()
+
+    XCTAssertEqual(
+      gate.completeDisconnect(
+        peripheralID: peripheralID,
+        peripheralIdentity: ObjectIdentifier(peripheral)
+      ),
+      token
+    )
+    let result = await resultTask.value
+    XCTAssertTrue(result)
+    XCTAssertFalse(gate.hasUnresolvedDisconnect)
+  }
+
+  func testBluetoothPairingProbeTeardownRejectsDifferentPeripheralObject() async {
+    let peripheralID = UUID()
+    let probePeripheral = NSObject()
+    let callbackPeripheral = NSObject()
+    let token = CameraVendorPairingProbeTeardownToken(
+      peripheralID: peripheralID,
+      peripheralIdentity: ObjectIdentifier(probePeripheral),
+      generation: 4,
+      teardownNonce: UUID()
+    )
+    var timeoutHandler: (() -> Void)?
+    let teardownStarted = AsyncTestGate()
+    let gate = CameraVendorPairingProbeTeardownGate(
+      timeoutScheduler: { _, handler in
+        timeoutHandler = handler
+        return {}
+      }
+    )
+
+    let resultTask = Task {
+      await gate.teardown(token: token, timeoutSeconds: 30) {
+        Task { await teardownStarted.open() }
+      }
+    }
+    await teardownStarted.wait()
+
+    XCTAssertNil(
+      gate.completeDisconnect(
+        peripheralID: peripheralID,
+        peripheralIdentity: ObjectIdentifier(callbackPeripheral)
+      )
+    )
+    XCTAssertTrue(gate.hasUnresolvedDisconnect)
+    timeoutHandler?()
+    let result = await resultTask.value
+    XCTAssertFalse(result)
+    XCTAssertTrue(gate.hasUnresolvedDisconnect)
+  }
+
+  func testBluetoothDisconnectOwnershipRoutesOnlyActiveMainline() {
+    let peripheralID = UUID()
+    let activePeripheral = NSObject()
+    let orphanPeripheral = NSObject()
+    let activeToken = CameraVendorBluetoothConnectionToken(
+      peripheralID: peripheralID,
+      peripheralIdentity: ObjectIdentifier(activePeripheral),
+      generation: 9
+    )
+
+    XCTAssertEqual(
+      CameraVendorBluetoothDisconnectOwnershipPolicy.route(
+        peripheralID: peripheralID,
+        peripheralIdentity: ObjectIdentifier(activePeripheral),
+        activeMainlineToken: activeToken
+      ),
+      .activeMainline(generation: 9)
+    )
+    XCTAssertEqual(
+      CameraVendorBluetoothDisconnectOwnershipPolicy.route(
+        peripheralID: peripheralID,
+        peripheralIdentity: ObjectIdentifier(orphanPeripheral),
+        activeMainlineToken: activeToken
+      ),
+      .orphan
+    )
+    XCTAssertEqual(
+      CameraVendorBluetoothDisconnectOwnershipPolicy.route(
+        peripheralID: peripheralID,
+        peripheralIdentity: ObjectIdentifier(activePeripheral),
+        activeMainlineToken: nil
+      ),
+      .orphan
+    )
   }
 
   func testBluetoothFullResetCompletesWhenMatchingDisconnectArrives() async {

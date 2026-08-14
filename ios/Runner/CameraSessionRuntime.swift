@@ -673,6 +673,10 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     connectionController?.cancelPairingProbe(reason: reason)
   }
 
+  func cancelPairingProbeAndWait(reason: String) async -> Bool {
+    await connectionController?.cancelPairingProbeAndWait(reason: reason) ?? true
+  }
+
   var isConnectionWorkerActive: Bool { connectionWorker?.isActive ?? false }
   var connectionFlowState: IOSCameraConnectFlowState? { connectionWorker?.state }
   var connectionNavigationEvent: IOSCameraConnectFlowNavigationEvent? { connectionWorker?.navigationEvent }

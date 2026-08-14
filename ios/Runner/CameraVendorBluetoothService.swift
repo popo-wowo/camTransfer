@@ -1120,6 +1120,172 @@ struct CameraVendorBluetoothResetToken: Equatable {
   let resetNonce: UUID
 }
 
+struct CameraVendorPairingProbeTeardownToken: Equatable {
+  let peripheralID: UUID
+  let peripheralIdentity: ObjectIdentifier
+  let generation: UInt64
+  let teardownNonce: UUID
+}
+
+final class CameraVendorPairingProbeTeardownGate {
+  typealias TimeoutCancellation = () -> Void
+  typealias TimeoutScheduler = (
+    TimeInterval,
+    @escaping () -> Void
+  ) -> TimeoutCancellation
+
+  private final class PendingTeardown {
+    let token: CameraVendorPairingProbeTeardownToken
+    var continuation: CheckedContinuation<Bool, Never>?
+    var cancelTimeout: TimeoutCancellation?
+
+    init(
+      token: CameraVendorPairingProbeTeardownToken,
+      continuation: CheckedContinuation<Bool, Never>
+    ) {
+      self.token = token
+      self.continuation = continuation
+    }
+  }
+
+  private let lock = NSLock()
+  private let timeoutScheduler: TimeoutScheduler
+  private var unresolvedTeardown: PendingTeardown?
+
+  init(
+    timeoutScheduler: @escaping TimeoutScheduler = { timeoutSeconds, handler in
+      let workItem = DispatchWorkItem(block: handler)
+      DispatchQueue.main.asyncAfter(
+        deadline: .now() + timeoutSeconds,
+        execute: workItem
+      )
+      return { workItem.cancel() }
+    }
+  ) {
+    self.timeoutScheduler = timeoutScheduler
+  }
+
+  var hasUnresolvedDisconnect: Bool {
+    lock.withLock { unresolvedTeardown != nil }
+  }
+
+  func matchesUnresolvedDisconnect(
+    peripheralID: UUID,
+    peripheralIdentity: ObjectIdentifier
+  ) -> Bool {
+    lock.withLock {
+      unresolvedTeardown?.token.peripheralID == peripheralID
+        && unresolvedTeardown?.token.peripheralIdentity == peripheralIdentity
+    }
+  }
+
+  func teardown(
+    token: CameraVendorPairingProbeTeardownToken?,
+    timeoutSeconds: TimeInterval,
+    cancelConnection: @escaping () -> Void
+  ) async -> Bool {
+    guard let token else {
+      return !hasUnresolvedDisconnect
+    }
+
+    return await withCheckedContinuation { continuation in
+      let pending = PendingTeardown(token: token, continuation: continuation)
+      let accepted: Bool
+      lock.lock()
+      if unresolvedTeardown == nil {
+        unresolvedTeardown = pending
+        accepted = true
+      } else {
+        accepted = false
+      }
+      lock.unlock()
+      guard accepted else {
+        continuation.resume(returning: false)
+        return
+      }
+
+      let cancelTimeout = timeoutScheduler(timeoutSeconds) { [weak self] in
+        self?.timeout(teardownNonce: pending.token.teardownNonce)
+      }
+      var shouldCancelTimeout = false
+      lock.lock()
+      if unresolvedTeardown === pending, pending.continuation != nil {
+        pending.cancelTimeout = cancelTimeout
+      } else {
+        shouldCancelTimeout = true
+      }
+      lock.unlock()
+      if shouldCancelTimeout {
+        cancelTimeout()
+      }
+
+      cancelConnection()
+    }
+  }
+
+  @discardableResult
+  func completeDisconnect(
+    peripheralID: UUID,
+    peripheralIdentity: ObjectIdentifier
+  ) -> CameraVendorPairingProbeTeardownToken? {
+    let pending: PendingTeardown?
+    lock.lock()
+    if unresolvedTeardown?.token.peripheralID == peripheralID,
+       unresolvedTeardown?.token.peripheralIdentity == peripheralIdentity {
+      pending = unresolvedTeardown
+      unresolvedTeardown = nil
+    } else {
+      pending = nil
+    }
+    lock.unlock()
+    guard let pending else { return nil }
+    pending.cancelTimeout?()
+    pending.continuation?.resume(returning: true)
+    pending.continuation = nil
+    return pending.token
+  }
+
+  private func timeout(teardownNonce: UUID) {
+    let continuation: CheckedContinuation<Bool, Never>?
+    lock.lock()
+    if unresolvedTeardown?.token.teardownNonce == teardownNonce {
+      continuation = unresolvedTeardown?.continuation
+      unresolvedTeardown?.continuation = nil
+      unresolvedTeardown?.cancelTimeout = nil
+    } else {
+      continuation = nil
+    }
+    lock.unlock()
+    continuation?.resume(returning: false)
+  }
+}
+
+struct CameraVendorBluetoothConnectionToken: Equatable {
+  let peripheralID: UUID
+  let peripheralIdentity: ObjectIdentifier
+  let generation: UInt64
+}
+
+enum CameraVendorBluetoothDisconnectRoute: Equatable {
+  case activeMainline(generation: UInt64)
+  case orphan
+}
+
+enum CameraVendorBluetoothDisconnectOwnershipPolicy {
+  static func route(
+    peripheralID: UUID,
+    peripheralIdentity: ObjectIdentifier,
+    activeMainlineToken: CameraVendorBluetoothConnectionToken?
+  ) -> CameraVendorBluetoothDisconnectRoute {
+    guard let activeMainlineToken,
+          activeMainlineToken.peripheralID == peripheralID,
+          activeMainlineToken.peripheralIdentity == peripheralIdentity else {
+      return .orphan
+    }
+    return .activeMainline(generation: activeMainlineToken.generation)
+  }
+}
+
 final class CameraVendorBluetoothFullResetGate {
   typealias TimeoutCancellation = () -> Void
   typealias TimeoutScheduler = (
@@ -3267,7 +3433,9 @@ final class CameraVendorBluetoothService: NSObject {
   private var activeActivationAttemptToken: CameraVendorActivationAttemptToken?
   private var transferActivationWriteAttemptTokensByCharacteristicIdentity: [ObjectIdentifier: CameraVendorActivationWriteToken] = [:]
   private let fullResetGate = CameraVendorBluetoothFullResetGate()
+  private let pairingProbeTeardownGate = CameraVendorPairingProbeTeardownGate()
   private var wirelessConnectionGeneration: UInt64 = 0
+  private var activeBluetoothConnectionToken: CameraVendorBluetoothConnectionToken?
   private var hadAutomaticTransferActivationFeature = false
   private var transferActivationObservedChange = false
   private var transferActivationObservedWifiLaunch = false
@@ -3298,6 +3466,7 @@ final class CameraVendorBluetoothService: NSObject {
   private var pairingProbeContinuation: CheckedContinuation<CameraVendorPairingProbeResult, Never>?
   private var pairingProbeTimeoutWorkItem: DispatchWorkItem?
   private var pairingProbePeripheral: CBPeripheral?
+  private var pairingProbeGeneration: UInt64 = 0
 
   init(pairingStore: CameraVendorPairedCameraStore = CameraVendorPairedCameraStore()) {
     self.pairingStore = pairingStore
@@ -3402,9 +3571,13 @@ final class CameraVendorBluetoothService: NSObject {
     }
 
     // Cancel any existing probe.
-    cancelPairingProbe(reason: "new-probe-requested")
+    guard await cancelPairingProbeAndWait(reason: "new-probe-requested") else {
+      appendObservation("PAIRING_PROBE_BEGIN_BLOCKED unresolvedDisconnect=true")
+      return .offline
+    }
 
     appendObservation("PAIRING_PROBE_BEGIN peripheralID=\(peripheralID.uuidString)")
+    pairingProbeGeneration &+= 1
 
     return await withCheckedContinuation { continuation in
       pairingProbeContinuation = continuation
@@ -3465,7 +3638,18 @@ final class CameraVendorBluetoothService: NSObject {
 
   /// Cancel any in-progress probe (e.g., when user taps connect).
   func cancelPairingProbe(reason: String) {
-    guard pairingProbeState.isActive || pairingProbeState.preconnectedPeripheralID != nil else { return }
+    Task { [weak self] in
+      _ = await self?.cancelPairingProbeAndWait(reason: reason)
+    }
+  }
+
+  func cancelPairingProbeAndWait(
+    reason: String,
+    timeoutSeconds: TimeInterval = 2
+  ) async -> Bool {
+    guard pairingProbeState.isActive || pairingProbeState.preconnectedPeripheralID != nil else {
+      return !pairingProbeTeardownGate.hasUnresolvedDisconnect
+    }
     pairingProbeTimeoutWorkItem?.cancel()
     pairingProbeTimeoutWorkItem = nil
 
@@ -3474,12 +3658,16 @@ final class CameraVendorBluetoothService: NSObject {
       central.stopScan()
     }
 
-    // If we have a probe peripheral connected but not consumed, disconnect it.
-    if let peripheral = pairingProbePeripheral, pairingProbeState.isActive {
-      central.cancelPeripheralConnection(peripheral)
-    }
-
     let previousState = pairingProbeState
+    let peripheral = pairingProbePeripheral
+    let teardownToken = peripheral.map {
+      CameraVendorPairingProbeTeardownToken(
+        peripheralID: $0.identifier,
+        peripheralIdentity: ObjectIdentifier($0),
+        generation: pairingProbeGeneration,
+        teardownNonce: UUID()
+      )
+    }
     pairingProbeState = .idle
     pairingProbePeripheral = nil
 
@@ -3490,6 +3678,21 @@ final class CameraVendorBluetoothService: NSObject {
       pairingProbeContinuation = nil
       continuation.resume(returning: .offline)
     }
+
+    guard let peripheral, let teardownToken else {
+      return true
+    }
+    let didComplete = await pairingProbeTeardownGate.teardown(
+      token: teardownToken,
+      timeoutSeconds: timeoutSeconds
+    ) { [weak self] in
+      self?.central.cancelPeripheralConnection(peripheral)
+    }
+    appendObservation(
+      "PAIRING_PROBE_TEARDOWN_RESULT peripheralID=\(peripheral.identifier.uuidString) " +
+      "generation=\(teardownToken.generation) completed=\(didComplete)"
+    )
+    return didComplete
   }
 
   private func completePairingProbe(result: CameraVendorPairingProbeResult, reason: String) {
@@ -3505,12 +3708,16 @@ final class CameraVendorBluetoothService: NSObject {
       pairingProbeState = .preconnected(peripheralID: pairingProbePeripheral?.identifier ?? UUID())
       // Keep the peripheral connected for fast gallery entry.
     case .pairingInvalid, .offline, .bluetoothOff:
-      // Disconnect if we connected during probe.
       if let peripheral = pairingProbePeripheral, pairingProbeState.isActive {
+        pairingProbeState = .tearingDown(
+          peripheralID: peripheral.identifier,
+          result: result
+        )
         central.cancelPeripheralConnection(peripheral)
+      } else {
+        pairingProbeState = .completed(result)
+        pairingProbePeripheral = nil
       }
-      pairingProbeState = .completed(result)
-      pairingProbePeripheral = nil
     }
 
     appendObservation("PAIRING_PROBE_COMPLETE result=\(result) reason=\(reason)")
@@ -3695,6 +3902,7 @@ final class CameraVendorBluetoothService: NSObject {
       central.cancelPeripheralConnection(peripheral)
     }
     selectedPeripheral = nil
+    activeBluetoothConnectionToken = nil
     selectedCamera = nil
     autoReconnectTargetPeripheralID = nil
     isRunningTransferActivation = false
@@ -4160,7 +4368,8 @@ final class CameraVendorBluetoothService: NSObject {
     peripheral: CBPeripheral,
     camera: CameraVendorDiscoveredCamera
   ) -> Bool {
-    guard !fullResetGate.hasUnresolvedDisconnect else {
+    guard !fullResetGate.hasUnresolvedDisconnect,
+          !pairingProbeTeardownGate.hasUnresolvedDisconnect else {
       appendObservation(
         "BLE_CONNECTION_ATTEMPT_BLOCKED unresolvedDisconnect=true " +
         "peripheralID=\(peripheral.identifier.uuidString)"
@@ -4172,6 +4381,11 @@ final class CameraVendorBluetoothService: NSObject {
     central.stopScan()
     wirelessConnectionGeneration &+= 1
     selectedPeripheral = peripheral
+    activeBluetoothConnectionToken = CameraVendorBluetoothConnectionToken(
+      peripheralID: peripheral.identifier,
+      peripheralIdentity: ObjectIdentifier(peripheral),
+      generation: wirelessConnectionGeneration
+    )
     selectedCamera = camera
     pairingCharacteristic = nil
     connectedDeviceNameCharacteristic = nil
@@ -5531,6 +5745,29 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
       return
     }
 
+    if pairingProbeTeardownGate.matchesUnresolvedDisconnect(
+      peripheralID: peripheral.identifier,
+      peripheralIdentity: ObjectIdentifier(peripheral)
+    ) {
+      appendObservation(
+        "PAIRING_PROBE_LATE_CONNECT_CANCELLED peripheralID=\(peripheral.identifier.uuidString)"
+      )
+      central.cancelPeripheralConnection(peripheral)
+      return
+    }
+
+    guard case .activeMainline = CameraVendorBluetoothDisconnectOwnershipPolicy.route(
+      peripheralID: peripheral.identifier,
+      peripheralIdentity: ObjectIdentifier(peripheral),
+      activeMainlineToken: activeBluetoothConnectionToken
+    ) else {
+      appendObservation(
+        "BLE_CONNECT_ORPHAN_IGNORED peripheralID=\(peripheral.identifier.uuidString)"
+      )
+      central.cancelPeripheralConnection(peripheral)
+      return
+    }
+
     recordBackgroundHardwareActivity()
     appendLog("蓝牙连接成功: \(peripheral.name ?? peripheral.identifier.uuidString)")
     appendObservation("BLE_CONNECTED name=\(peripheral.name ?? "nil") id=\(peripheral.identifier.uuidString)")
@@ -5544,6 +5781,16 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
     didFailToConnect peripheral: CBPeripheral,
     error: Error?
   ) {
+    if case .tearingDown(let probeID, let result) = pairingProbeState,
+       peripheral.identifier == probeID {
+      pairingProbeState = .completed(result)
+      pairingProbePeripheral = nil
+      appendObservation(
+        "PAIRING_PROBE_CONNECT_FAILURE_CONSUMED peripheralID=\(peripheral.identifier.uuidString) " +
+        "state=tearingDown"
+      )
+      return
+    }
     // Pairing probe: if the probe peripheral failed to connect, check if pairing is invalid.
     if pairingProbeState.targetPeripheralID == peripheral.identifier {
       if CameraVendorPairingProbePolicy.isConnectionFailurePairingInvalid(error) {
@@ -5554,7 +5801,31 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
       return
     }
 
+    if let teardownToken = pairingProbeTeardownGate.completeDisconnect(
+      peripheralID: peripheral.identifier,
+      peripheralIdentity: ObjectIdentifier(peripheral)
+    ) {
+      appendObservation(
+        "PAIRING_PROBE_CONNECT_FAILURE_CONSUMED peripheralID=\(peripheral.identifier.uuidString) " +
+        "generation=\(teardownToken.generation)"
+      )
+      return
+    }
+
+    guard case .activeMainline(let generation) =
+      CameraVendorBluetoothDisconnectOwnershipPolicy.route(
+        peripheralID: peripheral.identifier,
+        peripheralIdentity: ObjectIdentifier(peripheral),
+        activeMainlineToken: activeBluetoothConnectionToken
+      ) else {
+      appendObservation(
+        "BLE_CONNECT_FAILURE_ORPHAN_IGNORED peripheralID=\(peripheral.identifier.uuidString)"
+      )
+      return
+    }
+
     let errorDescription = error?.localizedDescription
+    appendObservation("BLE_CONNECT_FAILURE_ACCEPTED generation=\(generation)")
     appendLog("连接失败: \(errorDescription ?? "unknown")")
     terminateRememberedGallery(
       .bleConnectFailed(reason: errorDescription ?? "unknown")
@@ -5594,6 +5865,34 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
       return
     }
 
+    if case .tearingDown(let probeID, let result) = pairingProbeState,
+       peripheral.identifier == probeID {
+      pairingProbeState = .completed(result)
+      pairingProbePeripheral = nil
+      appendObservation(
+        "PAIRING_PROBE_DISCONNECT_CONSUMED peripheralID=\(peripheral.identifier.uuidString) " +
+        "state=tearingDown"
+      )
+      return
+    }
+
+    if let teardownToken = pairingProbeTeardownGate.completeDisconnect(
+      peripheralID: peripheral.identifier,
+      peripheralIdentity: ObjectIdentifier(peripheral)
+    ) {
+      appendObservation(
+        "PAIRING_PROBE_DISCONNECT_CONSUMED peripheralID=\(peripheral.identifier.uuidString) " +
+        "generation=\(teardownToken.generation)"
+      )
+      return
+    }
+    guard !pairingProbeTeardownGate.hasUnresolvedDisconnect else {
+      appendObservation(
+        "PAIRING_PROBE_DISCONNECT_UNPROVEN peripheralID=\(peripheral.identifier.uuidString)"
+      )
+      return
+    }
+
     // Pairing probe: if the probe peripheral disconnected, the probe failed.
     if pairingProbeState.targetPeripheralID == peripheral.identifier {
       if let error, CameraVendorPairingProbePolicy.isPairingInvalidError(error) {
@@ -5603,6 +5902,19 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
       }
       return
     }
+
+    guard case .activeMainline(let generation) =
+      CameraVendorBluetoothDisconnectOwnershipPolicy.route(
+        peripheralID: peripheral.identifier,
+        peripheralIdentity: ObjectIdentifier(peripheral),
+        activeMainlineToken: activeBluetoothConnectionToken
+      ) else {
+      appendObservation(
+        "BLE_DISCONNECT_ORPHAN_IGNORED peripheralID=\(peripheral.identifier.uuidString)"
+      )
+      return
+    }
+    appendObservation("BLE_DISCONNECT_ACCEPTED generation=\(generation)")
 
     if let error {
       appendLog("连接断开: \(error.localizedDescription)")

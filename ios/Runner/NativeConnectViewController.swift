@@ -1087,6 +1087,7 @@ final class NativeConnectViewController: UIViewController {
   // MARK: - Pairing Probe
 
   private var pairingProbeTask: Task<Void, Never>?
+  private var rememberedConnectionPreparationTask: Task<Void, Never>?
 
   private func beginPairingProbeIfNeeded() {
     guard let record = cameraSessionRuntime.rememberedCameraRecords.first else { return }
@@ -1644,11 +1645,6 @@ final class NativeConnectViewController: UIViewController {
     _ record: IOSCameraRememberedCameraRecord,
     purpose: NativeRememberedCameraConnectionPurpose = .gallery
   ) {
-    // Cancel any in-progress probe — user is explicitly connecting now.
-    pairingProbeTask?.cancel()
-    pairingProbeTask = nil
-    cameraSessionRuntime.cancelPairingProbe(reason: "user-initiated-connect")
-
     isDisconnectingActiveRememberedCamera = false
     if cameraSessionRuntime.publishSystemBluetoothCleanupBlockIfNeeded() {
       logView.text = ""
@@ -1667,13 +1663,43 @@ final class NativeConnectViewController: UIViewController {
       updateRememberedCameraCard()
       return
     }
+    pairingProbeTask?.cancel()
+    pairingProbeTask = nil
+    rememberedConnectionPreparationTask?.cancel()
+    isEnteringGalleryFromRememberedCamera = true
+    showConnectingOverlay(deviceName: record.identity.displayName)
+    rememberedConnectionPreparationTask = Task { @MainActor [weak self] in
+      guard let self else { return }
+      let didFinishProbeTeardown = await self.cameraSessionRuntime
+        .cancelPairingProbeAndWait(reason: "user-initiated-connect")
+      guard !Task.isCancelled else { return }
+      self.rememberedConnectionPreparationTask = nil
+      guard didFinishProbeTeardown else {
+        self.handleConnectFlowFailure(
+          title: "进入相机相册失败",
+          error: IOSCameraConnectionIssue(
+            step: .reconnectPairedBle,
+            reason: "等待上一条 BLE 探测连接断开超时"
+          ),
+          hidesOverlay: true,
+          resetsRememberedFlow: true
+        )
+        return
+      }
+      self.startRememberedCameraConnection(record, purpose: purpose)
+    }
+    updateRememberedCameraCard()
+  }
+
+  private func startRememberedCameraConnection(
+    _ record: IOSCameraRememberedCameraRecord,
+    purpose: NativeRememberedCameraConnectionPurpose
+  ) {
     cameraSessionRuntime.clearConnectionLogs()
     CameraVendorFileLogger.log(
       "[REMEMBERED_GALLERY_FLOW_START] device=\(record.identity.displayName) peripheralID=\(record.peripheralID)"
     )
     logView.text = ""
-    isEnteringGalleryFromRememberedCamera = true
-    showConnectingOverlay(deviceName: record.identity.displayName)
     let completion: (IOSCameraConnectFlowState) -> Void = { [weak self] state in
       guard let self else { return }
       CameraVendorFileLogger.log(
@@ -1711,7 +1737,6 @@ final class NativeConnectViewController: UIViewController {
         completion: completion
       )
     }
-    updateRememberedCameraCard()
   }
 
   private func showConnectingOverlay(deviceName: String) {
@@ -1754,6 +1779,8 @@ final class NativeConnectViewController: UIViewController {
     )
     quickDownloadTask?.cancel()
     quickDownloadTask = nil
+    rememberedConnectionPreparationTask?.cancel()
+    rememberedConnectionPreparationTask = nil
     pairingProbeTask?.cancel()
     pairingProbeTask = nil
     cameraSessionRuntime.cancelPairingProbe(reason: reason)

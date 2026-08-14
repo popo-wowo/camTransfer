@@ -34,6 +34,7 @@ protocol CameraSessionRuntimeConnectionControlling: AnyObject {
   var hasPreconnectedProbe: Bool { get }
   var preconnectedProbePeripheralID: UUID? { get }
   func cancelPairingProbe(reason: String)
+  func cancelPairingProbeAndWait(reason: String) async -> Bool
 }
 
 struct CameraSessionRuntimeGalleryPresentationPayload {

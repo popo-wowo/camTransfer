@@ -242,6 +242,10 @@ final class CameraVendorConnectFlowBridge: NSObject, IOSCameraConnectFlowRuntime
     service.cancelPairingProbe(reason: reason)
   }
 
+  func cancelPairingProbeAndWait(reason: String) async -> Bool {
+    await service.cancelPairingProbeAndWait(reason: reason)
+  }
+
   func consumeGalleryDestination(for peripheralID: UUID) -> IOSCameraGalleryDestination? {
     activeGalleryDestinationByPeripheralID.removeValue(forKey: peripheralID)
   }

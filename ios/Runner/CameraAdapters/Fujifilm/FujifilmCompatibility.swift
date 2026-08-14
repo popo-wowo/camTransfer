@@ -786,7 +786,6 @@ struct FujifilmCompatibilityEnvironment {
   private func fallback(for facts: CameraProtocolFacts) -> CameraConnectionPlanFallback? {
     if facts.bleEndpointEvidence == .rememberedPairedPeripheral,
        facts.compatibilityFamily == nil,
-       facts.advertisedServices.isEmpty,
        facts.discoveredCharacteristics.isEmpty {
       return CameraConnectionPlanFallback(
         supportStatus: .verified,

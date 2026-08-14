@@ -65,12 +65,14 @@ enum CameraVendorPairingProbeState: Equatable {
   case discoveringServices(peripheralID: UUID)
   case readingCharacteristic(peripheralID: UUID)
   case preconnected(peripheralID: UUID)
+  case tearingDown(peripheralID: UUID, result: CameraVendorPairingProbeResult)
   case completed(CameraVendorPairingProbeResult)
 
   var isActive: Bool {
     switch self {
     case .idle, .preconnected, .completed: return false
-    case .scanning, .connecting, .discoveringServices, .readingCharacteristic: return true
+    case .scanning, .connecting, .discoveringServices, .readingCharacteristic, .tearingDown:
+      return true
     }
   }
 
@@ -83,7 +85,7 @@ enum CameraVendorPairingProbeState: Equatable {
     switch self {
     case .scanning(let id), .connecting(let id),
          .discoveringServices(let id), .readingCharacteristic(let id),
-         .preconnected(let id):
+         .preconnected(let id), .tearingDown(let id, _):
       return id
     case .idle, .completed:
       return nil
