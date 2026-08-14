@@ -1,0 +1,36 @@
+app/src/main/java/com/camtransfer/viewmodel/BrowseViewModel.kt
+  a45c7ac0441e9b3f 102-104,117-128,133,138-152,171-176
+app/src/test/java/com/camtransfer/viewmodel/BrowseViewModelSnapshotTest.kt
+  a45c7ac0441e9b3f 26,64-113,120,123-136
+app/src/test/java/com/camtransfer/runtime/service/CameraRuntimeServicePolicyTest.kt
+  a45c7ac0441e9b3f 20,26-32
+app/src/main/java/com/camtransfer/runtime/CameraSessionRuntime.kt
+  a45c7ac0441e9b3f 10-12,38,40
+app/src/main/java/com/camtransfer/runtime/DefaultCameraSessionRuntime.kt
+  a45c7ac0441e9b3f 59-60,109-138,275-288,292-328,1030,1033-1037,1039-1042,1049,1053,1058-1060,1062-1067,1069-1072,1075-1077
+app/src/test/java/com/camtransfer/runtime/DefaultCameraSessionRuntimeTest.kt
+  a45c7ac0441e9b3f 53-58,1154-1245
+app/src/test/java/com/camtransfer/runtime/service/CameraRuntimeClientTest.kt
+  a45c7ac0441e9b3f 14-17,19,21-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "5ade2e61256cb572b259d3ac67769e582068b451",
+  "prompts": {
+    "a45c7ac0441e9b3f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fff92-39b0-7cd0-a416-4dad373071e0",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 2109,
+      "total_deletions": 79,
+      "accepted_lines": 2073,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/4af5cad2643f1f6e65393a6282e4154b74696098d2d642c14496fb305642f398"
+    }
+  }
+}
