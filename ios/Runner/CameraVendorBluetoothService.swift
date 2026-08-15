@@ -3344,6 +3344,9 @@ final class CameraVendorBluetoothService: NSObject {
   private let pairServiceUUID = CBUUID(string: "91F1DE68-DFF6-466E-8B65-FF13B0F16FB8")
   private let pairingCharacteristicUUID = CBUUID(string: "ABA356EB-9633-4E60-B73F-F52516DBD671")
   private let connectedDeviceNameCharacteristicUUID = CBUUID(string: "85B9163E-62D1-49FF-A6F5-054B4630D4A1")
+  private let connectedApplicationInfoCharacteristicUUID = CBUUID(
+    string: CameraVendorConnectedApplicationHandshakePolicy.characteristicUUIDString
+  )
   private let securePairServiceUUID = CBUUID(string: "123D8F06-62A1-4935-9322-833C531EE225")
   private let connectedDeviceIdentificationCharacteristicUUID = CBUUID(string: "F557D96B-8284-4667-8793-B971C1DECA2A")
   private let notificationCharacteristicUUID = CBUUID(string: "4C0020FE-F3B6-40DE-ACC9-77D129067B14")
@@ -3387,6 +3390,7 @@ final class CameraVendorBluetoothService: NSObject {
   private var pairingCharacteristic: CBCharacteristic?
   private var connectedDeviceNameCharacteristic: CBCharacteristic?
   private var connectedDeviceIdentificationCharacteristic: CBCharacteristic?
+  private var connectedApplicationInfoCharacteristic: CBCharacteristic?
   private var discoveredCharacteristicsByUUID: [CBUUID: CBCharacteristic] = [:]
   private var notifiableCharacteristics: [CBCharacteristic] = []
   private var probedCharacteristics: [CBUUID: CBCharacteristic] = [:]
@@ -3395,6 +3399,7 @@ final class CameraVendorBluetoothService: NSObject {
   private var unmatchedAdvertisementSampleCount = 0
   private var scanTimeoutWorkItem: DispatchWorkItem?
   private var postHandshakeProbeTimeoutWorkItem: DispatchWorkItem?
+  private var connectedApplicationInfoTimeoutWorkItem: DispatchWorkItem?
   private var transferActivationTimeoutWorkItem: DispatchWorkItem?
   private var bleStateSamplingWorkItems: [DispatchWorkItem] = []
   private var bleStateSamplingCompletionWorkItem: DispatchWorkItem?
@@ -3455,6 +3460,8 @@ final class CameraVendorBluetoothService: NSObject {
   private var secureHandshakePhase: CameraVendorSecureHandshakePhase = .idle
   private var secureHandshakeReconnectCount = 0
   private var secureIdentificationNumberAlreadyPaired = false
+  private var connectedApplicationInfoWriteGeneration: UInt64?
+  private var completedConnectedApplicationInfoGeneration: UInt64?
   private var rememberedPairedCameras: [CameraVendorPairedCameraRecord]
   private var rememberedPairedCamera: CameraVendorPairedCameraRecord?
   private var autoReconnectTargetPeripheralID: UUID?
@@ -3905,6 +3912,11 @@ final class CameraVendorBluetoothService: NSObject {
     activeBluetoothConnectionToken = nil
     selectedCamera = nil
     autoReconnectTargetPeripheralID = nil
+    connectedApplicationInfoCharacteristic = nil
+    connectedApplicationInfoTimeoutWorkItem?.cancel()
+    connectedApplicationInfoTimeoutWorkItem = nil
+    connectedApplicationInfoWriteGeneration = nil
+    completedConnectedApplicationInfoGeneration = nil
     isRunningTransferActivation = false
     awaitingPairingReadyRediscovery = false
     awaitingTransferActivationStateChange = false
@@ -4097,6 +4109,9 @@ final class CameraVendorBluetoothService: NSObject {
   }
 
   private func handleIdentifierWriteCompletion(on peripheral: CBPeripheral) {
+    guard continueAfterConnectedApplicationInfoHandshakeIfNeeded(on: peripheral) else {
+      return
+    }
     refreshPendingHandshakeSummary(using: peripheral)
     if completeQueuedPhonePairingConfirmationIfReady() {
       return
@@ -4123,6 +4138,101 @@ final class CameraVendorBluetoothService: NSObject {
       appendLog("已配对相机未通过重连确认，已阻止进入相册。请清除旧配对后重新配对。")
       updateStatus("请清除旧配对后重新配对", isBusy: false)
     }
+  }
+
+  private func continueAfterConnectedApplicationInfoHandshakeIfNeeded(
+    on peripheral: CBPeripheral
+  ) -> Bool {
+    let availableCharacteristicUUIDs = Set(
+      discoveredCharacteristicsByUUID.keys.map { $0.uuidString.uppercased() }
+    )
+    switch CameraVendorConnectedApplicationHandshakePolicy.action(
+      availableCharacteristicUUIDStrings: availableCharacteristicUUIDs
+    ) {
+    case .completeIdentityHandshake:
+      return true
+    case .writeApplicationInfo(let payload):
+      guard completedConnectedApplicationInfoGeneration != wirelessConnectionGeneration else {
+        return true
+      }
+      guard connectedApplicationInfoWriteGeneration != wirelessConnectionGeneration else {
+        appendObservation(
+          "BLE_HANDSHAKE_GATE appInfo=required result=waiting generation=\(wirelessConnectionGeneration)"
+        )
+        return false
+      }
+      guard let characteristic = connectedApplicationInfoCharacteristic else {
+        failConnectedApplicationInfoHandshake("缺少 Connected Application Information 特征")
+        return false
+      }
+
+      connectedApplicationInfoWriteGeneration = wirelessConnectionGeneration
+      secureHandshakePhase = .awaitingConnectedApplicationInfoWrite
+      appendObservation(
+        "BLE_APP_INFO_WRITE_REQUEST payload=\(hexString(payload)) generation=\(wirelessConnectionGeneration)"
+      )
+      appendObservation(
+        "BLE_HANDSHAKE_GATE appInfo=required result=waiting generation=\(wirelessConnectionGeneration)"
+      )
+      writeBleControlValue(
+        payload,
+        to: characteristic,
+        on: peripheral,
+        kind: "connected-application-info"
+      )
+      scheduleConnectedApplicationInfoTimeout(
+        for: characteristic,
+        generation: wirelessConnectionGeneration
+      )
+      return false
+    }
+  }
+
+  private func scheduleConnectedApplicationInfoTimeout(
+    for characteristic: CBCharacteristic,
+    generation: UInt64
+  ) {
+    connectedApplicationInfoTimeoutWorkItem?.cancel()
+    let timeout = DispatchWorkItem { [weak self, weak characteristic] in
+      guard let self, let characteristic else { return }
+      guard self.wirelessConnectionGeneration == generation,
+            self.connectedApplicationInfoWriteGeneration == generation,
+            self.connectedApplicationInfoCharacteristic === characteristic else {
+        return
+      }
+      self.failConnectedApplicationInfoHandshake("等待 Connected Application Information 写入确认超时")
+    }
+    connectedApplicationInfoTimeoutWorkItem = timeout
+    DispatchQueue.main.asyncAfter(
+      deadline: .now() + CameraVendorConnectedApplicationHandshakePolicy.writeTimeoutSeconds,
+      execute: timeout
+    )
+  }
+
+  private func completeConnectedApplicationInfoWrite(on peripheral: CBPeripheral) {
+    connectedApplicationInfoTimeoutWorkItem?.cancel()
+    connectedApplicationInfoTimeoutWorkItem = nil
+    connectedApplicationInfoWriteGeneration = nil
+    completedConnectedApplicationInfoGeneration = wirelessConnectionGeneration
+    secureHandshakePhase = .completed
+    appendObservation(
+      "BLE_APP_INFO_WRITE_ACK result=success generation=\(wirelessConnectionGeneration)"
+    )
+    appendObservation("BLE_HANDSHAKE_GATE appInfo=required result=complete")
+    handleIdentifierWriteCompletion(on: peripheral)
+  }
+
+  private func failConnectedApplicationInfoHandshake(_ reason: String) {
+    connectedApplicationInfoTimeoutWorkItem?.cancel()
+    connectedApplicationInfoTimeoutWorkItem = nil
+    connectedApplicationInfoWriteGeneration = nil
+    secureHandshakePhase = .idle
+    appendObservation(
+      "BLE_APP_INFO_WRITE_FAILED reason=\(reason) generation=\(wirelessConnectionGeneration)"
+    )
+    appendObservation("BLE_HANDSHAKE_GATE appInfo=required result=failed")
+    updateStatus("握手失败", isBusy: false)
+    _ = terminateRememberedGallery(.activationResolutionFailed(reason: reason))
   }
 
   private func beginRememberedGalleryTransferIfPossible(on peripheral: CBPeripheral) {
@@ -4185,6 +4295,7 @@ final class CameraVendorBluetoothService: NSObject {
     pairingCharacteristic = nil
     connectedDeviceNameCharacteristic = nil
     connectedDeviceIdentificationCharacteristic = nil
+    connectedApplicationInfoCharacteristic = nil
     discoveredCharacteristicsByUUID = [:]
     notifiableCharacteristics = []
     probedCharacteristics = [:]
@@ -4200,6 +4311,10 @@ final class CameraVendorBluetoothService: NSObject {
     encryptionRecoveryPolicy.reset()
     awaitingPairingReadyRediscovery = false
     pendingHandshakeSummary = nil
+    connectedApplicationInfoTimeoutWorkItem?.cancel()
+    connectedApplicationInfoTimeoutWorkItem = nil
+    connectedApplicationInfoWriteGeneration = nil
+    completedConnectedApplicationInfoGeneration = nil
     pendingPostHandshakeProbeReads = []
     isRunningPostHandshakeProbe = false
     transferActivationStepDriver = nil
@@ -4390,6 +4505,7 @@ final class CameraVendorBluetoothService: NSObject {
     pairingCharacteristic = nil
     connectedDeviceNameCharacteristic = nil
     connectedDeviceIdentificationCharacteristic = nil
+    connectedApplicationInfoCharacteristic = nil
     discoveredCharacteristicsByUUID = [:]
     notifiableCharacteristics = []
     probedCharacteristics = [:]
@@ -4405,6 +4521,10 @@ final class CameraVendorBluetoothService: NSObject {
     encryptionRecoveryPolicy.reset()
     awaitingPairingReadyRediscovery = false
     pendingHandshakeSummary = nil
+    connectedApplicationInfoTimeoutWorkItem?.cancel()
+    connectedApplicationInfoTimeoutWorkItem = nil
+    connectedApplicationInfoWriteGeneration = nil
+    completedConnectedApplicationInfoGeneration = nil
     pendingPostHandshakeProbeReads = []
     isRunningPostHandshakeProbe = false
     transferActivationStepDriver = nil
@@ -6154,6 +6274,8 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
       )
       if characteristic.uuid == pairingCharacteristicUUID {
         pairingCharacteristic = characteristic
+      } else if characteristic.uuid == connectedApplicationInfoCharacteristicUUID {
+        connectedApplicationInfoCharacteristic = characteristic
       } else if characteristic.uuid == connectedDeviceIdentificationCharacteristicUUID {
         connectedDeviceIdentificationCharacteristic = characteristic
       } else if characteristic.uuid == connectedDeviceNameCharacteristicUUID {
@@ -6550,6 +6672,23 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
     }
 
     if let error = error as NSError? {
+      if characteristic.uuid == connectedApplicationInfoCharacteristicUUID,
+         secureHandshakePhase == .awaitingConnectedApplicationInfoWrite {
+        guard selectedPeripheral === peripheral,
+              CameraVendorConnectedApplicationHandshakePolicy.acceptsWriteCallback(
+                pendingGeneration: connectedApplicationInfoWriteGeneration,
+                currentGeneration: wirelessConnectionGeneration,
+                isCurrentCharacteristic: connectedApplicationInfoCharacteristic === characteristic
+              ) else {
+          appendObservation(
+            "BLE_APP_INFO_WRITE_ERROR_IGNORED reason=stale-callback " +
+            "generation=\(wirelessConnectionGeneration)"
+          )
+          return
+        }
+        failConnectedApplicationInfoHandshake(error.localizedDescription)
+        return
+      }
       if isRunningTransferActivation,
          transferActivationStepDriver?.isCurrentWriteCharacteristic(
            uuidString: characteristic.uuid.uuidString
@@ -6585,6 +6724,24 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
         appendLog("写入失败: \(error.localizedDescription)")
       }
       updateStatus("握手失败", isBusy: false)
+      return
+    }
+
+    if characteristic.uuid == connectedApplicationInfoCharacteristicUUID,
+       secureHandshakePhase == .awaitingConnectedApplicationInfoWrite {
+      guard selectedPeripheral === peripheral,
+            CameraVendorConnectedApplicationHandshakePolicy.acceptsWriteCallback(
+              pendingGeneration: connectedApplicationInfoWriteGeneration,
+              currentGeneration: wirelessConnectionGeneration,
+              isCurrentCharacteristic: connectedApplicationInfoCharacteristic === characteristic
+            ) else {
+        appendObservation(
+          "BLE_APP_INFO_WRITE_ACK_IGNORED reason=stale-callback " +
+          "generation=\(wirelessConnectionGeneration)"
+        )
+        return
+      }
+      completeConnectedApplicationInfoWrite(on: peripheral)
       return
     }
 

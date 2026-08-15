@@ -165,10 +165,7 @@ enum FujifilmInitialCatalogStrategyExecutor {
     recover: () throws -> Void
   ) throws -> CameraVendorCatalogSnapshot {
     switch definition.action {
-    case .directSpecifiedCatalog:
-      return try fetch()
-    case .storeNotAvailableRecovery:
-      try recover()
+    case .directSpecifiedCatalog, .storeNotAvailableRecovery:
       return try fetch()
     }
   }
@@ -198,9 +195,7 @@ enum FujifilmInitialCatalogResponseClassifier {
 enum FujifilmResponseDrivenInitialCatalogExecutor {
   static func execute(
     directFetch: () throws -> CameraVendorCatalogSnapshot,
-    revise: (CameraCatalogResponseFacts) throws -> Void,
-    recover: () throws -> Void,
-    recoveryFetch: () throws -> CameraVendorCatalogSnapshot
+    revise: (CameraCatalogResponseFacts) throws -> Void
   ) throws -> CameraVendorCatalogSnapshot {
     do {
       return try directFetch()
@@ -209,8 +204,7 @@ enum FujifilmResponseDrivenInitialCatalogExecutor {
         throw error
       }
       try revise(facts)
-      try recover()
-      return try recoveryFetch()
+      throw error
     }
   }
 }
@@ -564,30 +558,19 @@ final class CameraVendorPtpSessionRuntime {
   ) async throws -> CameraVendorCatalogSnapshot {
     try await commandLane.runExclusiveSessionMutation {
       let fetch = {
+        try self.session.prepareCameraVendorLegacyGalleryLoadIfNeeded()
         if let query {
           return try self.session.cameraVendorCatalogSnapshot(query: query)
         }
         return try self.session.cameraVendorInitialCatalogSnapshot()
       }
-      switch definition.action {
-      case .directSpecifiedCatalog:
-        return try FujifilmResponseDrivenInitialCatalogExecutor.execute(
-          directFetch: fetch,
-          revise: revise,
-          recover: {
-            try self.session.recoverInitialCameraCatalogAfterStoreNotAvailable()
-          },
-          recoveryFetch: fetch
-        )
-      case .storeNotAvailableRecovery:
-        return try FujifilmInitialCatalogStrategyExecutor.execute(
-          definition: definition,
-          fetch: fetch,
-          recover: {
-            try self.session.recoverInitialCameraCatalogAfterStoreNotAvailable()
-          }
-        )
-      }
+      // Initial Catalog is a single authoritative read. Strategy revision may
+      // still be recorded by the protocol engine, but the same PTP session
+      // never replays bootstrap/recovery after a 0x2013 response.
+      return try FujifilmResponseDrivenInitialCatalogExecutor.execute(
+        directFetch: fetch,
+        revise: revise
+      )
     }
   }
 

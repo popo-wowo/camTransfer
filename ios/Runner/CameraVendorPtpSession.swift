@@ -866,11 +866,6 @@ final class CameraVendorPtpSession {
     try prepareCameraVendorLegacyGalleryLoad()
   }
 
-  func recoverInitialCameraCatalogAfterStoreNotAvailable() throws {
-    report("[OBS] PTP_INITIAL_CAMERA_CATALOG_BOOTSTRAP_RECOVERY response=0x2013")
-    try prepareCameraVendorLegacyGalleryLoadIfNeeded()
-  }
-
   private func performCameraVendorReservedReceiveDiagnosticHandshake() throws {
     report("[OBS] PTP_RESERVED_RECEIVE_DIAGNOSTIC_HANDSHAKE_BEGIN")
 
@@ -1113,43 +1108,9 @@ final class CameraVendorPtpSession {
     }
 
     report("[OBS] PTP_INITIAL_CAMERA_CATALOG_BEGIN")
-
-    // Android records the D604=31 baseline before probing the expanded HEIF/RAW
-    // directory. The difference identifies unresolved extended-still placeholders
-    // without waiting for thousands of ObjectInfo reads.
-    let baselinePayload = CameraVendorSearchModeAllPayload.objectFormatMaskPayload(
-      CameraVendorSearchModeAllPayload.allObjectFormatMask
-    )
-    _ = try sendCommandWithData(
-      operationCode: UInt16(CameraVendorPtpOperationCode.cameraVendorSetSearchModeAll),
-      data: baselinePayload
-    )
-    let baselineSnapshot = try requestCameraVendorSpecifiedObjectSnapshot(
-      stage: "initial-camera-catalog-baseline",
-      allowsEmptyRetry: false
-    )
-    report("[OBS] PTP_INITIAL_CATALOG_BASELINE handles=\(baselineSnapshot.handles.count)")
-
-    // D604=2 returns the expanded directory on this camera, including the
-    // HEIF/RAW handles hidden from the D604=31 baseline.
-    let heifPayload = CameraVendorSearchModeAllPayload.objectFormatMaskPayload(
-      CameraVendorSearchModeAllPayload.heifObjectFormatMask
-    )
-    _ = try sendCommandWithData(
-      operationCode: UInt16(CameraVendorPtpOperationCode.cameraVendorSetSearchModeAll),
-      data: heifPayload
-    )
     let snapshot = try requestCameraVendorSpecifiedObjectSnapshot(
       stage: "initial-camera-catalog",
       allowsEmptyRetry: false
-    )
-    report("[OBS] PTP_INITIAL_CATALOG_EXPANDED handles=\(snapshot.handles.count)")
-
-    // Restore SearchMode to empty after reading
-    let resetPayload = CameraVendorSearchModeAllPayload.payload(for: [])
-    _ = try sendCommandWithData(
-      operationCode: UInt16(CameraVendorPtpOperationCode.cameraVendorSetSearchModeAll),
-      data: resetPayload
     )
 
     guard CameraVendorCatalogSnapshotValidationPolicy.isPublishable(
@@ -1163,22 +1124,18 @@ final class CameraVendorPtpSession {
         userInfo: [NSLocalizedDescriptionKey: "相机返回的初始目录计数、日期组或句柄不一致"]
       )
     }
-    let formatHints = CameraVendorCatalogPlaceholderPolicy.expandedStillFormatHints(
-      baselineHandles: baselineSnapshot.handles,
-      expandedStillHandles: snapshot.handles
-    )
     let catalog = CameraVendorCatalogSnapshot(
       dateGroups: snapshot.dateGroups,
       orderedHandles: snapshot.handles,
       items: CameraVendorCatalogPlaceholderPolicy.placeholderItems(
         from: snapshot.handles,
         dateGroups: snapshot.dateGroups,
-        formatHintsByHandle: formatHints
+        formatHintsByHandle: [:]
       )
     )
     report(
       "[OBS] PTP_INITIAL_CAMERA_CATALOG_END groups=\(catalog.dateGroups.count) " +
-      "handles=\(catalog.orderedHandles.count) extendedStill=\(formatHints.count)"
+      "handles=\(catalog.orderedHandles.count) extendedStill=0"
     )
     return catalog
   }

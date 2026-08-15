@@ -214,6 +214,15 @@ final class CameraVendorGalleryMainlineSessionLoader {
     )
     do {
       _ = try await orchestrator.connect(context: sessionContext)
+    } catch is CancellationError {
+      protocolEngine.appendRuntimeMessage(
+        cancellationDiagnostic(
+          connectionSessionID: connectionSessionID,
+          plan: orchestrator.currentPlan,
+          firstMissingBarrier: orchestrator.firstMissingBarrier
+        )
+      )
+      throw CancellationError()
     } catch {
       let issue = orchestrator.recordFailure(error)
       protocolEngine.appendRuntimeMessage(
@@ -317,6 +326,11 @@ final class CameraVendorGalleryMainlineSessionLoader {
           return orchestrator.currentPlan
         }
       )
+    } catch is CancellationError {
+      protocolEngine.appendRuntimeMessage(
+        "[OBS] GALLERY_CONNECTION_CANCELLED connectionSessionID=\(connectionSessionID.uuidString)"
+      )
+      throw CancellationError()
     } catch {
       let routeError = protocolEngine.buildGalleryRouteFailure(
         didCompleteWifiHandoff: didCompleteWifiHandoff,
@@ -458,6 +472,19 @@ final class CameraVendorGalleryMainlineSessionLoader {
       "strategyID=\(strategyID(for: firstMissingBarrier, plan: plan)) " +
       "lastWireOutcome=\(diagnosticValue(error.localizedDescription)) " +
       "retryOwner=\(retryOwner(for: firstMissingBarrier).rawValue)"
+  }
+
+  private func cancellationDiagnostic(
+    connectionSessionID: UUID,
+    plan: CameraConnectionPlan,
+    firstMissingBarrier: IOSCameraConnectionStep?
+  ) -> String {
+    let firstMissingBarrier = firstMissingBarrier ?? .gallerySessionPrepared
+    return "[OBS] CONNECTION_CANCELLED " +
+      "connectionSessionID=\(connectionSessionID.uuidString) " +
+      "firstMissingBarrier=\(firstMissingBarrier.rawValue) " +
+      "planID=\(plan.id.rawValue) revision=\(plan.revision) " +
+      "reason=user-or-owner-cancel"
   }
 
   private func diagnosticValue(_ value: String) -> String {

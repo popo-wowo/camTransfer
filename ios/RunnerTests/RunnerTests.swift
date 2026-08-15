@@ -3894,6 +3894,64 @@ final class RunnerTests: XCTestCase {
     )
   }
 
+  func testConnectedApplicationHandshakeRequiresConditionalWriteAndAcknowledgement() {
+    let action = CameraVendorConnectedApplicationHandshakePolicy.action(
+      availableCharacteristicUUIDStrings: [
+        CameraVendorConnectedApplicationHandshakePolicy.characteristicUUIDString
+      ]
+    )
+    XCTAssertEqual(
+      action,
+      .writeApplicationInfo(CameraVendorConnectedApplicationHandshakePolicy.applicationInfoPayload)
+    )
+    XCTAssertEqual(
+      CameraVendorConnectedApplicationHandshakePolicy.applicationInfoPayload,
+      Data([0x80, 0x01, 0x01])
+    )
+    XCTAssertEqual(CameraVendorConnectedApplicationHandshakePolicy.writeTimeoutSeconds, 5)
+    XCTAssertTrue(
+      CameraVendorConnectedApplicationHandshakePolicy.acceptsWriteCallback(
+        pendingGeneration: 7,
+        currentGeneration: 7,
+        isCurrentCharacteristic: true
+      )
+    )
+    XCTAssertFalse(
+      CameraVendorConnectedApplicationHandshakePolicy.acceptsWriteCallback(
+        pendingGeneration: 6,
+        currentGeneration: 7,
+        isCurrentCharacteristic: true
+      )
+    )
+    XCTAssertFalse(
+      CameraVendorConnectedApplicationHandshakePolicy.acceptsWriteCallback(
+        pendingGeneration: 7,
+        currentGeneration: 7,
+        isCurrentCharacteristic: false
+      )
+    )
+  }
+
+  func testConnectedApplicationHandshakeSkipsWriteWhenCharacteristicIsAbsent() {
+    XCTAssertEqual(
+      CameraVendorConnectedApplicationHandshakePolicy.action(
+        availableCharacteristicUUIDStrings: []
+      ),
+      .completeIdentityHandshake
+    )
+  }
+
+  func testProductionBluetoothServiceGatesTransferOnConnectedApplicationInfoAck() throws {
+    let source = try runnerSource("CameraVendorBluetoothService.swift")
+    XCTAssertTrue(source.contains("connectedApplicationInfoCharacteristicUUID"))
+    XCTAssertTrue(source.contains("connectedApplicationInfoCharacteristic = characteristic"))
+    XCTAssertTrue(source.contains("continueAfterConnectedApplicationInfoHandshakeIfNeeded"))
+    XCTAssertTrue(source.contains("BLE_APP_INFO_WRITE_REQUEST"))
+    XCTAssertTrue(source.contains("BLE_APP_INFO_WRITE_ACK"))
+    XCTAssertTrue(source.contains("BLE_APP_INFO_WRITE_FAILED"))
+    XCTAssertTrue(source.contains("scheduleConnectedApplicationInfoTimeout"))
+  }
+
   func testEncryptionRecoveryRetriesOnlyOnce() {
     var policy = CameraVendorEncryptionRecoveryPolicy()
 
@@ -7063,11 +7121,10 @@ final class RunnerTests: XCTestCase {
       )?.lowerBound
     )
     let initialFetchBody = String(realtimeServiceSource[initialFetchStart..<initialFetchEnd])
-    XCTAssertTrue(initialFetchBody.contains("FujifilmInitialCatalogStrategyExecutor.execute("))
+    XCTAssertTrue(initialFetchBody.contains("FujifilmResponseDrivenInitialCatalogExecutor.execute("))
+    XCTAssertTrue(initialFetchBody.contains("prepareCameraVendorLegacyGalleryLoadIfNeeded"))
     XCTAssertTrue(initialFetchBody.contains("self.session.cameraVendorInitialCatalogSnapshot()"))
-    XCTAssertTrue(
-      initialFetchBody.contains("self.session.recoverInitialCameraCatalogAfterStoreNotAvailable()")
-    )
+    XCTAssertFalse(initialFetchBody.contains("recoverInitialCameraCatalogAfterStoreNotAvailable"))
 
     let serviceConfirmStart = try XCTUnwrap(
       sessionSource.range(of: "private func confirmCameraVendorLegacyReferenceAppGalleryMode()")?.lowerBound
@@ -16774,11 +16831,11 @@ final class RunnerTests: XCTestCase {
       return
     }
     let body = String(source[start..<end])
-    let baseline = try XCTUnwrap(body.range(of: "stage: \"initial-camera-catalog-baseline\""))
-    let expanded = try XCTUnwrap(body.range(of: "stage: \"initial-camera-catalog\""))
-    XCTAssertFalse(body.contains("requestCameraVendorSearchModeAll("))
-    XCTAssertTrue(body.contains("cameraVendorSetSearchModeAll"))
-    XCTAssertLessThan(baseline.lowerBound, expanded.lowerBound)
+    XCTAssertFalse(body.contains("initial-camera-catalog-baseline"))
+    XCTAssertFalse(body.contains("initial-camera-catalog-expanded"))
+    XCTAssertFalse(body.contains("cameraVendorSetSearchModeAll"))
+    XCTAssertEqual(body.components(separatedBy: "stage: \"initial-camera-catalog\"").count - 1, 1)
+    XCTAssertTrue(body.contains("requestCameraVendorSpecifiedObjectSnapshot"))
   }
 
   @MainActor
@@ -18130,6 +18187,12 @@ final class RunnerTests: XCTestCase {
       source[resetStart..<resetEnd].contains(
         "transferActivationWriteAttemptTokensByCharacteristicIdentity.removeAll()"
       )
+    )
+    XCTAssertTrue(
+      source[resetStart..<resetEnd].contains("connectedApplicationInfoTimeoutWorkItem?.cancel()")
+    )
+    XCTAssertTrue(
+      source[resetStart..<resetEnd].contains("completedConnectedApplicationInfoGeneration = nil")
     )
 
     let callbackStart = try XCTUnwrap(
@@ -26620,7 +26683,7 @@ extension RunnerTests {
     }
   }
 
-  func testInitialCatalogDefinitionsExecuteDistinctWireOrder() throws {
+  func testInitialCatalogDefinitionsDoNotReplayRecoveryInSameSession() throws {
     let registry = FujifilmCompatibilityEnvironment.production.strategyRegistry
     let directDefinition = try registry.initialCatalogDefinition(for: .directSpecifiedCatalog)
     let recoveryDefinition = try registry.initialCatalogDefinition(for: .storeNotAvailableRecovery)
@@ -26650,7 +26713,7 @@ extension RunnerTests {
         recoveryEvents.append("recover")
       }
     )
-    XCTAssertEqual(recoveryEvents, ["recover", "fetch"])
+    XCTAssertEqual(recoveryEvents, ["fetch"])
 
     let failure = NSError(domain: "InitialCatalogStrategyTests", code: 1)
     var directFailureEvents: [String] = []
@@ -26681,7 +26744,7 @@ extension RunnerTests {
         }
       )
     )
-    XCTAssertEqual(recoveryFailureEvents, ["recover", "fetch"])
+    XCTAssertEqual(recoveryFailureEvents, ["fetch"])
   }
 
   func testProductionConnectionSourcesDoNotRouteByConcreteCameraModel() throws {
@@ -28146,6 +28209,23 @@ extension RunnerTests {
     XCTAssertTrue(loaderSource.contains("lastWireOutcome="))
   }
 
+  func testProductionConnectionDoesNotPromoteUserCancellationToTerminalFailure() throws {
+    let loaderSource = try runnerSource("CameraVendorGalleryMainlineSessionLoader.swift")
+    let cancellationGuard = try XCTUnwrap(
+      loaderSource.range(of: "} catch is CancellationError {")?.lowerBound
+    )
+    let cancellationCatchEnd = try XCTUnwrap(
+      loaderSource.range(of: "} catch {", range: cancellationGuard..<loaderSource.endIndex)?.lowerBound
+    )
+    XCTAssertTrue(
+      loaderSource[cancellationGuard..<cancellationCatchEnd].contains("cancellationDiagnostic(")
+    )
+    XCTAssertFalse(
+      loaderSource[cancellationGuard..<cancellationCatchEnd].contains("terminalDiagnostic(")
+    )
+    XCTAssertTrue(loaderSource.contains("[OBS] CONNECTION_CANCELLED"))
+  }
+
   func testLoaderPropagatesOneConnectionSessionIDIntoDiagnosticsStateAndPhysicalSession() throws {
     let loaderSource = try runnerSource("CameraVendorGalleryMainlineSessionLoader.swift")
     let engineSource = try runnerSource("CameraAdapters/Fujifilm/FujifilmProtocolEngine.swift")
@@ -28755,38 +28835,14 @@ extension RunnerTests {
     }
   }
 
-  func testResponseDrivenInitialCatalogExecutorRevisesBeforeRecoveryWithoutLoop() throws {
-    enum ExpectedRecoveryFailure: Error { case secondFetchFailed }
+  func testResponseDrivenInitialCatalogExecutorRevisesAndRethrowsWithoutReplay() throws {
     let responseError = makePtpResponseError(
       operationCode: 0x9053,
       responseCode: 0x2013,
       transactionID: 9
     )
-    let snapshot = CameraVendorCatalogSnapshot(dateGroups: [], orderedHandles: [], items: [])
     var events: [String] = []
 
-    let result = try FujifilmResponseDrivenInitialCatalogExecutor.execute(
-      directFetch: {
-        events.append("directFetch")
-        throw responseError
-      },
-      revise: { facts in
-        XCTAssertEqual(facts.classification, .storeNotAvailable)
-        events.append("revision")
-      },
-      recover: {
-        events.append("recover")
-      },
-      recoveryFetch: {
-        events.append("recoveryFetch")
-        return snapshot
-      }
-    )
-
-    XCTAssertEqual(result, snapshot)
-    XCTAssertEqual(events, ["directFetch", "revision", "recover", "recoveryFetch"])
-
-    events.removeAll()
     XCTAssertThrowsError(
       try FujifilmResponseDrivenInitialCatalogExecutor.execute(
         directFetch: {
@@ -28795,19 +28851,37 @@ extension RunnerTests {
         },
         revise: { _ in
           events.append("revision")
-        },
-        recover: {
-          events.append("recover")
-        },
-        recoveryFetch: {
-          events.append("recoveryFetch")
-          throw ExpectedRecoveryFailure.secondFetchFailed
         }
       )
     ) { error in
-      XCTAssertTrue(error is ExpectedRecoveryFailure)
+      XCTAssertEqual((error as NSError).code, 0x2013)
     }
-    XCTAssertEqual(events, ["directFetch", "revision", "recover", "recoveryFetch"])
+    XCTAssertEqual(events, ["directFetch", "revision"])
+  }
+
+  func testResponseDrivenInitialCatalogMainlineRevisesButDoesNotReplaySameSession() throws {
+    let responseError = makePtpResponseError(
+      operationCode: 0x9053,
+      responseCode: 0x2013,
+      transactionID: 10
+    )
+    var events: [String] = []
+
+    XCTAssertThrowsError(
+      try FujifilmResponseDrivenInitialCatalogExecutor.execute(
+        directFetch: {
+          events.append("directFetch")
+          throw responseError
+        },
+        revise: { facts in
+          XCTAssertEqual(facts.classification, .storeNotAvailable)
+          events.append("revision")
+        }
+      )
+    ) { error in
+      XCTAssertEqual((error as NSError).code, 0x2013)
+    }
+    XCTAssertEqual(events, ["directFetch", "revision"])
   }
 
   func testInitialCatalogStrategyExecutionIsDurablyObservable() throws {
@@ -28826,7 +28900,7 @@ extension RunnerTests {
     XCTAssertTrue(source.contains("snapshotID="))
   }
 
-  func testProductionInitialCatalogFetchRebindsSessionPlanBeforeRecovery() throws {
+  func testProductionInitialCatalogFetchPreparesBeforeSingleFetchWithoutReplay() throws {
     let source = try runnerSource("CameraVendorRealtimeGalleryService.swift")
     let methodStart = try XCTUnwrap(
       source.range(of: "func fetchInitialCameraCatalog() async throws")?.lowerBound
@@ -28855,10 +28929,8 @@ extension RunnerTests {
     XCTAssertTrue(method.contains("applyInitialCatalogResponseRevision"))
     XCTAssertTrue(method.contains("activeConnectionPlan = revision.plan"))
     XCTAssertTrue(method.contains("activeStrategySnapshot = revision.strategySnapshot"))
-    XCTAssertLessThan(
-      try XCTUnwrap(runtimeMethod.range(of: "revise: revise")?.lowerBound),
-      try XCTUnwrap(runtimeMethod.range(of: "recover:")?.lowerBound)
-    )
+    XCTAssertTrue(runtimeMethod.contains("prepareCameraVendorLegacyGalleryLoadIfNeeded"))
+    XCTAssertFalse(runtimeMethod.contains("recoverInitialCameraCatalogAfterStoreNotAvailable"))
     XCTAssertEqual(
       method.components(separatedBy: "runExclusiveSessionMutation").count - 1 +
         runtimeMethod.components(separatedBy: "runExclusiveSessionMutation").count - 1,
