@@ -3952,6 +3952,21 @@ final class RunnerTests: XCTestCase {
     XCTAssertTrue(source.contains("scheduleConnectedApplicationInfoTimeout"))
   }
 
+  func testReconnectHandshakeResetsConnectedApplicationInfoState() throws {
+    let source = try runnerSource("CameraVendorBluetoothService.swift")
+    let start = try XCTUnwrap(
+      source.range(of: "private func resetHandshakeStateForReconnect()")?.lowerBound
+    )
+    let end = try XCTUnwrap(
+      source.range(of: "\n  private func makeCoreRememberedRecord", range: start..<source.endIndex)?.lowerBound
+    )
+    let body = source[start..<end]
+    XCTAssertTrue(body.contains("connectedApplicationInfoCharacteristic = nil"))
+    XCTAssertTrue(body.contains("connectedApplicationInfoTimeoutWorkItem?.cancel()"))
+    XCTAssertTrue(body.contains("connectedApplicationInfoWriteGeneration = nil"))
+    XCTAssertTrue(body.contains("completedConnectedApplicationInfoGeneration = nil"))
+  }
+
   func testEncryptionRecoveryRetriesOnlyOnce() {
     var policy = CameraVendorEncryptionRecoveryPolicy()
 

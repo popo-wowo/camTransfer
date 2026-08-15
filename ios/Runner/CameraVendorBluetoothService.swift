@@ -4651,6 +4651,7 @@ final class CameraVendorBluetoothService: NSObject {
     pairingCharacteristic = nil
     connectedDeviceNameCharacteristic = nil
     connectedDeviceIdentificationCharacteristic = nil
+    connectedApplicationInfoCharacteristic = nil
     discoveredCharacteristicsByUUID = [:]
     notifiableCharacteristics = []
     probedCharacteristics = [:]
@@ -4690,6 +4691,10 @@ final class CameraVendorBluetoothService: NSObject {
     hasUserInitiatedTransfer = false
     secureHandshakePhase = .idle
     secureIdentificationNumberAlreadyPaired = false
+    connectedApplicationInfoTimeoutWorkItem?.cancel()
+    connectedApplicationInfoTimeoutWorkItem = nil
+    connectedApplicationInfoWriteGeneration = nil
+    completedConnectedApplicationInfoGeneration = nil
     postHandshakeProbeTimeoutWorkItem?.cancel()
     transferActivationTimeoutWorkItem?.cancel()
   }
