@@ -97,6 +97,10 @@ enum CameraTransportFailureDispositionPolicy {
       if nsError.domain == "CameraVendorPtpSocket" {
         return .sessionTerminal
       }
+      if nsError.domain == "CameraVendorPtpSession",
+         nsError.code == 15 {
+        return .sessionTerminal
+      }
       if nsError.domain == NSURLErrorDomain,
          terminalURLErrorCodes.contains(nsError.code) {
         return .sessionTerminal

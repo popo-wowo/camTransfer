@@ -48,6 +48,19 @@ final class RunnerTests: XCTestCase {
     XCTAssertTrue(failure.invalidatesPhysicalSession)
   }
 
+  func testTransportFailureDispositionTreatsPtpFramingUnknownAsSessionTerminal() {
+    let error = NSError(
+      domain: "CameraVendorPtpSession",
+      code: 15,
+      userInfo: [NSLocalizedDescriptionKey: "PTP response transaction 181 does not match request transaction 184"]
+    )
+
+    XCTAssertEqual(
+      CameraTransportFailureDispositionPolicy.disposition(for: error, context: .catalog),
+      .sessionTerminal
+    )
+  }
+
   func testWiredCameraImportPolicyAcceptsPhotosAndVideos() {
     XCTAssertTrue(WiredCameraImportPolicy.isSupportedMedia(filename: "DSCF0001.JPG", uti: nil))
     XCTAssertTrue(WiredCameraImportPolicy.isSupportedMedia(filename: "DSCF0002.RAF", uti: nil))
