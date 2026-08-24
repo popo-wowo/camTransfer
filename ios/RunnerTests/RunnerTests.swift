@@ -21991,10 +21991,10 @@ final class RunnerTests: XCTestCase {
     runtime.send(.transportFailed(NSError(domain: "CameraVendorPtpSession", code: 15)))
     for _ in 0..<100 where runtime.presentation.phase != .recovering { await Task.yield() }
     runtime.send(.enterGallery(identity))
-    for _ in 0..<1_000 where transport.initialCatalogRequestCount < 2 { await Task.yield() }
+    for _ in 0..<1_000 where runtime.presentation.phase != .galleryReady { await Task.yield() }
 
     XCTAssertEqual(transport.initialCatalogRequestCount, 2)
-    XCTAssertEqual(transport.capturedCatalogQueries.map(\.label), ["format-raw"])
+    XCTAssertEqual(runtime.presentation.catalog.intent, .all)
   }
 
   @MainActor
