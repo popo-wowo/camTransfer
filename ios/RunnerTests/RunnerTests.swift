@@ -7912,6 +7912,52 @@ final class RunnerTests: XCTestCase {
     )
   }
 
+  func testPriorityDownloadReconnectRequiresCameraNetworkEvidenceBeforePtpInit() {
+    XCTAssertFalse(
+      CameraVendorPriorityDownloadReconnectPolicy.shouldStartPtpInit(
+        currentIP: nil,
+        isPtpReachable: false
+      )
+    )
+    XCTAssertFalse(
+      CameraVendorPriorityDownloadReconnectPolicy.shouldStartPtpInit(
+        currentIP: "192.168.3.28",
+        isPtpReachable: true
+      )
+    )
+    XCTAssertTrue(
+      CameraVendorPriorityDownloadReconnectPolicy.shouldStartPtpInit(
+        currentIP: "192.168.0.125",
+        isPtpReachable: true
+      )
+    )
+  }
+
+  func testHomePassiveResetAndProbeStayBlockedWhileConnectionWorkerIsActive() {
+    XCTAssertFalse(
+      NativeHomePassiveConnectionResetPolicy.shouldResetOnViewWillAppear(
+        isRootHome: true,
+        isEnteringGalleryFromRememberedCamera: false,
+        isConnectionWorkerActive: true
+      )
+    )
+    XCTAssertFalse(
+      NativeHomePairingProbePolicy.shouldBegin(
+        hasRememberedCamera: true,
+        isConnectionWorkerActive: true,
+        hasPairingProbeTask: false,
+        hasReturnedFromCameraSession: false
+      )
+    )
+  }
+
+  func testPairingProbeValidationServiceUnavailableIsNotOffline() {
+    XCTAssertEqual(
+      CameraVendorPairingProbeResult.validationUnavailable(reason: "validation-service-not-found"),
+      .validationUnavailable(reason: "validation-service-not-found")
+    )
+  }
+
   func testGalleryFilterRequestUsesDistinctRequestSuccessAndFailureEvents() {
     XCTAssertEqual(NativeGalleryFilterDiagnosticPolicy.requestEvent, "GALLERY_FILTER_UI_REQUESTED")
     XCTAssertEqual(NativeGalleryFilterDiagnosticPolicy.successEvent, "GALLERY_FILTER_APPLIED")

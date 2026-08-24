@@ -383,10 +383,15 @@ final class CameraVendorPtpSession {
   func configureTransferProfile(cameraSerialNumber: String?) {
     transferCapabilitySerialNumber = cameraSerialNumber
   }
+
+  func setPriorityDownloadReconnectClientIP(_ clientIP: String?) {
+    priorityDownloadReconnectClientIP = clientIP
+  }
   private var operationTransport: CameraVendorPtpOperationTransport = .standardPtpIp
   private var diagnosticHandler: ((String) -> Void)?
   private var connectedHost = CameraVendorPtpConstants.defaultHost
   private var connectedClientName = CameraVendorHandshakeIdentityPolicy.fallbackConnectedDeviceName
+  private var priorityDownloadReconnectClientIP: String?
   private var connectedPurpose: CameraVendorPtpSessionPurpose = .gallery
   private var priorityDownloadInterruptionGeneration: UInt64 = 0
   private var transferModeCoordinator = CameraVendorTransferModeCoordinator()
@@ -448,6 +453,7 @@ final class CameraVendorPtpSession {
   func connectTransportAndOpenSession(
     host: String = CameraVendorPtpConstants.defaultHost,
     clientName: String = CameraVendorHandshakeIdentityPolicy.fallbackConnectedDeviceName,
+    clientIP: String? = nil,
     commandConnectTimeout: TimeInterval = CameraVendorPtpConnectionStartupPolicy.commandConnectTimeoutSeconds,
     diagnosticHandler: ((String) -> Void)? = nil,
     purpose: CameraVendorPtpSessionPurpose = .gallery,
@@ -492,7 +498,8 @@ final class CameraVendorPtpSession {
     let initResult = try performInitHandshake(
       host: host,
       clientName: clientName,
-      strategy: ptpInitDefinition
+      strategy: ptpInitDefinition,
+      clientIP: clientIP
     )
     connectionNumber = initResult.connectionNumber
     operationTransport = initResult.operationTransport
@@ -690,6 +697,17 @@ final class CameraVendorPtpSession {
 
   func ensureConnectedForPriorityDownload() throws {
     guard !isConnected else { return }
+    guard let reconnectClientIP = priorityDownloadReconnectClientIP,
+          CameraVendorPriorityDownloadReconnectPolicy.shouldStartPtpInit(
+            currentIP: reconnectClientIP,
+            isPtpReachable: true
+          ) else {
+      throw NSError(
+        domain: "CameraVendorPtpSession",
+        code: 16,
+        userInfo: [NSLocalizedDescriptionKey: "未取得已验证的相机 Wi‑Fi IPv4，禁止发送 PTP INIT"]
+      )
+    }
     guard let ptpInitDefinition = boundPtpInitDefinition,
           let negotiationDefinition = boundNegotiationDefinition,
           let galleryBootstrapDefinition = boundGalleryBootstrapDefinition else {
@@ -717,6 +735,7 @@ final class CameraVendorPtpSession {
         try connectTransportAndOpenSession(
           host: connectedHost,
           clientName: connectedClientName,
+          clientIP: reconnectClientIP,
           diagnosticHandler: reconnectDiagnosticHandler,
           purpose: connectedPurpose,
           ptpInitDefinition: ptpInitDefinition
@@ -2098,17 +2117,18 @@ final class CameraVendorPtpSession {
   private func performInitHandshake(
     host: String,
     clientName: String,
-    strategy: PtpInitStrategyDefinition
+    strategy: PtpInitStrategyDefinition,
+    clientIP: String? = nil
   ) throws -> (connectionNumber: UInt32, operationTransport: CameraVendorPtpOperationTransport) {
-    let clientIP = getWifiIPv4Address()
-    report("客户端 IP: \(clientIP ?? "nil")")
+    let resolvedClientIP = clientIP ?? getWifiIPv4Address()
+    report("客户端 IP: \(resolvedClientIP ?? "nil")")
     report("PTP 客户端名称: \(clientName)")
-    report("[OBS] PTP_INIT_CONTEXT clientIP=\(clientIP ?? "nil") clientName=\(clientName)")
+    report("[OBS] PTP_INIT_CONTEXT clientIP=\(resolvedClientIP ?? "nil") clientName=\(clientName)")
 
     let attempts = CameraVendorOfficialGalleryPtpInitPolicy.initAttempts(
       packetVariants: strategy.packetVariants,
       clientName: clientName,
-      clientIP: clientIP,
+      clientIP: resolvedClientIP,
       timeout: strategy.retryTiming.perPacketAckTimeoutSeconds
     )
 

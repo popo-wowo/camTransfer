@@ -86,6 +86,15 @@ enum CameraVendorWifiAssociationReadinessPolicy {
   }
 }
 
+enum CameraVendorPriorityDownloadReconnectPolicy {
+  static func shouldStartPtpInit(
+    currentIP: String?,
+    isPtpReachable: Bool
+  ) -> Bool {
+    CameraVendorPtpConstants.isCameraWifiIPv4Address(currentIP) && isPtpReachable
+  }
+}
+
 enum CameraVendorWifiJoinDiagnostics {
   static let shouldRemoveExistingConfigurationBeforeJoin = false
   static let applyCallbackTimeoutSeconds: TimeInterval = 8

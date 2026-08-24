@@ -1909,7 +1909,42 @@ final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, C
     try await ptpRuntime.performBackgroundKeepAlive()
   }
 
+  private func preparePriorityDownloadReconnectNetworkIfNeeded() async throws {
+    guard !session.isSessionConnected else { return }
+    let currentSSID = await CameraVendorCameraWifiConnector.fetchCurrentSSID()
+    let currentIP = getWifiIPv4Address()
+    let isPtpReachable = await Task.detached(priority: .utility) {
+      CameraVendorCameraPtpReachabilityProbe.isReachable()
+    }.value
+    let expectedSSIDs = Set(wifiConfigurations.map(\.ssid))
+    let ssidMatches = currentSSID.map { expectedSSIDs.contains($0) } ?? false
+    report(
+      "[OBS] WIFI_RECONNECT_PREFLIGHT_SAMPLE ssid=\(currentSSID ?? "nil") " +
+      "ip=\(currentIP ?? "nil") ssidMatchesCamera=\(ssidMatches) ptpReachable=\(isPtpReachable)"
+    )
+    guard ssidMatches,
+          CameraVendorPriorityDownloadReconnectPolicy.shouldStartPtpInit(
+            currentIP: currentIP,
+            isPtpReachable: isPtpReachable
+          ) else {
+      report(
+        "[OBS] WIFI_RECONNECT_PREFLIGHT_FAILED reason=network-not-confirmed " +
+        "ssid=\(currentSSID ?? "nil") ip=\(currentIP ?? "nil")"
+      )
+      throw NSError(
+        domain: "CameraVendorRealtimeGalleryService",
+        code: 32,
+        userInfo: [NSLocalizedDescriptionKey: "相机 Wi‑Fi/IP 未确认，已阻止优先下载 PTP 重连"]
+      )
+    }
+    session.setPriorityDownloadReconnectClientIP(currentIP)
+    report(
+      "[OBS] WIFI_RECONNECT_PREFLIGHT_READY ssid=\(currentSSID ?? "nil") ip=\(currentIP ?? "nil")"
+    )
+  }
+
   func downloadOriginal(for handle: Int) async throws -> Data {
+    try await preparePriorityDownloadReconnectNetworkIfNeeded()
     let expectedSize = objectInfoCache[handle]?.compressedSize.nonzero
     return try await ptpRuntime.downloadOriginal(for: handle, expectedSize: expectedSize)
   }
@@ -1918,6 +1953,7 @@ final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, C
     for handle: Int,
     mode: CameraVendorTransferDownloadMode
   ) async throws -> CameraVendorDownloadedPhotoData {
+    try await preparePriorityDownloadReconnectNetworkIfNeeded()
     let cachedInfo = objectInfoCache[handle]?.reliableDownloadMetadata
     let result = try await ptpRuntime.downloadOriginalData(
       for: handle,
@@ -1941,6 +1977,7 @@ final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, C
     for handle: Int,
     mode: CameraVendorTransferDownloadMode
   ) async throws -> CameraVendorDownloadedFile {
+    try await preparePriorityDownloadReconnectNetworkIfNeeded()
     let cachedInfo = objectInfoCache[handle]?.reliableDownloadMetadata
     let result = try await ptpRuntime.downloadOriginalFile(
       for: handle,
