@@ -1362,7 +1362,7 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     filterState.downloadScope = downloadScopeChips.selectedID == "notDownloaded" ? .notDownloaded : .all
 
     appendDiagnostic(
-      "[OBS] GALLERY_FILTER_UI_APPLIED " +
+      "[OBS] \(NativeGalleryFilterDiagnosticPolicy.requestEvent) " +
       "date=\(dateChips.selectedID ?? "nil") " +
       "formats=\(formatChips.selectedIDs.sorted()) " +
       "sort=\(sortChips.selectedID ?? "nil")"
@@ -2102,6 +2102,15 @@ final class NativeGalleryViewController: UIViewController, UIGestureRecognizerDe
     let isCatalogReplacement = previousPresentation.generation != presentation.generation ||
       previousPresentation.intent != presentation.intent
     galleryRenderState = nextRenderState
+    if case .ready = presentation.state,
+       presentation.intent != previousPresentation.intent {
+      appendDiagnostic("[OBS] \(NativeGalleryFilterDiagnosticPolicy.successEvent) " +
+        "formats=\(presentation.intent.rule.formats)")
+    } else if case .failed = presentation.state,
+              presentation.intent != previousPresentation.intent {
+      appendDiagnostic("[OBS] \(NativeGalleryFilterDiagnosticPolicy.failureEvent) " +
+        "formats=\(presentation.intent.rule.formats)")
+    }
     let sort: NativeGallerySortMode
     switch presentation.intent.sort {
     case .newest: sort = .newest
@@ -2413,7 +2422,10 @@ extension NativeGalleryViewController {
     if let errorMessage = catalogPresentation.errorMessage {
       galleryHeaderCountLabel.isHidden = true
       galleryStatusRow.isHidden = false
-      copyLabel.text = "加载失败：\(errorMessage)"
+      copyLabel.text = NativeGalleryFilterFailureCopy.statusText(
+        errorMessage: errorMessage,
+        hasRetainedItems: !catalogPresentation.items.isEmpty
+      )
       copyLabel.textColor = NativeLuxuryTheme.secondaryInk
       refreshFilterSummary()
       refreshBottomDownloadBar()

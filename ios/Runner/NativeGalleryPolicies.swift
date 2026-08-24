@@ -572,6 +572,20 @@ struct NativeGalleryFilterState: Equatable {
   }
 }
 
+enum NativeGalleryFilterDiagnosticPolicy {
+  static let requestEvent = "GALLERY_FILTER_UI_REQUESTED"
+  static let successEvent = "GALLERY_FILTER_APPLIED"
+  static let failureEvent = "GALLERY_FILTER_FAILED"
+}
+
+enum NativeGalleryFilterFailureCopy {
+  static func statusText(errorMessage: String, hasRetainedItems: Bool) -> String {
+    hasRetainedItems
+      ? "筛选失败，仍显示上一次结果：\(errorMessage)"
+      : "加载失败：\(errorMessage)"
+  }
+}
+
 extension NativeGalleryFilterState {
   var sortIntent: CameraGallerySortIntent {
     switch sort {
