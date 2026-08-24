@@ -1663,28 +1663,31 @@ final class NativeConnectViewController: UIViewController {
       updateRememberedCameraCard()
       return
     }
-    pairingProbeTask?.cancel()
-    pairingProbeTask = nil
     rememberedConnectionPreparationTask?.cancel()
     isEnteringGalleryFromRememberedCamera = true
     showConnectingOverlay(deviceName: record.identity.displayName)
     rememberedConnectionPreparationTask = Task { @MainActor [weak self] in
       guard let self else { return }
-      let didFinishProbeTeardown = await self.cameraSessionRuntime
-        .cancelPairingProbeAndWait(reason: "user-initiated-connect")
+      let probeDecision = CameraVendorPairingProbeUserActionDecision.resolve(
+        hasProbeTask: self.pairingProbeTask != nil,
+        hasPreconnectedProbe: self.cameraSessionRuntime.hasPreconnectedProbe,
+        preconnectedPeripheralID: self.cameraSessionRuntime.preconnectedProbePeripheralID,
+        requestedPeripheralID: record.peripheralID
+      )
+      let probeResult: CameraVendorPairingProbeResult?
+      switch probeDecision {
+      case .reusePreconnectedProbe:
+        probeResult = .online
+      case .waitForProbe:
+        probeResult = await self.cameraSessionRuntime
+          .waitForPairingProbeCompletion(peripheralID: record.peripheralID)
+      case .startNormalConnection:
+        probeResult = nil
+      }
       guard !Task.isCancelled else { return }
       self.rememberedConnectionPreparationTask = nil
-      guard didFinishProbeTeardown else {
-        self.handleConnectFlowFailure(
-          title: "进入相机相册失败",
-          error: IOSCameraConnectionIssue(
-            step: .reconnectPairedBle,
-            reason: "等待上一条 BLE 探测连接断开超时"
-          ),
-          hidesOverlay: true,
-          resetsRememberedFlow: true
-        )
-        return
+      if probeResult == .online {
+        CameraVendorFileLogger.log("[PAIRING_PROBE_UI_HANDOFF] action=wait-complete-reuse peripheralID=\(record.peripheralID)")
       }
       self.startRememberedCameraConnection(record, purpose: purpose)
     }

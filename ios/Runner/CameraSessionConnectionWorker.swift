@@ -31,6 +31,8 @@ protocol CameraSessionRuntimeConnectionControlling: AnyObject {
   func forgetRememberedCamera(peripheralID: UUID)
   func startScan()
   func probePairing(peripheralID: UUID) async -> CameraVendorPairingProbeResult
+  func waitForPairingProbeCompletion(peripheralID: UUID) async -> CameraVendorPairingProbeResult?
+  func adoptPreconnectedProbe(peripheralID: UUID) -> Bool
   var hasPreconnectedProbe: Bool { get }
   var preconnectedProbePeripheralID: UUID? { get }
   func cancelPairingProbe(reason: String)

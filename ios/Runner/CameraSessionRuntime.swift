@@ -664,6 +664,14 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
     await connectionController?.probePairing(peripheralID: peripheralID) ?? .bluetoothOff
   }
 
+  func waitForPairingProbeCompletion(peripheralID: UUID) async -> CameraVendorPairingProbeResult? {
+    await connectionController?.waitForPairingProbeCompletion(peripheralID: peripheralID)
+  }
+
+  func adoptPreconnectedProbe(peripheralID: UUID) -> Bool {
+    connectionController?.adoptPreconnectedProbe(peripheralID: peripheralID) ?? false
+  }
+
   var hasPreconnectedProbe: Bool {
     connectionController?.hasPreconnectedProbe ?? false
   }

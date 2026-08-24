@@ -92,3 +92,38 @@ enum CameraVendorPairingProbeState: Equatable {
     }
   }
 }
+
+enum CameraVendorPairingProbeUserActionDecision: Equatable {
+  case waitForProbe
+  case reusePreconnectedProbe
+  case startNormalConnection
+
+  static func resolve(
+    hasProbeTask: Bool,
+    hasPreconnectedProbe: Bool,
+    preconnectedPeripheralID: UUID?,
+    requestedPeripheralID: UUID
+  ) -> Self {
+    if hasPreconnectedProbe, preconnectedPeripheralID == requestedPeripheralID {
+      return .reusePreconnectedProbe
+    }
+    if hasProbeTask {
+      return .waitForProbe
+    }
+    return .startNormalConnection
+  }
+}
+
+enum CameraVendorPairingProbeWaiterPolicy {
+  static func shouldResumeImmediately(
+    result: CameraVendorPairingProbeResult,
+    hasPeripheralTeardown: Bool
+  ) -> Bool {
+    switch result {
+    case .online:
+      return true
+    case .pairingInvalid, .offline, .bluetoothOff:
+      return !hasPeripheralTeardown
+    }
+  }
+}

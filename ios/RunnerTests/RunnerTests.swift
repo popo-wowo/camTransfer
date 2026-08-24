@@ -7871,6 +7871,65 @@ final class RunnerTests: XCTestCase {
     )
   }
 
+  func testPairingProbeUserActionWaitsForRunningProbeBeforeStartingConnection() {
+    let requestedID = UUID()
+    XCTAssertEqual(
+      CameraVendorPairingProbeUserActionDecision.resolve(
+        hasProbeTask: true,
+        hasPreconnectedProbe: false,
+        preconnectedPeripheralID: nil,
+        requestedPeripheralID: requestedID
+      ),
+      .waitForProbe
+    )
+  }
+
+  func testPairingProbeUserActionReusesMatchingPreconnectedProbe() {
+    let requestedID = UUID()
+    XCTAssertEqual(
+      CameraVendorPairingProbeUserActionDecision.resolve(
+        hasProbeTask: false,
+        hasPreconnectedProbe: true,
+        preconnectedPeripheralID: requestedID,
+        requestedPeripheralID: requestedID
+      ),
+      .reusePreconnectedProbe
+    )
+  }
+
+  func testPairingProbeWaiterResumesImmediatelyWhenOfflineHasNoPeripheralTeardown() {
+    XCTAssertTrue(
+      CameraVendorPairingProbeWaiterPolicy.shouldResumeImmediately(
+        result: .offline,
+        hasPeripheralTeardown: false
+      )
+    )
+    XCTAssertFalse(
+      CameraVendorPairingProbeWaiterPolicy.shouldResumeImmediately(
+        result: .offline,
+        hasPeripheralTeardown: true
+      )
+    )
+  }
+
+  func testGalleryFilterRequestUsesDistinctRequestSuccessAndFailureEvents() {
+    XCTAssertEqual(NativeGalleryFilterDiagnosticPolicy.requestEvent, "GALLERY_FILTER_UI_REQUESTED")
+    XCTAssertEqual(NativeGalleryFilterDiagnosticPolicy.successEvent, "GALLERY_FILTER_APPLIED")
+    XCTAssertEqual(NativeGalleryFilterDiagnosticPolicy.failureEvent, "GALLERY_FILTER_FAILED")
+  }
+
+  func testGalleryFilterFailureCopyExplainsRetainedCatalog() {
+    XCTAssertEqual(
+      NativeGalleryFilterFailureCopy.statusText(errorMessage: "PTP 查询失败", hasRetainedItems: true),
+      "筛选失败，仍显示上一次结果：PTP 查询失败"
+    )
+    XCTAssertEqual(
+      NativeGalleryFilterFailureCopy.statusText(errorMessage: "PTP 查询失败", hasRetainedItems: false),
+      "加载失败：PTP 查询失败"
+    )
+  }
+
+
   func testSpecifiedObjectEmptySnapshotRecoveryRetriesOnlyEmptyFirstSnapshot() {
     XCTAssertTrue(
       CameraVendorSpecifiedObjectEmptySnapshotRecoveryPolicy.shouldRetry(
@@ -24519,6 +24578,8 @@ private final class CameraSessionRuntimeHomeCommandSpy: CameraSessionRuntimeConn
     events.append(.forgetRemembered)
   }
   func probePairing(peripheralID _: UUID) async -> CameraVendorPairingProbeResult { .bluetoothOff }
+  func waitForPairingProbeCompletion(peripheralID _: UUID) async -> CameraVendorPairingProbeResult? { nil }
+  func adoptPreconnectedProbe(peripheralID _: UUID) -> Bool { false }
   func cancelPairingProbe(reason _: String) {}
   func cancelPairingProbeAndWait(reason _: String) async -> Bool { true }
 }

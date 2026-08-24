@@ -230,6 +230,14 @@ final class CameraVendorConnectFlowBridge: NSObject, IOSCameraConnectFlowRuntime
     await service.probePairing(peripheralID: peripheralID)
   }
 
+  func waitForPairingProbeCompletion(peripheralID: UUID) async -> CameraVendorPairingProbeResult? {
+    await service.waitForPairingProbeCompletion(peripheralID: peripheralID)
+  }
+
+  func adoptPreconnectedProbe(peripheralID: UUID) -> Bool {
+    service.adoptPreconnectedProbe(peripheralID: peripheralID)
+  }
+
   var hasPreconnectedProbe: Bool {
     service.hasPreconnectedProbe
   }
