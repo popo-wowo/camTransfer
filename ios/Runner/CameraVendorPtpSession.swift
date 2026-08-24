@@ -7,6 +7,29 @@ enum CameraVendorPtpOperationTransport {
   case cameraVendorLegacy
 }
 
+enum CameraPtpCommandLaneState: Equatable {
+  case available
+  case framingUnknown
+
+  var allowsCommand: Bool {
+    self == .available
+  }
+
+  func after(_ failure: CameraPtpFramingFailure) -> Self {
+    failure.invalidatesPhysicalSession ? .framingUnknown : self
+  }
+}
+
+enum CameraPtpFramingFailure: Equatable {
+  case legacyPacketLength(UInt32)
+  case responseTransactionMismatch(expected: UInt32, actual: UInt32)
+  case packetBoundaryUnknown
+
+  var invalidatesPhysicalSession: Bool {
+    true
+  }
+}
+
 enum CameraVendorPtpSessionPurpose {
   case gallery
   case reservedReceiveDiagnostic
@@ -332,6 +355,7 @@ final class CameraVendorPtpSession {
   private var connectionNumber: UInt32 = 0
   private var transactionID: UInt32 = 0
   private var isConnected = false
+  private var commandLaneState: CameraPtpCommandLaneState = .available
   private var transferCapabilitySerialNumber: String?
   private let originalTransferCapabilityStore = CameraVendorOriginalTransferCapabilityStore()
   private let activeDownloadCancellation = CameraVendorPtpDownloadCancellation()
@@ -407,6 +431,16 @@ final class CameraVendorPtpSession {
   private var boundGalleryBootstrapDefinition: GalleryBootstrapStrategyDefinition?
   private var boundConnectionPlanID: CameraConnectionPlanID?
 
+  private func invalidatePhysicalSessionForFramingFailure() {
+    commandLaneState = .framingUnknown
+    commandSocket.close()
+    eventSocket.close()
+    isConnected = false
+    didConfirmGalleryMode = false
+    didPrepareLegacyGalleryLoad = false
+    transferModeCoordinator.invalidate()
+  }
+
   var hasExplicitGalleryModeEvidence: Bool {
     didConfirmGalleryMode
   }
@@ -428,6 +462,7 @@ final class CameraVendorPtpSession {
     boundConnectionPlanID = nil
 
     disconnect()
+    commandLaneState = .available
     transactionID = 0
     didConfirmGalleryMode = false
     didPrepareLegacyGalleryLoad = false
@@ -3600,7 +3635,13 @@ final class CameraVendorPtpSession {
     parameters: [UInt32] = []
   ) throws -> CameraVendorOperationResponse {
     try withSerializedCommand {
+      guard commandLaneState.allowsCommand else {
+        throw NSError(domain: "CameraVendorPtpSession", code: 14, userInfo: [
+          NSLocalizedDescriptionKey: "PTP command lane framing is unknown"
+        ])
+      }
       transactionID += 1
+      let expectedTransactionID = transactionID
       let packet: Data
       switch operationTransport {
       case .standardPtpIp:
@@ -3623,7 +3664,10 @@ final class CameraVendorPtpSession {
         packet: packet
       )
       try commandSocket.write(packet)
-      let response = try readCameraVendorOperationResponse(validatesOK: false)
+      let response = try readCameraVendorOperationResponse(
+        validatesOK: false,
+        expectedTransactionID: expectedTransactionID
+      )
       reportPtpCommandResponse(operationCode: operationCode, response: response)
       return response
     }
@@ -3635,7 +3679,13 @@ final class CameraVendorPtpSession {
     data: Data
   ) throws -> CameraVendorOperationResponse {
     try withSerializedCommand {
+      guard commandLaneState.allowsCommand else {
+        throw NSError(domain: "CameraVendorPtpSession", code: 14, userInfo: [
+          NSLocalizedDescriptionKey: "PTP command lane framing is unknown"
+        ])
+      }
       transactionID += 1
+      let expectedTransactionID = transactionID
       let commandPacket: Data
       let dataPacket: Data
       switch operationTransport {
@@ -3680,7 +3730,9 @@ final class CameraVendorPtpSession {
       )
       try commandSocket.write(commandPacket)
       try commandSocket.write(dataPacket)
-      let response = try readCameraVendorOperationResponse()
+      let response = try readCameraVendorOperationResponse(
+        expectedTransactionID: expectedTransactionID
+      )
       reportPtpCommandResponse(operationCode: operationCode, response: response)
       return response
     }
@@ -4077,7 +4129,8 @@ final class CameraVendorPtpSession {
   }
 
   private func readCameraVendorOperationResponse(
-    validatesOK: Bool = true
+    validatesOK: Bool = true,
+    expectedTransactionID: UInt32? = nil
   ) throws -> CameraVendorOperationResponse {
     let packet = try readOperationPacket(timeout: 15)
     guard packet.type == CameraVendorPtpPacketType.operationResponse else {
@@ -4086,6 +4139,12 @@ final class CameraVendorPtpSession {
       ])
     }
     let response = try parseOperationResponsePayload(packet.payload)
+    if let expectedTransactionID, response.transactionID != expectedTransactionID {
+      invalidatePhysicalSessionForFramingFailure()
+      throw NSError(domain: "CameraVendorPtpSession", code: 15, userInfo: [
+        NSLocalizedDescriptionKey: "PTP response transaction \(response.transactionID) does not match request transaction \(expectedTransactionID)"
+      ])
+    }
     report("CameraVendor 操作响应: responseCode=0x\(String(response.responseCode, radix: 16)) txnID=\(response.transactionID)")
     if validatesOK {
       try CameraVendorPtpResponsePolicy.validateOK(
@@ -4183,6 +4242,7 @@ final class CameraVendorPtpSession {
     }
     let length = header.withUnsafeBytes { $0.load(as: UInt32.self).littleEndian }
     guard length >= 6 else {
+      invalidatePhysicalSessionForFramingFailure()
       throw NSError(domain: "CameraVendorPtpSession", code: 5, userInfo: [NSLocalizedDescriptionKey: "CameraVendor legacy PTP 包长度异常 \(length)"])
     }
     let payloadLength = Int(length) - 4

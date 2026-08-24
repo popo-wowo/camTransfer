@@ -32,6 +32,22 @@ private actor AsyncTestGate {
 }
 
 final class RunnerTests: XCTestCase {
+  func testPtpCommandLaneFramingFailureEntersUnknownAndRejectsFurtherCommands() {
+    var state = CameraPtpCommandLaneState.available
+
+    state = state.after(.responseTransactionMismatch(expected: 184, actual: 181))
+
+    XCTAssertEqual(state, .framingUnknown)
+    XCTAssertFalse(state.allowsCommand)
+  }
+
+  func testPtpCommandLaneRejectsZeroLengthLegacyFrameAsFramingUnknown() {
+    let failure = CameraPtpFramingFailure.legacyPacketLength(0)
+
+    XCTAssertEqual(failure, .legacyPacketLength(0))
+    XCTAssertTrue(failure.invalidatesPhysicalSession)
+  }
+
   func testWiredCameraImportPolicyAcceptsPhotosAndVideos() {
     XCTAssertTrue(WiredCameraImportPolicy.isSupportedMedia(filename: "DSCF0001.JPG", uti: nil))
     XCTAssertTrue(WiredCameraImportPolicy.isSupportedMedia(filename: "DSCF0002.RAF", uti: nil))
