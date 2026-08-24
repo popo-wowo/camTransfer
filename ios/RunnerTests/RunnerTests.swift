@@ -15987,6 +15987,52 @@ final class RunnerTests: XCTestCase {
   }
 
   @MainActor
+  func testCatalogRuntimeRetainsLastGoodItemsWhenFilterQueryFails() async {
+    let source = CameraGalleryCatalogRuntimeSourceSpy()
+    let initialReady = expectation(description: "initial catalog ready")
+    let failed = expectation(description: "filter failed")
+    var lastPresentation = CameraGalleryPresentation.unavailable
+    let runtime = CameraGalleryCatalogRuntime(
+      source: source,
+      publishPresentation: { presentation in
+        lastPresentation = presentation
+        if case .ready = presentation.state, presentation.intent.format == .all {
+          initialReady.fulfill()
+        }
+        if case .failed = presentation.state, presentation.intent.format == .raw {
+          failed.fulfill()
+        }
+      },
+      reportTransportEvidence: { _ in }
+    )
+
+    await runtime.start(initial: .all)
+    await fulfillment(of: [initialReady], timeout: 1)
+    let previousItems = lastPresentation.items
+    source.catalogError = NSError(
+      domain: "RunnerTests",
+      code: 20,
+      userInfo: [NSLocalizedDescriptionKey: "filter failed"]
+    )
+
+    await runtime.submit(
+      CameraGalleryFilterIntent(
+        date: .all,
+        format: .raw,
+        sort: .newest,
+        downloadStatus: .all
+      ),
+      submissionID: CameraGalleryIntentSubmissionID(rawValue: 1),
+      downloadedHandles: []
+    )
+    await fulfillment(of: [failed], timeout: 1)
+
+    XCTAssertEqual(lastPresentation.items, previousItems)
+    XCTAssertEqual(lastPresentation.entries.map(\.summary.handle), previousItems.map(\.handle))
+    await runtime.cancelAllChildren()
+  }
+
+  @MainActor
   func testCatalogRuntimeDoesNotRestartThumbnailWorkerForSameSnapshotSubsetRefresh() async {
     let source = CameraGalleryCatalogRuntimeSourceSpy()
     source.suspendsChildRequests = true
