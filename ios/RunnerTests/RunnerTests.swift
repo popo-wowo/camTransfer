@@ -21935,6 +21935,69 @@ final class RunnerTests: XCTestCase {
   }
 
   @MainActor
+  func testCameraSessionRuntimeGalleryTransportFailureRequestsFreshRecoveryConnection() async throws {
+    let transport = CameraSessionRuntimeSpy()
+    let connector = CameraSessionRuntimeRecoveryConnectorSpy()
+    let runtime = CameraSessionRuntime(
+      transport: transport,
+      recoveryStore: CameraSessionRuntimeRecoveryStoreSpy(),
+      recoveryConnector: connector
+    )
+    let identity = CameraSessionIdentity(cameraName: "X-M5", peripheralID: UUID())
+    runtime.send(.enterGallery(identity))
+    await waitForRuntimeGalleryReady(runtime)
+
+    runtime.send(.transportFailed(NSError(
+      domain: "CameraVendorPtpSession",
+      code: 15,
+      userInfo: [NSLocalizedDescriptionKey: "PTP response transaction mismatch"]
+    )))
+    for _ in 0..<100 where runtime.presentation.phase != .recovering {
+      await Task.yield()
+    }
+
+    XCTAssertEqual(runtime.presentation.phase, .recovering)
+    XCTAssertEqual(transport.terminateCount, 1)
+    XCTAssertEqual(connector.requestedIdentities.map(\.cameraName), ["X-M5"])
+    XCTAssertFalse(runtime.canAcceptCatalogCommands)
+  }
+
+  @MainActor
+  func testCameraSessionRuntimeRecoveryStartsWithFreshAllCatalog() async throws {
+    let transport = CameraSessionRuntimeSpy()
+    transport.catalogItems = [galleryItem(handle: 1, formatLabel: "JPG")]
+    let runtime = CameraSessionRuntime(
+      transport: transport,
+      recoveryStore: CameraSessionRuntimeRecoveryStoreSpy(),
+      recoveryConnector: CameraSessionRuntimeRecoveryConnectorSpy()
+    )
+    let identity = CameraSessionIdentity(
+      cameraName: "X-M5",
+      peripheralID: UUID(),
+      historyKey: "recovery-all-\(UUID().uuidString)"
+    )
+    runtime.send(.enterGallery(identity))
+    await waitForRuntimeGalleryReady(runtime)
+    runtime.submitGalleryFilter(
+      rule: CameraMediaFilterRule(
+        formats: .selected([.raw]),
+        date: .all,
+        downloadScope: .all
+      ),
+      sort: .newest
+    )
+    await transport.waitForCatalogRequestCount(1)
+
+    runtime.send(.transportFailed(NSError(domain: "CameraVendorPtpSession", code: 15)))
+    for _ in 0..<100 where runtime.presentation.phase != .recovering { await Task.yield() }
+    runtime.send(.enterGallery(identity))
+    for _ in 0..<1_000 where transport.initialCatalogRequestCount < 2 { await Task.yield() }
+
+    XCTAssertEqual(transport.initialCatalogRequestCount, 2)
+    XCTAssertEqual(transport.capturedCatalogQueries.map(\.label), ["format-raw"])
+  }
+
+  @MainActor
   func testCameraSessionRuntimeQuickCancellationDuringTransportFailureCleanupReturnsToGallery() async throws {
     let transport = CameraSessionRuntimeSpy()
     let recoveryConnector = CameraSessionRuntimeRecoveryConnectorSpy()

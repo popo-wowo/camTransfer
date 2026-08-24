@@ -35,6 +35,7 @@ final class CameraGallerySession {
     sessionEpoch: UUID,
     queryEngine: CameraCatalogQueryEngine,
     filterStore: CameraGalleryFilterStateStore = CameraGalleryFilterStateStore(),
+    initialFilterIntent: CameraGalleryFilterIntent? = nil,
     downloadedHandles: @escaping () -> Set<Int>,
     previewCache: NativeGalleryHighDefinitionPreviewCache = NativeGalleryHighDefinitionPreviewCache(),
     fetchPreview: @escaping CameraGalleryHDPreviewPipeline.FetchPreview
@@ -86,7 +87,7 @@ final class CameraGallerySession {
     self.catalogRuntime = catalogRuntime
     self.hdPreviewPipeline = hdPreviewPipeline
     self.previewCache = previewCache
-    filterIntent = filterStore.load(for: identity)
+    filterIntent = initialFilterIntent ?? filterStore.load(for: identity)
     callbacks.owner = self
   }
 

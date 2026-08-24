@@ -195,6 +195,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
   private(set) var galleryCatalogIdentity: CameraGalleryCatalogIdentity?
   private var pendingGalleryActivation: PendingGalleryActivation?
   private var hasRequestedRecoveredConnection = false
+  private var requiresFreshAllCatalog = false
   private var presentationObservers: [UUID: (CameraSessionPresentation) -> Void] = [:]
   private var incrementalCatalogObservers: [UUID: (CameraGalleryPresentation, CameraGalleryIncrementalDelta) -> Void] = [:]
   private var galleryThumbnailViewportRevision: UInt64 = 0
@@ -474,6 +475,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
       source: source,
       sessionEpoch: sessionEpoch,
       queryEngine: queryEngine,
+      initialFilterIntent: requiresFreshAllCatalog ? .all : nil,
       downloadedHandles: { [weak self] in self?.savedDownloadHandles() ?? [] },
       fetchPreview: { [weak self] mediaIdentity in
         guard let self else { throw CancellationError() }
@@ -500,6 +502,7 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
         return
       }
       self.gallerySession = session
+      self.requiresFreshAllCatalog = false
       session.onTransportFailure = { [weak self] failure in
         guard failure.provesTransportLost,
               self?.catalogSessionID == sessionID else { return }
@@ -1028,9 +1031,20 @@ final class CameraSessionRuntime: CameraSessionRuntimeCommandHandling {
           guard let self,
                 self.catalogSessionID == catalogSessionID,
                 self.activeTransportBinding == transportBinding else { return }
-          self.transport.terminateCameraCommunication(reason: "catalog-transport-lost")
-          self.activeTransportBinding = nil
-          self.isCatalogTransportUsable = false
+          let terminationTask = self.beginCatalogSessionTermination(
+            reason: "catalog-transport-lost"
+          )
+          await terminationTask.value
+          guard self.identity != nil else { return }
+          self.presentation = CameraSessionPresentation(
+            phase: .recovering,
+            queuedHandles: [],
+            inFlightHandle: nil,
+            catalog: self.presentation.catalog
+          )
+          self.requiresFreshAllCatalog = true
+          self.requestRecoveredConnectionIfNeeded()
+          self.publishPresentation()
         }
       }
 
