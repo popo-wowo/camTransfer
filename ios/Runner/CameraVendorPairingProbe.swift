@@ -9,6 +9,8 @@ enum CameraVendorPairingProbeResult: Equatable {
   case pairingInvalid(reason: String)
   /// Camera not discovered within timeout. May be powered off or out of range.
   case offline
+  /// BLE is reachable, but this camera does not expose the probe validation characteristic.
+  case validationUnavailable(reason: String)
   /// iOS Bluetooth is not powered on.
   case bluetoothOff
 }
@@ -122,7 +124,7 @@ enum CameraVendorPairingProbeWaiterPolicy {
     switch result {
     case .online:
       return true
-    case .pairingInvalid, .offline, .bluetoothOff:
+    case .pairingInvalid, .offline, .validationUnavailable, .bluetoothOff:
       return !hasPeripheralTeardown
     }
   }

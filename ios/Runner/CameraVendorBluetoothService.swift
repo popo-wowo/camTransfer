@@ -3753,7 +3753,7 @@ final class CameraVendorBluetoothService: NSObject {
     case .online:
       pairingProbeState = .preconnected(peripheralID: pairingProbePeripheral?.identifier ?? UUID())
       // Keep the peripheral connected for fast gallery entry.
-    case .pairingInvalid, .offline, .bluetoothOff:
+    case .pairingInvalid, .offline, .validationUnavailable, .bluetoothOff:
       if let peripheral = pairingProbePeripheral, pairingProbeState.isActive {
         pairingProbeState = .tearingDown(
           peripheralID: peripheral.identifier,
@@ -6249,7 +6249,10 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
       guard let service = peripheral.services?.first(where: {
         $0.uuid == CameraVendorPairingProbePolicy.validationServiceUUID
       }) else {
-        completePairingProbe(result: .offline, reason: "validation-service-not-found")
+        completePairingProbe(
+          result: .validationUnavailable(reason: "validation-service-not-found"),
+          reason: "validation-service-not-found"
+        )
         return
       }
       pairingProbeState = .readingCharacteristic(peripheralID: probeID)
@@ -6311,7 +6314,10 @@ extension CameraVendorBluetoothService: CBPeripheralDelegate {
       guard let characteristic = service.characteristics?.first(where: {
         $0.uuid == CameraVendorPairingProbePolicy.validationCharacteristicUUID
       }) else {
-        completePairingProbe(result: .offline, reason: "validation-characteristic-not-found")
+        completePairingProbe(
+          result: .validationUnavailable(reason: "validation-characteristic-not-found"),
+          reason: "validation-characteristic-not-found"
+        )
         return
       }
       peripheral.readValue(for: characteristic)

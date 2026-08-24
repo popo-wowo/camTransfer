@@ -292,9 +292,10 @@ enum NativeHomeCameraSearchActionPolicy {
 enum NativeHomePassiveConnectionResetPolicy {
   static func shouldResetOnViewWillAppear(
     isRootHome: Bool,
-    isEnteringGalleryFromRememberedCamera: Bool
+    isEnteringGalleryFromRememberedCamera: Bool,
+    isConnectionWorkerActive: Bool = false
   ) -> Bool {
-    isRootHome && !isEnteringGalleryFromRememberedCamera
+    isRootHome && !isEnteringGalleryFromRememberedCamera && !isConnectionWorkerActive
   }
 }
 
@@ -1049,7 +1050,8 @@ final class NativeConnectViewController: UIViewController {
       && navigationController?.viewControllers.count == 1
     if NativeHomePassiveConnectionResetPolicy.shouldResetOnViewWillAppear(
       isRootHome: isRootHome,
-      isEnteringGalleryFromRememberedCamera: isEnteringGalleryFromRememberedCamera
+      isEnteringGalleryFromRememberedCamera: isEnteringGalleryFromRememberedCamera,
+      isConnectionWorkerActive: cameraSessionRuntime.isConnectionWorkerActive
     ) {
       // We've returned to the home screen; clear stale BLE/PTP flags so the
       // next "Connect" tap is guaranteed to actually start a new attempt.
@@ -1123,6 +1125,9 @@ final class NativeConnectViewController: UIViewController {
         self.updateRememberedCameraCard()
       case .offline:
         // Camera not in range — no action needed, card remains as-is.
+        self.updateRememberedCameraCard()
+      case .validationUnavailable(let reason):
+        CameraVendorFileLogger.log("[PAIRING_PROBE_NOT_APPLICABLE] reason=\(reason)")
         self.updateRememberedCameraCard()
       case .bluetoothOff:
         // Bluetooth is off — no action, system will prompt if needed.

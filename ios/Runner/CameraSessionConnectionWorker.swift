@@ -163,8 +163,6 @@ final class CameraSessionRuntimeConnectionWorker {
 
   private func cancelTaskOnly() {
     activeTask?.cancel()
-    activeTask = nil
-    activeTaskID = nil
   }
 
   private func cancelActiveTaskForSupersedingConnection(reason: String) {
