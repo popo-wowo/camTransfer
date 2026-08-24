@@ -1,0 +1,24 @@
+ios/RunnerTests/RunnerTests.swift
+  493f25a8d6bb65d2 21994,21997
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "121b1a5e223586720e09bf9e8ab27b56867628f7",
+  "prompts": {
+    "493f25a8d6bb65d2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0340a-e7b4-7c90-9729-8b83cf26b39f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 2,
+      "accepted_lines": 2,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/b72007041fe10b368540704402ab330b3f0daeeb99fdd7801da4bfbebaa9bd0c"
+    }
+  }
+}
