@@ -26,6 +26,43 @@ main 基线
   -> 再单独评估动态协议架构
 ```
 
+## 1.1 本轮范围：两个目标，两个阶段
+
+本轮不是“修 Bug 或做架构重构”二选一，而是按风险顺序分成两个目标：
+
+### 目标 A：必须解决的当前 Bug
+
+以下事项是本轮的强制交付范围，因为它们已经被 TestFlight 19 的同一会话日志直接证明：
+
+1. `legacy PTP 包长度异常 0` 后仍继续使用旧 command lane；
+2. `PTP response transaction 181 does not match request transaction 184` 的错帧扩散；
+3. 筛选命令与缩略图/metadata 命令并发读写同一 PTP socket；
+4. 筛选失败被发布成 `items=0`，把传输失败伪装成“没有该格式”；
+5. 旧 session、旧 D621 reference、旧异步结果在新筛选或恢复后继续生效；
+6. 错帧后没有闭合到 fresh PTP session、fresh ALL Catalog 和新 generation 的恢复路径。
+
+目标 A 的验收标准是：JPG、HEIF、RAW 的 ALL/显示/下载原有成功路径无回归；筛选失败不再出现假空目录；错帧后旧 session 不再接收新命令，并能恢复到新的 ALL Catalog。
+
+### 目标 B：只实施确定性、直接支撑稳定性的架构优化
+
+架构优化只允许满足三个条件：有当前日志或代码证据；能直接降低目标 A 的复发概率；可以用单元测试、构建和真机矩阵验证。按此标准，本轮只保留以下七项边界：
+
+| 架构边界 | 为什么必须 | 解决的问题 | 回归风险 | 验收方式 |
+|---|---|---|---|---|
+| 单一 PTP Command Lane owner | 日志已证明共享 socket 发生错帧；多个任务各自读写无法证明帧归属 | transaction mismatch、长度 0 后继续读写 | 串行化可能降低吞吐 | 并发筛选/缩略图测试；真机连续筛选 |
+| `CameraSessionRuntime` 作为物理 session 唯一 owner | 错帧后必须统一关闭 socket、重建 session；不能由 UI 或子任务各自重连 | 旧 session 复用、重复重连 | 恢复路径未闭合会回到 Gallery | session 生命周期测试；fresh ALL Catalog 真机验收 |
+| `CameraGalleryCatalogRuntime` 作为 Catalog transaction/generation 唯一 owner | 筛选失败发布空目录说明查询和展示状态边界混淆 | 旧查询覆盖新查询、错误 items=0 | 需要补充显式 pending/failed 状态 | query 状态测试；筛选失败保留旧目录 |
+| session/generation/snapshot identity fencing | 缩略图、metadata、preview 是异步结果，必须证明归属 | 旧 generation 结果污染当前 UI/cache | 丢弃过严可能少显示一张图 | stale-result 单元测试；真机切换筛选 |
+| UI 只提交 intent，不直接控制协议 | UI 层取消/刷新不能安全管理 PTP socket 和 session | 筛选与协议重启耦合 | 需要适配现有回调 | UI intent 测试；不触发额外 BLE/Wi-Fi/PTP 重启 |
+| 失败状态与空结果状态分离 | 日志已证明失败被投影成 `items=0` | 用户误判格式不支持/照片不存在 | 新状态需要 UI 文案和埋点 | 状态机测试；真机故障提示不清空旧目录 |
+| D621 保持 opaque，并绑定 session/generation | 目前没有 XM5 `D621 opaque key -> 实际图片数据` 的完整映射证据 | 防止把未证实私有 key 当标准 handle，造成跨 session 误用 | 不能依赖标准 ObjectInfo 推断 | 类型/身份测试；不改变已成功下载命令序列 |
+
+这七项不是抽象层面的“为了优化而优化”：每一项都对应已观测的错帧、状态污染或恢复缺口，并且都有独立的验收证据。除上述边界外，本轮不扩张架构范围。
+
+### 明确不做的优化
+
+本轮不做 D621 标准 handle 映射、SearchMode reset 默认启用、subtract-baseline、count-sweep、首屏同步 ObjectInfo 扫描、operation contract 硬门禁、HD Preview/Wired Import/UI 大重构，也不整体迁移 `codex/ios-xm5-catalog-ab`。这些改动当前没有足够的同会话协议证据，且可能改变已经能工作的 JPG/HEIF/RAW 主链路。
+
 ## 2. 当前 main/TestFlight 19 的真实状态
 
 ### 2.1 版本身份
@@ -394,4 +431,3 @@ iPhoneOS 真机构建
 6. 连续格式筛选不再出现 transaction mismatch 扩散；
 7. 筛选失败不再发布假空目录；
 8. 错帧后旧 session 不可复用，且能够恢复到 fresh ALL Catalog。
-
