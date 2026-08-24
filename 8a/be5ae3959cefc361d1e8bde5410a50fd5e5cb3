@@ -1,0 +1,30 @@
+ios/Runner/CameraVendorRealtimeGalleryService.swift
+  493f25a8d6bb65d2 1912-1945,1947,1956,1980
+ios/Runner/CameraVendorPtpSession.swift
+  493f25a8d6bb65d2 386-389,394,456,501-502,700-710,738,2120-2121,2123-2124,2126,2131
+ios/Runner/CameraVendorWifiPolicy.swift
+  493f25a8d6bb65d2 89-97
+ios/RunnerTests/RunnerTests.swift
+  493f25a8d6bb65d2 7915-7960
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "8abe5ae3959cefc361d1e8bde5410a50fd5e5cb3",
+  "prompts": {
+    "493f25a8d6bb65d2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0340a-e7b4-7c90-9729-8b83cf26b39f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 118,
+      "total_deletions": 6,
+      "accepted_lines": 118,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/b03a5a2053ba5d756a19e1a1bcc1a25817d123810b31a7bb2ba254bb36f46448"
+    }
+  }
+}
