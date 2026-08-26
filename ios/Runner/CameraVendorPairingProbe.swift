@@ -26,10 +26,12 @@ enum CameraVendorPairingProbePolicy {
 
   /// The characteristic to read for encryption validation.
   /// Reading any encrypted characteristic will trigger iOS to verify the encryption link.
-  /// We use the device name characteristic (0x2A00) from the Generic Access service (0x1800)
-  /// which is always present and readable.
-  static let validationServiceUUID = CBUUID(string: "1800")
-  static let validationCharacteristicUUID = CBUUID(string: "2A00")
+  /// Use the Device Information serial characteristic. The XM5 device logs
+  /// prove that 180A/2A25 is exposed and readable on the remembered path;
+  /// unlike the Generic Access service, it is visible through the camera's
+  /// discovered GATT services on iOS and still exercises the protected link.
+  static let validationServiceUUID = CBUUID(string: "180A")
+  static let validationCharacteristicUUID = CBUUID(string: "2A25")
 
   static func isPairingInvalidError(_ error: Error) -> Bool {
     let nsError = error as NSError
@@ -42,7 +44,7 @@ enum CameraVendorPairingProbePolicy {
       return true
     }
     // "Peer removed pairing information" in localizedDescription
-    if nsError.localizedDescription.contains("Peer removed pairing information") {
+    if nsError.localizedDescription.lowercased() == "peer removed pairing information" {
       return true
     }
     // CBATTError.insufficientAuthentication = 0x05
