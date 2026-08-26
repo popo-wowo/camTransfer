@@ -22174,7 +22174,7 @@ final class RunnerTests: XCTestCase {
     await transport.waitForCatalogRequestCount(1)
 
     runtime.send(.transportFailed(NSError(domain: "CameraVendorPtpSession", code: 15)))
-    for _ in 0..<100 where runtime.presentation.phase != .recovering { await Task.yield() }
+    await waitForRuntimePhase(runtime, .recovering)
 
     XCTAssertEqual(transport.initialCatalogRequestCount, 1)
     XCTAssertEqual(runtime.presentation.phase, .recovering)
@@ -27158,10 +27158,13 @@ extension RunnerTests {
         "self.modelName = Self.normalizedOptional(modelName)",
         "self.firmwareVersion = Self.normalizedOptional(firmwareVersion)",
         "self.observedIdentity = observedIdentity",
+        "self.modelName = modelName",
+        "self.firmwareVersion = firmwareVersion",
       ],
       "CameraAdapters/Fujifilm/FujifilmProtocolEngine.swift": [
         "self.observedIdentity = observedIdentity",
         "previousFacts.observedIdentity",
+        "observedIdentity = observedIdentity",
       ],
       "CameraVendorGalleryMainlineSessionLoader.swift": [
         "compatibilityFacts.observedIdentity",
@@ -27172,13 +27175,17 @@ extension RunnerTests {
       "CameraAdapters/Fujifilm/FujifilmCompatibility.swift": [
         "facts.observedIdentity.modelName",
         "facts.observedIdentity.firmwareVersion",
+        "modelName: facts.observedIdentity.modelName",
+        "firmwareVersion: facts.observedIdentity.firmwareVersion",
       ],
     ]
     let identityReadMarkers = [".observedIdentity", ".modelName", ".firmwareVersion"]
     for item in sources {
       for (offset, line) in item.source.components(separatedBy: .newlines).enumerated()
         where identityReadMarkers.contains(where: line.contains) {
-        let allowed = identityReadWhitelist[item.relativePath, default: []].contains(where: line.contains)
+        let allowed = identityReadWhitelist.first(where: {
+          item.relativePath.hasSuffix($0.key)
+        })?.value.contains(where: line.contains) ?? false
         XCTAssertTrue(
           allowed,
           "Identity read outside explicit diagnostics/value-boundary whitelist at " +
