@@ -3586,6 +3586,8 @@ final class CameraVendorBluetoothService: NSObject {
   private var unmatchedAdvertisementSampleKeys: Set<String> = []
   private var unmatchedAdvertisementSampleCount = 0
   private var recognizedRememberedAdvertisementCount = 0
+  private var rememberedSecurePairAdvertisementCount = 0
+  private var rememberedFujifilmAdvertisementCount = 0
   private var rememberedEndpointFoundNotReady = false
   private var scanTimeoutWorkItem: DispatchWorkItem?
   private var bleConnectTimeoutWorkItem: DispatchWorkItem?
@@ -5048,6 +5050,16 @@ final class CameraVendorBluetoothService: NSObject {
         case .rememberedEndpointFoundNotReady: return .rememberedEndpointFoundNotReady
         }
       }()
+      self.appendObservation(
+        "BLE_SCAN_SUMMARY purpose=rememberedReconnect generation=\(self.wirelessConnectionGeneration) " +
+        "targetPeripheralID=\(record.peripheralID.uuidString) elapsedMs=\(elapsedMs) " +
+        "recognizedCandidates=\(self.recognizedRememberedAdvertisementCount) " +
+        "securePairCandidates=\(self.rememberedSecurePairAdvertisementCount) " +
+        "fujifilmCandidates=\(self.rememberedFujifilmAdvertisementCount) " +
+        "unmatchedSamples=\(self.unmatchedAdvertisementSampleCount) " +
+        "endpointFoundNotReady=\(self.rememberedEndpointFoundNotReady) " +
+        "classification=\(classification.rawValue)"
+      )
       if self.terminateRememberedGallery(failure) {
         self.appendObservation(
           "CONNECTION_TERMINAL barrier=rememberedCameraScanTimeout " +
@@ -5085,6 +5097,8 @@ final class CameraVendorBluetoothService: NSObject {
     unmatchedAdvertisementSampleKeys.removeAll()
     unmatchedAdvertisementSampleCount = 0
     recognizedRememberedAdvertisementCount = 0
+    rememberedSecurePairAdvertisementCount = 0
+    rememberedFujifilmAdvertisementCount = 0
     rememberedEndpointFoundNotReady = false
   }
 
@@ -5651,11 +5665,43 @@ final class CameraVendorBluetoothService: NSObject {
     ) ?? false
     if didTerminate {
       appendObservation("REMEMBERED_GALLERY_TERMINAL_FAILURE reason=\(failure.issue.reason)")
+      let requiresRepair: Bool
+      let userAction: String
+      switch failure {
+      case .identityMismatch, .registrationRejected:
+        requiresRepair = true
+        userAction = "rePair"
+      case .noAdvertisement, .rememberedEndpointFoundNotReady, .activationNotReady:
+        requiresRepair = false
+        userAction = "checkCameraAndRetry"
+      case .rememberedEndpointNotMatched:
+        requiresRepair = true
+        userAction = "rePair"
+      default:
+        requiresRepair = false
+        userAction = "retry"
+      }
+      appendObservation(
+        "CONNECTION_TERMINAL_DETAIL reason=\(failure.issue.reason) " +
+        "requiresRepair=\(requiresRepair) userAction=\(userAction)"
+      )
     }
     return didTerminate
   }
 
   private func completeHandshake(summary: CameraVendorConnectionSummary, reason: String) {
+    if let rememberedPairedCamera,
+       let selectedPeripheral = selectedPeripheral {
+      let modelMatch = rememberedPairedCamera.deviceName == summary.deviceName
+      let serialMatch = rememberedPairedCamera.serialNumber == summary.serialNumber
+      appendObservation(
+        "GATT_IDENTITY_COMPARISON rememberedModel=\(rememberedPairedCamera.deviceName) " +
+        "observedModel=\(summary.deviceName) modelMatch=\(modelMatch) " +
+        "rememberedSerialHash=\(diagnosticHash(rememberedPairedCamera.serialNumber)) " +
+        "observedSerialHash=\(diagnosticHash(summary.serialNumber)) serialMatch=\(serialMatch) " +
+        "peripheralID=\(selectedPeripheral.identifier.uuidString)"
+      )
+    }
     if let rememberedPairedCamera,
        !CameraVendorStoredPairingPolicy.matchesRememberedIdentity(
         record: rememberedPairedCamera,
@@ -5733,6 +5779,10 @@ final class CameraVendorBluetoothService: NSObject {
       updateStatus("握手完成", isBusy: false)
       delegate?.cameraVendorBluetoothService(self, didCompleteHandshake: verifiedSummary)
     }
+  }
+
+  private func diagnosticHash(_ value: String) -> String {
+    SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined().prefix(16).description
   }
 
   private func refreshPendingHandshakeSummary(using peripheral: CBPeripheral) {
@@ -6214,6 +6264,10 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
     }
 
     appendLog("蓝牙状态: \(description)")
+    appendObservation(
+      "BLE_RADIO_STATE state=\(description) raw=\(central.state.rawValue) " +
+      "authorization=\(CBManager.authorization.rawValue)"
+    )
 
     guard central.state == .poweredOn else {
       updateStatus(description, isBusy: false)
@@ -6274,6 +6328,14 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
       || manufacturerData.map {
         $0.count >= 3 && $0[0] == 0xD8 && $0[1] == 0x04
       } == true
+    if autoReconnectTargetPeripheralID != nil, isRecognizedCameraAdvertisement {
+      if serviceUUIDs.contains(CameraVendorDeviceMatcher.securePairServiceUUIDString) {
+        rememberedSecurePairAdvertisementCount += 1
+      }
+      if manufacturerData.map({ $0.count >= 3 && $0[0] == 0xD8 && $0[1] == 0x04 }) == true {
+        rememberedFujifilmAdvertisementCount += 1
+      }
+    }
     if autoReconnectTargetPeripheralID != nil,
        rememberedRedReconnectMatch == nil,
        isRecognizedCameraAdvertisement {
@@ -6522,6 +6584,13 @@ extension CameraVendorBluetoothService: CBCentralManagerDelegate {
     }
     let errorDescription = error?.localizedDescription
     let nsError = error as NSError?
+    appendObservation(
+      "BLE_CONNECT_OUTCOME outcome=failed generation=\(generation) " +
+      "peripheralID=\(peripheral.identifier.uuidString) " +
+      "domain=\(nsError?.domain ?? "nil") code=\(nsError?.code ?? 0) " +
+      "description=\(errorDescription ?? "nil") " +
+      "centralState=\(central.state.rawValue) peripheralState=\(peripheral.state.rawValue)"
+    )
     appendObservation(
       "BLE_CONNECT_FAILURE_DETAIL generation=\(generation) peripheralID=\(peripheral.identifier.uuidString) " +
       "domain=\(nsError?.domain ?? "nil") code=\(nsError?.code ?? 0) " +

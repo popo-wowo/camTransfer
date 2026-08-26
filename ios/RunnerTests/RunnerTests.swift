@@ -28601,6 +28601,20 @@ extension RunnerTests {
     XCTAssertTrue(loaderSource.contains("lastWireOutcome="))
   }
 
+  func testProductionConnectionEmitsRootCauseEvidenceDiagnostics() throws {
+    let bluetoothSource = try runnerSource("CameraVendorBluetoothService.swift")
+
+    XCTAssertTrue(bluetoothSource.contains("BLE_SCAN_SUMMARY"))
+    XCTAssertTrue(bluetoothSource.contains("securePairCandidates="))
+    XCTAssertTrue(bluetoothSource.contains("fujifilmCandidates="))
+    XCTAssertTrue(bluetoothSource.contains("BLE_RADIO_STATE"))
+    XCTAssertTrue(bluetoothSource.contains("BLE_CONNECT_OUTCOME"))
+    XCTAssertTrue(bluetoothSource.contains("GATT_IDENTITY_COMPARISON"))
+    XCTAssertTrue(bluetoothSource.contains("CONNECTION_TERMINAL_DETAIL"))
+    XCTAssertTrue(bluetoothSource.contains("requiresRepair="))
+    XCTAssertTrue(bluetoothSource.contains("userAction="))
+  }
+
   func testProductionConnectionDoesNotPromoteUserCancellationToTerminalFailure() throws {
     let loaderSource = try runnerSource("CameraVendorGalleryMainlineSessionLoader.swift")
     let cancellationGuard = try XCTUnwrap(
