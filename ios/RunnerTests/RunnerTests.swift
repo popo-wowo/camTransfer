@@ -22283,7 +22283,8 @@ final class RunnerTests: XCTestCase {
     XCTAssertEqual(transport.requestedCatalogLabels.count, catalogQueryCountBeforeRecovery)
 
     XCTAssertEqual(transport.requestedCatalogLabels.count, catalogQueryCountBeforeRecovery)
-    XCTAssertEqual(runtime.presentation.catalog.intent.sort, .oldest)
+    XCTAssertEqual(runtime.presentation.phase, .recovering)
+    XCTAssertFalse(runtime.canAcceptCatalogCommands)
   }
 
   @MainActor
