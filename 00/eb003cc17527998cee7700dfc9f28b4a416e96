@@ -1,0 +1,24 @@
+ios/RunnerTests/RunnerTests.swift
+  493f25a8d6bb65d2 44,47-73,88,166-243,250-371,373,375,377-381,391-400,3489-3495,3498-3500,3525,4697,4844,4846-4847,5095,5144,5269-5294,6789,6833,6874,6919,6962,7004,7021,7023,7885,9553-9578,13372,13562-13563,13672,13996-13997,14046,14109-14110,14469,14519-14520,17004,17021-17022,17082,17291,17321-17322,17330,17333-17348,17433-17434
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "00eb003cc17527998cee7700dfc9f28b4a416e96",
+  "prompts": {
+    "493f25a8d6bb65d2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0340a-e7b4-7c90-9729-8b83cf26b39f",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 63,
+      "total_deletions": 34,
+      "accepted_lines": 20,
+      "overriden_lines": 10,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/018908d4047ed42995d650b2af1f3f55bb85bf3a6d39c3898bcec11196c23879"
+    }
+  }
+}
