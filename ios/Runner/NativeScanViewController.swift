@@ -934,8 +934,6 @@ final class NativePairedCameraCard: UIView {
   private let quickDownloadSettingsButton = UIButton(type: .system)
   private let connectButton = UIButton(type: .system)
   private let disconnectButton = UIButton(type: .system)
-  private let deleteButton = UIButton(type: .system)
-  private var isDeleteRevealed = false
 
   init(
     record: IOSCameraRememberedCameraRecord,
@@ -987,8 +985,17 @@ final class NativePairedCameraCard: UIView {
     menuButton.configuration = .plain()
     menuButton.configuration?.image = UIImage(systemName: "ellipsis", withConfiguration: UIImage.SymbolConfiguration(pointSize: 16, weight: .bold))
     menuButton.tintColor = NativeLuxuryTheme.ink
-    menuButton.accessibilityLabel = "删除相机"
-    menuButton.addTarget(self, action: #selector(revealDeleteAction), for: .touchUpInside)
+    menuButton.accessibilityLabel = "相机操作"
+    menuButton.menu = UIMenu(children: [
+      UIAction(
+        title: "删除",
+        image: UIImage(systemName: "trash"),
+        attributes: .destructive
+      ) { [weak self] _ in
+        self?.onForget()
+      }
+    ])
+    menuButton.showsMenuAsPrimaryAction = true
 
     let divider = UIView()
     divider.translatesAutoresizingMaskIntoConstraints = false
@@ -1116,16 +1123,6 @@ final class NativePairedCameraCard: UIView {
     )
     statusDetail.font = .systemFont(ofSize: 12, weight: .regular)
 
-    deleteButton.translatesAutoresizingMaskIntoConstraints = false
-    deleteButton.configuration = .filled()
-    deleteButton.configuration?.cornerStyle = .capsule
-    deleteButton.configuration?.baseBackgroundColor = UIColor.systemRed
-    deleteButton.configuration?.baseForegroundColor = .white
-    deleteButton.configuration?.image = UIImage(systemName: "trash", withConfiguration: UIImage.SymbolConfiguration(pointSize: 15, weight: .bold))
-    deleteButton.accessibilityLabel = "删除已配对相机"
-    deleteButton.addTarget(self, action: #selector(deleteTapped), for: .touchUpInside)
-    deleteButton.alpha = 0
-    deleteButton.isHidden = true
 
     let quickDownloadColumn = UIStackView(arrangedSubviews: [quickDownloadButton, quickDownloadSettingsButton])
     quickDownloadColumn.translatesAutoresizingMaskIntoConstraints = false
@@ -1147,11 +1144,10 @@ final class NativePairedCameraCard: UIView {
     actionStack.distribution = .fill
     actionStack.spacing = 10
 
-    addSubview(deleteButton)
     addSubview(contentView)
     contentView.addSubview(profileHeader)
     profileHeader.addSubview(profileLabel)
-    profileHeader.addSubview(menuButton)
+    contentView.addSubview(menuButton)
     contentView.addSubview(divider)
     contentView.addSubview(badge)
     contentView.addSubview(seriesLabel)
@@ -1162,23 +1158,9 @@ final class NativePairedCameraCard: UIView {
     statusPanel.addSubview(statusDetail)
     contentView.addSubview(actionStack)
 
-    let swipeLeft = UISwipeGestureRecognizer(target: self, action: #selector(revealDeleteAction))
-    swipeLeft.direction = .left
-    contentView.addGestureRecognizer(swipeLeft)
-    let swipeRight = UISwipeGestureRecognizer(target: self, action: #selector(hideDeleteAction))
-    swipeRight.direction = .right
-    contentView.addGestureRecognizer(swipeRight)
-    let tap = UITapGestureRecognizer(target: self, action: #selector(contentTapped))
-    tap.cancelsTouchesInView = false
-    contentView.addGestureRecognizer(tap)
 
     NSLayoutConstraint.activate([
       heightAnchor.constraint(greaterThanOrEqualToConstant: NativeHomePairedCameraCardLayoutPolicy.cardMinimumHeight),
-
-      deleteButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-      deleteButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-      deleteButton.widthAnchor.constraint(equalToConstant: 58),
-      deleteButton.heightAnchor.constraint(equalToConstant: 46),
 
       contentView.topAnchor.constraint(equalTo: topAnchor),
       contentView.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -1195,8 +1177,8 @@ final class NativePairedCameraCard: UIView {
       profileLabel.leadingAnchor.constraint(equalTo: profileHeader.leadingAnchor, constant: 17),
       profileLabel.centerYAnchor.constraint(equalTo: profileHeader.centerYAnchor),
 
-      menuButton.trailingAnchor.constraint(equalTo: profileHeader.trailingAnchor, constant: -12),
-      menuButton.centerYAnchor.constraint(equalTo: profileHeader.centerYAnchor),
+      menuButton.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
+      menuButton.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 8),
       menuButton.widthAnchor.constraint(equalToConstant: 38),
       menuButton.heightAnchor.constraint(equalToConstant: 38),
 
@@ -1289,35 +1271,60 @@ final class NativePairedCameraCard: UIView {
     onForget()
   }
 
-  @objc private func revealDeleteAction() {
-    guard !isDeleteRevealed else { return }
-    isDeleteRevealed = true
-    deleteButton.isHidden = false
-    UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) {
-      self.contentView.transform = CGAffineTransform(translationX: -76, y: 0)
-      self.deleteButton.alpha = 1
-    }
-  }
-
-  @objc private func hideDeleteAction() {
-    guard isDeleteRevealed else { return }
-    isDeleteRevealed = false
-    UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseOut, .allowUserInteraction]) {
-      self.contentView.transform = .identity
-      self.deleteButton.alpha = 0
-    } completion: { _ in
-      self.deleteButton.isHidden = true
-    }
-  }
-
-  @objc private func contentTapped() {
-    if isDeleteRevealed {
-      hideDeleteAction()
-    }
-  }
-
   private func badgeText(for deviceName: String) -> String {
     let upper = deviceName.uppercased()
     return String(upper.filter { $0.isLetter }.prefix(2))
+  }
+}
+
+final class NativeAddCameraCard: UIControl {
+  private let onAdd: () -> Void
+
+  init(onAdd: @escaping () -> Void) {
+    self.onAdd = onAdd
+    super.init(frame: .zero)
+    translatesAutoresizingMaskIntoConstraints = false
+    isUserInteractionEnabled = true
+    NativeLuxuryTheme.applyCardStyle(self, radius: 24)
+    let imageView = UIImageView(image: UIImage(systemName: "plus.circle.fill"))
+    imageView.translatesAutoresizingMaskIntoConstraints = false
+    imageView.tintColor = NativeLuxuryTheme.accent
+    imageView.contentMode = .scaleAspectFit
+    let label = UILabel()
+    label.translatesAutoresizingMaskIntoConstraints = false
+    label.text = "添加相机"
+    label.font = .systemFont(ofSize: 20, weight: .heavy)
+    label.textColor = NativeLuxuryTheme.ink
+    let stack = UIStackView(arrangedSubviews: [imageView, label])
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    stack.axis = .vertical
+    stack.alignment = .center
+    stack.spacing = 12
+    addSubview(stack)
+    NSLayoutConstraint.activate([
+      heightAnchor.constraint(greaterThanOrEqualToConstant: NativeHomePairedCameraCardLayoutPolicy.cardMinimumHeight),
+      imageView.widthAnchor.constraint(equalToConstant: 48),
+      imageView.heightAnchor.constraint(equalToConstant: 48),
+      stack.centerXAnchor.constraint(equalTo: centerXAnchor),
+      stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+    ])
+    addTarget(self, action: #selector(tapped), for: .touchUpInside)
+    let tap = UITapGestureRecognizer(target: self, action: #selector(tappedByGesture))
+    tap.cancelsTouchesInView = false
+    addGestureRecognizer(tap)
+    accessibilityLabel = "添加相机"
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) has not been implemented")
+  }
+
+  @objc private func tapped() {
+    onAdd()
+  }
+
+  @objc private func tappedByGesture() {
+    onAdd()
   }
 }

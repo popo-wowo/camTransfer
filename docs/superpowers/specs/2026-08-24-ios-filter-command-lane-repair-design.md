@@ -1,6 +1,6 @@
 # iOS Gallery 筛选 Command Lane 稳定性修复与架构优化方案
 
-> 状态：待 review
+> 状态：review 修订版，实施前冻结边界
 >
 > 基线：`main@363593ffd99ee7d5e22e4e31577fc8a8807d9fc0`
 >
@@ -9,6 +9,13 @@
 > 目标分支：`codex/ios-filter-lane-repair`
 
 ## 1. 方案结论
+
+本修订版明确 owner 边界：`CameraSessionRuntime` 只负责页面与连接生命周期；
+`CameraVendorPtpSessionRuntime` 是唯一 PTP owner，负责唯一物理 session、CommandLane
+和 transport/session generation；`CameraGalleryCatalogRuntime` 只负责 Catalog
+transaction/generation；`CameraGalleryThumbnailPipeline` 只负责当前 Catalog generation
+的 child work。页面保留不等于 transport 可用，`GalleryVisible + TransportBroken`
+必须与 `GalleryReady` 分离。
 
 本轮不把 `codex/ios-xm5-catalog-ab` 的大范围动态协议改动整体迁移到 `main`。先在新分支上实现一个可验证的最小修复集，解决已经被真机日志证明的筛选错误：PTP Command Lane 错帧、筛选与缩略图并发、失败筛选发布空目录，以及错帧后的物理会话恢复。
 
@@ -24,6 +31,10 @@ main 基线
   -> 闭合错帧后的重连与 ALL Catalog 恢复
   -> 真机 A/B 验证 JPG/HEIF/RAW 显示、缩略图、下载和连续筛选
   -> 再单独评估动态协议架构
+
+本轮不在旧 `CameraVendorPtpSession` 对象内执行原地 transport recovery。framing/
+transaction 错误会使旧 session generation 终态失效；恢复必须由唯一 PTP owner 创建
+新的 session generation，重新建立 PTP session、fresh ALL Catalog 和新的 Catalog identity。
 ```
 
 ## 1.1 本轮范围：两个目标，两个阶段

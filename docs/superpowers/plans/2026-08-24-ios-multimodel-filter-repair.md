@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Repair iOS Gallery filter frame isolation, stale-session reuse, false empty catalogs, and add the smallest tested session-level multimodel connection-plan boundary.
+**Goal:** Repair iOS Gallery filter frame isolation, stale-session reuse, false empty catalogs, and add one evidence-driven session-local media strategy without model-specific runtimes or parallel registries.
 
-**Architecture:** Keep one `CameraSessionRuntime`, one physical `CameraVendorPtpSession`, one serialized `CameraCommandLane`, and one catalog owner. Promote framing/transaction corruption to terminal lane/session state; fence catalog, thumbnail, metadata, preview, and opaque D621 references by session/generation/snapshot identity. Resolve model/family/firmware into a session-local plan without copying runtimes or treating XM5-private D621 as universal.
+**Architecture:** Keep one `CameraSessionRuntime`, one physical `CameraVendorPtpSession`, one serialized `CameraCommandLane`, and one catalog owner. Promote framing/transaction corruption to terminal lane/session state; fence catalog, thumbnail, metadata, preview, and opaque D621 references by session/generation/snapshot identity. Resolve progressively collected compatibility facts into one immutable, revisioned session-local strategy snapshot. Keep SearchMode transaction policy separate from Catalog membership/coverage; model names are evidence only, never direct production routing.
 
 **Tech Stack:** Swift, XCTest, Xcode project, existing iOS Runner architecture.
 
@@ -86,3 +86,32 @@
 - [ ] Run iPhoneOS build/test gate and inspect exit status/output.
 - [ ] Run `git diff --check` and inspect the full diff.
 - [ ] Report implementation, automated proof, build/install/launch evidence, and real-camera/service acceptance separately; do not claim device resolution without fresh-device evidence.
+
+### Task 7: Replace model routing with evidence-driven media strategy boundaries
+
+**Files:**
+- Modify: `ios/Runner/CameraVendorCatalogPolicy.swift`
+- Modify: `ios/Runner/CameraVendorPtpSession.swift`
+- Modify: `ios/Runner/CameraVendorRealtimeGalleryService.swift`
+- Test: `ios/RunnerTests/RunnerTests.swift`
+
+- [x] **Step 1: Replace the existing model-specific assertions with failing invariance tests.** Same protocol/GATT/Function facts with X-M5, X-T5, and an unknown model must resolve the same public media baseline; incomplete facts must remain unknown/safe and RED family must not imply `explicitAllRestore`.
+- [x] **Step 2: Run only the new tests and confirm RED.** The expected failure was the current `modelName == X-M5` production route.
+- [x] **Step 3: Implement the smallest production change.** Removed modelName-based SearchMode selection; retained model/firmware as snapshot evidence fields. `explicitAllRestore` remains available only as an explicit evidence-driven/session-lab candidate, not as a production default.
+- [x] **Step 4: Add explicit separation in the media definition between SearchMode transaction semantics and Catalog membership/coverage semantics.** `explicitAllRestore` does not imply a complete ALL-format Catalog.
+- [ ] **Step 5: Add tests for strategy revision identity and unknown facts.** A strategy is immutable within a generation; a later evidence revision can only apply to a new generation/session-local transaction.
+- [ ] **Step 6: Run focused tests, `git diff --check`, and the allowed RunnerTests/build gates.** Report automation separately from any fresh-camera acceptance; do not claim the production SearchMode override is hardware-proven without same-session evidence.
+
+### Task 8: Define Catalog coverage and complete/partial/unknown semantics
+
+**Files:**
+- Modify: `ios/Runner/CameraCore/Gallery/CameraGalleryCatalogModels.swift`
+- Modify: `ios/Runner/CameraCore/Gallery/CameraCatalogQueryEngine.swift`
+- Modify: `ios/Runner/CameraVendorCatalogPolicy.swift`
+- Test: `ios/RunnerTests/RunnerTests.swift`
+
+- [ ] **Step 1: Write failing tests** proving an empty-condition baseline can be `partial`, a verified union can be `complete`, and unknown coverage cannot be published as complete.
+- [ ] **Step 2: Run focused tests and confirm RED.**
+- [ ] **Step 3: Add the smallest coverage value type and carry it through Catalog resolution without changing MOV/MP4 wire behavior.** Existing callers may continue to use the current baseline until format operations are explicitly verified.
+- [ ] **Step 4: Ensure Catalog generation/presentation preserves coverage and last-good semantics.** A failed extension query must not publish an incomplete catalog as a successful ALL result.
+- [ ] **Step 5: Re-run focused tests and `git diff --check`.**

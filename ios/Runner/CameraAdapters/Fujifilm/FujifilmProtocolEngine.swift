@@ -203,7 +203,11 @@ final class FujifilmCameraSession: Equatable {
       )
       let revisedPlan = executionState.plan
       let strategySnapshot = try compatibilityEnvironment.strategyRegistry.snapshot(
-        for: revisedPlan
+        for: revisedPlan,
+        compatibilityFacts: CameraCompatibilityFacts(
+          observedIdentity: observedIdentity,
+          protocolFacts: revisedPlan.protocolFacts
+        )
       )
       return FujifilmInitialCatalogRevisionResult(
         summary: summary,
@@ -262,6 +266,7 @@ final class FujifilmProtocolEngine {
   private let strategyRegistry: FujifilmProtocolStrategyRegistry
   private(set) var boundPlan: CameraConnectionPlan?
   private var boundStrategySnapshot: FujifilmProtocolStrategySnapshot?
+  private var boundCompatibilityFacts: CameraCompatibilityFacts?
 
   init(
     galleryService: CameraVendorRealtimeGalleryService,
@@ -272,7 +277,10 @@ final class FujifilmProtocolEngine {
     self.strategyRegistry = environment.strategyRegistry
   }
 
-  func bind(plan: CameraConnectionPlan) throws {
+  func bind(
+    plan: CameraConnectionPlan,
+    compatibilityFacts: CameraCompatibilityFacts
+  ) throws {
     if let boundPlan, boundPlan != plan {
       throw NSError(
         domain: "FujifilmProtocolEngine",
@@ -280,10 +288,24 @@ final class FujifilmProtocolEngine {
         userInfo: [NSLocalizedDescriptionKey: "A Fujifilm protocol engine cannot change plans mid-session"]
       )
     }
-    let strategySnapshot = try strategyRegistry.snapshot(for: plan)
+    let strategySnapshot = try strategyRegistry.snapshot(
+      for: plan,
+      compatibilityFacts: compatibilityFacts
+    )
     try galleryService.bindConnectionPlan(plan, strategySnapshot: strategySnapshot)
     boundPlan = plan
     boundStrategySnapshot = strategySnapshot
+    boundCompatibilityFacts = compatibilityFacts
+  }
+
+  func bind(plan: CameraConnectionPlan) throws {
+    try bind(
+      plan: plan,
+      compatibilityFacts: CameraCompatibilityFacts(
+        observedIdentity: .unknown,
+        protocolFacts: plan.protocolFacts
+      )
+    )
   }
 
   func applyRevision(
@@ -298,10 +320,22 @@ final class FujifilmProtocolEngine {
         userInfo: [NSLocalizedDescriptionKey: "Protocol engine plan revision must be adjacent"]
       )
     }
-    let strategySnapshot = try strategyRegistry.snapshot(for: plan)
+    let previousFacts = boundCompatibilityFacts ?? CameraCompatibilityFacts(
+      observedIdentity: .unknown,
+      protocolFacts: current.protocolFacts
+    )
+    let revisedFacts = CameraCompatibilityFacts(
+      observedIdentity: previousFacts.observedIdentity,
+      protocolFacts: plan.protocolFacts
+    )
+    let strategySnapshot = try strategyRegistry.snapshot(
+      for: plan,
+      compatibilityFacts: revisedFacts
+    )
     try galleryService.bindConnectionPlan(plan, strategySnapshot: strategySnapshot)
     boundPlan = plan
     boundStrategySnapshot = strategySnapshot
+    boundCompatibilityFacts = revisedFacts
     appendRuntimeMessage(
       "[OBS] CAMERA_PLAN_REVISION planID=\(plan.id.rawValue) revision=\(plan.revision) reason=\(reason.rawValue)"
     )

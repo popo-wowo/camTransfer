@@ -1,5 +1,35 @@
 import Darwin
 import Foundation
+
+struct CameraGalleryFilterReplayState {
+  private(set) var pendingIntent: CameraGalleryFilterIntent?
+  private(set) var freshCatalogGeneration: UInt64?
+  private var didReplayForGeneration = Set<UInt64>()
+
+  mutating func deferIntent(_ intent: CameraGalleryFilterIntent) {
+    pendingIntent = intent
+  }
+
+  mutating func markFreshCatalogInstalled(generation: UInt64) {
+    freshCatalogGeneration = generation
+  }
+
+  mutating func takeForCatalogReady(currentGeneration: UInt64) -> CameraGalleryFilterIntent? {
+    guard freshCatalogGeneration == currentGeneration,
+          !didReplayForGeneration.contains(currentGeneration) else {
+      return nil
+    }
+    didReplayForGeneration.insert(currentGeneration)
+    let intent = pendingIntent
+    pendingIntent = nil
+    return intent
+  }
+
+  mutating func clearAfterRecoveryFailure() {
+    pendingIntent = nil
+    freshCatalogGeneration = nil
+  }
+}
 import NetworkExtension
 
 protocol CameraVendorGalleryConnectionTerminating: AnyObject {
@@ -12,74 +42,6 @@ protocol CameraVendorGalleryBackgroundKeepAlive: AnyObject {
 
 protocol CameraVendorBleBackgroundKeepAlive: AnyObject {
   func performBackgroundBleKeepAlive(reason: String)
-}
-
-struct CameraVendorExclusiveDownloadWindowOwnerID: Hashable, Sendable {
-  fileprivate let rawValue: UUID
-  fileprivate let generationID: UUID
-
-  fileprivate init(generationID: UUID = UUID()) {
-    rawValue = UUID()
-    self.generationID = generationID
-  }
-}
-
-protocol CameraVendorExclusiveDownloadWindowControlling: AnyObject {
-  @discardableResult
-  func beginExclusiveDownloadWindow() -> CameraVendorExclusiveDownloadWindowOwnerID
-  func awaitExclusiveDownloadWindowReady(
-    ownerID: CameraVendorExclusiveDownloadWindowOwnerID
-  ) async throws
-  func endExclusiveDownloadWindow(ownerID: CameraVendorExclusiveDownloadWindowOwnerID)
-  func withExclusiveDownloadWindow<T>(_ operation: () async throws -> T) async throws -> T
-}
-
-private final class CameraVendorExclusiveDownloadWindowRelease: @unchecked Sendable {
-  private enum State {
-    case waiting
-    case admitted
-    case released
-  }
-
-  private let lock = NSLock()
-  private var state = State.waiting
-  private var releaseHandler: (() -> Void)?
-
-  init(releaseHandler: @escaping () -> Void) {
-    self.releaseHandler = releaseHandler
-  }
-
-  func markAdmitted() -> Bool {
-    lock.withLock {
-      guard case .waiting = state else { return false }
-      state = .admitted
-      return true
-    }
-  }
-
-  func cancelWhileWaiting() {
-    let handler: (() -> Void)? = lock.withLock {
-      guard case .waiting = state else { return nil }
-      state = .released
-      let handler = releaseHandler
-      releaseHandler = nil
-      return handler
-    }
-    handler?()
-  }
-
-  func release() {
-    let handler: (() -> Void)? = lock.withLock {
-      guard case .released = state else {
-        state = .released
-        let handler = releaseHandler
-        releaseHandler = nil
-        return handler
-      }
-      return nil
-    }
-    handler?()
-  }
 }
 
 protocol CameraVendorActiveDownloadInterrupting: AnyObject {
@@ -210,96 +172,15 @@ enum FujifilmResponseDrivenInitialCatalogExecutor {
 }
 
 final class CameraVendorPtpSessionRuntime {
-  private final class ExclusiveDownloadWindowGeneration {
-    var ownerIDs: Set<CameraVendorExclusiveDownloadWindowOwnerID>
-    let acquisition: ExclusiveDownloadLeaseAcquisition
-
-    init(
-      ownerID: CameraVendorExclusiveDownloadWindowOwnerID,
-      acquisition: ExclusiveDownloadLeaseAcquisition
-    ) {
-      ownerIDs = [ownerID]
-      self.acquisition = acquisition
-    }
-  }
-
-  private final class ExclusiveDownloadLeaseAcquisition {
-    private final class State {
-      private let lock = NSLock()
-      private var isCancelled = false
-      private var lease: CameraCommandLease?
-
-      func cancel(afterSerialized finalizer: (() -> Void)? = nil) {
-        let leaseToRelease: CameraCommandLease?
-        lock.lock()
-        isCancelled = true
-        leaseToRelease = lease
-        lease = nil
-        lock.unlock()
-        leaseToRelease?.release(afterSerialized: finalizer)
-      }
-
-      func install(_ lease: CameraCommandLease) throws {
-        let wasCancelled: Bool
-        lock.lock()
-        wasCancelled = isCancelled
-        if !wasCancelled {
-          self.lease = lease
-        }
-        lock.unlock()
-        if wasCancelled {
-          lease.release()
-          throw CancellationError()
-        }
-      }
-
-      func checkReady() throws {
-        let isReady = lock.withLock {
-          !isCancelled && lease != nil
-        }
-        guard isReady else { throw CancellationError() }
-      }
-    }
-
-    private let state: State
-    private let task: Task<Void, Error>
-
-    init(commandLane: CameraCommandLane) {
-      let state = State()
-      self.state = state
-      task = Task {
-        let lease = try await commandLane.acquireExclusiveDownloadLease()
-        try state.install(lease)
-      }
-    }
-
-    func waitUntilReady() async throws {
-      try await task.value
-      try state.checkReady()
-      try Task.checkCancellation()
-    }
-
-    func cancel(afterSerialized finalizer: (() -> Void)? = nil) {
-      task.cancel()
-      state.cancel(afterSerialized: finalizer)
-    }
-  }
-
   private let session: CameraVendorPtpSession
   private let commandLane: CameraCommandLane
   private let stateLock = NSLock()
-  private let exclusiveDownloadLeaseLock = NSLock()
   private let diagnosticHandler: (String) -> Void
   private let communicationGeneration: () -> UInt64
-  private var exclusiveDownloadWindowGenerations: [
-    UUID: ExclusiveDownloadWindowGeneration
-  ] = [:]
-  private var isExclusiveDownloadWindowActive = false
   private var activeThumbnailRequestCount = 0
   private var activeBackgroundMetadataRequestCount = 0
   private var visibleThumbnailBatchHandles = Set<Int>()
   private var lastThumbnailActivityAt: Date = .distantPast
-  private var hasReportedExclusiveDownloadWindowReady = false
 
   init(
     session: CameraVendorPtpSession,
@@ -313,115 +194,42 @@ final class CameraVendorPtpSessionRuntime {
     self.communicationGeneration = communicationGeneration
   }
 
-  func withExclusiveDownloadWindow<T>(_ operation: () async throws -> T) async throws -> T {
-    let ownerID = beginExclusiveDownloadWindow()
-    let release = CameraVendorExclusiveDownloadWindowRelease { [weak self] in
-      self?.endExclusiveDownloadWindow(ownerID: ownerID)
-    }
-    return try await withTaskCancellationHandler {
-      defer { release.release() }
-      try await awaitExclusiveDownloadWindowReady(ownerID: ownerID)
-      try Task.checkCancellation()
-      guard release.markAdmitted() else { throw CancellationError() }
-      return try await operation()
-    } onCancel: {
-      release.cancelWhileWaiting()
-    }
-  }
-
-  @discardableResult
-  func beginExclusiveDownloadWindow() -> CameraVendorExclusiveDownloadWindowOwnerID {
-    let ownerID = CameraVendorExclusiveDownloadWindowOwnerID()
-    beginExclusiveDownloadWindow(ownerID: ownerID)
-    return ownerID
-  }
-
-  func beginExclusiveDownloadWindow(ownerID: CameraVendorExclusiveDownloadWindowOwnerID) {
-    exclusiveDownloadLeaseLock.lock()
-    if let generation = exclusiveDownloadWindowGenerations[ownerID.generationID] {
-      generation.ownerIDs.insert(ownerID)
-    } else {
-      let shouldActivate = exclusiveDownloadWindowGenerations.isEmpty
-      let acquisition = ExclusiveDownloadLeaseAcquisition(commandLane: commandLane)
-      exclusiveDownloadWindowGenerations[ownerID.generationID] =
-        ExclusiveDownloadWindowGeneration(
-          ownerID: ownerID,
-          acquisition: acquisition
-        )
-      if shouldActivate {
-        activateExclusiveDownloadWindow()
-      }
-    }
-    exclusiveDownloadLeaseLock.unlock()
-  }
-
-  func awaitExclusiveDownloadWindowReady(
-    ownerID: CameraVendorExclusiveDownloadWindowOwnerID
-  ) async throws {
-    let acquisition: ExclusiveDownloadLeaseAcquisition? = exclusiveDownloadLeaseLock.withLock {
-      guard let generation = exclusiveDownloadWindowGenerations[ownerID.generationID],
-        generation.ownerIDs.contains(ownerID) else {
-        return nil
-      }
-      return generation.acquisition
-    }
-    guard let acquisition else { throw CancellationError() }
-    try await acquisition.waitUntilReady()
-    try Task.checkCancellation()
-  }
-
-  func runPriorityBatchTransition<T>(
-    ownerID: CameraVendorExclusiveDownloadWindowOwnerID,
-    _ operation: () throws -> T
+  private func runOwned<T>(
+    priority: CameraCommandPriority,
+    operation: CameraPtpTransportOperation,
+    _ body: () throws -> T
   ) async throws -> T {
-    try await commandLane.run(priority: .download) {
-      guard self.exclusiveDownloadLeaseLock.withLock({
-        self.exclusiveDownloadWindowGenerations[ownerID.generationID]?
-          .ownerIDs.contains(ownerID) == true
-      }) else {
-        throw CancellationError()
+    try await commandLane.run(priority: priority) {
+      try self.session.beginTransportOperation(operation)
+      do {
+        let result = try body()
+        self.session.finishTransportOperation()
+        return result
+      } catch {
+        if !self.session.requiresCommandTransportRecovery {
+          self.session.finishTransportOperation()
+        }
+        throw error
       }
-      return try operation()
     }
   }
 
-  func endExclusiveDownloadWindow(
-    ownerID: CameraVendorExclusiveDownloadWindowOwnerID,
-    afterSerialized finalizer: (() -> Void)? = nil
-  ) {
-    let acquisition: ExclusiveDownloadLeaseAcquisition?
-    let shouldDeactivate: Bool
-    exclusiveDownloadLeaseLock.lock()
-    guard let generation = exclusiveDownloadWindowGenerations[ownerID.generationID],
-      generation.ownerIDs.remove(ownerID) != nil else {
-      exclusiveDownloadLeaseLock.unlock()
-      return
-    }
-    if generation.ownerIDs.isEmpty {
-      exclusiveDownloadWindowGenerations.removeValue(forKey: ownerID.generationID)
-      acquisition = generation.acquisition
-    } else {
-      acquisition = nil
-    }
-    shouldDeactivate = acquisition != nil && exclusiveDownloadWindowGenerations.isEmpty
-    if shouldDeactivate {
-      deactivateExclusiveDownloadWindow()
-    }
-    exclusiveDownloadLeaseLock.unlock()
-    acquisition?.cancel(afterSerialized: finalizer)
-  }
-
-  func forceEndExclusiveDownloadWindow(afterSerialized finalizer: (() -> Void)? = nil) {
-    let acquisitions: [ExclusiveDownloadLeaseAcquisition]
-    exclusiveDownloadLeaseLock.lock()
-    acquisitions = exclusiveDownloadWindowGenerations.values.map(\.acquisition)
-    exclusiveDownloadWindowGenerations.removeAll(keepingCapacity: false)
-    if !acquisitions.isEmpty {
-      deactivateExclusiveDownloadWindow()
-    }
-    exclusiveDownloadLeaseLock.unlock()
-    for (index, acquisition) in acquisitions.enumerated() {
-      acquisition.cancel(afterSerialized: index == 0 ? finalizer : nil)
+  private func runOwnedSessionMutation<T>(
+    operation: CameraPtpTransportOperation = .catalog,
+    _ body: () throws -> T
+  ) async throws -> T {
+    try await commandLane.runExclusiveSessionMutation {
+      try self.session.beginTransportOperation(operation)
+      do {
+        let result = try body()
+        self.session.finishTransportOperation()
+        return result
+      } catch {
+        if !self.session.requiresCommandTransportRecovery {
+          self.session.finishTransportOperation()
+        }
+        throw error
+      }
     }
   }
 
@@ -447,7 +255,7 @@ final class CameraVendorPtpSessionRuntime {
     for handle: Int,
     expectedSize: UInt32?
   ) async throws -> (thumbnail: CameraVendorGalleryThumbnail, objectInfo: CameraVendorCameraObjectInfo?) {
-    try await commandLane.run(priority: .visibleThumbnail) {
+    try await runOwned(priority: .visibleThumbnail, operation: .thumbnail) {
       try self.beginThumbnailRequest(handle: handle)
       defer { self.endThumbnailRequest(handle: handle) }
       let result = try self.session.thumbWithInfo(
@@ -475,7 +283,7 @@ final class CameraVendorPtpSessionRuntime {
   }
 
   func fetchPreviewImage(for handle: Int) async throws -> Data {
-    try await commandLane.run(priority: .hdPreview) {
+    try await runOwned(priority: .hdPreview, operation: .preview) {
       try self.session.previewImage(handle: UInt32(handle))
     }
   }
@@ -483,13 +291,13 @@ final class CameraVendorPtpSessionRuntime {
   func fetchPreviewImageWithInfo(
     for handle: Int
   ) async throws -> CameraVendorPreviewImageFetchResult {
-    try await commandLane.run(priority: .hdPreview) {
+    try await runOwned(priority: .hdPreview, operation: .preview) {
       try self.session.previewImageWithInfo(handle: UInt32(handle))
     }
   }
 
   func performBackgroundKeepAlive() async throws {
-    try await commandLane.run(priority: .keepAlive) {
+    try await runOwned(priority: .keepAlive, operation: .metadata) {
       let handle = Int(CameraVendorBackgroundMetadataRefreshPolicy.readImageInfoKeepAliveHandle)
       try self.beginBackgroundMetadataRequest(handle: handle)
       defer { self.endBackgroundMetadataRequest(handle: handle) }
@@ -505,8 +313,8 @@ final class CameraVendorPtpSessionRuntime {
   }
 
   func downloadOriginal(for handle: Int, expectedSize: UInt32?) async throws -> Data {
-    try await commandLane.run(priority: .download) {
-      self.reportExclusiveDownloadWindowReadyIfNeeded()
+    try await runOwned(priority: .download, operation: .download) {
+      try self.requireTransportReadyForDownload()
       try self.session.ensureConnectedForPriorityDownload()
       return try self.session.object(handle: UInt32(handle), expectedSize: expectedSize)
     }
@@ -517,8 +325,8 @@ final class CameraVendorPtpSessionRuntime {
     mode: CameraVendorTransferDownloadMode,
     cachedInfo: CameraVendorCameraObjectInfo?
   ) async throws -> (Data, CameraVendorCameraObjectInfo?) {
-    try await commandLane.run(priority: .download) {
-      self.reportExclusiveDownloadWindowReadyIfNeeded()
+    try await runOwned(priority: .download, operation: .download) {
+      try self.requireTransportReadyForDownload()
       try self.session.ensureConnectedForPriorityDownload()
       let info = try (cachedInfo ?? self.session.objectInfo(handle: UInt32(handle)).reliableDownloadMetadata)
       let formatLabel = info?.galleryFormatLabel ?? ""
@@ -538,8 +346,8 @@ final class CameraVendorPtpSessionRuntime {
     mode: CameraVendorTransferDownloadMode,
     cachedInfo: CameraVendorCameraObjectInfo?
   ) async throws -> (URL, CameraVendorCameraObjectInfo?, CameraVendorOriginalFileTransferTiming) {
-    try await commandLane.run(priority: .download) {
-      self.reportExclusiveDownloadWindowReadyIfNeeded()
+    try await runOwned(priority: .download, operation: .download) {
+      try self.requireTransportReadyForDownload()
       try self.session.ensureConnectedForPriorityDownload()
       let fileResult = try self.session.objectFile(
         handle: UInt32(handle),
@@ -556,7 +364,8 @@ final class CameraVendorPtpSessionRuntime {
     query: CameraVendorCatalogQuery? = nil,
     revise: (CameraCatalogResponseFacts) throws -> Void
   ) async throws -> CameraVendorCatalogSnapshot {
-    try await commandLane.runExclusiveSessionMutation {
+    try await waitForCatalogChildWorkBarrier()
+    return try await runOwnedSessionMutation {
       let fetch = {
         try self.session.prepareCameraVendorLegacyGalleryLoadIfNeeded()
         if let query {
@@ -575,19 +384,83 @@ final class CameraVendorPtpSessionRuntime {
   }
 
   func fetchCameraCatalog(query: CameraVendorCatalogQuery) async throws -> CameraVendorCatalogSnapshot {
-    try await commandLane.runExclusiveSessionMutation {
-      try self.session.cameraVendorCatalogSnapshot(query: query)
+    try await waitForCatalogChildWorkBarrier()
+    return try await runOwnedSessionMutation {
+      do {
+        return try self.session.cameraVendorCatalogSnapshot(query: query)
+      } catch {
+        let catalogError = error
+        guard self.session.requiresCommandTransportRecovery else { throw error }
+        self.diagnosticHandler(
+          "[OBS] PTP_COMMAND_OWNER_BROKEN label=\(query.label) " +
+          "error=\(catalogError.localizedDescription)"
+        )
+        throw catalogError
+      }
+    }
+  }
+
+  private func waitForCatalogChildWorkBarrier() async throws {
+    // The gallery runtime suspends new child work before submitting a filter,
+    // but already admitted thumbnail/metadata commands must drain at the
+    // owner boundary before SearchMode is read or written. This is a bounded
+    // observation barrier, not a timing sleep and not a second owner.
+    let deadline = Date().addingTimeInterval(10)
+    let initialCounts = galleryRequestCounts()
+    diagnosticHandler(
+      "[OBS] CATALOG_CHILD_WORK_BARRIER_BEGIN " +
+        "activeThumbnail=\(initialCounts.activeThumbnailCount) " +
+        "activeMetadata=\(initialCounts.activeBackgroundMetadataCount) " +
+        "pendingThumbnail=\(initialCounts.pendingThumbnailCount)"
+    )
+    while true {
+      let counts = galleryRequestCounts()
+      if counts.activeThumbnailCount == 0,
+         counts.activeBackgroundMetadataCount == 0,
+         counts.pendingThumbnailCount == 0 {
+        diagnosticHandler(
+          "[OBS] CATALOG_CHILD_WORK_BARRIER_SUCCEEDED " +
+            "activeThumbnail=0 activeMetadata=0 pendingThumbnail=0"
+        )
+        return
+      }
+      if Date() >= deadline {
+        diagnosticHandler(
+          "[OBS] CATALOG_CHILD_WORK_BARRIER_TIMEOUT " +
+            "activeThumbnail=\(counts.activeThumbnailCount) " +
+            "activeMetadata=\(counts.activeBackgroundMetadataCount) " +
+            "pendingThumbnail=\(counts.pendingThumbnailCount)"
+        )
+        throw NSError(
+          domain: "CameraVendorGalleryService",
+          code: NSURLErrorTimedOut,
+          userInfo: [
+            NSLocalizedDescriptionKey:
+              "目录筛选等待缩略图/metadata child work 归零超时",
+          ]
+        )
+      }
+      try await Task.sleep(nanoseconds: 20_000_000)
+      try Task.checkCancellation()
+    }
+  }
+
+  private func requireTransportReadyForDownload() throws {
+    guard !session.requiresCommandTransportRecovery else {
+      throw CameraCommandLaneError.terminated
     }
   }
 
   func fetchExpandedCameraCatalog() async throws -> CameraVendorCatalogSnapshot {
-    try await commandLane.runExclusiveSessionMutation {
+    try await waitForCatalogChildWorkBarrier()
+    return try await runOwnedSessionMutation {
       try self.session.cameraVendorInitialCatalogSnapshot()
     }
   }
 
   func executeCountSweepExperiment() async throws -> CameraVendorCountSweepResult {
-    try await commandLane.runExclusiveSessionMutation {
+    try await waitForCatalogChildWorkBarrier()
+    return try await runOwnedSessionMutation {
       try self.session.cameraVendorCountSweepExperiment()
     }
   }
@@ -596,7 +469,7 @@ final class CameraVendorPtpSessionRuntime {
     handle: UInt32,
     readTimeout: TimeInterval
   ) async throws -> CameraVendorCameraObjectInfo {
-    try await commandLane.run(priority: .details) {
+    try await runOwned(priority: .details, operation: .metadata) {
       try self.beginBackgroundMetadataRequest(handle: Int(handle))
       defer { self.endBackgroundMetadataRequest(handle: Int(handle)) }
       return try self.session.objectInfo(handle: handle, readTimeout: readTimeout)
@@ -605,15 +478,6 @@ final class CameraVendorPtpSessionRuntime {
 
   private func beginThumbnailRequest(handle: Int) throws {
     stateLock.lock()
-    if isExclusiveDownloadWindowActive {
-      stateLock.unlock()
-      diagnosticHandler("[OBS] THUMBNAIL_REQUEST_REJECTED_PRIORITY_DOWNLOAD handle=0x\(String(format: "%08X", handle))")
-      throw NSError(
-        domain: "CameraVendorRealtimeGalleryService",
-        code: CameraVendorPriorityDownloadThumbnailGatePolicy.suspendedThumbnailErrorCode,
-        userInfo: [NSLocalizedDescriptionKey: "下载期间暂停缩略图加载"]
-      )
-    }
     activeThumbnailRequestCount += 1
     lastThumbnailActivityAt = Date()
     let activeCount = activeThumbnailRequestCount
@@ -657,42 +521,8 @@ final class CameraVendorPtpSessionRuntime {
     return counts
   }
 
-  private func activateExclusiveDownloadWindow() {
-    stateLock.lock()
-    isExclusiveDownloadWindowActive = true
-    hasReportedExclusiveDownloadWindowReady = false
-    stateLock.unlock()
-  }
-
-  private func deactivateExclusiveDownloadWindow() {
-    stateLock.lock()
-    isExclusiveDownloadWindowActive = false
-    stateLock.unlock()
-  }
-
-  private func reportExclusiveDownloadWindowReadyIfNeeded() {
-    stateLock.lock()
-    let shouldReport = isExclusiveDownloadWindowActive && !hasReportedExclusiveDownloadWindowReady
-    if shouldReport {
-      hasReportedExclusiveDownloadWindowReady = true
-    }
-    stateLock.unlock()
-    if shouldReport {
-      diagnosticHandler("[OBS] PTP_EXCLUSIVE_DOWNLOAD_WINDOW_READY")
-    }
-  }
-
   private func beginBackgroundMetadataRequest(handle: Int) throws {
     stateLock.lock()
-    if isExclusiveDownloadWindowActive {
-      stateLock.unlock()
-      diagnosticHandler("[OBS] GALLERY_BACKGROUND_METADATA_REJECTED_PRIORITY_DOWNLOAD handle=0x\(String(format: "%08X", handle))")
-      throw NSError(
-        domain: "CameraVendorRealtimeGalleryService",
-        code: NSURLErrorCancelled,
-        userInfo: [NSLocalizedDescriptionKey: "下载期间暂停后台元数据加载"]
-      )
-    }
     activeBackgroundMetadataRequestCount += 1
     let activeCount = activeBackgroundMetadataRequestCount
     stateLock.unlock()
@@ -809,7 +639,7 @@ final class CameraVendorPhysicalSessionTerminationWaitGate {
   }
 }
 
-final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, CameraVendorGalleryBackgroundKeepAlive, CameraVendorGalleryObjectInfoSource, CameraVendorExclusiveDownloadWindowControlling, CameraVendorActiveDownloadInterrupting, CameraVendorActiveDownloadCancellationRequesting, CameraVendorVisibleThumbnailLaneCoordinating {
+final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, CameraVendorGalleryBackgroundKeepAlive, CameraVendorGalleryObjectInfoSource, CameraVendorActiveDownloadInterrupting, CameraVendorActiveDownloadCancellationRequesting, CameraVendorVisibleThumbnailLaneCoordinating {
   private let session = CameraVendorPtpSession()
   private var commandLane = CameraCommandLane()
   private var ptpRuntime: CameraVendorPtpSessionRuntime! = nil
@@ -832,13 +662,7 @@ final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, C
   private let fetchLock = NSLock()
   private var isFetching = false
   private var communicationTerminationGeneration: UInt64 = 0
-  private let exclusiveDownloadWindowLock = NSLock()
-  private var exclusiveDownloadWindowOwnerIDs = Set<CameraVendorExclusiveDownloadWindowOwnerID>()
-  private var exclusiveDownloadWindowGeneration: UInt64 = 0
-  private var exclusiveDownloadWindowGenerationID: UUID?
-  private var hasStartedPriorityDownloadBatch = false
 #if DEBUG
-  var exclusiveDownloadWindowEndStateDidCommitForTesting: (() -> Void)?
   var physicalSessionTerminationDidCommitForTesting: (() -> Void)?
   var physicalSessionTransportDidCloseForTesting: (() -> Void)?
   var connectionPlanBindDidStartForTesting: (() -> Void)?
@@ -939,7 +763,6 @@ final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, C
     physicalSessionTerminationDidCommitForTesting?()
 #endif
     report("[OBS] GALLERY_COMMUNICATION_TERMINATE_REQUESTED reason=\(reason)")
-    forceEndExclusiveDownloadWindows()
     objectInfoCache.resetForPhysicalSession()
     fetchLock.lock()
     communicationTerminationGeneration += 1
@@ -1049,6 +872,7 @@ final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, C
     }
     activeConnectionPlan = plan
     activeStrategySnapshot = strategySnapshot
+    session.configureMediaOperations(strategySnapshot.mediaOperations)
     reportStrategySnapshotBindings(plan: plan, snapshot: strategySnapshot)
   }
 
@@ -1091,6 +915,11 @@ final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, C
         fingerprint: FujifilmStrategyDefinitionFingerprint.hex(definition)
       ))
     }
+    bindings.append((
+      stage: "mediaOperations",
+      strategyID: "media-operations",
+      fingerprint: FujifilmStrategyDefinitionFingerprint.hex(snapshot.mediaOperations)
+    ))
 
     for binding in bindings {
       report(
@@ -1118,157 +947,13 @@ final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, C
     }
   }
 
-  func withExclusiveDownloadWindow<T>(_ operation: () async throws -> T) async throws -> T {
-    let ownerID = beginExclusiveDownloadWindow()
-    let release = CameraVendorExclusiveDownloadWindowRelease { [weak self] in
-      self?.endExclusiveDownloadWindow(ownerID: ownerID)
-    }
-    return try await withTaskCancellationHandler {
-      defer { release.release() }
-      try await awaitExclusiveDownloadWindowReady(ownerID: ownerID)
-      try Task.checkCancellation()
-      guard release.markAdmitted() else { throw CancellationError() }
-      return try await operation()
-    } onCancel: {
-      release.cancelWhileWaiting()
-    }
-  }
-
-  @discardableResult
-  func beginExclusiveDownloadWindow() -> CameraVendorExclusiveDownloadWindowOwnerID {
-    let ownerID: CameraVendorExclusiveDownloadWindowOwnerID
-    let shouldReportBegin: Bool
-    let generation: UInt64
-    exclusiveDownloadWindowLock.lock()
-    shouldReportBegin = exclusiveDownloadWindowOwnerIDs.isEmpty
-    if shouldReportBegin {
-      exclusiveDownloadWindowGeneration += 1
-      exclusiveDownloadWindowGenerationID = UUID()
-      hasStartedPriorityDownloadBatch = false
-    }
-    ownerID = CameraVendorExclusiveDownloadWindowOwnerID(
-      generationID: exclusiveDownloadWindowGenerationID!
-    )
-    exclusiveDownloadWindowOwnerIDs.insert(ownerID)
-    generation = exclusiveDownloadWindowGeneration
-    exclusiveDownloadWindowLock.unlock()
-    ptpRuntime.beginExclusiveDownloadWindow(ownerID: ownerID)
-    let isCurrent = exclusiveDownloadWindowLock.withLock {
-      exclusiveDownloadWindowGeneration == generation
-        && exclusiveDownloadWindowOwnerIDs.contains(ownerID)
-    }
-    if !isCurrent {
-      ptpRuntime.endExclusiveDownloadWindow(ownerID: ownerID)
-    } else if shouldReportBegin {
-      report("[OBS] PTP_EXCLUSIVE_DOWNLOAD_WINDOW_BEGIN")
-    }
-    return ownerID
-  }
-
-  func awaitExclusiveDownloadWindowReady(
-    ownerID: CameraVendorExclusiveDownloadWindowOwnerID
-  ) async throws {
-    try await ptpRuntime.awaitExclusiveDownloadWindowReady(ownerID: ownerID)
-    try Task.checkCancellation()
-    let transition: UInt64? = try exclusiveDownloadWindowLock.withLock {
-      guard exclusiveDownloadWindowOwnerIDs.contains(ownerID) else {
-        throw CancellationError()
-      }
-      guard !hasStartedPriorityDownloadBatch else { return nil }
-      hasStartedPriorityDownloadBatch = true
-      return exclusiveDownloadWindowGeneration
-    }
-    guard let generation = transition else { return }
-    try await ptpRuntime.runPriorityBatchTransition(ownerID: ownerID) {
-      let shouldBegin = self.exclusiveDownloadWindowLock.withLock {
-        self.exclusiveDownloadWindowGeneration == generation
-          && self.exclusiveDownloadWindowOwnerIDs.contains(ownerID)
-          && self.hasStartedPriorityDownloadBatch
-      }
-      guard shouldBegin else { throw CancellationError() }
-      self.report("[OBS] PTP_PRIORITY_DOWNLOAD_BATCH_BEGIN_COMMAND_LANE")
-      self.session.beginPriorityDownloadBatch(
-        generation: self.currentCommunicationGeneration()
-      )
-    }
-    let isStillCurrent = exclusiveDownloadWindowLock.withLock {
-      exclusiveDownloadWindowGeneration == generation
-        && exclusiveDownloadWindowOwnerIDs.contains(ownerID)
-        && hasStartedPriorityDownloadBatch
-    }
-    guard isStillCurrent else { throw CancellationError() }
-    let counts = ptpRuntime.galleryRequestCounts()
-    report(
-      "[OBS] PTP_EXCLUSIVE_DOWNLOAD_ADMISSION_READY " +
-        "active=\(counts.activeThumbnailCount + counts.activeBackgroundMetadataCount) " +
-        "pendingNonDownload=0 schedulerIdle=true"
-    )
-    guard exclusiveDownloadWindowLock.withLock({
-      exclusiveDownloadWindowGeneration == generation
-        && exclusiveDownloadWindowOwnerIDs.contains(ownerID)
-    }) else {
-      throw CancellationError()
-    }
-  }
-
-  func endExclusiveDownloadWindow(ownerID: CameraVendorExclusiveDownloadWindowOwnerID) {
-    let shouldFinishBatch: Bool
-    exclusiveDownloadWindowLock.lock()
-    guard exclusiveDownloadWindowOwnerIDs.remove(ownerID) != nil else {
-      exclusiveDownloadWindowLock.unlock()
-      return
-    }
-    let isLastOwner = exclusiveDownloadWindowOwnerIDs.isEmpty
-    shouldFinishBatch = isLastOwner && hasStartedPriorityDownloadBatch
-    if isLastOwner {
-      exclusiveDownloadWindowGenerationID = nil
-      hasStartedPriorityDownloadBatch = false
-    }
-    exclusiveDownloadWindowLock.unlock()
-#if DEBUG
-    if isLastOwner {
-      exclusiveDownloadWindowEndStateDidCommitForTesting?()
-    }
-#endif
-    let finalizer: (() -> Void)? = shouldFinishBatch ? { [weak self] in
-      guard let self else { return }
-      self.session.finishPriorityDownloadBatchOnCommandLane()
-      self.report("[OBS] PRIORITY_DOWNLOAD_FINISH")
-    } : nil
-    ptpRuntime.endExclusiveDownloadWindow(
-      ownerID: ownerID,
-      afterSerialized: finalizer
-    )
-    if isLastOwner && !shouldFinishBatch {
-      report("[OBS] PRIORITY_DOWNLOAD_FINISH")
-    }
-  }
-
-  private func forceEndExclusiveDownloadWindows() {
-    let hadOwners: Bool
-    let shouldFinishBatch: Bool
-    exclusiveDownloadWindowLock.lock()
-    hadOwners = !exclusiveDownloadWindowOwnerIDs.isEmpty
-    shouldFinishBatch = hasStartedPriorityDownloadBatch
-    exclusiveDownloadWindowOwnerIDs.removeAll(keepingCapacity: false)
-    exclusiveDownloadWindowGeneration += 1
-    exclusiveDownloadWindowGenerationID = nil
-    hasStartedPriorityDownloadBatch = false
-    exclusiveDownloadWindowLock.unlock()
-    guard hadOwners else { return }
-    let finalizer: (() -> Void)? = shouldFinishBatch ? { [weak self] in
-      guard let self else { return }
-      self.session.finishPriorityDownloadBatchOnCommandLane()
-      self.report("[OBS] PRIORITY_DOWNLOAD_FINISH")
-    } : nil
-    ptpRuntime.forceEndExclusiveDownloadWindow(afterSerialized: finalizer)
-    if !shouldFinishBatch {
-      report("[OBS] PRIORITY_DOWNLOAD_FINISH")
-    }
-  }
-
   func interruptActiveDownload(reason: String) {
-    report("[OBS] PTP_ACTIVE_DOWNLOAD_INTERRUPT reason=\(reason)")
+    if reason == "user-confirmed-gallery-exit" {
+      report("[OBS] GALLERY_EXIT_BEGIN reason=\(reason)")
+      report("[OBS] PTP_GALLERY_EXIT_CANCEL_PENDING_WORK reason=\(reason)")
+    } else {
+      report("[OBS] PTP_ORIGINAL_DOWNLOAD_INTERRUPT reason=\(reason)")
+    }
     session.invalidateInFlightOperationForPriorityDownload(reason: reason)
   }
 

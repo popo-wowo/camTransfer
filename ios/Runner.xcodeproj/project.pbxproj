@@ -90,7 +90,6 @@
 		DCEA2CF1EC6E2D4FF098B299 /* NativeGalleryHDPreviewSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E42005BD544F5AA50190078 /* NativeGalleryHDPreviewSession.swift */; };
 		E3AE111E6509FA626EAA7115 /* CameraGalleryHDPreviewPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5292E8C26D9C9146466FF36 /* CameraGalleryHDPreviewPipeline.swift */; };
 		E4E06DB46EF0678B4A9DDCB1 /* CameraTransportFailureDisposition.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90F7FE2E756D6894F1551C79 /* CameraTransportFailureDisposition.swift */; };
-		E7BE625B6F1C444945049488 /* FujifilmXSeriesProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 863C640E1DFF7EEB915C907B /* FujifilmXSeriesProfile.swift */; };
 		E7C009B76304D4BC3C997DF9 /* CameraConnectionFlowGuards.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9249F1A4D7A6F6B6697F7DFA /* CameraConnectionFlowGuards.swift */; };
 		E9B85CA50C617FE4AEAC6FA6 /* NativeGalleryPolicies.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83DCCA61E25B1B4BF5BFD9EE /* NativeGalleryPolicies.swift */; };
 		F0F955880762DFB3B34F35B5 /* CameraConnectFlowCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CAE28E72F8814F293BF3FD0 /* CameraConnectFlowCoordinator.swift */; };
@@ -175,7 +174,6 @@
 		850707930ED023C58251512E /* CameraCoreModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraCoreModels.swift; sourceTree = "<group>"; };
 		85DC3285FFADBB45ADDC2E40 /* CameraPairingModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPairingModule.swift; sourceTree = "<group>"; };
 		8620442D979E9B6EF30B3869 /* CameraVendorGalleryMainlineSessionLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorGalleryMainlineSessionLoader.swift; sourceTree = "<group>"; };
-		863C640E1DFF7EEB915C907B /* FujifilmXSeriesProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FujifilmXSeriesProfile.swift; sourceTree = "<group>"; };
 		885AFF3A80513C34DC44ED4E /* FujifilmCameraAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FujifilmCameraAdapter.swift; sourceTree = "<group>"; };
 		88C4856CA0738EF7DFF81439 /* CameraVendorPairingProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorPairingProbe.swift; sourceTree = "<group>"; };
 		8941C8D867E337D6653EFE20 /* CameraVendorPtpSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraVendorPtpSession.swift; sourceTree = "<group>"; };
@@ -359,7 +357,6 @@
 				CA2000020000000000000002 /* FujifilmCompatibility.swift */,
 				885AFF3A80513C34DC44ED4E /* FujifilmCameraAdapter.swift */,
 				CA1000020000000000000002 /* FujifilmProtocolEngine.swift */,
-				863C640E1DFF7EEB915C907B /* FujifilmXSeriesProfile.swift */,
 			);
 			path = Fujifilm;
 			sourceTree = "<group>";
@@ -664,7 +661,6 @@
 				65E6F39481CB19CDEEF3CAA2 /* FujifilmCameraAdapter.swift in Sources */,
 				CA2000010000000000000001 /* FujifilmCompatibility.swift in Sources */,
 				CA1000010000000000000001 /* FujifilmProtocolEngine.swift in Sources */,
-				E7BE625B6F1C444945049488 /* FujifilmXSeriesProfile.swift in Sources */,
 				41A84F673A15B58C0680151D /* LocalProofingSession.swift in Sources */,
 				CBA17A04287790D7CEDA414F /* NativeAutoDownloadSettingsViewController.swift in Sources */,
 				0D2FDF3FF21F2F7B30A519B2 /* NativeConnectViewController.swift in Sources */,

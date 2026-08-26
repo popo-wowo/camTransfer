@@ -1,8 +1,6 @@
 import Foundation
 
 struct FujifilmCameraAdapter: CameraAdapter {
-  let profile: FujifilmXSeriesProfile
-
   let descriptor = CameraAdapterDescriptor(
     id: "fujifilm-x-series",
     displayName: "FUJIFILM X Series",
