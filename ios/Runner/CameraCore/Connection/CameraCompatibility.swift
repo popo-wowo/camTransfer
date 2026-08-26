@@ -417,6 +417,7 @@ struct CameraProtocolFacts: Codable, Equatable {
     case selectedFunctionVersion
     case bleEndpointEvidence
     case catalogResponseFacts
+    case searchModeReadbackStableAfterChildActivity
   }
 
   let compatibilityFamily: CameraCompatibilityFamily?
@@ -429,6 +430,7 @@ struct CameraProtocolFacts: Codable, Equatable {
   let selectedFunctionVersion: UInt32?
   let bleEndpointEvidence: CameraBleEndpointEvidence
   let catalogResponseFacts: CameraCatalogResponseFacts?
+  let searchModeReadbackStableAfterChildActivity: Bool?
 
   init(
     compatibilityFamily: CameraCompatibilityFamily?,
@@ -440,7 +442,8 @@ struct CameraProtocolFacts: Codable, Equatable {
     cameraFunctionVersion: UInt32? = nil,
     selectedFunctionVersion: UInt32? = nil,
     bleEndpointEvidence: CameraBleEndpointEvidence = .none,
-    catalogResponseFacts: CameraCatalogResponseFacts? = nil
+    catalogResponseFacts: CameraCatalogResponseFacts? = nil,
+    searchModeReadbackStableAfterChildActivity: Bool? = nil
   ) {
     self.compatibilityFamily = compatibilityFamily
     self.advertisedServices = Set(advertisedServices.map(Self.normalize))
@@ -452,6 +455,7 @@ struct CameraProtocolFacts: Codable, Equatable {
     self.selectedFunctionVersion = selectedFunctionVersion
     self.bleEndpointEvidence = bleEndpointEvidence
     self.catalogResponseFacts = catalogResponseFacts
+    self.searchModeReadbackStableAfterChildActivity = searchModeReadbackStableAfterChildActivity
   }
 
   init(from decoder: Decoder) throws {
@@ -490,6 +494,10 @@ struct CameraProtocolFacts: Codable, Equatable {
       catalogResponseFacts: try container.decodeIfPresent(
         CameraCatalogResponseFacts.self,
         forKey: .catalogResponseFacts
+      ),
+      searchModeReadbackStableAfterChildActivity: try container.decodeIfPresent(
+        Bool.self,
+        forKey: .searchModeReadbackStableAfterChildActivity
       )
     )
   }
@@ -512,7 +520,8 @@ struct CameraProtocolFacts: Codable, Equatable {
       cameraFunctionVersion: cameraFunctionVersion,
       selectedFunctionVersion: selectedFunctionVersion,
       bleEndpointEvidence: bleEndpointEvidence,
-      catalogResponseFacts: catalogResponseFacts
+      catalogResponseFacts: catalogResponseFacts,
+      searchModeReadbackStableAfterChildActivity: searchModeReadbackStableAfterChildActivity
     )
   }
 
@@ -536,7 +545,8 @@ struct CameraProtocolFacts: Codable, Equatable {
       cameraFunctionVersion: functionFacts.cameraFunctionVersion ?? cameraFunctionVersion,
       selectedFunctionVersion: functionFacts.selectedFunctionVersion ?? selectedFunctionVersion,
       bleEndpointEvidence: bleEndpointEvidence,
-      catalogResponseFacts: catalogResponseFacts
+      catalogResponseFacts: catalogResponseFacts,
+      searchModeReadbackStableAfterChildActivity: searchModeReadbackStableAfterChildActivity
     )
   }
 
@@ -553,7 +563,8 @@ struct CameraProtocolFacts: Codable, Equatable {
       cameraFunctionVersion: cameraFunctionVersion,
       selectedFunctionVersion: selectedFunctionVersion,
       bleEndpointEvidence: bleEndpointEvidence,
-      catalogResponseFacts: catalogResponseFacts
+      catalogResponseFacts: catalogResponseFacts,
+      searchModeReadbackStableAfterChildActivity: searchModeReadbackStableAfterChildActivity
     )
   }
 
@@ -588,7 +599,8 @@ struct CameraCompatibilityFacts: Codable, Equatable {
     cameraFunctionVersion: UInt32? = nil,
     selectedFunctionVersion: UInt32? = nil,
     bleEndpointEvidence: CameraBleEndpointEvidence = .none,
-    catalogResponseFacts: CameraCatalogResponseFacts? = nil
+    catalogResponseFacts: CameraCatalogResponseFacts? = nil,
+    searchModeReadbackStableAfterChildActivity: Bool? = nil
   ) {
     observedIdentity = CameraObservedIdentity(
       modelName: modelName,
@@ -604,7 +616,8 @@ struct CameraCompatibilityFacts: Codable, Equatable {
       cameraFunctionVersion: cameraFunctionVersion,
       selectedFunctionVersion: selectedFunctionVersion,
       bleEndpointEvidence: bleEndpointEvidence,
-      catalogResponseFacts: catalogResponseFacts
+      catalogResponseFacts: catalogResponseFacts,
+      searchModeReadbackStableAfterChildActivity: searchModeReadbackStableAfterChildActivity
     )
   }
 
@@ -618,6 +631,9 @@ struct CameraCompatibilityFacts: Codable, Equatable {
   var selectedFunctionVersion: UInt32? { protocolFacts.selectedFunctionVersion }
   var bleEndpointEvidence: CameraBleEndpointEvidence { protocolFacts.bleEndpointEvidence }
   var catalogResponseFacts: CameraCatalogResponseFacts? { protocolFacts.catalogResponseFacts }
+  var searchModeReadbackStableAfterChildActivity: Bool? {
+    protocolFacts.searchModeReadbackStableAfterChildActivity
+  }
 
   func updating(
     successfulInitStrategy: PtpInitStrategyID,
@@ -635,7 +651,9 @@ struct CameraCompatibilityFacts: Codable, Equatable {
         cameraFunctionVersion: protocolFacts.cameraFunctionVersion,
         selectedFunctionVersion: protocolFacts.selectedFunctionVersion,
         bleEndpointEvidence: protocolFacts.bleEndpointEvidence,
-        catalogResponseFacts: protocolFacts.catalogResponseFacts
+        catalogResponseFacts: protocolFacts.catalogResponseFacts,
+        searchModeReadbackStableAfterChildActivity:
+          protocolFacts.searchModeReadbackStableAfterChildActivity
       )
     )
   }
@@ -683,7 +701,9 @@ struct CameraCompatibilityFacts: Codable, Equatable {
         selectedFunctionVersion:
           functionFacts.selectedFunctionVersion ?? protocolFacts.selectedFunctionVersion,
         bleEndpointEvidence: protocolFacts.bleEndpointEvidence,
-        catalogResponseFacts: protocolFacts.catalogResponseFacts
+        catalogResponseFacts: protocolFacts.catalogResponseFacts,
+        searchModeReadbackStableAfterChildActivity:
+          protocolFacts.searchModeReadbackStableAfterChildActivity
       )
     )
   }

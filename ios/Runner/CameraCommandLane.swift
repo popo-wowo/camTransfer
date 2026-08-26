@@ -1,5 +1,84 @@
 import Foundation
 
+enum CameraPtpTransportOperation: Equatable {
+  case catalog
+  case thumbnail
+  case metadata
+  case preview
+  case download
+}
+
+enum CameraPtpTransportFailure: Equatable {
+  case invalidPacketLength(UInt32)
+  case transactionMismatch(expected: UInt32, actual: UInt32)
+  case cancellationTimeout
+}
+
+struct CameraPtpTransportOperationToken: Equatable {
+  let generation: UInt64
+  let operation: CameraPtpTransportOperation
+}
+
+enum CameraPtpTransportState: Equatable {
+  case ready(generation: UInt64)
+  case executing(generation: UInt64, operation: CameraPtpTransportOperation)
+  case cancelling(generation: UInt64, operation: CameraPtpTransportOperation)
+  case terminal(generation: UInt64, reason: CameraPtpTransportFailure)
+}
+
+struct CameraPtpTransportStateMachine {
+  enum Error: Swift.Error, Equatable {
+    case busy
+    case terminal
+  }
+
+  private(set) var state: CameraPtpTransportState
+
+  init(generation: UInt64) {
+    state = .ready(generation: generation)
+  }
+
+  mutating func begin(
+    operation: CameraPtpTransportOperation
+  ) throws -> CameraPtpTransportOperationToken {
+    guard case let .ready(generation) = state else {
+      switch state {
+      case .terminal:
+        throw Error.terminal
+      default:
+        throw Error.busy
+      }
+    }
+    state = .executing(generation: generation, operation: operation)
+    return CameraPtpTransportOperationToken(generation: generation, operation: operation)
+  }
+
+  mutating func requestCancellation() -> CameraPtpTransportState {
+    guard case let .executing(generation, operation) = state else { return state }
+    state = .cancelling(generation: generation, operation: operation)
+    return state
+  }
+
+  mutating func completeCancellation() {
+    guard case let .cancelling(generation, _) = state else { return }
+    state = .ready(generation: generation)
+  }
+
+  mutating func cancelTimedOut(reason: CameraPtpTransportFailure) {
+    guard case let .cancelling(generation, _) = state else { return }
+    state = .terminal(generation: generation, reason: reason)
+  }
+
+  mutating func failFraming(reason: CameraPtpTransportFailure) {
+    let generation: UInt64
+    switch state {
+    case let .ready(current), let .executing(current, _), let .cancelling(current, _), let .terminal(current, _):
+      generation = current
+    }
+    state = .terminal(generation: generation, reason: reason)
+  }
+}
+
 enum CameraCommandPriority: Int, Sendable {
   case sessionMutation = -1
   case download = 0
@@ -12,28 +91,6 @@ enum CameraCommandPriority: Int, Sendable {
 enum CameraCommandLaneError: Error {
   case waitTimeout
   case terminated
-}
-
-final class CameraCommandLease: @unchecked Sendable {
-  private let lock = NSLock()
-  private var releaseHandler: (((() -> Void)?) -> Void)?
-
-  init(releaseHandler: @escaping ((() -> Void)?) -> Void) {
-    self.releaseHandler = releaseHandler
-  }
-
-  func release(afterSerialized finalizer: (() -> Void)? = nil) {
-    let handler: (((() -> Void)?) -> Void)?
-    lock.lock()
-    handler = releaseHandler
-    releaseHandler = nil
-    lock.unlock()
-    handler?(finalizer)
-  }
-
-  deinit {
-    release()
-  }
 }
 
 final class CameraCommandLane {
@@ -94,10 +151,7 @@ final class CameraCommandLane {
   private var waiters: [Waiter] = []
   private var nextSequence = 0
   private var nextWaiterID = 0
-  private var exclusiveDownloadLeaseIDs = Set<Int>()
-  private var nextExclusiveDownloadLeaseID = 0
   private var isExclusiveSessionMutationBarrierActive = false
-  private var serializedFinalizers: [() -> Void] = []
   private var idleWaiters: [IdleWaiter] = []
   private var nextIdleWaiterID = 0
   private var terminated = false
@@ -139,15 +193,10 @@ final class CameraCommandLane {
     idleWaitersToCancel = idleWaiters
     waiters.removeAll(keepingCapacity: false)
     idleWaiters.removeAll(keepingCapacity: false)
-    exclusiveDownloadLeaseIDs.removeAll(keepingCapacity: false)
     isExclusiveSessionMutationBarrierActive = false
     if isCommandActive {
       terminationFinalizer = finalizer
       finalizerToRun = nil
-    } else if let serializedFinalizer = takeNextSerializedFinalizerLocked() {
-      isCommandActive = true
-      terminationFinalizer = finalizer
-      finalizerToRun = serializedFinalizer
     } else {
       finalizerToRun = finalizer
     }
@@ -188,21 +237,6 @@ final class CameraCommandLane {
     return try await run(priority: .sessionMutation, operation)
   }
 
-  func acquireExclusiveDownloadLease() async throws -> CameraCommandLease {
-    try Task.checkCancellation()
-    let leaseID = try beginExclusiveDownloadBarrier()
-    do {
-      try await waitUntilIdle()
-      try Task.checkCancellation()
-      return CameraCommandLease { [weak self] finalizer in
-        self?.endExclusiveDownloadBarrier(leaseID: leaseID, finalizer: finalizer)
-      }
-    } catch {
-      endExclusiveDownloadBarrier(leaseID: leaseID)
-      throw error
-    }
-  }
-
   func waitUntilIdle() async throws {
     try Task.checkCancellation()
     let token = WaiterToken()
@@ -238,70 +272,6 @@ final class CameraCommandLane {
       self?.cancelIdleWaiter(id: waiterID)
     }
     try Task.checkCancellation()
-  }
-
-  private func beginExclusiveDownloadBarrier() throws -> Int {
-    let cancelledWaiters: [Waiter]
-    let idleWaitersToResume: [IdleWaiter]
-    lock.lock()
-    guard !terminated else {
-      lock.unlock()
-      throw CameraCommandLaneError.terminated
-    }
-    let leaseID = nextExclusiveDownloadLeaseID
-    nextExclusiveDownloadLeaseID += 1
-    exclusiveDownloadLeaseIDs.insert(leaseID)
-    cancelledWaiters = waiters.filter {
-      !canRunDuringExclusiveDownloadBarrier(priority: $0.priority)
-    }
-    waiters.removeAll {
-      !canRunDuringExclusiveDownloadBarrier(priority: $0.priority)
-    }
-    idleWaitersToResume = takeIdleWaitersIfReadyLocked()
-    lock.unlock()
-    for waiter in cancelledWaiters {
-      waiter.continuation.resume(throwing: CancellationError())
-    }
-    idleWaitersToResume.forEach { $0.continuation.resume() }
-    return leaseID
-  }
-
-  private func endExclusiveDownloadBarrier(
-    leaseID: Int,
-    finalizer: (() -> Void)? = nil
-  ) {
-    let next: Waiter?
-    let finalizerToRun: (() -> Void)?
-    lock.lock()
-    guard exclusiveDownloadLeaseIDs.remove(leaseID) != nil else {
-      lock.unlock()
-      return
-    }
-    if let finalizer {
-      serializedFinalizers.append(finalizer)
-    }
-    if !isCommandActive {
-      finalizerToRun = takeNextSerializedFinalizerLocked()
-      if finalizerToRun != nil {
-        isCommandActive = true
-        next = nil
-      } else {
-        next = removeNextRunnableWaiterLocked()
-        if next != nil {
-          isCommandActive = true
-        }
-      }
-    } else {
-      next = nil
-      finalizerToRun = nil
-    }
-    lock.unlock()
-    if let finalizerToRun {
-      finalizerToRun()
-      releaseNext()
-    } else {
-      next?.continuation.resume()
-    }
   }
 
   private func beginExclusiveSessionMutationBarrier() {
@@ -342,12 +312,9 @@ final class CameraCommandLane {
           resumeError = CameraCommandLaneError.terminated
         } else if Task.isCancelled {
           resumeError = CancellationError()
-        } else if isExclusiveDownloadBarrierActive
-          && !canRunDuringExclusiveDownloadBarrier(priority: priority) {
-          resumeError = CancellationError()
         } else if !isCommandActive
           && canRunImmediatelyLocked(priority: priority)
-          && (waiters.isEmpty || isExclusiveDownloadBarrierActive) {
+          && waiters.isEmpty {
           isCommandActive = true
           shouldAcquireImmediately = true
         } else {
@@ -396,18 +363,9 @@ final class CameraCommandLane {
     let idleWaitersToResume: [IdleWaiter]
     lock.lock()
     if terminated {
-      if let serializedFinalizer = takeNextSerializedFinalizerLocked() {
-        isCommandActive = true
-        finalizerToRun = serializedFinalizer
-      } else {
-        isCommandActive = false
-        finalizerToRun = terminationFinalizer
-        terminationFinalizer = nil
-      }
-      next = nil
-      idleWaitersToResume = []
-    } else if let finalizer = takeNextSerializedFinalizerLocked() {
-      finalizerToRun = finalizer
+      isCommandActive = false
+      finalizerToRun = terminationFinalizer
+      terminationFinalizer = nil
       next = nil
       idleWaitersToResume = []
     } else if let runnable = removeNextRunnableWaiterLocked() {
@@ -431,12 +389,7 @@ final class CameraCommandLane {
   }
 
   private var isIdleLocked: Bool {
-    !isCommandActive && waiters.isEmpty && serializedFinalizers.isEmpty
-  }
-
-  private func takeNextSerializedFinalizerLocked() -> (() -> Void)? {
-    guard !serializedFinalizers.isEmpty else { return nil }
-    return serializedFinalizers.removeFirst()
+    !isCommandActive && waiters.isEmpty
   }
 
   private func takeIdleWaitersIfReadyLocked() -> [IdleWaiter] {
@@ -446,20 +399,11 @@ final class CameraCommandLane {
     return waiters
   }
 
-  private var isExclusiveDownloadBarrierActive: Bool {
-    !exclusiveDownloadLeaseIDs.isEmpty
-  }
-
   private func canRunImmediatelyLocked(priority: CameraCommandPriority) -> Bool {
     if isExclusiveSessionMutationBarrierActive {
       return priority == .sessionMutation
     }
-    return !isExclusiveDownloadBarrierActive
-      || canRunDuringExclusiveDownloadBarrier(priority: priority)
-  }
-
-  private func canRunDuringExclusiveDownloadBarrier(priority: CameraCommandPriority) -> Bool {
-    priority == .sessionMutation || priority == .download
+    return true
   }
 
   private func removeNextRunnableWaiterLocked() -> Waiter? {

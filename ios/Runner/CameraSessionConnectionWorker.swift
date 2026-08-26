@@ -31,6 +31,8 @@ protocol CameraSessionRuntimeConnectionControlling: AnyObject {
   func forgetRememberedCamera(peripheralID: UUID)
   func startScan()
   func probePairing(peripheralID: UUID) async -> CameraVendorPairingProbeResult
+  func waitForPairingProbeCompletion(peripheralID: UUID) async -> CameraVendorPairingProbeResult?
+  func adoptPreconnectedProbe(peripheralID: UUID) -> Bool
   var hasPreconnectedProbe: Bool { get }
   var preconnectedProbePeripheralID: UUID? { get }
   func cancelPairingProbe(reason: String)
@@ -161,8 +163,6 @@ final class CameraSessionRuntimeConnectionWorker {
 
   private func cancelTaskOnly() {
     activeTask?.cancel()
-    activeTask = nil
-    activeTaskID = nil
   }
 
   private func cancelActiveTaskForSupersedingConnection(reason: String) {

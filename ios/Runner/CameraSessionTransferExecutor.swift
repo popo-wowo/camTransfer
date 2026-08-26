@@ -3,8 +3,6 @@ import UIKit
 
 @MainActor
 protocol CameraSessionRuntimeTransport: AnyObject {
-  func beginDownloadLease()
-  func endDownloadLease()
   func fetchThumbnailWithInfo(for handle: Int) async throws -> CameraVendorGalleryThumbnail
   func fetchPreviewImage(for handle: Int) async throws -> Data
   func fetchInitialCameraCatalog() async throws -> CameraVendorCatalogSnapshot
@@ -111,14 +109,6 @@ final class CameraSessionRuntimeDeferredTransport: CameraSessionRuntimeTransport
 
   func startTransfer(handle: UInt32, mode: CameraVendorTransferDownloadMode) {
     transport?.startTransfer(handle: handle, mode: mode)
-  }
-
-  func beginDownloadLease() {
-    transport?.beginDownloadLease()
-  }
-
-  func endDownloadLease() {
-    transport?.endDownloadLease()
   }
 
   func fetchThumbnailWithInfo(for handle: Int) async throws -> CameraVendorGalleryThumbnail {
@@ -579,7 +569,6 @@ final class CameraVendorGallerySessionRuntimeTransport: CameraSessionRuntimeTran
   private var activeTransferTask: Task<Void, Never>?
   private var activeTransferID: UUID?
   private var activeTransferCommitGate: CameraSessionRuntimeTransferCommitGate?
-  private var exclusiveDownloadWindowOwnerID: CameraVendorExclusiveDownloadWindowOwnerID?
   private var didNotifyRuntimeTermination = false
 
   init(
@@ -704,20 +693,6 @@ final class CameraVendorGallerySessionRuntimeTransport: CameraSessionRuntimeTran
     }
   }
 
-  func beginDownloadLease() {
-    guard exclusiveDownloadWindowOwnerID == nil else { return }
-    exclusiveDownloadWindowOwnerID =
-      (galleryService as? CameraVendorExclusiveDownloadWindowControlling)?
-        .beginExclusiveDownloadWindow()
-  }
-
-  func endDownloadLease() {
-    guard let ownerID = exclusiveDownloadWindowOwnerID else { return }
-    exclusiveDownloadWindowOwnerID = nil
-    (galleryService as? CameraVendorExclusiveDownloadWindowControlling)?
-      .endExclusiveDownloadWindow(ownerID: ownerID)
-  }
-
   func fetchThumbnailWithInfo(for handle: Int) async throws -> CameraVendorGalleryThumbnail {
     try await galleryService.fetchThumbnailWithInfo(for: handle)
   }
@@ -776,7 +751,7 @@ final class CameraVendorGallerySessionRuntimeTransport: CameraSessionRuntimeTran
   func cancelActiveTransfer(reason: String) {
     activeTransferTask?.cancel()
     activeTransferCommitGate?.invalidate()
-    if reason == "user-cancelled-download" {
+    if reason.hasPrefix("user-cancelled-download") {
       (galleryService as? CameraVendorActiveDownloadCancellationRequesting)?
         .requestActiveDownloadCancellation(reason: reason)
       return

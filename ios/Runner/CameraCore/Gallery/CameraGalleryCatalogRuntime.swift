@@ -402,8 +402,8 @@ actor CameraGalleryCatalogRuntime {
       currentPresentation = CameraGalleryPresentation(
         state: .failed(generation: transaction.generation, failure: failure.catalogFailure),
         intent: transaction.intent,
-        items: [],
-        entries: []
+        items: retainedCatalogItems(for: transaction.intent),
+        entries: repository.entries
       )
       await publishCurrentPresentation()
       await reportTransportEvidence(failure.catalogFailure)
@@ -429,8 +429,8 @@ actor CameraGalleryCatalogRuntime {
       currentPresentation = CameraGalleryPresentation(
         state: .failed(generation: transaction.generation, failure: failure),
         intent: transaction.intent,
-        items: [],
-        entries: []
+        items: retainedCatalogItems(for: transaction.intent),
+        entries: repository.entries
       )
       await publishCurrentPresentation()
       await reportTransportEvidence(failure)
@@ -587,6 +587,10 @@ actor CameraGalleryCatalogRuntime {
       items: items,
       entries: items.compactMap { entriesByHandle[$0.handle] }
     )
+  }
+
+  private func retainedCatalogItems(for intent: CameraGalleryFilterIntent) -> [CameraGalleryCatalogItem] {
+    sort(repository.items, by: intent.sort)
   }
 
   private func preservingCurrentState(

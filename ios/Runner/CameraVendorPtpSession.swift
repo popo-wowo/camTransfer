@@ -7,6 +7,19 @@ enum CameraVendorPtpOperationTransport {
   case cameraVendorLegacy
 }
 
+enum CameraPtpFramingFailure: Equatable {
+  case legacyPacketLength(UInt32)
+  case responseTransactionMismatch(expected: UInt32, actual: UInt32)
+  case packetBoundaryUnknown
+
+  var invalidatesPhysicalSession: Bool {
+    switch self {
+    case .legacyPacketLength, .responseTransactionMismatch, .packetBoundaryUnknown:
+      true
+    }
+  }
+}
+
 enum CameraVendorPtpSessionPurpose {
   case gallery
   case reservedReceiveDiagnostic
@@ -327,16 +340,36 @@ final class CameraVendorPtpSession {
   private let commandSocket = CameraVendorPtpSocket()
   private let eventSocket = CameraVendorPtpSocket()
   private let originalTransferWorker = CameraVendorOriginalTransferWorker()
-  private let commandLock = NSLock()
   private let lifecycleLock = NSLock()
   private var connectionNumber: UInt32 = 0
   private var transactionID: UInt32 = 0
   private var isConnected = false
+  private var transportStateMachine = CameraPtpTransportStateMachine(generation: 0)
   private var transferCapabilitySerialNumber: String?
   private let originalTransferCapabilityStore = CameraVendorOriginalTransferCapabilityStore()
   private let activeDownloadCancellation = CameraVendorPtpDownloadCancellation()
   var isSessionConnected: Bool {
     isConnected
+  }
+
+  var requiresCommandTransportRecovery: Bool {
+    if case .terminal = transportStateMachine.state { return true }
+    return false
+  }
+
+  func beginTransportOperation(_ operation: CameraPtpTransportOperation) throws {
+    _ = try transportStateMachine.begin(operation: operation)
+  }
+
+  func finishTransportOperation() {
+    if case .executing = transportStateMachine.state {
+      let generation: UInt64
+      switch transportStateMachine.state {
+      case let .executing(current, _): generation = current
+      default: return
+      }
+      transportStateMachine = CameraPtpTransportStateMachine(generation: generation)
+    }
   }
 
   #if DEBUG
@@ -359,10 +392,24 @@ final class CameraVendorPtpSession {
   func configureTransferProfile(cameraSerialNumber: String?) {
     transferCapabilitySerialNumber = cameraSerialNumber
   }
+
+  /// Binds the single session-scoped media operation contract produced from
+  /// the current compatibility facts.  The session keeps the aggregate
+  /// definition; individual catalog/download/thumbnail callers never resolve
+  /// capabilities independently.
+  func configureMediaOperations(_ definition: FujifilmMediaOperationDefinition) {
+    mediaOperationDefinition = definition
+    catalogSearchModeStrategy = definition.searchMode
+  }
+
+  func setPriorityDownloadReconnectClientIP(_ clientIP: String?) {
+    priorityDownloadReconnectClientIP = clientIP
+  }
   private var operationTransport: CameraVendorPtpOperationTransport = .standardPtpIp
   private var diagnosticHandler: ((String) -> Void)?
   private var connectedHost = CameraVendorPtpConstants.defaultHost
   private var connectedClientName = CameraVendorHandshakeIdentityPolicy.fallbackConnectedDeviceName
+  private var priorityDownloadReconnectClientIP: String?
   private var connectedPurpose: CameraVendorPtpSessionPurpose = .gallery
   private var priorityDownloadInterruptionGeneration: UInt64 = 0
   private var transferModeCoordinator = CameraVendorTransferModeCoordinator()
@@ -399,6 +446,8 @@ final class CameraVendorPtpSession {
   private var cameraVendorSpecifiedObjectHandles: [UInt32] = []
   private var cameraVendorSpecifiedObjectDateGroups: [CameraVendorSpecifiedObjectDateGroup] = []
   private var cameraVendorSpecifiedObjectHandlesByFormatMask: [UInt16: [UInt32]] = [:]
+  private var catalogSearchModeStrategy: CameraVendorCatalogSearchModeStrategy = .backupAndRestore
+  private var mediaOperationDefinition: FujifilmMediaOperationDefinition?
   private var cameraVendorCurrentSlotStatus: UInt8?
   private var didConfirmGalleryMode = false
   private var didPrepareLegacyGalleryLoad = false
@@ -407,6 +456,19 @@ final class CameraVendorPtpSession {
   private var boundGalleryBootstrapDefinition: GalleryBootstrapStrategyDefinition?
   private var boundConnectionPlanID: CameraConnectionPlanID?
 
+  private func invalidatePhysicalSessionForFramingFailure(
+    _ failure: CameraPtpFramingFailure = .packetBoundaryUnknown
+  ) {
+    guard failure.invalidatesPhysicalSession else { return }
+    transportStateMachine.failFraming(reason: transportFailure(from: failure))
+    commandSocket.close()
+    eventSocket.close()
+    isConnected = false
+    didConfirmGalleryMode = false
+    didPrepareLegacyGalleryLoad = false
+    transferModeCoordinator.invalidate()
+  }
+
   var hasExplicitGalleryModeEvidence: Bool {
     didConfirmGalleryMode
   }
@@ -414,6 +476,7 @@ final class CameraVendorPtpSession {
   func connectTransportAndOpenSession(
     host: String = CameraVendorPtpConstants.defaultHost,
     clientName: String = CameraVendorHandshakeIdentityPolicy.fallbackConnectedDeviceName,
+    clientIP: String? = nil,
     commandConnectTimeout: TimeInterval = CameraVendorPtpConnectionStartupPolicy.commandConnectTimeoutSeconds,
     diagnosticHandler: ((String) -> Void)? = nil,
     purpose: CameraVendorPtpSessionPurpose = .gallery,
@@ -428,6 +491,7 @@ final class CameraVendorPtpSession {
     boundConnectionPlanID = nil
 
     disconnect()
+    transportStateMachine = CameraPtpTransportStateMachine(generation: physicalSessionSequence + 1)
     transactionID = 0
     didConfirmGalleryMode = false
     didPrepareLegacyGalleryLoad = false
@@ -457,7 +521,8 @@ final class CameraVendorPtpSession {
     let initResult = try performInitHandshake(
       host: host,
       clientName: clientName,
-      strategy: ptpInitDefinition
+      strategy: ptpInitDefinition,
+      clientIP: clientIP
     )
     connectionNumber = initResult.connectionNumber
     operationTransport = initResult.operationTransport
@@ -494,6 +559,17 @@ final class CameraVendorPtpSession {
     physicalSessionSequence &+= 1
     #endif
     report("PTP transport and OpenSession complete, purpose=\(purpose)")
+  }
+
+  private func transportFailure(from failure: CameraPtpFramingFailure) -> CameraPtpTransportFailure {
+    switch failure {
+    case let .legacyPacketLength(length):
+      return .invalidPacketLength(length)
+    case let .responseTransactionMismatch(expected, actual):
+      return .transactionMismatch(expected: expected, actual: actual)
+    case .packetBoundaryUnknown:
+      return .invalidPacketLength(0)
+    }
   }
 
   func negotiateGalleryFunction(
@@ -614,32 +690,6 @@ final class CameraVendorPtpSession {
     )
   }
 
-  func beginPriorityDownloadBatch(generation: UInt64) {
-    report(
-      "[OBS] PTP_PRIORITY_DOWNLOAD_BATCH_BEGIN " +
-      "transferPurpose=\(transferModeCoordinator.currentPurpose.label) " +
-      "session=\(debugPhysicalSessionLabel) generation=\(generation)"
-    )
-  }
-
-  func finishPriorityDownloadBatchOnCommandLane() {
-    guard isConnected else {
-      transferModeCoordinator.invalidate()
-      report("[OBS] PTP_PRIORITY_DOWNLOAD_BATCH_RESET_SKIPPED_DISCONNECTED")
-      report("[OBS] PTP_PRIORITY_DOWNLOAD_BATCH_FINISH")
-      return
-    }
-    do {
-      _ = try resetTransferMode(reason: "priority-download-batch-finish")
-    } catch {
-      report(
-        "[OBS] PTP_PRIORITY_DOWNLOAD_BATCH_MODE_RESET_FAILED " +
-        "error=\(error.localizedDescription)"
-      )
-    }
-    report("[OBS] PTP_PRIORITY_DOWNLOAD_BATCH_FINISH")
-  }
-
   @discardableResult
   private func prepareDownloadModeForPriorityBatch(
     _ mode: CameraVendorTransferDownloadMode,
@@ -653,8 +703,24 @@ final class CameraVendorPtpSession {
     )
   }
 
-  func ensureConnectedForPriorityDownload() throws {
+  func ensureConnectedForPriorityDownload(
+    reconnectLabel: String = "PTP_PRIORITY_DOWNLOAD_RECONNECT"
+  ) throws {
+    // The default label remains PTP_PRIORITY_DOWNLOAD_RECONNECT for the real
+    // download path; catalog recovery supplies its own label explicitly.
+    // Diagnostic compatibility: PTP_PRIORITY_DOWNLOAD_RECONNECT_RETRY.
     guard !isConnected else { return }
+    guard let reconnectClientIP = priorityDownloadReconnectClientIP,
+          CameraVendorPriorityDownloadReconnectPolicy.shouldStartPtpInit(
+            currentIP: reconnectClientIP,
+            isPtpReachable: true
+          ) else {
+      throw NSError(
+        domain: "CameraVendorPtpSession",
+        code: 16,
+        userInfo: [NSLocalizedDescriptionKey: "未取得已验证的相机 Wi‑Fi IPv4，禁止发送 PTP INIT"]
+      )
+    }
     guard let ptpInitDefinition = boundPtpInitDefinition,
           let negotiationDefinition = boundNegotiationDefinition,
           let galleryBootstrapDefinition = boundGalleryBootstrapDefinition else {
@@ -671,9 +737,7 @@ final class CameraVendorPtpSession {
     let reconnectDiagnosticHandler = diagnosticHandler
     var lastError: Error?
     for attempt in 1...ptpInitDefinition.retryTiming.connectionMaxAttempts {
-      report("[OBS] PTP_PRIORITY_DOWNLOAD_RECONNECT_BEGIN clientName=\(connectedClientName) attempt=\(attempt)")
-      commandLock.lock()
-      commandLock.unlock()
+      report("[OBS] \(reconnectLabel)_BEGIN clientName=\(connectedClientName) attempt=\(attempt)")
       guard !isConnected else { return }
       do {
         if ptpInitDefinition.startupDelaySeconds > 0 {
@@ -682,6 +746,7 @@ final class CameraVendorPtpSession {
         try connectTransportAndOpenSession(
           host: connectedHost,
           clientName: connectedClientName,
+          clientIP: reconnectClientIP,
           diagnosticHandler: reconnectDiagnosticHandler,
           purpose: connectedPurpose,
           ptpInitDefinition: ptpInitDefinition
@@ -694,7 +759,7 @@ final class CameraVendorPtpSession {
           definition: galleryBootstrapDefinition,
           connectionPlanID: connectionPlanID
         )
-        report("[OBS] PTP_PRIORITY_DOWNLOAD_RECONNECT_COMPLETE attempt=\(attempt)")
+        report("[OBS] \(reconnectLabel)_COMPLETE attempt=\(attempt)")
         return
       } catch {
         commandSocket.close()
@@ -714,7 +779,7 @@ final class CameraVendorPtpSession {
           backoff: ptpInitDefinition.retryTiming.connectionRetryBackoff
         )
         report(
-          "[OBS] PTP_PRIORITY_DOWNLOAD_RECONNECT_RETRY " +
+          "[OBS] \(reconnectLabel)_RETRY " +
           "attempt=\(attempt) delay=\(String(format: "%.1f", delay)) " +
           "error=\(error.localizedDescription)"
         )
@@ -1096,6 +1161,42 @@ final class CameraVendorPtpSession {
     report("[OBS] PTP_RESTORE_SEARCH_MODE_ALL_END stage=\(stage) response=0x\(String(format: "%04X", response.responseCode))")
   }
 
+  private func catalogSearchModeBackup(stage: String) throws -> Data {
+    if mediaOperationDefinition?.failClosedForUnknownSearchMode == true,
+       catalogSearchModeStrategy.readsBackupFromCamera {
+      report(
+        "[OBS] PTP_SEARCH_MODE_BACKUP_REJECTED stage=\(stage) " +
+          "reason=unknown-search-mode-behavior"
+      )
+      throw NSError(
+        domain: "CameraVendorPtpSession",
+        code: NSURLErrorUnsupportedURL,
+        userInfo: [
+          NSLocalizedDescriptionKey:
+            "当前 SearchMode 行为事实未知，拒绝读取并恢复未知状态",
+        ]
+      )
+    }
+    guard catalogSearchModeStrategy.readsBackupFromCamera else {
+      report("[OBS] PTP_SEARCH_MODE_BACKUP_SKIPPED stage=\(stage) reason=explicit-all-restore")
+      return Data()
+    }
+    return try requestCameraVendorSearchModeAll(stage: stage)
+  }
+
+  private func restoreCatalogSearchModeAll(_ saved: Data, stage: String) throws {
+    guard let explicitPayload = catalogSearchModeStrategy.restorationPayload else {
+      try restoreCameraVendorSearchModeAll(saved, stage: stage)
+      return
+    }
+    report("[OBS] PTP_SEARCH_MODE_EXPLICIT_ALL_BEGIN stage=\(stage) bytes=\(explicitPayload.count)")
+    let response = try sendCommandWithData(
+      operationCode: UInt16(CameraVendorPtpOperationCode.cameraVendorSetSearchModeAll),
+      data: explicitPayload
+    )
+    report("[OBS] PTP_SEARCH_MODE_EXPLICIT_ALL_END stage=\(stage) response=0x\(String(format: "%04X", response.responseCode))")
+  }
+
   func cameraVendorInitialCatalogSnapshot() throws -> CameraVendorCatalogSnapshot {
     let previousHandles = cameraVendorSpecifiedObjectHandles
     let previousDateGroups = cameraVendorSpecifiedObjectDateGroups
@@ -1108,6 +1209,13 @@ final class CameraVendorPtpSession {
     }
 
     report("[OBS] PTP_INITIAL_CAMERA_CATALOG_BEGIN")
+    if catalogSearchModeStrategy.requiresExplicitAllBeforeUnfilteredCatalog {
+      _ = try sendCommandWithData(
+        operationCode: UInt16(CameraVendorPtpOperationCode.cameraVendorSetSearchModeAll),
+        data: CameraVendorSearchModeAllPayload.payload(for: [])
+      )
+      report("[OBS] PTP_INITIAL_CAMERA_CATALOG_EXPLICIT_ALL")
+    }
     let snapshot = try requestCameraVendorSpecifiedObjectSnapshot(
       stage: "initial-camera-catalog",
       allowsEmptyRetry: false
@@ -1131,11 +1239,12 @@ final class CameraVendorPtpSession {
         from: snapshot.handles,
         dateGroups: snapshot.dateGroups,
         formatHintsByHandle: [:]
-      )
+      ),
+      coverage: .unknown
     )
     report(
       "[OBS] PTP_INITIAL_CAMERA_CATALOG_END groups=\(catalog.dateGroups.count) " +
-      "handles=\(catalog.orderedHandles.count) extendedStill=0"
+      "handles=\(catalog.orderedHandles.count) coverage=unknown extendedStill=0"
     )
     return catalog
   }
@@ -1143,6 +1252,15 @@ final class CameraVendorPtpSession {
   func cameraVendorCatalogSnapshot(
     query: CameraVendorCatalogQuery
   ) throws -> CameraVendorCatalogSnapshot {
+    if let definition = mediaOperationDefinition,
+       definition.usesConservativeSearchMode {
+      report(
+        "[OBS] PTP_CATALOG_SEARCH_MODE_CONSERVATIVE label=\(query.label) " +
+          "evidence=\(definition.searchModeEvidence.rawValue) " +
+          "backupRead=\(definition.backupReadAllowed) " +
+          "explicitAllRestore=\(definition.explicitAllRestoreAllowed)"
+      )
+    }
     switch query.membershipPolicy {
     case .countSweepThenApply:
       return try cameraVendorCountSweepCatalogSnapshot(query: query)
@@ -1173,7 +1291,7 @@ final class CameraVendorPtpSession {
     // Step 1: Read ALL directory (baseline)
     let baselineSnapshot = try CameraVendorCatalogTransactionExecutor.execute(
       backup: {
-        try requestCameraVendorSearchModeAll(stage: "subtract-all-backup-\(query.label)")
+        try catalogSearchModeBackup(stage: "subtract-all-backup-\(query.label)")
       },
       perform: {
         let allPayload = CameraVendorSearchModeAllPayload.payload(for: [])
@@ -1187,7 +1305,7 @@ final class CameraVendorPtpSession {
         )
       },
       restore: { saved in
-        try restoreCameraVendorSearchModeAll(saved, stage: "subtract-all-restore-\(query.label)")
+        try restoreCatalogSearchModeAll(saved, stage: "subtract-all-restore-\(query.label)")
       }
     )
     report("[OBS] PTP_SUBTRACT_BASELINE_ALL handles=\(baselineSnapshot.handles.count)")
@@ -1195,7 +1313,7 @@ final class CameraVendorPtpSession {
     // Step 2: Read format-filtered directory (D604=X, returns broad result)
     let formatSnapshot = try CameraVendorCatalogTransactionExecutor.execute(
       backup: {
-        try requestCameraVendorSearchModeAll(stage: "subtract-fmt-backup-\(query.label)")
+        try catalogSearchModeBackup(stage: "subtract-fmt-backup-\(query.label)")
       },
       perform: {
         let payload = CameraVendorSearchModeAllPayload.payload(for: query.conditions)
@@ -1210,7 +1328,7 @@ final class CameraVendorPtpSession {
         )
       },
       restore: { saved in
-        try restoreCameraVendorSearchModeAll(saved, stage: "subtract-fmt-restore-\(query.label)")
+        try restoreCatalogSearchModeAll(saved, stage: "subtract-fmt-restore-\(query.label)")
       }
     )
     report("[OBS] PTP_SUBTRACT_FORMAT_RAW handles=\(formatSnapshot.handles.count)")
@@ -1231,7 +1349,7 @@ final class CameraVendorPtpSession {
       "[OBS] PTP_SUBTRACT_BASELINE_END label=\(query.label) " +
       "all=\(baselineSnapshot.handles.count) " +
       "format_raw=\(formatSnapshot.handles.count) " +
-      "isolated=\(isolatedHandles.count)"
+      "isolated=\(isolatedHandles.count) coverage=complete(heif)"
     )
 
     // Build date groups for isolated handles by mapping from the format snapshot's date groups
@@ -1258,7 +1376,8 @@ final class CameraVendorPtpSession {
     return CameraVendorCatalogSnapshot(
       dateGroups: isolatedDateGroups,
       orderedHandles: isolatedHandles,
-      items: items
+      items: items,
+      coverage: .complete(knownFormats: [.heif])
     )
   }
 
@@ -1276,9 +1395,14 @@ final class CameraVendorPtpSession {
     }
 
     do {
+      report(
+        "[OBS] CATALOG_SEARCH_MODE_STRATEGY strategy=\(catalogSearchModeStrategy.rawValue) " +
+        "readsBackup=\(catalogSearchModeStrategy.readsBackupFromCamera) " +
+        "factsDriven=true sessionScoped=true label=\(query.label)"
+      )
       let catalog = try CameraVendorCatalogTransactionExecutor.execute(
         backup: {
-          try requestCameraVendorSearchModeAll(
+          return try catalogSearchModeBackup(
             stage: "catalog-query-backup-\(query.label)"
           )
         },
@@ -1315,18 +1439,33 @@ final class CameraVendorPtpSession {
           return CameraVendorCatalogSnapshot(
             dateGroups: snapshot.dateGroups,
             orderedHandles: snapshot.handles,
-            items: items
+            items: items,
+            coverage: query.conditions.isEmpty
+              ? .unknown
+              : .complete(knownFormats: Set(query.conditions.compactMap { condition in
+                guard case let .uint16(propertyCode, value) = condition,
+                      propertyCode == CameraVendorSearchModeAllPayload.objectFormatPropertyCode else {
+                  return nil
+                }
+                switch value {
+                case CameraVendorSearchModeAllPayload.jpegObjectFormatMask: return .jpg
+                case CameraVendorSearchModeAllPayload.rawObjectFormatMask: return .raw
+                case CameraVendorSearchModeAllPayload.heifObjectFormatMask: return .heif
+                default: return nil
+                }
+              }))
           )
         },
         restore: { savedSearchMode in
-          try restoreCameraVendorSearchModeAll(
+          try restoreCatalogSearchModeAll(
             savedSearchMode,
             stage: "catalog-query-restore-\(query.label)"
           )
         }
       )
       report(
-        "[OBS] PTP_CAMERA_CATALOG_END label=\(query.label) groups=\(catalog.dateGroups.count) handles=\(catalog.orderedHandles.count)"
+        "[OBS] PTP_CAMERA_CATALOG_END label=\(query.label) groups=\(catalog.dateGroups.count) " +
+        "handles=\(catalog.orderedHandles.count) coverage=\(catalog.coverage)"
       )
       return catalog
     } catch {
@@ -2063,17 +2202,18 @@ final class CameraVendorPtpSession {
   private func performInitHandshake(
     host: String,
     clientName: String,
-    strategy: PtpInitStrategyDefinition
+    strategy: PtpInitStrategyDefinition,
+    clientIP: String? = nil
   ) throws -> (connectionNumber: UInt32, operationTransport: CameraVendorPtpOperationTransport) {
-    let clientIP = getWifiIPv4Address()
-    report("客户端 IP: \(clientIP ?? "nil")")
+    let resolvedClientIP = clientIP ?? getWifiIPv4Address()
+    report("客户端 IP: \(resolvedClientIP ?? "nil")")
     report("PTP 客户端名称: \(clientName)")
-    report("[OBS] PTP_INIT_CONTEXT clientIP=\(clientIP ?? "nil") clientName=\(clientName)")
+    report("[OBS] PTP_INIT_CONTEXT clientIP=\(resolvedClientIP ?? "nil") clientName=\(clientName)")
 
     let attempts = CameraVendorOfficialGalleryPtpInitPolicy.initAttempts(
       packetVariants: strategy.packetVariants,
       clientName: clientName,
-      clientIP: clientIP,
+      clientIP: resolvedClientIP,
       timeout: strategy.retryTiming.perPacketAckTimeoutSeconds
     )
 
@@ -2920,10 +3060,8 @@ final class CameraVendorPtpSession {
           maximumByteCount: maxByteCount,
           initialReadSize: dedicatedInitialReadSize,
           fileHandle: handleForWriting,
-          withSerializedLease: { body in
-            try self.withSerializedCommand {
-              try body()
-            }
+          executeOperation: { body in
+            try body()
           }
         )
       }
@@ -3441,8 +3579,22 @@ final class CameraVendorPtpSession {
     let cachedExpectedSize = matchingCachedInfo?.compressedSize.nonzero
     let cachedFilename = matchingCachedInfo?.filename ?? "CamTransfer-\(handle).bin"
     var temporaryFileURL: URL?
+    var shouldResetTransferMode = false
     let startedAt = Date()
     var prepareMs = 0
+    defer {
+      if shouldResetTransferMode {
+        do {
+          try resetTransferMode(reason: "download-file-reset", handle: handle)
+        } catch {
+          report(
+            "[OBS] PTP_DOWNLOAD_FILE_RESET_MODE_FAILED " +
+            "handle=0x\(String(format: "%08X", handle)) " +
+            "error=\(error.localizedDescription)"
+          )
+        }
+      }
+    }
     do {
       report(
         "[OBS] PTP_DOWNLOAD_FILE_PREPARE_BEGIN " +
@@ -3456,6 +3608,7 @@ final class CameraVendorPtpSession {
         handle: handle,
         reason: "download-batch-prepare"
       )
+      shouldResetTransferMode = didPrepareBatchMode
       report(
         "[OBS] PTP_DOWNLOAD_FILE_BATCH_MODE " +
         "handle=0x\(String(format: "%08X", handle)) mode=\(downloadMode) " +
@@ -3512,6 +3665,17 @@ final class CameraVendorPtpSession {
         cancellationGeneration: cancellationGeneration,
         negotiatedReadSize: CameraVendorOriginalReadImageExecutorPolicy.negotiatedReadSize(from: compressionCutOffData)
       )
+      if shouldResetTransferMode {
+        do {
+          try resetTransferMode(reason: "download-file-reset", handle: handle)
+          shouldResetTransferMode = false
+        } catch {
+          // The reset attempt has already marked the coordinator unknown. Do
+          // not issue a second reset from defer on the same broken transport.
+          shouldResetTransferMode = false
+          throw error
+        }
+      }
       let transferMs = Int(Date().timeIntervalSince(startedAt) * 1000)
       let commandGapMs = max(
         0,
@@ -3543,15 +3707,6 @@ final class CameraVendorPtpSession {
       }
       throw error
     }
-  }
-
-  private func withSerializedCommand<T>(_ body: () throws -> T) rethrows -> T {
-    guard CameraVendorPtpCommandSerializationPolicy.shouldSerializeCommandSocketAccess else {
-      return try body()
-    }
-    commandLock.lock()
-    defer { commandLock.unlock() }
-    return try body()
   }
 
   func disconnect() {
@@ -3599,8 +3754,14 @@ final class CameraVendorPtpSession {
     operationCode: UInt16,
     parameters: [UInt32] = []
   ) throws -> CameraVendorOperationResponse {
-    try withSerializedCommand {
+    do {
+      guard !requiresCommandTransportRecovery else {
+        throw NSError(domain: "CameraVendorPtpSession", code: 14, userInfo: [
+          NSLocalizedDescriptionKey: "PTP command lane framing is unknown"
+        ])
+      }
       transactionID += 1
+      let expectedTransactionID = transactionID
       let packet: Data
       switch operationTransport {
       case .standardPtpIp:
@@ -3623,7 +3784,10 @@ final class CameraVendorPtpSession {
         packet: packet
       )
       try commandSocket.write(packet)
-      let response = try readCameraVendorOperationResponse(validatesOK: false)
+      let response = try readCameraVendorOperationResponse(
+        validatesOK: false,
+        expectedTransactionID: expectedTransactionID
+      )
       reportPtpCommandResponse(operationCode: operationCode, response: response)
       return response
     }
@@ -3634,8 +3798,14 @@ final class CameraVendorPtpSession {
     parameters: [UInt32] = [],
     data: Data
   ) throws -> CameraVendorOperationResponse {
-    try withSerializedCommand {
+    do {
+      guard !requiresCommandTransportRecovery else {
+        throw NSError(domain: "CameraVendorPtpSession", code: 14, userInfo: [
+          NSLocalizedDescriptionKey: "PTP command lane framing is unknown"
+        ])
+      }
       transactionID += 1
+      let expectedTransactionID = transactionID
       let commandPacket: Data
       let dataPacket: Data
       switch operationTransport {
@@ -3680,7 +3850,9 @@ final class CameraVendorPtpSession {
       )
       try commandSocket.write(commandPacket)
       try commandSocket.write(dataPacket)
-      let response = try readCameraVendorOperationResponse()
+      let response = try readCameraVendorOperationResponse(
+        expectedTransactionID: expectedTransactionID
+      )
       reportPtpCommandResponse(operationCode: operationCode, response: response)
       return response
     }
@@ -3836,7 +4008,7 @@ final class CameraVendorPtpSession {
     fileHandle: FileHandle,
     readTimeout: TimeInterval
   ) throws -> CameraVendorFileCommandResult {
-    try withSerializedCommand {
+    do {
       transactionID += 1
       let request: Data
       switch operationTransport {
@@ -3962,7 +4134,7 @@ final class CameraVendorPtpSession {
     readTimeout: TimeInterval = 15,
     timingHandler: ((CameraVendorDataCommandTiming, Int) -> Void)? = nil
   ) throws -> Data {
-    try withSerializedCommand {
+    do {
       let commandStartedAt = Date()
       var firstByteAt: Date?
       var dataCompleteAt: Date?
@@ -4077,7 +4249,8 @@ final class CameraVendorPtpSession {
   }
 
   private func readCameraVendorOperationResponse(
-    validatesOK: Bool = true
+    validatesOK: Bool = true,
+    expectedTransactionID: UInt32? = nil
   ) throws -> CameraVendorOperationResponse {
     let packet = try readOperationPacket(timeout: 15)
     guard packet.type == CameraVendorPtpPacketType.operationResponse else {
@@ -4086,6 +4259,14 @@ final class CameraVendorPtpSession {
       ])
     }
     let response = try parseOperationResponsePayload(packet.payload)
+    if let expectedTransactionID, response.transactionID != expectedTransactionID {
+      invalidatePhysicalSessionForFramingFailure(
+        .responseTransactionMismatch(expected: expectedTransactionID, actual: response.transactionID)
+      )
+      throw NSError(domain: "CameraVendorPtpSession", code: 15, userInfo: [
+        NSLocalizedDescriptionKey: "PTP response transaction \(response.transactionID) does not match request transaction \(expectedTransactionID)"
+      ])
+    }
     report("CameraVendor 操作响应: responseCode=0x\(String(response.responseCode, radix: 16)) txnID=\(response.transactionID)")
     if validatesOK {
       try CameraVendorPtpResponsePolicy.validateOK(
@@ -4183,6 +4364,7 @@ final class CameraVendorPtpSession {
     }
     let length = header.withUnsafeBytes { $0.load(as: UInt32.self).littleEndian }
     guard length >= 6 else {
+      invalidatePhysicalSessionForFramingFailure(.legacyPacketLength(length))
       throw NSError(domain: "CameraVendorPtpSession", code: 5, userInfo: [NSLocalizedDescriptionKey: "CameraVendor legacy PTP 包长度异常 \(length)"])
     }
     let payloadLength = Int(length) - 4

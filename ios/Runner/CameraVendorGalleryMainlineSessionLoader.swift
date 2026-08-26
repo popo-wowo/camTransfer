@@ -127,7 +127,10 @@ final class CameraVendorGalleryMainlineSessionLoader {
       ))
       throw issue
     }
-    try protocolEngine.bind(plan: executionState.plan)
+    try protocolEngine.bind(
+      plan: executionState.plan,
+      compatibilityFacts: compatibilityFacts
+    )
     var sessionContext = context
     sessionContext.connectionPlan = executionState.plan
 

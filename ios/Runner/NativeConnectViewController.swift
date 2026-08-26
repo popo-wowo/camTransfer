@@ -282,6 +282,23 @@ enum NativeHomePairedCameraCardLayoutPolicy {
   static let statusPanelTopSpacingAfterIdentity: CGFloat = 8
   static let showsDecorativeProfileHeader = false
   static let showsStatusPanelFrame = false
+  static let showsEllipsisDeleteMenu = true
+  static let showsSwipeToDelete = false
+}
+
+enum NativeHomePairedCameraPagerPolicy {
+  static let isPagingEnabled = true
+  static let isHorizontal = true
+  static let showsAddPage = true
+  static let showsPageControl = true
+
+  static func pageCount(for recordCount: Int) -> Int {
+    max(0, recordCount)
+  }
+
+  static func pageCountIncludingAddPage(for recordCount: Int) -> Int {
+    pageCount(for: recordCount) + (showsAddPage ? 1 : 0)
+  }
 }
 
 enum NativeHomeCameraSearchActionPolicy {
@@ -292,9 +309,10 @@ enum NativeHomeCameraSearchActionPolicy {
 enum NativeHomePassiveConnectionResetPolicy {
   static func shouldResetOnViewWillAppear(
     isRootHome: Bool,
-    isEnteringGalleryFromRememberedCamera: Bool
+    isEnteringGalleryFromRememberedCamera: Bool,
+    isConnectionWorkerActive: Bool = false
   ) -> Bool {
-    isRootHome && !isEnteringGalleryFromRememberedCamera
+    isRootHome && !isEnteringGalleryFromRememberedCamera && !isConnectionWorkerActive
   }
 }
 
@@ -963,6 +981,10 @@ final class NativeConnectViewController: UIViewController {
   private var isPresentingPairingConfirmationPrompt = false
   private var isPresentingSystemBluetoothCleanupPrompt = false
   private var isPresentingFreshPairingCleanupPrompt = false
+  private var isAddingPairedCamera = false
+  private weak var pairedCameraPager: UIScrollView?
+  private weak var pairedCameraPageControl: UIPageControl?
+  private var visiblePairedCameraID: UUID?
   private var hasConfirmedSystemBluetoothCleanupForFreshPairing = false
   private var latestServiceStatus = ""
   private var latestServiceIsBusy = false
@@ -1049,7 +1071,8 @@ final class NativeConnectViewController: UIViewController {
       && navigationController?.viewControllers.count == 1
     if NativeHomePassiveConnectionResetPolicy.shouldResetOnViewWillAppear(
       isRootHome: isRootHome,
-      isEnteringGalleryFromRememberedCamera: isEnteringGalleryFromRememberedCamera
+      isEnteringGalleryFromRememberedCamera: isEnteringGalleryFromRememberedCamera,
+      isConnectionWorkerActive: cameraSessionRuntime.isConnectionWorkerActive
     ) {
       // We've returned to the home screen; clear stale BLE/PTP flags so the
       // next "Connect" tap is guaranteed to actually start a new attempt.
@@ -1090,7 +1113,9 @@ final class NativeConnectViewController: UIViewController {
   private var rememberedConnectionPreparationTask: Task<Void, Never>?
 
   private func beginPairingProbeIfNeeded() {
-    guard let record = cameraSessionRuntime.rememberedCameraRecords.first else { return }
+    let records = cameraSessionRuntime.rememberedCameraRecords
+    let record = records.first(where: { $0.peripheralID == visiblePairedCameraID }) ?? records.first
+    guard let record else { return }
     guard NativeHomePairingProbePolicy.shouldBegin(
       hasRememberedCamera: true,
       isConnectionWorkerActive: cameraSessionRuntime.isConnectionWorkerActive,
@@ -1123,6 +1148,9 @@ final class NativeConnectViewController: UIViewController {
         self.updateRememberedCameraCard()
       case .offline:
         // Camera not in range — no action needed, card remains as-is.
+        self.updateRememberedCameraCard()
+      case .validationUnavailable(let reason):
+        CameraVendorFileLogger.log("[PAIRING_PROBE_NOT_APPLICABLE] reason=\(reason)")
         self.updateRememberedCameraCard()
       case .bluetoothOff:
         // Bluetooth is off — no action, system will prompt if needed.
@@ -1375,13 +1403,39 @@ final class NativeConnectViewController: UIViewController {
     cameraSessionRuntime.requestCameraDiscovery()
   }
 
+  private func startAddingCameraPairing() {
+    cancelConnectFlow(reason: "add-new-paired-camera")
+    galleryEntryTask?.cancel()
+    galleryEntryTask = nil
+    hideConnectingOverlay()
+    isEnteringGalleryFromRememberedCamera = false
+    isAddingPairedCamera = true
+    showFreshPairingUI()
+    startFreshPairingSearch()
+  }
+
+  private func showFreshPairingUI() {
+    pairedCameraStack.arrangedSubviews.forEach { view in
+      pairedCameraStack.removeArrangedSubview(view)
+      view.removeFromSuperview()
+    }
+    pairedCameraStack.isHidden = true
+    pairingPreparationStack.isHidden = false
+    startPairingButton.isHidden = false
+    discoveredCameraStack.isHidden = true
+  }
+
   private func prepareFreshPairingSearchPresentation() {
     logView.text = ""
     confirmPairingButton.isHidden = true
     hasStartedInitialCameraSearch = true
     latestServiceStatus = "搜索中"
     latestServiceIsBusy = true
-    updateRememberedCameraCard()
+    if isAddingPairedCamera {
+      showFreshPairingUI()
+    } else {
+      updateRememberedCameraCard()
+    }
     updateInlineDiscoveredCameras()
   }
 
@@ -1663,28 +1717,31 @@ final class NativeConnectViewController: UIViewController {
       updateRememberedCameraCard()
       return
     }
-    pairingProbeTask?.cancel()
-    pairingProbeTask = nil
     rememberedConnectionPreparationTask?.cancel()
     isEnteringGalleryFromRememberedCamera = true
     showConnectingOverlay(deviceName: record.identity.displayName)
     rememberedConnectionPreparationTask = Task { @MainActor [weak self] in
       guard let self else { return }
-      let didFinishProbeTeardown = await self.cameraSessionRuntime
-        .cancelPairingProbeAndWait(reason: "user-initiated-connect")
+      let probeDecision = CameraVendorPairingProbeUserActionDecision.resolve(
+        hasProbeTask: self.pairingProbeTask != nil,
+        hasPreconnectedProbe: self.cameraSessionRuntime.hasPreconnectedProbe,
+        preconnectedPeripheralID: self.cameraSessionRuntime.preconnectedProbePeripheralID,
+        requestedPeripheralID: record.peripheralID
+      )
+      let probeResult: CameraVendorPairingProbeResult?
+      switch probeDecision {
+      case .reusePreconnectedProbe:
+        probeResult = .online
+      case .waitForProbe:
+        probeResult = await self.cameraSessionRuntime
+          .waitForPairingProbeCompletion(peripheralID: record.peripheralID)
+      case .startNormalConnection:
+        probeResult = nil
+      }
       guard !Task.isCancelled else { return }
       self.rememberedConnectionPreparationTask = nil
-      guard didFinishProbeTeardown else {
-        self.handleConnectFlowFailure(
-          title: "进入相机相册失败",
-          error: IOSCameraConnectionIssue(
-            step: .reconnectPairedBle,
-            reason: "等待上一条 BLE 探测连接断开超时"
-          ),
-          hidesOverlay: true,
-          resetsRememberedFlow: true
-        )
-        return
+      if probeResult == .online {
+        CameraVendorFileLogger.log("[PAIRING_PROBE_UI_HANDOFF] action=wait-complete-reuse peripheralID=\(record.peripheralID)")
       }
       self.startRememberedCameraConnection(record, purpose: purpose)
     }
@@ -1836,6 +1893,7 @@ final class NativeConnectViewController: UIViewController {
       guard let self else { return }
       switch result {
       case .success:
+        self.isAddingPairedCamera = false
         let finishPairing: () -> Void = {
           self.updateRememberedCameraCard()
           self.statusBadgeLabel.text = "配对完成，点击进入相机相册"
@@ -2154,6 +2212,7 @@ final class NativeConnectViewController: UIViewController {
     hidesOverlay: Bool,
     resetsRememberedFlow: Bool
   ) {
+    isAddingPairedCamera = false
     let message = error.localizedDescription
     latestServiceStatus = message
     latestServiceIsBusy = false
@@ -2243,6 +2302,11 @@ final class NativeConnectViewController: UIViewController {
   }
 
   private func updateRememberedCameraCard() {
+    if isAddingPairedCamera {
+      showFreshPairingUI()
+      updateInlineDiscoveredCameras()
+      return
+    }
     switch NativeHomeConnectionPresentationPolicy.resolve(
       requiresSystemBluetoothPairingCleanup: cameraSessionRuntime.requiresSystemBluetoothPairingCleanup,
       isPairingConfirmationBlockingRememberedGalleryEntry: isPairingConfirmationBlockingRememberedGalleryEntry
@@ -2326,6 +2390,46 @@ final class NativeConnectViewController: UIViewController {
     pairedCameraStack.isHidden = false
     pairingPreparationStack.isHidden = true
     startPairingButton.isHidden = true
+    let pager = UIScrollView()
+    pager.translatesAutoresizingMaskIntoConstraints = false
+    pager.isPagingEnabled = NativeHomePairedCameraPagerPolicy.isPagingEnabled
+    pager.showsHorizontalScrollIndicator = false
+    pager.alwaysBounceVertical = false
+    pager.delegate = self
+    pairedCameraPager = pager
+    if let visiblePairedCameraID,
+       records.contains(where: { $0.peripheralID == visiblePairedCameraID }) {
+      self.visiblePairedCameraID = visiblePairedCameraID
+    } else {
+      self.visiblePairedCameraID = records.first?.peripheralID
+    }
+    let pages = UIStackView()
+    pages.translatesAutoresizingMaskIntoConstraints = false
+    pages.axis = .horizontal
+    pages.spacing = 0
+    pager.addSubview(pages)
+    let pageControl = UIPageControl()
+    pageControl.translatesAutoresizingMaskIntoConstraints = false
+    pageControl.numberOfPages = NativeHomePairedCameraPagerPolicy.pageCountIncludingAddPage(for: records.count)
+    pageControl.currentPage = 0
+    pageControl.isHidden = !NativeHomePairedCameraPagerPolicy.showsPageControl
+    pageControl.pageIndicatorTintColor = NativeLuxuryTheme.secondaryInk.withAlphaComponent(0.28)
+    pageControl.currentPageIndicatorTintColor = NativeLuxuryTheme.ink
+    pairedCameraPageControl = pageControl
+    let pagerStack = UIStackView(arrangedSubviews: [pager, pageControl])
+    pagerStack.translatesAutoresizingMaskIntoConstraints = false
+    pagerStack.axis = .vertical
+    pagerStack.alignment = .fill
+    pagerStack.spacing = 4
+    pairedCameraStack.addArrangedSubview(pagerStack)
+    NSLayoutConstraint.activate([
+      pager.heightAnchor.constraint(greaterThanOrEqualToConstant: NativeHomePairedCameraCardLayoutPolicy.cardMinimumHeight),
+      pages.leadingAnchor.constraint(equalTo: pager.contentLayoutGuide.leadingAnchor),
+      pages.trailingAnchor.constraint(equalTo: pager.contentLayoutGuide.trailingAnchor),
+      pages.topAnchor.constraint(equalTo: pager.contentLayoutGuide.topAnchor),
+      pages.bottomAnchor.constraint(equalTo: pager.contentLayoutGuide.bottomAnchor),
+      pages.heightAnchor.constraint(equalTo: pager.frameLayoutGuide.heightAnchor),
+    ])
     for record in records {
       let isActiveSession = cameraSessionRuntime.activeCameraIdentity?.peripheralID == record.peripheralID
       let presence = NativeHomeRememberedCameraPresencePolicy.presence(
@@ -2368,10 +2472,37 @@ final class NativeConnectViewController: UIViewController {
           self?.forgetRememberedCamera(record)
         }
       )
-      pairedCameraStack.addArrangedSubview(card)
+      pages.addArrangedSubview(card)
+      card.widthAnchor.constraint(equalTo: pager.frameLayoutGuide.widthAnchor).isActive = true
     }
 
+    let addPage = NativeAddCameraCard { [weak self] in
+      guard let self else { return }
+      guard self.presentFreshPairingBluetoothCleanupPromptIfNeeded() else { return }
+        self.startAddingCameraPairing()
+    }
+    pages.addArrangedSubview(addPage)
+    addPage.widthAnchor.constraint(equalTo: pager.frameLayoutGuide.widthAnchor).isActive = true
+
     confirmPairingButton.isHidden = true
+  }
+
+  private func updateVisiblePairedCamera() {
+    guard let pager = pairedCameraPager,
+          !recordsForCurrentPager().isEmpty,
+          pager.bounds.width > 0 else { return }
+    let index = min(
+      NativeHomePairedCameraPagerPolicy.pageCountIncludingAddPage(for: recordsForCurrentPager().count) - 1,
+      max(0, Int(round(pager.contentOffset.x / pager.bounds.width)))
+    )
+    pairedCameraPageControl?.currentPage = index
+    visiblePairedCameraID = recordsForCurrentPager().indices.contains(index)
+      ? recordsForCurrentPager()[index].peripheralID
+      : nil
+  }
+
+  private func recordsForCurrentPager() -> [IOSCameraRememberedCameraRecord] {
+    cameraSessionRuntime.rememberedCameraRecords
   }
 
   private func quickDownloadTapped(record: IOSCameraRememberedCameraRecord) {
@@ -2480,6 +2611,18 @@ final class NativeConnectViewController: UIViewController {
   private func badgeText(for deviceName: String) -> String {
     let upper = deviceName.uppercased()
     return String(upper.filter { $0.isLetter }.prefix(2))
+  }
+}
+
+extension NativeConnectViewController: UIScrollViewDelegate {
+  func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+    guard scrollView === pairedCameraPager else { return }
+    updateVisiblePairedCamera()
+  }
+
+  func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+    guard scrollView === pairedCameraPager else { return }
+    updateVisiblePairedCamera()
   }
 }
 

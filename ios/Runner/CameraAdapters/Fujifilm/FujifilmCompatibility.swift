@@ -208,6 +208,119 @@ struct FujifilmProtocolStrategySnapshot: Equatable {
   let negotiation: SessionNegotiationStrategyDefinition?
   let galleryBootstrap: GalleryBootstrapStrategyDefinition?
   let initialCatalog: InitialCatalogStrategyDefinition?
+  let mediaOperations: FujifilmMediaOperationDefinition
+}
+
+enum FujifilmThumbnailOperation: String, Codable, Equatable {
+  case standard
+}
+
+enum FujifilmMetadataOperation: String, Codable, Equatable {
+  case objectInfo
+}
+
+enum FujifilmPreviewOperation: String, Codable, Equatable {
+  case screenPreview
+}
+
+enum FujifilmDownloadOperation: String, Codable, Equatable {
+  case original
+}
+
+enum FujifilmCatalogMembershipStrategy: String, Codable, Equatable {
+  case baselineOnly
+  case exactPerFormat
+  case subtractBaseline
+  case unknown
+}
+
+enum FujifilmCatalogChildWorkBarrier: String, Codable, Equatable {
+  case awaitIdle
+}
+
+enum FujifilmSearchModeEvidence: String, Codable, Equatable {
+  case unknown
+  case stable
+  case unstableAfterChildActivity
+}
+
+enum FujifilmD621ReferenceSemantics: String, Codable, Equatable {
+  case sessionCatalogOpaque
+}
+
+struct FujifilmMediaOperationDefinition: Codable, Equatable {
+  let searchMode: CameraVendorCatalogSearchModeStrategy
+  let searchModeEvidence: FujifilmSearchModeEvidence
+  let failClosedForUnknownSearchMode: Bool
+  let catalogMembership: FujifilmCatalogMembershipStrategy
+  let catalogChildWorkBarrier: FujifilmCatalogChildWorkBarrier
+  let thumbnail: FujifilmThumbnailOperation
+  let metadata: FujifilmMetadataOperation
+  let preview: FujifilmPreviewOperation
+  let download: FujifilmDownloadOperation
+  let d621Reference: FujifilmD621ReferenceSemantics
+  let modelName: String?
+  let firmwareVersion: String?
+
+  var requiresSessionScopedCatalog: Bool {
+    d621Reference == .sessionCatalogOpaque
+  }
+
+  /// SearchMode safety is deliberately expressed as operation capabilities,
+  /// not as a model-specific route. Unknown evidence disables backup-read,
+  /// while the known explicit ALL payload remains an allowed conservative
+  /// restore path.
+  var backupReadAllowed: Bool {
+    searchMode == .backupAndRestore && searchModeEvidence == .stable
+  }
+
+  var explicitAllRestoreAllowed: Bool {
+    searchMode == .explicitAllRestore
+  }
+
+  var usesConservativeSearchMode: Bool {
+    searchModeEvidence != .stable
+  }
+
+  var operationRejectedForUnknownSearchMode: Bool {
+    false
+  }
+
+  static func current(for facts: CameraCompatibilityFacts) -> FujifilmMediaOperationDefinition {
+    let searchModeEvidence: FujifilmSearchModeEvidence
+    switch facts.searchModeReadbackStableAfterChildActivity {
+    case .some(true): searchModeEvidence = .stable
+    case .some(false): searchModeEvidence = .unstableAfterChildActivity
+    case .none: searchModeEvidence = .unknown
+    }
+    let searchMode: CameraVendorCatalogSearchModeStrategy
+    switch facts.searchModeReadbackStableAfterChildActivity {
+    case .some(true):
+      searchMode = .backupAndRestore
+    case .some(false), .none:
+      // Unknown is deliberately conservative: do not read a possibly stale
+      // SearchMode payload after child activity.  An explicit ALL payload is
+      // the only operation that does not depend on unverified readback.
+      searchMode = .explicitAllRestore
+    }
+    return FujifilmMediaOperationDefinition(
+      // The public baseline is intentionally model-agnostic. An explicit ALL
+      // SearchMode transaction may only be selected by a verified current-
+      // session evidence rule; model identity alone is not such evidence.
+      searchMode: searchMode,
+      searchModeEvidence: searchModeEvidence,
+      failClosedForUnknownSearchMode: searchModeEvidence == .unknown,
+      catalogMembership: .baselineOnly,
+      catalogChildWorkBarrier: .awaitIdle,
+      thumbnail: .standard,
+      metadata: .objectInfo,
+      preview: .screenPreview,
+      download: .original,
+      d621Reference: .sessionCatalogOpaque,
+      modelName: facts.observedIdentity.modelName,
+      firmwareVersion: facts.observedIdentity.firmwareVersion
+    )
+  }
 }
 
 enum FujifilmStrategyDefinitionFingerprint {
@@ -408,7 +521,10 @@ struct FujifilmProtocolStrategyRegistry: Equatable {
     )
   }
 
-  func snapshot(for plan: CameraConnectionPlan) throws -> FujifilmProtocolStrategySnapshot {
+  func snapshot(
+    for plan: CameraConnectionPlan,
+    compatibilityFacts: CameraCompatibilityFacts
+  ) throws -> FujifilmProtocolStrategySnapshot {
     FujifilmProtocolStrategySnapshot(
       activation: try activationDefinition(for: plan.activationStrategy),
       ptpInit: plan.ptpInitStrategy == .unsupported
@@ -422,7 +538,18 @@ struct FujifilmProtocolStrategyRegistry: Equatable {
         : try galleryBootstrapDefinition(for: plan.galleryBootstrapStrategy),
       initialCatalog: plan.initialCatalogStrategy == .unsupported
         ? nil
-        : try initialCatalogDefinition(for: plan.initialCatalogStrategy)
+        : try initialCatalogDefinition(for: plan.initialCatalogStrategy),
+      mediaOperations: .current(for: compatibilityFacts)
+    )
+  }
+
+  func snapshot(for plan: CameraConnectionPlan) throws -> FujifilmProtocolStrategySnapshot {
+    try snapshot(
+      for: plan,
+      compatibilityFacts: CameraCompatibilityFacts(
+        observedIdentity: .unknown,
+        protocolFacts: plan.protocolFacts
+      )
     )
   }
 
@@ -725,6 +852,20 @@ struct FujifilmCompatibilityEnvironment {
         "compatibility-lab-candidate=\(compatibilityLabCandidate.id)"
       ]
     )
+  }
+
+  func strategySnapshot(
+    for facts: CameraCompatibilityFacts
+  ) throws -> FujifilmProtocolStrategySnapshot {
+    let plan = resolve(protocolFacts: facts.protocolFacts).plan
+    guard plan.supportStatus != .unsupported else {
+      throw NSError(
+        domain: "FujifilmCompatibilityEnvironment",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "Unsupported facts cannot produce a Strategy snapshot"]
+      )
+    }
+    return try strategyRegistry.snapshot(for: plan, compatibilityFacts: facts)
   }
 
   func addingCompatibilityLabCandidate(

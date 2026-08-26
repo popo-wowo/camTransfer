@@ -173,13 +173,13 @@ struct CameraVendorOriginalReadImageExecutor {
     maximumByteCount: UInt64,
     initialReadSize: UInt32,
     fileHandle: FileHandle,
-    withSerializedLease: (_ body: () throws -> CameraVendorOriginalReadImageExecutionResult) throws -> CameraVendorOriginalReadImageExecutionResult
+    executeOperation: (_ body: () throws -> CameraVendorOriginalReadImageExecutionResult) throws -> CameraVendorOriginalReadImageExecutionResult
   ) throws -> CameraVendorOriginalReadImageExecutionResult {
     report(
       "[OBS] PTP_ORIGINAL_COMMAND_LOCK_WAIT " +
       "handle=0x\(String(format: "%08X", handle))"
     )
-    return try withSerializedLease {
+    return try executeOperation {
       report(
         "[OBS] PTP_ORIGINAL_COMMAND_LOCK_ACQUIRED " +
         "handle=0x\(String(format: "%08X", handle))"

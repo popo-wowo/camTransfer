@@ -9,6 +9,8 @@ enum CameraVendorPairingProbeResult: Equatable {
   case pairingInvalid(reason: String)
   /// Camera not discovered within timeout. May be powered off or out of range.
   case offline
+  /// BLE is reachable, but this camera does not expose the probe validation characteristic.
+  case validationUnavailable(reason: String)
   /// iOS Bluetooth is not powered on.
   case bluetoothOff
 }
@@ -89,6 +91,41 @@ enum CameraVendorPairingProbeState: Equatable {
       return id
     case .idle, .completed:
       return nil
+    }
+  }
+}
+
+enum CameraVendorPairingProbeUserActionDecision: Equatable {
+  case waitForProbe
+  case reusePreconnectedProbe
+  case startNormalConnection
+
+  static func resolve(
+    hasProbeTask: Bool,
+    hasPreconnectedProbe: Bool,
+    preconnectedPeripheralID: UUID?,
+    requestedPeripheralID: UUID
+  ) -> Self {
+    if hasPreconnectedProbe, preconnectedPeripheralID == requestedPeripheralID {
+      return .reusePreconnectedProbe
+    }
+    if hasProbeTask {
+      return .waitForProbe
+    }
+    return .startNormalConnection
+  }
+}
+
+enum CameraVendorPairingProbeWaiterPolicy {
+  static func shouldResumeImmediately(
+    result: CameraVendorPairingProbeResult,
+    hasPeripheralTeardown: Bool
+  ) -> Bool {
+    switch result {
+    case .online:
+      return true
+    case .pairingInvalid, .offline, .validationUnavailable, .bluetoothOff:
+      return !hasPeripheralTeardown
     }
   }
 }

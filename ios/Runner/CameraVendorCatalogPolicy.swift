@@ -1,5 +1,19 @@
 import Foundation
 
+enum CameraVendorCatalogSearchModeStrategy: String, Codable, Equatable {
+  case backupAndRestore
+  case explicitAllRestore
+
+  var readsBackupFromCamera: Bool { self == .backupAndRestore }
+
+  var requiresExplicitAllBeforeUnfilteredCatalog: Bool { self == .explicitAllRestore }
+
+  var restorationPayload: Data? {
+    guard self == .explicitAllRestore else { return nil }
+    return CameraVendorSearchModeAllPayload.payload(for: [])
+  }
+}
+
 enum CameraVendorSpecifiedObjectSnapshotPolicy {
   static let shouldCompareBeforeAndAfterEmptySearchMode = false
 }
@@ -52,6 +66,25 @@ struct CameraVendorCatalogSnapshot: Equatable {
   let dateGroups: [CameraVendorSpecifiedObjectDateGroup]
   let orderedHandles: [UInt32]
   let items: [CameraVendorGalleryItem]
+  let coverage: CameraVendorCatalogCoverage
+
+  init(
+    dateGroups: [CameraVendorSpecifiedObjectDateGroup],
+    orderedHandles: [UInt32],
+    items: [CameraVendorGalleryItem],
+    coverage: CameraVendorCatalogCoverage = .unknown
+  ) {
+    self.dateGroups = dateGroups
+    self.orderedHandles = orderedHandles
+    self.items = items
+    self.coverage = coverage
+  }
+}
+
+enum CameraVendorCatalogCoverage: Equatable {
+  case complete(knownFormats: Set<CameraMediaFormat>)
+  case partial(knownFormats: Set<CameraMediaFormat>)
+  case unknown
 }
 
 struct CameraVendorCountSweepFormatCount {
@@ -129,7 +162,7 @@ enum CameraVendorCatalogTransactionExecutor {
       throw CameraGalleryCatalogTransactionFailure(
         primaryMessage: "目录读取已完成，但 SearchMode 恢复失败",
         restorationMessage: restorationError.localizedDescription,
-        provesTransportLost: true
+        provesTransportLost: CameraVendorCatalogTransportEvidencePolicy.provesTransportLost(restorationError)
       )
     case let (.failure(primaryError), nil):
       throw CameraGalleryCatalogTransactionFailure(
@@ -142,7 +175,9 @@ enum CameraVendorCatalogTransactionExecutor {
       throw CameraGalleryCatalogTransactionFailure(
         primaryMessage: primaryError.localizedDescription,
         restorationMessage: restorationError.localizedDescription,
-        provesTransportLost: true,
+        provesTransportLost:
+          CameraVendorCatalogTransportEvidencePolicy.provesTransportLost(primaryError) ||
+          CameraVendorCatalogTransportEvidencePolicy.provesTransportLost(restorationError),
         responseEvidence: CameraGalleryCatalogResponseEvidence(error: primaryError)
       )
     }

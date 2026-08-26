@@ -348,7 +348,7 @@ enum NativeLogTextViewPolicy {
 }
 
 enum NativeCameraAdapterRegistry {
-  static let defaultAdapter = FujifilmCameraAdapter(profile: .currentVerifiedBaseline)
+  static let defaultAdapter = FujifilmCameraAdapter()
 
   static var defaultAdapterDescriptor: CameraAdapterDescriptor {
     defaultAdapter.descriptor
@@ -569,6 +569,20 @@ struct NativeGalleryFilterState: Equatable {
       downloadScope: downloadScope
     )
     self.sort = sort
+  }
+}
+
+enum NativeGalleryFilterDiagnosticPolicy {
+  static let requestEvent = "GALLERY_FILTER_UI_REQUESTED"
+  static let successEvent = "GALLERY_FILTER_APPLIED"
+  static let failureEvent = "GALLERY_FILTER_FAILED"
+}
+
+enum NativeGalleryFilterFailureCopy {
+  static func statusText(errorMessage: String, hasRetainedItems: Bool) -> String {
+    hasRetainedItems
+      ? "筛选失败，仍显示上一次结果：\(errorMessage)"
+      : "加载失败：\(errorMessage)"
   }
 }
 
