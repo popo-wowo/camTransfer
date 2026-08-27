@@ -4,6 +4,7 @@ struct CameraVendorPairedCameraRecord: Codable, Equatable {
   let peripheralID: UUID
   let deviceName: String
   let serialNumber: String
+  let firmwareVersion: String?
   let connectedDeviceName: String?
   let appVariant: CameraVendorAppVariant
   let preferredWifiNetwork: CameraVendorWifiNetworkConfiguration?
@@ -13,6 +14,7 @@ struct CameraVendorPairedCameraRecord: Codable, Equatable {
     peripheralID: UUID,
     deviceName: String,
     serialNumber: String,
+    firmwareVersion: String? = nil,
     connectedDeviceName: String? = nil,
     appVariant: CameraVendorAppVariant,
     preferredWifiNetwork: CameraVendorWifiNetworkConfiguration?,
@@ -21,6 +23,7 @@ struct CameraVendorPairedCameraRecord: Codable, Equatable {
     self.peripheralID = peripheralID
     self.deviceName = deviceName
     self.serialNumber = serialNumber
+    self.firmwareVersion = firmwareVersion
     self.connectedDeviceName = connectedDeviceName
     self.appVariant = appVariant
     self.preferredWifiNetwork = preferredWifiNetwork

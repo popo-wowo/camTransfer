@@ -25993,6 +25993,53 @@ private extension NativeGalleryHDPreviewSnapshot {
 // MARK: - CameraTransportFailureDisposition Tests
 
 extension RunnerTests {
+  func testRedCapabilitySnapshotIsSingleAuditableInput() throws {
+    let peripheralID = try XCTUnwrap(UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE"))
+    let snapshot = RedCapabilitySnapshot(
+      protocolFamily: .red,
+      modelName: "X-T5",
+      firmwareVersion: "4.01",
+      serialNumber: "SERIAL",
+      identificationNumber: Data([1, 2]),
+      peripheralID: peripheralID,
+      advertisedServices: [FujifilmCompatibilityUUID.securePairService],
+      discoveredServices: [FujifilmCompatibilityUUID.securePairService],
+      discoveredCharacteristics: [FujifilmCompatibilityUUID.connectedDeviceIdentificationCharacteristic],
+      characteristicProperties: [:],
+      registrationCapabilities: RedRegistrationCapabilities(securePairing: true, identificationRead: true),
+      activationCapabilities: RedActivationCapabilities(
+        transferAuthorizationWrite: true,
+        statusObservation: true,
+        wifiConfigurationRead: true
+      ),
+      wifiConfiguration: nil,
+      evidence: RedCapabilityEvidence(identityVerified: true, missingRequirements: [])
+    )
+    XCTAssertEqual(snapshot.compatibilityFacts.observedIdentity.firmwareVersion, "4.01")
+    XCTAssertEqual(snapshot.compatibilityFacts.protocolFacts.discoveredServices, snapshot.discoveredServices)
+  }
+
+  func testRedRuleUsesDiscoveredServicesWhenPresent() {
+    let rule = CameraCompatibilityRule(
+      id: .verifiedCurrentProtocolBaseline,
+      priority: 1,
+      supportStatus: .verified,
+      compatibilityFamily: .red,
+      requiredServices: [FujifilmCompatibilityUUID.securePairService],
+      requiredCharacteristics: [],
+      responsePredicate: nil,
+      selection: .currentWireBaseline
+    )
+    let registry = CameraCompatibilityRegistry(schemaVersion: 1, version: "test", rules: [rule])
+    let facts = CameraProtocolFacts(
+      compatibilityFamily: .red,
+      advertisedServices: [],
+      discoveredServices: [FujifilmCompatibilityUUID.securePairService],
+      discoveredCharacteristics: ["A"]
+    )
+    XCTAssertEqual(CameraConnectionPlanResolver.resolve(protocolFacts: facts, registry: registry).matchedRuleIDs, [rule.id])
+  }
+
 
   // MARK: HD Preview Pipeline Transport Loss
 
@@ -27177,6 +27224,9 @@ extension RunnerTests {
         "facts.observedIdentity.firmwareVersion",
         "modelName: facts.observedIdentity.modelName",
         "firmwareVersion: facts.observedIdentity.firmwareVersion",
+      ],
+      "CameraVendorPairingStore.swift": [
+        "self.firmwareVersion = firmwareVersion",
       ],
     ]
     let identityReadMarkers = [".observedIdentity", ".modelName", ".firmwareVersion"]

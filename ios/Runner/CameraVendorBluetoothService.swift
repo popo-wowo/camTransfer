@@ -5535,6 +5535,7 @@ final class CameraVendorBluetoothService: NSObject {
       peripheralID: peripheralID,
       deviceName: summary.deviceName,
       serialNumber: summary.serialNumber,
+      firmwareVersion: discoveredFirmwareVersion,
       connectedDeviceName: summary.connectedDeviceName,
       appVariant: selectedCamera?.appVariant ?? rememberedPairedCamera?.appVariant ?? .unknown,
       preferredWifiNetwork: summary.preferredWifiNetwork,
@@ -5786,6 +5787,9 @@ final class CameraVendorBluetoothService: NSObject {
       protocolFacts: CameraProtocolFacts(
         compatibilityFamily: family,
         advertisedServices: normalizedServices,
+        discoveredServices: Set(discoveredServiceUUIDStrings.map {
+          $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        }),
         discoveredCharacteristics: Set(discoveredCharacteristicsByUUID.keys.map {
           $0.uuidString.uppercased()
         })

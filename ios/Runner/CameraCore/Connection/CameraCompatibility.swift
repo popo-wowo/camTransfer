@@ -409,6 +409,7 @@ struct CameraProtocolFacts: Codable, Equatable {
   private enum CodingKeys: String, CodingKey {
     case compatibilityFamily
     case advertisedServices
+    case discoveredServices
     case discoveredCharacteristics
     case successfulInitStrategy
     case operationTransport
@@ -422,6 +423,7 @@ struct CameraProtocolFacts: Codable, Equatable {
 
   let compatibilityFamily: CameraCompatibilityFamily?
   let advertisedServices: Set<String>
+  let discoveredServices: Set<String>
   let discoveredCharacteristics: Set<String>
   let successfulInitStrategy: PtpInitStrategyID?
   let operationTransport: CameraPtpTransport?
@@ -435,6 +437,7 @@ struct CameraProtocolFacts: Codable, Equatable {
   init(
     compatibilityFamily: CameraCompatibilityFamily?,
     advertisedServices: Set<String>,
+    discoveredServices: Set<String> = [],
     discoveredCharacteristics: Set<String>,
     successfulInitStrategy: PtpInitStrategyID? = nil,
     operationTransport: CameraPtpTransport? = nil,
@@ -447,6 +450,7 @@ struct CameraProtocolFacts: Codable, Equatable {
   ) {
     self.compatibilityFamily = compatibilityFamily
     self.advertisedServices = Set(advertisedServices.map(Self.normalize))
+    self.discoveredServices = Set(discoveredServices.map(Self.normalize))
     self.discoveredCharacteristics = Set(discoveredCharacteristics.map(Self.normalize))
     self.successfulInitStrategy = successfulInitStrategy
     self.operationTransport = operationTransport
@@ -466,6 +470,10 @@ struct CameraProtocolFacts: Codable, Equatable {
         forKey: .compatibilityFamily
       ),
       advertisedServices: try container.decode(Set<String>.self, forKey: .advertisedServices),
+      discoveredServices: try container.decodeIfPresent(
+        Set<String>.self,
+        forKey: .discoveredServices
+      ) ?? [],
       discoveredCharacteristics: try container.decode(
         Set<String>.self,
         forKey: .discoveredCharacteristics
@@ -513,6 +521,7 @@ struct CameraProtocolFacts: Codable, Equatable {
     CameraProtocolFacts(
       compatibilityFamily: compatibilityFamily,
       advertisedServices: advertisedServices,
+      discoveredServices: discoveredServices,
       discoveredCharacteristics: discoveredCharacteristics,
       successfulInitStrategy: successfulInitStrategy,
       operationTransport: operationTransport,
@@ -529,6 +538,7 @@ struct CameraProtocolFacts: Codable, Equatable {
     CameraProtocolFacts(
       compatibilityFamily: compatibilityFamily,
       advertisedServices: advertisedServices,
+      discoveredServices: discoveredServices,
       discoveredCharacteristics: [],
       bleEndpointEvidence: bleEndpointEvidence
     )
@@ -538,6 +548,7 @@ struct CameraProtocolFacts: Codable, Equatable {
     CameraProtocolFacts(
       compatibilityFamily: compatibilityFamily,
       advertisedServices: advertisedServices,
+      discoveredServices: discoveredServices,
       discoveredCharacteristics: discoveredCharacteristics,
       successfulInitStrategy: successfulInitStrategy,
       operationTransport: operationTransport,
@@ -556,6 +567,7 @@ struct CameraProtocolFacts: Codable, Equatable {
     CameraProtocolFacts(
       compatibilityFamily: compatibilityFamily,
       advertisedServices: advertisedServices,
+      discoveredServices: discoveredServices,
       discoveredCharacteristics: discoveredCharacteristics,
       successfulInitStrategy: successfulInitStrategy,
       operationTransport: operationTransport,
@@ -709,6 +721,55 @@ struct CameraCompatibilityFacts: Codable, Equatable {
   }
 }
 
+struct RedRegistrationCapabilities: Codable, Equatable {
+  let securePairing: Bool
+  let identificationRead: Bool
+}
+
+struct RedActivationCapabilities: Codable, Equatable {
+  let transferAuthorizationWrite: Bool
+  let statusObservation: Bool
+  let wifiConfigurationRead: Bool
+}
+
+struct RedCapabilityEvidence: Codable, Equatable {
+  let identityVerified: Bool
+  let missingRequirements: [String]
+}
+
+/// One immutable, auditable input for RED strategy resolution.
+struct RedCapabilitySnapshot: Codable, Equatable {
+  let protocolFamily: CameraCompatibilityFamily
+  let modelName: String?
+  let firmwareVersion: String?
+  let serialNumber: String?
+  let identificationNumber: Data?
+  let peripheralID: UUID
+  let advertisedServices: Set<String>
+  let discoveredServices: Set<String>
+  let discoveredCharacteristics: Set<String>
+  let characteristicProperties: [String: Set<String>]
+  let registrationCapabilities: RedRegistrationCapabilities
+  let activationCapabilities: RedActivationCapabilities
+  let wifiConfiguration: CameraVendorWifiNetworkConfiguration?
+  let evidence: RedCapabilityEvidence
+
+  var compatibilityFacts: CameraCompatibilityFacts {
+    CameraCompatibilityFacts(
+      observedIdentity: CameraObservedIdentity(
+        modelName: modelName,
+        firmwareVersion: firmwareVersion
+      ),
+      protocolFacts: CameraProtocolFacts(
+        compatibilityFamily: protocolFamily,
+        advertisedServices: advertisedServices,
+        discoveredServices: discoveredServices,
+        discoveredCharacteristics: discoveredCharacteristics
+      )
+    )
+  }
+}
+
 struct CameraGalleryFunctionFacts: Codable, Equatable {
   let functionMode: UInt32?
   let cameraFunctionVersion: UInt32?
@@ -789,7 +850,10 @@ struct CameraCompatibilityRule: Codable, Equatable {
     if let compatibilityFamily, facts.compatibilityFamily != compatibilityFamily {
       reasons.append(.compatibilityFamily)
     }
-    if !requiredServices.isSubset(of: facts.advertisedServices) {
+    let observedServices = facts.discoveredServices.isEmpty
+      ? facts.advertisedServices
+      : facts.discoveredServices
+    if !requiredServices.isSubset(of: observedServices) {
       reasons.append(.requiredServices)
     }
     if !requiredCharacteristics.isSubset(of: facts.discoveredCharacteristics) {
@@ -1034,7 +1098,8 @@ enum CameraConnectionPlanResolver {
     if facts.compatibilityFamily == nil {
       unresolved.append(.compatibilityFamily)
     }
-    if facts.advertisedServices.isEmpty || facts.discoveredCharacteristics.isEmpty {
+    if (facts.discoveredServices.isEmpty && facts.advertisedServices.isEmpty)
+      || facts.discoveredCharacteristics.isEmpty {
       unresolved.append(.requiredGattCapabilities)
     }
     return unresolved
