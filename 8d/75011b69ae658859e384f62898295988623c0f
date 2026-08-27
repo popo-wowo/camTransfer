@@ -1,0 +1,24 @@
+ios/Runner/CameraVendorPtpSession.swift
+  311b1e1acd433d82 377
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "8d75011b69ae658859e384f62898295988623c0f",
+  "prompts": {
+    "311b1e1acd433d82": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a04134-a1ef-7393-b4d5-1b66a9d65f89",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 1,
+      "total_deletions": 1,
+      "accepted_lines": 1,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/7a7a18c9d59962e57f1e145c9f1e7fdde2c29451d16c0bedec54aa917057ca81"
+    }
+  }
+}
