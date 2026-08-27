@@ -372,9 +372,9 @@ final class CameraVendorPtpSession {
     }
   }
 
-  #if DEBUG
   private var physicalSessionSequence: UInt64 = 0
 
+  #if DEBUG
   var physicalSessionID: String? {
     guard isConnected else { return nil }
     return "\(connectedHost)-\(connectionNumber)-\(physicalSessionSequence)"
