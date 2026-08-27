@@ -1,0 +1,24 @@
+ios/Runner/CameraCore/Connection/CameraCompatibility.swift
+  311b1e1acd433d82 412,426,440,453,473-476,524,541,551,570,724-772,853-856,1101-1102
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "b2ceb4d71d9c84765ff422703fef932e7a733d6f",
+  "prompts": {
+    "311b1e1acd433d82": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a04134-a1ef-7393-b4d5-1b66a9d65f89",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 67,
+      "total_deletions": 2,
+      "accepted_lines": 67,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/920be6ea9ffe4acba91b963dc2fe28e67611ade600dbcdbf93c0bb9f7da032ac"
+    }
+  }
+}
