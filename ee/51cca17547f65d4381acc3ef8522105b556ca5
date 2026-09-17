@@ -1,0 +1,28 @@
+ios/RunnerTests/RunnerTests.swift
+  a389fd3febef2732 35-45
+ios/Runner/WiredCameraImportViewController.swift
+  a389fd3febef2732 31-33,207-213,227,229,231,320-325
+ios/Runner/WiredCameraImportModels.swift
+  a389fd3febef2732 4-18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "ee51cca17547f65d4381acc3ef8522105b556ca5",
+  "prompts": {
+    "a389fd3febef2732": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0aa2e-b03d-7c20-b6e0-24b5f1761100",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 45,
+      "total_deletions": 2,
+      "accepted_lines": 10496,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/3b0049c65df862df0a1db66929407941a3dd3af7fb595721836541951b6ccae2"
+    }
+  }
+}
