@@ -96,7 +96,7 @@ final class RunnerTests: XCTestCase {
     XCTAssertTrue(state.selectedItemIDs.isEmpty)
   }
 
-  func testWiredCameraDeletePolicyRequiresExactlyOneLiveSelectedPhoto() {
+  func testWiredCameraDeletePolicyAllowsMultipleLiveSelectedFilesIncludingImported() {
     let first = WiredCameraImportItem(
       id: "1",
       name: "DSCF0001.JPG",
@@ -118,15 +118,16 @@ final class RunnerTests: XCTestCase {
 
     var state = WiredCameraImportState()
     state.replaceItems([first, second])
-    state.toggleSelection(for: first)
+    state.selectedItemIDs = [first.id, second.id]
+    state.importedItemIDs = [second.id]
 
-    XCTAssertEqual(WiredCameraDeletePolicy.selectedItem(from: state, isDeleting: false), first)
-
-    state.toggleSelection(for: second)
-    XCTAssertNil(WiredCameraDeletePolicy.selectedItem(from: state, isDeleting: false))
+    XCTAssertEqual(
+      WiredCameraDeletePolicy.selectedItems(from: state, isDeleting: false),
+      [first, second]
+    )
   }
 
-  func testWiredCameraDeletePolicyRejectsCachedImportedAndBusySelections() {
+  func testWiredCameraDeletePolicyRejectsCachedEmptyAndBusySelections() {
     let item = WiredCameraImportItem(
       id: "1",
       name: "DSCF0001.JPG",
@@ -140,18 +141,97 @@ final class RunnerTests: XCTestCase {
     var state = WiredCameraImportState()
     state.replaceItems([item], isLiveCatalog: false)
     state.selectedItemIDs = [item.id]
-    XCTAssertNil(WiredCameraDeletePolicy.selectedItem(from: state, isDeleting: false))
+    XCTAssertTrue(WiredCameraDeletePolicy.selectedItems(from: state, isDeleting: false).isEmpty)
 
     state.replaceItems([item])
-    state.selectedItemIDs = [item.id]
-    state.importedItemIDs = [item.id]
-    XCTAssertNil(WiredCameraDeletePolicy.selectedItem(from: state, isDeleting: false))
+    state.selectedItemIDs = []
+    XCTAssertTrue(WiredCameraDeletePolicy.selectedItems(from: state, isDeleting: false).isEmpty)
 
-    state.importedItemIDs.removeAll()
-    XCTAssertNil(WiredCameraDeletePolicy.selectedItem(from: state, isDeleting: true))
+    state.selectedItemIDs = [item.id]
+    XCTAssertTrue(WiredCameraDeletePolicy.selectedItems(from: state, isDeleting: true).isEmpty)
 
     state.isImporting = true
-    XCTAssertNil(WiredCameraDeletePolicy.selectedItem(from: state, isDeleting: false))
+    XCTAssertTrue(WiredCameraDeletePolicy.selectedItems(from: state, isDeleting: false).isEmpty)
+  }
+
+  func testWiredCameraDeleteResultClassifiesMissingItemsAsUnknown() {
+    let result = WiredCameraDeleteResult.classify(
+      requestedItemIDs: ["1", "2", "3"],
+      successfulItemIDs: ["1"],
+      failedItemIDs: ["2"]
+    )
+
+    XCTAssertEqual(result.requestedItemIDs, ["1", "2", "3"])
+    XCTAssertEqual(result.successfulItemIDs, ["1"])
+    XCTAssertEqual(result.failedItemIDs, ["2"])
+    XCTAssertEqual(result.unknownItemIDs, ["3"])
+  }
+
+  func testWiredCameraDeleteResultLetsSuccessTakePrecedenceOverFailure() {
+    let result = WiredCameraDeleteResult.classify(
+      requestedItemIDs: ["1", "2"],
+      successfulItemIDs: ["1"],
+      failedItemIDs: ["1", "2"]
+    )
+
+    XCTAssertEqual(result.successfulItemIDs, ["1"])
+    XCTAssertEqual(result.failedItemIDs, ["2"])
+    XCTAssertTrue(result.unknownItemIDs.isEmpty)
+  }
+
+  func testWiredCameraDeleteCopyDescribesBatchAndImportedCount() {
+    let first = WiredCameraImportItem(
+      id: "1",
+      name: "DSCF0001.JPG",
+      uti: "public.jpeg",
+      fileSize: 1024,
+      createdAt: nil,
+      thumbnail: nil,
+      isImportable: true
+    )
+    let second = WiredCameraImportItem(
+      id: "2",
+      name: "DSCF0002.JPG",
+      uti: "public.jpeg",
+      fileSize: 2048,
+      createdAt: nil,
+      thumbnail: nil,
+      isImportable: true
+    )
+
+    XCTAssertEqual(WiredCameraDeleteCopy.confirmationTitle(for: [first, second]), "从相机删除 2 个文件？")
+    let message = WiredCameraDeleteCopy.confirmationMessage(
+      for: [first, second],
+      importedItemIDs: [second.id]
+    )
+    XCTAssertTrue(message.contains("1 个已导入手机"))
+    XCTAssertTrue(message.contains("1 个尚未导入"))
+    XCTAssertTrue(message.contains("不会删除已经导入 iPhone 系统相册的副本"))
+  }
+
+  func testWiredCameraDeleteCopyDescribesPartialResult() {
+    let result = WiredCameraDeleteResult.classify(
+      requestedItemIDs: ["1", "2", "3"],
+      successfulItemIDs: ["1"],
+      failedItemIDs: ["2"]
+    )
+
+    XCTAssertEqual(
+      WiredCameraDeleteCopy.completionMessage(for: result),
+      "删除完成：成功 1 个，失败 1 个，结果未知 1 个"
+    )
+  }
+
+  func testWiredCameraImportStateAllowsImportedItemSelectionForCameraDeletion() {
+    let item = wiredImportItem(id: "saved", name: "DSCF0002.JPG")
+    var state = WiredCameraImportState()
+    state.replaceItems([item], isLiveCatalog: true)
+    state.importedItemIDs = [item.id]
+
+    state.toggleSelection(for: item)
+
+    XCTAssertEqual(state.selectedItemIDs, [item.id])
+    XCTAssertTrue(state.selectedImportableItems.isEmpty)
   }
 
   func testWiredCameraThumbnailQueueDoesNotStartWhileDeletionIsInFlight() {

@@ -223,7 +223,7 @@ struct WiredCameraImportState {
   }
 
   mutating func toggleSelection(for item: WiredCameraImportItem) {
-    guard isLiveCatalogReady, item.isImportable, !importedItemIDs.contains(item.id) else { return }
+    guard isLiveCatalogReady, item.isImportable else { return }
     if selectedItemIDs.contains(item.id) {
       selectedItemIDs.remove(item.id)
     } else {
@@ -299,18 +299,80 @@ struct WiredCameraImportState {
 }
 
 enum WiredCameraDeletePolicy {
-  static func selectedItem(
+  static func selectedItems(
     from state: WiredCameraImportState,
     isDeleting: Bool
-  ) -> WiredCameraImportItem? {
-    guard state.isLiveCatalogReady, !state.isImporting, !isDeleting else { return nil }
-    let selectedItems = state.items.filter {
+  ) -> [WiredCameraImportItem] {
+    guard state.isLiveCatalogReady, !state.isImporting, !isDeleting else { return [] }
+    return state.items.filter {
       state.selectedItemIDs.contains($0.id) &&
-        $0.isImportable &&
-        !state.importedItemIDs.contains($0.id)
+        $0.isImportable
     }
-    guard selectedItems.count == 1 else { return nil }
-    return selectedItems[0]
+  }
+
+}
+
+struct WiredCameraDeleteResult {
+  let requestedItemIDs: [String]
+  let successfulItemIDs: [String]
+  let failedItemIDs: [String]
+  let unknownItemIDs: [String]
+  let error: Error?
+
+  static func classify(
+    requestedItemIDs: [String],
+    successfulItemIDs: Set<String>,
+    failedItemIDs: Set<String>,
+    error: Error? = nil
+  ) -> WiredCameraDeleteResult {
+    let requested = orderedUnique(requestedItemIDs)
+    let requestedSet = Set(requested)
+    let successfulSet = successfulItemIDs.intersection(requestedSet)
+    let effectiveFailedSet = failedItemIDs.intersection(requestedSet).subtracting(successfulSet)
+    let unknownSet = requestedSet.subtracting(successfulSet).subtracting(effectiveFailedSet)
+    return WiredCameraDeleteResult(
+      requestedItemIDs: requested,
+      successfulItemIDs: requested.filter(successfulSet.contains),
+      failedItemIDs: requested.filter(effectiveFailedSet.contains),
+      unknownItemIDs: requested.filter(unknownSet.contains),
+      error: error
+    )
+  }
+
+  private static func orderedUnique(_ values: [String]) -> [String] {
+    var seen = Set<String>()
+    return values.filter { seen.insert($0).inserted }
+  }
+}
+
+enum WiredCameraDeleteCopy {
+  static func confirmationTitle(for items: [WiredCameraImportItem]) -> String {
+    if items.count == 1 {
+      return "从相机删除这张照片？"
+    }
+    return "从相机删除 \(items.count) 个文件？"
+  }
+
+  static func confirmationMessage(
+    for items: [WiredCameraImportItem],
+    importedItemIDs: Set<String>
+  ) -> String {
+    if let item = items.first, items.count == 1 {
+      return "\(item.name) · \(item.fileSizeText)\n\n只删除相机存储卡中的文件，不会删除已经导入 iPhone 系统相册的副本。此操作无法撤销。"
+    }
+    let importedCount = items.filter { importedItemIDs.contains($0.id) }.count
+    let notImportedCount = items.count - importedCount
+    return "将从相机存储卡删除 \(items.count) 个文件，其中 \(importedCount) 个已导入手机、\(notImportedCount) 个尚未导入。\n\n此操作不会删除已经导入 iPhone 系统相册的副本，且无法撤销。"
+  }
+
+  static func completionMessage(for result: WiredCameraDeleteResult) -> String {
+    let successfulCount = result.successfulItemIDs.count
+    let failedCount = result.failedItemIDs.count
+    let unknownCount = result.unknownItemIDs.count
+    if successfulCount == result.requestedItemIDs.count {
+      return "已从相机删除 \(successfulCount) 个文件"
+    }
+    return "删除完成：成功 \(successfulCount) 个，失败 \(failedCount) 个，结果未知 \(unknownCount) 个"
   }
 }
 

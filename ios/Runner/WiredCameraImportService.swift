@@ -270,26 +270,53 @@ final class WiredCameraImportService: NSObject {
     }
   }
 
-  func deleteFile(
-    for itemID: String,
-    completion: @escaping (Result<Void, Error>) -> Void
+  func deleteFiles(
+    for itemIDs: [String],
+    completion: @escaping (Result<WiredCameraDeleteResult, Error>) -> Void
   ) {
     guard let camera = activeCamera, camera.hasOpenSession else {
       completion(.failure(deleteError(code: 10, message: "相机会话未打开，请重新连接后再试")))
       return
     }
-    guard let file = filesByID[itemID] else {
-      completion(.failure(deleteError(code: 11, message: "相机文件已不可用，请刷新后重试")))
+    var seenItemIDs = Set<String>()
+    let requestedItemIDs = itemIDs.filter { seenItemIDs.insert($0).inserted }
+    guard !requestedItemIDs.isEmpty else {
+      completion(.failure(deleteError(code: 11, message: "请先选择要从相机删除的文件")))
       return
+    }
+    guard !isDeleteRequestInFlight else {
+      completion(.failure(deleteError(code: 12, message: "相机正在执行删除，请稍后再试")))
+      return
+    }
+    var files: [ICCameraFile] = []
+    for itemID in requestedItemIDs {
+      guard let file = filesByID[itemID] else {
+        completion(.failure(deleteError(code: 13, message: "相机文件已不可用，请刷新后重试：\(itemID)")))
+        return
+      }
+      files.append(file)
     }
 
     let capability = ICDeviceCapability.cameraDeviceCanDeleteOneFile.rawValue
     let advertisesSingleDelete = camera.capabilities.contains(capability)
-    let filename = file.originalFilename ?? file.name ?? "camera-file"
-    let handle = file.ptpObjectHandle
+    let requestedIDsByObject = Dictionary(
+      uniqueKeysWithValues: zip(files, requestedItemIDs).map { (ObjectIdentifier($0.0), $0.1) }
+    )
+    var requestedIDsByHandle: [UInt32: String] = [:]
+    for (file, itemID) in zip(files, requestedItemIDs) where file.ptpObjectHandle != 0 {
+      requestedIDsByHandle[file.ptpObjectHandle] = itemID
+    }
+    func requestedID(for item: ICCameraItem) -> String? {
+      requestedIDsByObject[ObjectIdentifier(item)] ?? requestedIDsByHandle[item.ptpObjectHandle]
+    }
     isDeleteRequestInFlight = true
     Task { [weak self, weak camera] in
-      guard let self, let camera else { return }
+      guard let self else { return }
+      guard let camera else {
+        self.isDeleteRequestInFlight = false
+        completion(.failure(self.deleteError(code: 14, message: "相机已断开，删除结果无法确认")))
+        return
+      }
       do {
         try await self.beginForegroundOperation(named: "delete")
       } catch {
@@ -304,42 +331,48 @@ final class WiredCameraImportService: NSObject {
           "transport=\(camera.transportType ?? "unknown") " +
           "advertisesSingleDelete=\(advertisesSingleDelete) " +
           "capabilities=\(camera.capabilities.sorted()) " +
-          "item=\(itemID) filename=\(filename) handle=0x\(String(format: "%08X", handle)) " +
+          "items=\(requestedItemIDs.count) ids=\(requestedItemIDs.joined(separator: ",")) " +
           "thumbnailActive=\(self.activeThumbnailRequestItemID ?? "none") thumbnailDiscarded=\(discardedThumbnailCount)"
       )
 
       _ = camera.requestDeleteFiles(
-        [file],
+        files,
         deleteFailed: { [weak self] failures in
           let details = failures.map { key, item in
             "error=\(key.rawValue) filename=\(item.name ?? "unknown") handle=0x\(String(format: "%08X", item.ptpObjectHandle))"
           }.sorted().joined(separator: ";")
-          self?.logDelete("deleteFailed item=\(itemID) details=\(details)")
+          self?.logDelete("deleteFailed requested=\(requestedItemIDs.count) details=\(details)")
         },
         completion: { [weak self, weak camera] result, error in
           DispatchQueue.main.async {
             guard let self else { return }
-            let successfulCount = result[.successful]?.count ?? 0
-            let failedCount = result[.failed]?.count ?? 0
+            let successfulItemIDs = Set((result[.successful] ?? []).compactMap(requestedID(for:)))
+            let failedItemIDs = Set((result[.failed] ?? []).compactMap(requestedID(for:)))
+            let deleteResult = WiredCameraDeleteResult.classify(
+              requestedItemIDs: requestedItemIDs,
+              successfulItemIDs: successfulItemIDs,
+              failedItemIDs: failedItemIDs,
+              error: error
+            )
             self.isDeleteRequestInFlight = false
             self.finishForegroundOperation(named: "delete")
             if let error {
               let nsError = error as NSError
               self.logDelete(
-                "completion failed item=\(itemID) successCount=\(successfulCount) failedCount=\(failedCount) " +
+                "completion error requested=\(requestedItemIDs.count) successCount=\(deleteResult.successfulItemIDs.count) " +
+                  "failedCount=\(deleteResult.failedItemIDs.count) unknownCount=\(deleteResult.unknownItemIDs.count) " +
                   "domain=\(nsError.domain) code=\(nsError.code) description=\(nsError.localizedDescription)"
               )
-              completion(.failure(error))
-              return
+            } else {
+              self.logDelete(
+                "completion requested=\(requestedItemIDs.count) successCount=\(deleteResult.successfulItemIDs.count) " +
+                  "failedCount=\(deleteResult.failedItemIDs.count) unknownCount=\(deleteResult.unknownItemIDs.count)"
+              )
             }
-
-            self.logDelete(
-              "completion succeeded item=\(itemID) successCount=\(successfulCount) failedCount=\(failedCount)"
-            )
             if let camera {
               self.refreshItems(from: camera)
             }
-            completion(.success(()))
+            completion(.success(deleteResult))
           }
         }
       )

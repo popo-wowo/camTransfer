@@ -263,7 +263,11 @@ final class WiredCameraImportViewController: UIViewController {
   }
 
   private func render() {
-    let selectedCount = state.selectedImportableItems.count
+    let selectedItems = state.items.filter {
+      state.selectedItemIDs.contains($0.id) && $0.isImportable
+    }
+    let selectedCount = selectedItems.count
+    let selectedImportableCount = state.selectedImportableItems.count
     let proofingFavoriteCount = state.proofingFavoriteItemIDs.count
     let importableCount = state.importableItems.count
     let filteredItems = state.filteredItems()
@@ -309,14 +313,14 @@ final class WiredCameraImportViewController: UIViewController {
     selectAllButton.configuration = selectAllConfig
     selectAllButton.accessibilityLabel = allFilteredSelected ? "取消全选" : "全选当前筛选"
     selectAllButton.isEnabled = filteredImportableCount > 0 && !state.isImporting && !isDeleting
-    importButton.isEnabled = selectedCount > 0 && !state.isImporting && !isDeleting
+    importButton.isEnabled = selectedImportableCount > 0 && !state.isImporting && !isDeleting
     importButton.alpha = importButton.isEnabled ? 1 : 0.55
-    let deletableItem = WiredCameraDeletePolicy.selectedItem(from: state, isDeleting: isDeleting)
-    deleteButton.isHidden = selectedCount != 1
-    deleteButton.isEnabled = deletableItem != nil
+    let deletableItems = WiredCameraDeletePolicy.selectedItems(from: state, isDeleting: isDeleting)
+    deleteButton.isHidden = selectedCount == 0
+    deleteButton.isEnabled = !deletableItems.isEmpty
     deleteButton.alpha = deleteButton.isEnabled ? 1 : 0.55
     collectionView.isUserInteractionEnabled = !isDeleting
-    updateImportButtonTitle(selectedCount: selectedCount)
+    updateImportButtonTitle(selectedCount: selectedImportableCount)
     bottomImportBar.isHidden = selectedCount == 0
     bottomImportLabel.text = "已选 \(selectedCount) 个文件"
     proofingSheet?.updateSelectedCount(proofingFavoriteCount)
@@ -420,31 +424,40 @@ final class WiredCameraImportViewController: UIViewController {
   }
 
   @objc private func deleteTapped() {
-    guard let item = WiredCameraDeletePolicy.selectedItem(from: state, isDeleting: isDeleting) else { return }
+    let items = WiredCameraDeletePolicy.selectedItems(from: state, isDeleting: isDeleting)
+    guard !items.isEmpty else { return }
     let alert = UIAlertController(
-      title: "从相机删除这张照片？",
-      message: "\(item.name) · \(item.fileSizeText)\n\n只删除相机存储卡中的文件，不删除已经导入手机的副本。请只选择刚刚新拍、可以丢弃的测试照片。",
+      title: WiredCameraDeleteCopy.confirmationTitle(for: items),
+      message: WiredCameraDeleteCopy.confirmationMessage(
+        for: items,
+        importedItemIDs: state.importedItemIDs
+      ),
       preferredStyle: .alert
     )
     alert.addAction(UIAlertAction(title: "取消", style: .cancel))
-    alert.addAction(UIAlertAction(title: "删除相机照片", style: .destructive) { [weak self] _ in
-      self?.performDelete(item)
+    let actionTitle = items.count == 1 ? "删除相机照片" : "删除 \(items.count) 个文件"
+    alert.addAction(UIAlertAction(title: actionTitle, style: .destructive) { [weak self] _ in
+      self?.performDelete(items)
     })
     present(alert, animated: true)
   }
 
-  private func performDelete(_ item: WiredCameraImportItem) {
-    guard WiredCameraDeletePolicy.selectedItem(from: state, isDeleting: isDeleting)?.id == item.id else { return }
+  private func performDelete(_ items: [WiredCameraImportItem]) {
+    let currentItems = WiredCameraDeletePolicy.selectedItems(from: state, isDeleting: isDeleting)
+    guard currentItems.map(\.id) == items.map(\.id) else { return }
     isDeleting = true
-    state.errorMessage = "正在请求相机删除 \(item.name)"
+    state.errorMessage = items.count == 1
+      ? "正在请求相机删除 \(items[0].name)"
+      : "正在请求相机删除 \(items.count) 个文件"
     render()
 
-    service.deleteFile(for: item.id) { [weak self] result in
+    service.deleteFiles(for: items.map(\.id)) { [weak self] result in
       guard let self else { return }
       self.isDeleting = false
       switch result {
-      case .success:
-        self.state.errorMessage = "相机报告删除成功：\(item.name)"
+      case .success(let deleteResult):
+        self.state.selectedItemIDs.subtract(deleteResult.successfulItemIDs)
+        self.state.errorMessage = WiredCameraDeleteCopy.completionMessage(for: deleteResult)
       case .failure(let error):
         self.state.errorMessage = "删除失败：\(error.localizedDescription)"
       }
@@ -1172,8 +1185,8 @@ private final class WiredCameraImportGridCell: UICollectionViewCell {
     titleLabel.text = item.name
     detailLabel.text = item.fileSizeText
     formatBadgeLabel.text = " \(item.formatLabel) "
-    selectionButton.isHidden = !isLiveCatalogReady || !item.isImportable || isImported
-    selectionButton.isEnabled = isLiveCatalogReady && item.isImportable && !isImported
+    selectionButton.isHidden = !isLiveCatalogReady || !item.isImportable
+    selectionButton.isEnabled = isLiveCatalogReady && item.isImportable
     updateSelection(isSelectedForImport)
     if isProofingFavorite {
       statusBadgeLabel.text = " 客户收藏 "
