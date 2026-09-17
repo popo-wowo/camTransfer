@@ -32,6 +32,17 @@ private actor AsyncTestGate {
 }
 
 final class RunnerTests: XCTestCase {
+  func testWiredCameraImportHeaderLayoutCollapsesHiddenPermissionButton() {
+    XCTAssertEqual(
+      WiredCameraImportHeaderLayoutPolicy.metrics(needsAuthorization: false),
+      .init(permissionTopSpacing: 0, permissionButtonHeight: 0, filterTopSpacing: 8)
+    )
+    XCTAssertEqual(
+      WiredCameraImportHeaderLayoutPolicy.metrics(needsAuthorization: true),
+      .init(permissionTopSpacing: 10, permissionButtonHeight: 38, filterTopSpacing: 10)
+    )
+  }
+
   func testWiredCameraImportPolicyAcceptsPhotosAndVideos() {
     XCTAssertTrue(WiredCameraImportPolicy.isSupportedMedia(filename: "DSCF0001.JPG", uti: nil))
     XCTAssertTrue(WiredCameraImportPolicy.isSupportedMedia(filename: "DSCF0002.RAF", uti: nil))

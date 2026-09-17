@@ -28,6 +28,9 @@ final class WiredCameraImportViewController: UIViewController {
   private let statusLabel = UILabel()
   private let deviceLabel = UILabel()
   private let permissionButton = UIButton(type: .system)
+  private var permissionButtonTopConstraint: NSLayoutConstraint?
+  private var permissionButtonHeightConstraint: NSLayoutConstraint?
+  private var dateChipsTopConstraint: NSLayoutConstraint?
   private let selectAllButton = UIButton(type: .system)
   private let dateChips = NativeChipBarControl()
   private let formatChips = NativeChipBarControl()
@@ -201,6 +204,13 @@ final class WiredCameraImportViewController: UIViewController {
       bottomImportBar.addSubview($0)
     }
 
+    let permissionButtonTopConstraint = permissionButton.topAnchor.constraint(equalTo: deviceLabel.bottomAnchor)
+    let permissionButtonHeightConstraint = permissionButton.heightAnchor.constraint(equalToConstant: 0)
+    let dateChipsTopConstraint = dateChips.topAnchor.constraint(equalTo: permissionButton.bottomAnchor)
+    self.permissionButtonTopConstraint = permissionButtonTopConstraint
+    self.permissionButtonHeightConstraint = permissionButtonHeightConstraint
+    self.dateChipsTopConstraint = dateChipsTopConstraint
+
     NSLayoutConstraint.activate([
       headerView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 6),
       headerView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -214,10 +224,11 @@ final class WiredCameraImportViewController: UIViewController {
       deviceLabel.leadingAnchor.constraint(equalTo: statusLabel.leadingAnchor),
       deviceLabel.trailingAnchor.constraint(equalTo: statusLabel.trailingAnchor),
 
-      permissionButton.topAnchor.constraint(equalTo: deviceLabel.bottomAnchor, constant: 10),
+      permissionButtonTopConstraint,
       permissionButton.leadingAnchor.constraint(equalTo: statusLabel.leadingAnchor),
+      permissionButtonHeightConstraint,
 
-      dateChips.topAnchor.constraint(equalTo: permissionButton.bottomAnchor, constant: 10),
+      dateChipsTopConstraint,
       dateChips.leadingAnchor.constraint(equalTo: statusLabel.leadingAnchor),
       dateChips.trailingAnchor.constraint(equalTo: statusLabel.trailingAnchor),
 
@@ -306,6 +317,12 @@ final class WiredCameraImportViewController: UIViewController {
     activityIndicator.isHidden = !state.isLoadingItems && !state.isImporting && !isDeleting
     state.isLoadingItems || state.isImporting || isDeleting ? activityIndicator.startAnimating() : activityIndicator.stopAnimating()
     permissionButton.isHidden = !needsContentsAuthorization
+    let headerLayout = WiredCameraImportHeaderLayoutPolicy.metrics(
+      needsAuthorization: needsContentsAuthorization
+    )
+    permissionButtonTopConstraint?.constant = headerLayout.permissionTopSpacing
+    permissionButtonHeightConstraint?.constant = headerLayout.permissionButtonHeight
+    dateChipsTopConstraint?.constant = headerLayout.filterTopSpacing
     let filteredIDs = Set(filteredItems.filter(\.isImportable).map(\.id))
     let allFilteredSelected = !filteredIDs.isEmpty && filteredIDs.isSubset(of: state.selectedItemIDs)
     var selectAllConfig = selectAllButton.configuration

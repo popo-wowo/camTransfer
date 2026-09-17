@@ -1,6 +1,21 @@
 import Foundation
 import UIKit
 
+struct WiredCameraImportHeaderLayoutMetrics: Equatable {
+  let permissionTopSpacing: CGFloat
+  let permissionButtonHeight: CGFloat
+  let filterTopSpacing: CGFloat
+}
+
+enum WiredCameraImportHeaderLayoutPolicy {
+  static func metrics(needsAuthorization: Bool) -> WiredCameraImportHeaderLayoutMetrics {
+    if needsAuthorization {
+      return .init(permissionTopSpacing: 10, permissionButtonHeight: 38, filterTopSpacing: 10)
+    }
+    return .init(permissionTopSpacing: 0, permissionButtonHeight: 0, filterTopSpacing: 8)
+  }
+}
+
 struct WiredCameraImportDevice: Codable, Equatable {
   let id: String
   let name: String
