@@ -1,0 +1,30 @@
+ios/Runner/WiredCameraImportModels.swift
+  a389fd3febef2732 172,177,199,261,328-340,448,451-454,481-502,526-528
+ios/Runner/WiredCameraImportService.swift
+  a389fd3febef2732 36,40,88-89,93,107-108,112,117-118,129-130,458-464,469-473,477-499,531-533,591,701-702,716-717,722-723,731-734
+ios/RunnerTests/RunnerTests.swift
+  a389fd3febef2732 245-302,383-410,3068,3081,3084
+ios/Runner/WiredCameraImportViewController.swift
+  a389fd3febef2732 8-9,48,64-67,192-197,204,247-259,263,268,273-279,320-324,355-370,381,384,397,399-400,402,404,412-419,536-543,761-765,1030,1032,1036,1042-1058,1302,1339-1340,1396,1416,1475-1481,1929-1933,1949-1959,2019-2023,2096-2100,2104-2107,2121,2125-2126,2137-2147,2198-2276
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "148b779c6c9826287a646dc7ecd2048fb0494d8b",
+  "prompts": {
+    "a389fd3febef2732": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0aa2e-b03d-7c20-b6e0-24b5f1761100",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 442,
+      "total_deletions": 219,
+      "accepted_lines": 10938,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/4b5442148502c9de965c6fb56b784eac6b7ca74b683003cec967c232673290aa"
+    }
+  }
+}
