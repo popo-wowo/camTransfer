@@ -1,0 +1,30 @@
+ios/Runner/WiredCameraImportViewController.swift
+  a389fd3febef2732 311,858-860,994-999,1005-1007,1055-1063,1092-1104,1168,1178-1189,1193-1194,1197,1199-1201,1210-1215,1217-1226
+ios/RunnerTests/RunnerTests.swift
+  a389fd3febef2732 248-294
+ios/Runner/WiredCameraImportModels.swift
+  a389fd3febef2732 249-259,327-332
+ios/Runner/WiredCameraImportService.swift
+  a389fd3febef2732 9-13,35-38,84-88,100-105,109,120,407,442,445-480,483-493,655,666,673,678-679,683,691-694,698
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "916e6171190e239a39ed56becaf35e916cde22e6",
+  "prompts": {
+    "a389fd3febef2732": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0aa2e-b03d-7c20-b6e0-24b5f1761100",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 221,
+      "total_deletions": 34,
+      "accepted_lines": 10578,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/ad2726ff7894117780a1eb80f12b76ce0554470020eb6e4cb37d6bb08ac1ad50"
+    }
+  }
+}
