@@ -246,6 +246,17 @@ struct WiredCameraImportState {
     }
   }
 
+  mutating func toggleSelection(for items: [WiredCameraImportItem]) {
+    guard isLiveCatalogReady else { return }
+    let selectableIDs = Set(items.filter(\.isImportable).map(\.id))
+    guard !selectableIDs.isEmpty else { return }
+    if selectableIDs.isSubset(of: selectedItemIDs) {
+      selectedItemIDs.subtract(selectableIDs)
+    } else {
+      selectedItemIDs.formUnion(selectableIDs)
+    }
+  }
+
   mutating func setSelection(_ shouldSelect: Bool, for item: WiredCameraImportItem) {
     guard isLiveCatalogReady, item.isImportable, !importedItemIDs.contains(item.id) else { return }
     if shouldSelect {
@@ -310,6 +321,15 @@ struct WiredCameraImportState {
 
   mutating func clearSelection() {
     selectedItemIDs.removeAll()
+  }
+}
+
+enum WiredCameraCatalogPublicationPolicy {
+  static let minimumInterval: TimeInterval = 0.2
+
+  static func delay(now: Date, lastPublishedAt: Date?) -> TimeInterval {
+    guard let lastPublishedAt else { return 0 }
+    return max(0, minimumInterval - now.timeIntervalSince(lastPublishedAt))
   }
 }
 

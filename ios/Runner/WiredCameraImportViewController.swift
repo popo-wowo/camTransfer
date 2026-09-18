@@ -308,7 +308,7 @@ final class WiredCameraImportViewController: UIViewController {
         statusLabel.text = "正在导入 \(state.importedCount + 1)/\(max(currentImportTotal, 1))，请保持相机连接"
       }
     } else if state.isLoadingItems {
-      statusLabel.text = state.items.isEmpty ? "正在读取相机目录" : "正在刷新相机目录 · 已先显示缓存"
+      statusLabel.text = state.items.isEmpty ? "正在读取相机目录" : "正在读取相机目录 · 已显示 \(state.items.count) 个文件"
     } else if let errorMessage = state.errorMessage {
       statusLabel.text = errorMessage
     } else if state.devices.isEmpty {
@@ -845,14 +845,6 @@ final class WiredCameraImportViewController: UIViewController {
       state.applyCache(snapshot)
     }
     state.importedItemIDs.formUnion(WiredCameraImportHistoryStore.importedItemIDs(for: device.id))
-    mergeCachedThumbnailsForSelectedDevice()
-  }
-
-  private func mergeCachedThumbnailsForSelectedDevice() {
-    guard let deviceID = state.selectedDeviceID else { return }
-    for index in state.items.indices where state.items[index].thumbnail == nil {
-      state.items[index].thumbnail = thumbnailCacheStore.loadThumbnail(deviceID: deviceID, itemID: state.items[index].id)
-    }
   }
 
   private func saveCacheSnapshot() {
@@ -863,7 +855,9 @@ final class WiredCameraImportViewController: UIViewController {
       importedItemIDs: state.importedItemIDs,
       cachedAt: Date()
     )
-    try? cacheStore.save(snapshot)
+    DispatchQueue.global(qos: .utility).async { [cacheStore] in
+      try? cacheStore.save(snapshot)
+    }
   }
 
   private func requestThumbnailsForVisibleItems() {
@@ -997,15 +991,20 @@ extension WiredCameraImportViewController: WiredCameraImportServiceDelegate {
     render()
   }
 
-  func wiredCameraImportService(_ service: WiredCameraImportService, didUpdateItems items: [WiredCameraImportItem]) {
-    state.isLoadingItems = false
+  func wiredCameraImportService(
+    _ service: WiredCameraImportService,
+    didUpdateItems items: [WiredCameraImportItem],
+    isCompleteCatalog: Bool
+  ) {
+    state.isLoadingItems = !isCompleteCatalog
     state.errorMessage = nil
     if let deviceID = state.selectedDeviceID {
       state.importedItemIDs.formUnion(WiredCameraImportHistoryStore.importedItemIDs(for: deviceID))
     }
     state.replaceItems(items)
-    mergeCachedThumbnailsForSelectedDevice()
-    saveCacheSnapshot()
+    if isCompleteCatalog {
+      saveCacheSnapshot()
+    }
     render()
     DispatchQueue.main.async { [weak self] in
       self?.requestThumbnailsForVisibleItems()
@@ -1019,7 +1018,6 @@ extension WiredCameraImportViewController: WiredCameraImportServiceDelegate {
     if let deviceID = state.selectedDeviceID {
       thumbnailCacheStore.saveThumbnail(thumbnail, deviceID: deviceID, itemID: itemID)
     }
-    saveCacheSnapshot()
     if let indexPath = indexPathForVisibleItemID(itemID),
        let cell = collectionView.cellForItem(at: indexPath) as? WiredCameraImportGridCell {
       cell.setThumbnail(thumbnail)
@@ -1054,7 +1052,15 @@ extension WiredCameraImportViewController: UICollectionViewDataSource, UICollect
     ) as? WiredCameraImportGridCell else {
       return UICollectionViewCell()
     }
-    guard let item = item(at: indexPath) else { return UICollectionViewCell() }
+    guard var item = item(at: indexPath) else { return UICollectionViewCell() }
+    if item.thumbnail == nil,
+       let deviceID = state.selectedDeviceID,
+       let cachedThumbnail = thumbnailCacheStore.loadThumbnail(deviceID: deviceID, itemID: item.id) {
+      item.thumbnail = cachedThumbnail
+      if let itemIndex = state.items.firstIndex(where: { $0.id == item.id }) {
+        state.items[itemIndex].thumbnail = cachedThumbnail
+      }
+    }
     cell.configure(
       item: item,
       isSelectedForImport: state.selectedItemIDs.contains(item.id),
@@ -1083,7 +1089,19 @@ extension WiredCameraImportViewController: UICollectionViewDataSource, UICollect
           ) as? WiredCameraImportSectionHeaderView else {
       return UICollectionReusableView()
     }
-    header.configure(title: gallerySections[indexPath.section].title)
+    let section = gallerySections[indexPath.section]
+    let selectableIDs = Set(section.items.filter(\.isImportable).map(\.id))
+    let allSelected = !selectableIDs.isEmpty && selectableIDs.isSubset(of: state.selectedItemIDs)
+    header.configure(
+      title: section.title,
+      selectionTitle: allSelected ? "取消" : "全选",
+      isSelectionEnabled: state.isLiveCatalogReady && !selectableIDs.isEmpty && !state.isImporting && !isDeleting
+    )
+    header.onSelectionTapped = { [weak self] in
+      guard let self, self.gallerySections.indices.contains(indexPath.section) else { return }
+      self.state.toggleSelection(for: self.gallerySections[indexPath.section].items)
+      self.render()
+    }
     return header
   }
 
@@ -1147,6 +1165,7 @@ extension WiredCameraImportViewController: UICollectionViewDataSource, UICollect
 
 private final class WiredCameraImportSectionHeaderView: UICollectionReusableView {
   static let reuseID = "WiredCameraImportSectionHeaderView"
+  var onSelectionTapped: (() -> Void)?
 
   private let titleLabel: UILabel = {
     let label = UILabel()
@@ -1156,13 +1175,30 @@ private final class WiredCameraImportSectionHeaderView: UICollectionReusableView
     return label
   }()
 
+  private let selectionButton: UIButton = {
+    let button = UIButton(type: .system)
+    button.translatesAutoresizingMaskIntoConstraints = false
+    var config = UIButton.Configuration.filled()
+    config.cornerStyle = .capsule
+    config.baseBackgroundColor = NativeLuxuryTheme.mutedFill
+    config.baseForegroundColor = NativeLuxuryTheme.ink
+    config.contentInsets = NSDirectionalEdgeInsets(top: 5, leading: 10, bottom: 5, trailing: 10)
+    button.configuration = config
+    return button
+  }()
+
   override init(frame: CGRect) {
     super.init(frame: frame)
     addSubview(titleLabel)
+    addSubview(selectionButton)
+    selectionButton.addTarget(self, action: #selector(selectionTapped), for: .touchUpInside)
     NSLayoutConstraint.activate([
       titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-      titleLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+      titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: selectionButton.leadingAnchor, constant: -8),
       titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+      selectionButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+      selectionButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+      selectionButton.heightAnchor.constraint(equalToConstant: 28),
     ])
   }
 
@@ -1171,8 +1207,23 @@ private final class WiredCameraImportSectionHeaderView: UICollectionReusableView
     fatalError("init(coder:) has not been implemented")
   }
 
-  func configure(title: String) {
+  override func prepareForReuse() {
+    super.prepareForReuse()
+    onSelectionTapped = nil
+  }
+
+  func configure(title: String, selectionTitle: String, isSelectionEnabled: Bool) {
     titleLabel.text = title
+    selectionButton.configuration?.attributedTitle = AttributedString(
+      selectionTitle,
+      attributes: AttributeContainer([.font: UIFont.systemFont(ofSize: 12, weight: .bold)])
+    )
+    selectionButton.isEnabled = isSelectionEnabled
+    selectionButton.alpha = isSelectionEnabled ? 1 : 0.45
+  }
+
+  @objc private func selectionTapped() {
+    onSelectionTapped?()
   }
 }
 

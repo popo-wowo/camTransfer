@@ -245,6 +245,53 @@ final class RunnerTests: XCTestCase {
     XCTAssertTrue(state.selectedImportableItems.isEmpty)
   }
 
+  func testWiredCameraImportStateTogglesAllSelectableItemsInDayIncludingImportedItems() {
+    let available = wiredImportItem(id: "available", name: "DSCF0001.JPG")
+    let imported = wiredImportItem(id: "imported", name: "DSCF0002.JPG")
+    let unsupported = WiredCameraImportItem(
+      id: "unsupported",
+      name: "README.TXT",
+      uti: "public.text",
+      fileSize: 512,
+      createdAt: nil,
+      thumbnail: nil,
+      isImportable: false
+    )
+    var state = WiredCameraImportState()
+    state.replaceItems([available, imported, unsupported], isLiveCatalog: true)
+    state.importedItemIDs = [imported.id]
+
+    state.toggleSelection(for: [available, imported, unsupported])
+    XCTAssertEqual(state.selectedItemIDs, [available.id, imported.id])
+
+    state.toggleSelection(for: [available, imported, unsupported])
+    XCTAssertTrue(state.selectedItemIDs.isEmpty)
+  }
+
+  func testWiredCameraCatalogPublicationPolicyPublishesFirstBatchImmediatelyAndCoalescesBursts() {
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+
+    XCTAssertEqual(
+      WiredCameraCatalogPublicationPolicy.delay(now: now, lastPublishedAt: nil),
+      0
+    )
+    XCTAssertEqual(
+      WiredCameraCatalogPublicationPolicy.delay(
+        now: now.addingTimeInterval(0.05),
+        lastPublishedAt: now
+      ),
+      0.15,
+      accuracy: 0.001
+    )
+    XCTAssertEqual(
+      WiredCameraCatalogPublicationPolicy.delay(
+        now: now.addingTimeInterval(0.25),
+        lastPublishedAt: now
+      ),
+      0
+    )
+  }
+
   func testWiredCameraThumbnailQueueDoesNotStartWhileDeletionIsInFlight() {
     XCTAssertTrue(
       WiredCameraThumbnailQueuePolicy.shouldStartRequest(

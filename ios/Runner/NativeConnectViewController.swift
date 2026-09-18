@@ -2504,7 +2504,8 @@ extension NativeConnectViewController: WiredCameraImportServiceDelegate {
 
   func wiredCameraImportService(
     _ service: WiredCameraImportService,
-    didUpdateItems items: [WiredCameraImportItem]
+    didUpdateItems items: [WiredCameraImportItem],
+    isCompleteCatalog: Bool
   ) {}
 
   func wiredCameraImportService(

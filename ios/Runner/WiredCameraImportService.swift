@@ -6,7 +6,11 @@ protocol WiredCameraImportServiceDelegate: AnyObject {
   func wiredCameraImportServiceDidUpdateAuthorization(_ service: WiredCameraImportService, isAuthorized: Bool)
   func wiredCameraImportServiceDidUpdateDevices(_ service: WiredCameraImportService, devices: [WiredCameraImportDevice])
   func wiredCameraImportServiceDidStartLoadingItems(_ service: WiredCameraImportService)
-  func wiredCameraImportService(_ service: WiredCameraImportService, didUpdateItems items: [WiredCameraImportItem])
+  func wiredCameraImportService(
+    _ service: WiredCameraImportService,
+    didUpdateItems items: [WiredCameraImportItem],
+    isCompleteCatalog: Bool
+  )
   func wiredCameraImportService(_ service: WiredCameraImportService, didUpdateThumbnailFor itemID: String, thumbnail: UIImage)
   func wiredCameraImportService(_ service: WiredCameraImportService, didFailWith message: String)
 }
@@ -28,6 +32,10 @@ final class WiredCameraImportService: NSObject {
   private var failedThumbnailItemIDs: Set<String> = []
   private var thumbnailIdleWaiters: [CheckedContinuation<Void, Never>] = []
   private var activeDownloadProgressObservation: NSKeyValueObservation?
+  private var pendingCatalogPublication: DispatchWorkItem?
+  private var lastCatalogPublishedAt: Date?
+  private var catalogStartedAt: Date?
+  private var isCompleteCatalog = false
 
   override init() {
     super.init()
@@ -73,6 +81,11 @@ final class WiredCameraImportService: NSObject {
     queuedThumbnailItemIDSet.removeAll()
     resolvedThumbnailItemIDs.removeAll()
     failedThumbnailItemIDs.removeAll()
+    pendingCatalogPublication?.cancel()
+    pendingCatalogPublication = nil
+    lastCatalogPublishedAt = nil
+    catalogStartedAt = nil
+    isCompleteCatalog = false
     resumeThumbnailIdleWaiters()
   }
 
@@ -84,10 +97,16 @@ final class WiredCameraImportService: NSObject {
 
     activeCamera = camera
     camera.delegate = self
+    pendingCatalogPublication?.cancel()
+    pendingCatalogPublication = nil
+    lastCatalogPublishedAt = nil
+    catalogStartedAt = Date()
+    isCompleteCatalog = false
+    filesByID.removeAll()
     delegate?.wiredCameraImportServiceDidStartLoadingItems(self)
 
     if camera.hasOpenSession {
-      refreshItems(from: camera)
+      replaceFilesAndPublish(from: camera, source: "already-open")
       return
     }
 
@@ -98,7 +117,7 @@ final class WiredCameraImportService: NSObject {
           self.delegate?.wiredCameraImportService(self, didFailWith: "打开相机会话失败：\(error.localizedDescription)")
           return
         }
-        self.refreshItems(from: camera)
+        self.replaceFilesAndPublish(from: camera, source: "session-open")
       }
     }
   }
@@ -385,7 +404,7 @@ final class WiredCameraImportService: NSObject {
               )
             }
             if let camera {
-              self.refreshItems(from: camera)
+              self.replaceFilesAndPublish(from: camera, source: "delete-completion", force: true)
             }
             completion(.success(deleteResult))
           }
@@ -420,13 +439,58 @@ final class WiredCameraImportService: NSObject {
     delegate?.wiredCameraImportServiceDidUpdateDevices(self, devices: cameras.map(summary(for:)))
   }
 
-  private func refreshItems(from camera: ICCameraDevice) {
+  private func replaceFilesAndPublish(from camera: ICCameraDevice, source: String, force: Bool = false) {
     let files = camera.mediaFiles?.compactMap { $0 as? ICCameraFile } ?? []
     filesByID = Dictionary(uniqueKeysWithValues: files.map { (itemID(for: $0), $0) })
+    scheduleCatalogPublication(source: source, force: force)
+  }
+
+  private func addFilesAndPublish(_ items: [ICCameraItem], source: String) {
+    for file in items.compactMap({ $0 as? ICCameraFile }) {
+      filesByID[itemID(for: file)] = file
+    }
+    scheduleCatalogPublication(source: source)
+  }
+
+  private func scheduleCatalogPublication(source: String, force: Bool = false) {
+    let now = Date()
+    let delay = force ? 0 : WiredCameraCatalogPublicationPolicy.delay(
+      now: now,
+      lastPublishedAt: lastCatalogPublishedAt
+    )
+    if delay <= 0 {
+      pendingCatalogPublication?.cancel()
+      pendingCatalogPublication = nil
+      publishCatalogSnapshot(source: source)
+      return
+    }
+    guard pendingCatalogPublication == nil else { return }
+    let workItem = DispatchWorkItem { [weak self] in
+      guard let self else { return }
+      self.pendingCatalogPublication = nil
+      self.publishCatalogSnapshot(source: "coalesced-\(source)")
+    }
+    pendingCatalogPublication = workItem
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+  }
+
+  private func publishCatalogSnapshot(source: String) {
+    if filesByID.isEmpty && !isCompleteCatalog {
+      return
+    }
     resolvedThumbnailItemIDs.formIntersection(Set(filesByID.keys))
     failedThumbnailItemIDs.formIntersection(Set(filesByID.keys))
-    let items = WiredCameraImportSortPolicy.newestFirst(files.map(item(for:)))
-    delegate?.wiredCameraImportService(self, didUpdateItems: items)
+    let items = WiredCameraImportSortPolicy.newestFirst(filesByID.values.map(item(for:)))
+    lastCatalogPublishedAt = Date()
+    let elapsed = catalogStartedAt.map { Date().timeIntervalSince($0) } ?? 0
+    let message = "CamTransferWired catalog publish source=\(source) count=\(items.count) complete=\(isCompleteCatalog) elapsed=\(String(format: "%.3f", elapsed))s"
+    print(message)
+    CameraVendorFileLogger.log(message)
+    delegate?.wiredCameraImportService(
+      self,
+      didUpdateItems: items,
+      isCompleteCatalog: isCompleteCatalog
+    )
   }
 
   private func summary(for camera: ICCameraDevice) -> WiredCameraImportDevice {
@@ -588,7 +652,7 @@ extension WiredCameraImportService: ICDeviceBrowserDelegate {
     if let camera = device as? ICCameraDevice, deviceID(for: camera) == activeCamera.map(deviceID(for:)) {
       activeCamera = nil
       filesByID.removeAll()
-      delegate?.wiredCameraImportService(self, didUpdateItems: [])
+      delegate?.wiredCameraImportService(self, didUpdateItems: [], isCompleteCatalog: false)
     }
     publishDevices()
   }
@@ -599,23 +663,24 @@ extension WiredCameraImportService: ICCameraDeviceDelegate {
 
   func device(_ device: ICDevice, didOpenSessionWithError error: Error?) {
     guard let camera = device as? ICCameraDevice, error == nil else { return }
-    refreshItems(from: camera)
+    replaceFilesAndPublish(from: camera, source: "delegate-session-open")
   }
 
   func didRemove(_ device: ICDevice) {
     if let camera = device as? ICCameraDevice, deviceID(for: camera) == activeCamera.map(deviceID(for:)) {
       activeCamera = nil
       filesByID.removeAll()
-      delegate?.wiredCameraImportService(self, didUpdateItems: [])
+      delegate?.wiredCameraImportService(self, didUpdateItems: [], isCompleteCatalog: false)
     }
   }
 
   func deviceDidBecomeReady(withCompleteContentCatalog device: ICCameraDevice) {
-    refreshItems(from: device)
+    isCompleteCatalog = true
+    replaceFilesAndPublish(from: device, source: "complete", force: true)
   }
 
   func cameraDevice(_ camera: ICCameraDevice, didAdd items: [ICCameraItem]) {
-    refreshItems(from: camera)
+    addFilesAndPublish(items, source: "did-add")
   }
 
   func cameraDevice(_ camera: ICCameraDevice, didRemove items: [ICCameraItem]) {
@@ -623,11 +688,14 @@ extension WiredCameraImportService: ICCameraDeviceDelegate {
       "\($0.name ?? "unknown")@0x\(String(format: "%08X", $0.ptpObjectHandle))"
     }.joined(separator: ",")
     logDelete("didRemove count=\(items.count) items=\(details)")
-    refreshItems(from: camera)
+    for file in items.compactMap({ $0 as? ICCameraFile }) {
+      filesByID.removeValue(forKey: itemID(for: file))
+    }
+    scheduleCatalogPublication(source: "did-remove", force: true)
   }
 
   func cameraDevice(_ camera: ICCameraDevice, didRenameItems items: [ICCameraItem]) {
-    refreshItems(from: camera)
+    replaceFilesAndPublish(from: camera, source: "did-rename", force: true)
   }
 
   func cameraDevice(_ camera: ICCameraDevice, didCompleteDeleteFilesWithError error: Error?) {
