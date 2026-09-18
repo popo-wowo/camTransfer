@@ -51,6 +51,18 @@ final class WiredCameraImportViewController: UIViewController {
   private let importButton = UIButton(type: .system)
   private let activityIndicator = UIActivityIndicatorView(style: .medium)
   private let refreshControl = UIRefreshControl()
+  private lazy var zoomOutButton = UIBarButtonItem(
+    image: UIImage(systemName: "minus.magnifyingglass"),
+    style: .plain,
+    target: self,
+    action: #selector(zoomOutTapped)
+  )
+  private lazy var zoomInButton = UIBarButtonItem(
+    image: UIImage(systemName: "plus.magnifyingglass"),
+    style: .plain,
+    target: self,
+    action: #selector(zoomInTapped)
+  )
 
   override var preferredStatusBarStyle: UIStatusBarStyle { .darkContent }
 
@@ -66,6 +78,9 @@ final class WiredCameraImportViewController: UIViewController {
       target: self,
       action: #selector(disconnectTapped)
     )
+    zoomOutButton.accessibilityLabel = "缩小照片网格"
+    zoomInButton.accessibilityLabel = "放大照片网格"
+    navigationItem.rightBarButtonItems = [zoomInButton, zoomOutButton]
     service.delegate = self
     service.downloadProgressHandler = { [weak self] itemID, completedBytes, totalBytes in
       self?.activeDownloadProgress = (itemID, completedBytes, totalBytes)
@@ -337,6 +352,8 @@ final class WiredCameraImportViewController: UIViewController {
     deleteButton.isEnabled = !deletableItems.isEmpty
     deleteButton.alpha = deleteButton.isEnabled ? 1 : 0.55
     collectionView.isUserInteractionEnabled = !isDeleting
+    zoomOutButton.isEnabled = currentColumnCount < NativeGalleryGridLayoutPolicy.maxColumnCount && !isDeleting
+    zoomInButton.isEnabled = currentColumnCount > NativeGalleryGridLayoutPolicy.minColumnCount && !isDeleting
     updateImportButtonTitle(selectedCount: selectedImportableCount)
     bottomImportBar.isHidden = selectedCount == 0
     bottomImportLabel.text = "已选 \(selectedCount) 个文件"
@@ -388,11 +405,20 @@ final class WiredCameraImportViewController: UIViewController {
     state.errorMessage = nil
     state.isLoadingItems = state.selectedDeviceID != nil
     render()
+    service.retryFailedThumbnails()
     service.start()
     if let selectedDeviceID = state.selectedDeviceID {
       service.openDevice(id: selectedDeviceID)
     }
     refreshControl.endRefreshing()
+  }
+
+  @objc private func zoomOutTapped() {
+    changeGridColumnCount(by: 1)
+  }
+
+  @objc private func zoomInTapped() {
+    changeGridColumnCount(by: -1)
   }
 
   @objc private func permissionTapped() {
@@ -873,7 +899,13 @@ final class WiredCameraImportViewController: UIViewController {
     guard next != currentColumnCount else { return }
     currentColumnCount = next
     UserDefaults.standard.set(next, forKey: "camtransfer.wiredGalleryColumnCount")
-    collectionView.collectionViewLayout.invalidateLayout()
+    zoomOutButton.isEnabled = next < NativeGalleryGridLayoutPolicy.maxColumnCount
+    zoomInButton.isEnabled = next > NativeGalleryGridLayoutPolicy.minColumnCount
+    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseInOut]) {
+      self.collectionView.collectionViewLayout.invalidateLayout()
+      self.collectionView.layoutIfNeeded()
+    }
     requestThumbnailsForVisibleItems()
   }
 
@@ -1748,6 +1780,7 @@ private final class WiredCameraPhotoPreviewPageController: UIViewController, UIS
   private var sourceImage: UIImage?
   private var manualRotationDegrees = 0
   private var didRequestPreview = false
+  private var lastLaidOutViewportSize = CGSize.zero
 
   init(
     item: WiredCameraImportItem,
@@ -1856,13 +1889,15 @@ private final class WiredCameraPhotoPreviewPageController: UIViewController, UIS
     requestLargerPreviewIfNeeded()
   }
 
-  override func viewWillLayoutSubviews() {
-    super.viewWillLayoutSubviews()
-    if let image = imageView.image, sourceImage != nil {
-      layout(image: image)
-    } else {
+  override func viewDidLayoutSubviews() {
+    super.viewDidLayoutSubviews()
+    guard view.bounds.size != lastLaidOutViewportSize else { return }
+    lastLaidOutViewportSize = view.bounds.size
+    guard let image = imageView.image, sourceImage != nil else {
       centerImage()
+      return
     }
+    layout(image: image)
   }
 
   func rotateClockwise() {

@@ -276,6 +276,27 @@ final class RunnerTests: XCTestCase {
     )
   }
 
+  func testWiredCameraThumbnailQueueDoesNotRequeueFailedItemsInSameSession() {
+    XCTAssertFalse(
+      WiredCameraThumbnailQueuePolicy.shouldEnqueue(
+        itemID: "failed",
+        resolvedItemIDs: [],
+        failedItemIDs: ["failed"],
+        activeItemID: nil,
+        queuedItemIDs: []
+      )
+    )
+    XCTAssertTrue(
+      WiredCameraThumbnailQueuePolicy.shouldEnqueue(
+        itemID: "new",
+        resolvedItemIDs: [],
+        failedItemIDs: ["failed"],
+        activeItemID: nil,
+        queuedItemIDs: []
+      )
+    )
+  }
+
   func testWiredCameraPreviewPolicyUsesLargerPreviewThanGrid() {
     XCTAssertEqual(WiredCameraPreviewPolicy.gridMaximumPixelSize, 320)
     XCTAssertEqual(WiredCameraPreviewPolicy.maximumPixelSize, 1_536)

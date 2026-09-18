@@ -399,6 +399,19 @@ enum WiredCameraThumbnailQueuePolicy {
   ) -> Bool {
     !isDeleteInFlight && !isForegroundOperationInFlight && !hasActiveThumbnailRequest
   }
+
+  static func shouldEnqueue(
+    itemID: String,
+    resolvedItemIDs: Set<String>,
+    failedItemIDs: Set<String>,
+    activeItemID: String?,
+    queuedItemIDs: Set<String>
+  ) -> Bool {
+    !resolvedItemIDs.contains(itemID) &&
+      !failedItemIDs.contains(itemID) &&
+      activeItemID != itemID &&
+      !queuedItemIDs.contains(itemID)
+  }
 }
 
 enum WiredCameraPreviewPolicy {

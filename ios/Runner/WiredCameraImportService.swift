@@ -25,6 +25,7 @@ final class WiredCameraImportService: NSObject {
   private var queuedThumbnailItemIDs: [String] = []
   private var queuedThumbnailItemIDSet: Set<String> = []
   private var resolvedThumbnailItemIDs: Set<String> = []
+  private var failedThumbnailItemIDs: Set<String> = []
   private var thumbnailIdleWaiters: [CheckedContinuation<Void, Never>] = []
   private var activeDownloadProgressObservation: NSKeyValueObservation?
 
@@ -71,6 +72,7 @@ final class WiredCameraImportService: NSObject {
     queuedThumbnailItemIDs.removeAll()
     queuedThumbnailItemIDSet.removeAll()
     resolvedThumbnailItemIDs.removeAll()
+    failedThumbnailItemIDs.removeAll()
     resumeThumbnailIdleWaiters()
   }
 
@@ -110,9 +112,13 @@ final class WiredCameraImportService: NSObject {
     }
     guard !isDeleteRequestInFlight,
           !isForegroundOperationInFlight,
-          !resolvedThumbnailItemIDs.contains(itemID),
-          activeThumbnailRequestItemID != itemID,
-          !queuedThumbnailItemIDSet.contains(itemID) else { return }
+          WiredCameraThumbnailQueuePolicy.shouldEnqueue(
+            itemID: itemID,
+            resolvedItemIDs: resolvedThumbnailItemIDs,
+            failedItemIDs: failedThumbnailItemIDs,
+            activeItemID: activeThumbnailRequestItemID,
+            queuedItemIDs: queuedThumbnailItemIDSet
+          ) else { return }
     queuedThumbnailItemIDs.append(itemID)
     queuedThumbnailItemIDSet.insert(itemID)
     startNextThumbnailRequestIfNeeded()
@@ -122,8 +128,13 @@ final class WiredCameraImportService: NSObject {
     guard !isDeleteRequestInFlight, !isForegroundOperationInFlight else { return }
     let requestedIDs = priorityOrder.reduce(into: [String]()) { result, itemID in
       guard !result.contains(itemID),
-            itemID != activeThumbnailRequestItemID,
-            !resolvedThumbnailItemIDs.contains(itemID),
+            WiredCameraThumbnailQueuePolicy.shouldEnqueue(
+              itemID: itemID,
+              resolvedItemIDs: resolvedThumbnailItemIDs,
+              failedItemIDs: failedThumbnailItemIDs,
+              activeItemID: activeThumbnailRequestItemID,
+              queuedItemIDs: []
+            ),
             let file = filesByID[itemID],
             file.thumbnail == nil else {
         return
@@ -137,6 +148,10 @@ final class WiredCameraImportService: NSObject {
     queuedThumbnailItemIDs = requestedIDs + remainingIDs
     queuedThumbnailItemIDSet = Set(queuedThumbnailItemIDs)
     startNextThumbnailRequestIfNeeded()
+  }
+
+  func retryFailedThumbnails() {
+    failedThumbnailItemIDs.removeAll()
   }
 
   func downloadFile(for itemID: String) async throws -> WiredCameraDownloadedFile {
@@ -409,6 +424,7 @@ final class WiredCameraImportService: NSObject {
     let files = camera.mediaFiles?.compactMap { $0 as? ICCameraFile } ?? []
     filesByID = Dictionary(uniqueKeysWithValues: files.map { (itemID(for: $0), $0) })
     resolvedThumbnailItemIDs.formIntersection(Set(filesByID.keys))
+    failedThumbnailItemIDs.formIntersection(Set(filesByID.keys))
     let items = WiredCameraImportSortPolicy.newestFirst(files.map(item(for:)))
     delegate?.wiredCameraImportService(self, didUpdateItems: items)
   }
@@ -469,7 +485,13 @@ final class WiredCameraImportService: NSObject {
       queuedThumbnailItemIDSet.remove(itemID)
       guard let file = filesByID[itemID],
             file.thumbnail == nil,
-            !resolvedThumbnailItemIDs.contains(itemID) else { continue }
+            WiredCameraThumbnailQueuePolicy.shouldEnqueue(
+              itemID: itemID,
+              resolvedItemIDs: resolvedThumbnailItemIDs,
+              failedItemIDs: failedThumbnailItemIDs,
+              activeItemID: nil,
+              queuedItemIDs: []
+            ) else { continue }
       activeThumbnailRequestItemID = itemID
       file.requestThumbnailData(options: [
         .imageSourceThumbnailMaxPixelSize: WiredCameraPreviewPolicy.gridMaximumPixelSize,
@@ -478,6 +500,7 @@ final class WiredCameraImportService: NSObject {
           guard let self else { return }
           self.completeActiveThumbnailRequest()
           if let error {
+            self.failedThumbnailItemIDs.insert(itemID)
             let message = "CamTransferWired thumbnail request failed item=\(itemID) error=\(error)"
             print(message)
             CameraVendorFileLogger.log(message)
@@ -485,6 +508,7 @@ final class WiredCameraImportService: NSObject {
             self.resolvedThumbnailItemIDs.insert(itemID)
             self.delegate?.wiredCameraImportService(self, didUpdateThumbnailFor: itemID, thumbnail: image)
           } else {
+            self.failedThumbnailItemIDs.insert(itemID)
             let message = "CamTransferWired thumbnail request returned empty data item=\(itemID)"
             print(message)
             CameraVendorFileLogger.log(message)
