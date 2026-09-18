@@ -1,0 +1,36 @@
+ios/RunnerTests/RunnerTests.swift
+  a389fd3febef2732 798-827,3032-3075
+ios/Runner/NativeGalleryPolicies.swift
+  a389fd3febef2732 1661,1679-1681,1688-1690,1692,1703-1708,1710
+ios/Runner/CameraSessionRuntime.swift
+  a389fd3febef2732 125-126,129-150
+ios/Runner/CameraSessionLiveActivityController.swift
+  a389fd3febef2732 17-18,33-34,50-51,143-158,161-162,174-175,191-192,246-247,281-282,291-292,306-307
+ios/Shared/CameraSessionActivityAttributes.swift
+  a389fd3febef2732 13-14,24-29
+ios/Runner/WiredCameraImportModels.swift
+  a389fd3febef2732 336-360
+ios/Runner/WiredCameraImportViewController.swift
+  a389fd3febef2732 4,18-27,76-82,103-113,136-140,197,420,463,465,556-564,575,583,596,601,607-614,621-689,1008-1171,1205-1226,1331,1334-1337,1377-1378,1381-1386,1405,1571-1572,1588,1612-1617,1627,1686-1688
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "17b1cbb9a443a6eab4671ce6b8c4e0378b1bad02",
+  "prompts": {
+    "a389fd3febef2732": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0aa2e-b03d-7c20-b6e0-24b5f1761100",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 525,
+      "total_deletions": 59,
+      "accepted_lines": 10931,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/ff6a1cb19b063af35c5ecdeb857e52e81ba3bc5302bcde539d8906efad26d726"
+    }
+  }
+}
