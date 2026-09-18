@@ -1,7 +1,7 @@
 import Photos
 import UIKit
 
-final class WiredCameraImportViewController: UIViewController {
+final class WiredCameraImportViewController: UIViewController, UIGestureRecognizerDelegate {
   private let service = WiredCameraImportService()
   private let cacheStore = WiredCameraImportCacheStore()
   private let thumbnailCacheStore = WiredCameraThumbnailCacheStore()
@@ -15,6 +15,16 @@ final class WiredCameraImportViewController: UIViewController {
   private var previousInteractivePopGestureEnabled: Bool?
   private var importTask: Task<Void, Never>?
   private var isDeleting = false
+  private let liveActivityController = CameraSessionLiveActivityController()
+  private let backgroundExecutionAuthority = CameraSessionUIKitExecutionAuthority()
+  private var importActivitySessionID: UUID?
+  private var completedImportBytes: Int64 = 0
+  private var totalImportBytes: Int64 = 0
+  private var backgroundExecutionExpired = false
+  private var lifecycleObserverTokens: [NSObjectProtocol] = []
+  private var dragSelectionMode: NativeGalleryDragSelectionMode?
+  private var dragSelectionStartItemID: String?
+  private var dragSelectionLastEndItemID: String?
   private var needsContentsAuthorization = false
   private var currentColumnCount: Int = {
     let stored = UserDefaults.standard.integer(forKey: "camtransfer.wiredGalleryColumnCount")
@@ -63,6 +73,13 @@ final class WiredCameraImportViewController: UIViewController {
     target: self,
     action: #selector(zoomInTapped)
   )
+  private lazy var dragSelectionGesture: UIPanGestureRecognizer = {
+    let gesture = UIPanGestureRecognizer(target: self, action: #selector(handleGridDragSelection(_:)))
+    gesture.maximumNumberOfTouches = 1
+    gesture.cancelsTouchesInView = false
+    gesture.delegate = self
+    return gesture
+  }()
 
   override var preferredStatusBarStyle: UIStatusBarStyle { .darkContent }
 
@@ -83,8 +100,17 @@ final class WiredCameraImportViewController: UIViewController {
     navigationItem.rightBarButtonItems = [zoomInButton, zoomOutButton]
     service.delegate = self
     service.downloadProgressHandler = { [weak self] itemID, completedBytes, totalBytes in
-      self?.activeDownloadProgress = (itemID, completedBytes, totalBytes)
-      self?.render()
+      guard let self else { return }
+      self.activeDownloadProgress = (itemID, completedBytes, totalBytes)
+      self.refreshImportProgressChrome(reason: "usb-download-progress")
+    }
+    configureLifecycleObservers()
+    backgroundExecutionAuthority.onExpired = { [weak self] in
+      guard let self, self.state.isImporting else { return }
+      self.backgroundExecutionExpired = true
+      self.importTask?.cancel()
+      self.liveActivityController.end(reason: "usb-background-execution-expired")
+      self.statusLabel.text = "后台时间已结束，请回到 App 继续"
     }
     configureViews()
     layoutViews()
@@ -107,6 +133,11 @@ final class WiredCameraImportViewController: UIViewController {
 
   deinit {
     importTask?.cancel()
+    lifecycleObserverTokens.forEach(NotificationCenter.default.removeObserver)
+    Task { @MainActor [backgroundExecutionAuthority, liveActivityController] in
+      backgroundExecutionAuthority.release(reason: "usb-gallery-deinit")
+      liveActivityController.end(reason: "usb-gallery-deinit")
+    }
     proofingServer?.stop()
     service.stop()
   }
@@ -163,6 +194,7 @@ final class WiredCameraImportViewController: UIViewController {
     refreshControl.addTarget(self, action: #selector(refreshTapped), for: .valueChanged)
     collectionView.refreshControl = refreshControl
     collectionView.addGestureRecognizer(UIPinchGestureRecognizer(target: self, action: #selector(handleGridPinch(_:))))
+    collectionView.addGestureRecognizer(dragSelectionGesture)
     collectionView.register(WiredCameraImportGridCell.self, forCellWithReuseIdentifier: WiredCameraImportGridCell.reuseID)
     collectionView.register(
       WiredCameraImportSectionHeaderView.self,
@@ -385,6 +417,7 @@ final class WiredCameraImportViewController: UIViewController {
       guard let self else { return }
       self.importTask?.cancel()
       self.state.isImporting = false
+      self.stopImportActivity(reason: "usb-user-disconnect")
       self.service.stop()
       self.leaveImportScreen()
     })
@@ -427,8 +460,9 @@ final class WiredCameraImportViewController: UIViewController {
   }
 
   @objc private func selectAllTapped() {
+    let previousSelection = state.selectedItemIDs
     state.toggleAllFilteredImportable()
-    render()
+    refreshSelectionChrome(changedItemIDs: previousSelection.symmetricDifference(state.selectedItemIDs))
   }
 
   @objc private func chipFilterChanged() {
@@ -519,6 +553,15 @@ final class WiredCameraImportViewController: UIViewController {
     state.importedCount = 0
     currentImportTotal = items.count
     activeDownloadProgress = nil
+    completedImportBytes = 0
+    let knownTotalBytes = items.reduce(into: Int64(0)) { total, item in
+      total += max(item.fileSize, 0)
+    }
+    totalImportBytes = items.allSatisfy { $0.fileSize > 0 } ? knownTotalBytes : 0
+    backgroundExecutionExpired = false
+    importActivitySessionID = UUID()
+    _ = backgroundExecutionAuthority.acquire(reason: "wired-camera-import")
+    publishImportActivity(reason: "usb-import-started")
     render()
 
     importTask?.cancel()
@@ -529,7 +572,7 @@ final class WiredCameraImportViewController: UIViewController {
           try Task.checkCancellation()
           await MainActor.run {
             self.activeDownloadProgress = nil
-            self.render()
+            self.refreshImportProgressChrome(reason: "usb-import-next-item")
           }
           let file = try await self.service.downloadFile(for: item.id)
           try Task.checkCancellation()
@@ -537,6 +580,7 @@ final class WiredCameraImportViewController: UIViewController {
           try Task.checkCancellation()
           await MainActor.run {
             self.state.importedCount += 1
+            self.completedImportBytes += max(item.fileSize, 0)
             self.activeDownloadProgress = nil
             self.state.markImported(itemID: item.id)
             if let deviceID = self.state.selectedDeviceID {
@@ -548,26 +592,99 @@ final class WiredCameraImportViewController: UIViewController {
         }
         await MainActor.run {
           self.state.isImporting = false
-          self.currentImportTotal = 0
-          self.activeDownloadProgress = nil
           self.state.errorMessage = "\(completionPrefix)：已保存 \(self.state.importedCount) 个文件"
+          self.stopImportActivity(reason: "usb-import-completed")
           self.render()
           self.attemptAutoImportIfNeeded()
         }
       } catch {
+        let taskWasCancelled = Task.isCancelled || error is CancellationError
         await MainActor.run {
-          guard !Task.isCancelled else { return }
           self.state.isImporting = false
-          self.currentImportTotal = 0
-          self.activeDownloadProgress = nil
           let message = "CamTransferWired import failed error=\(error)"
           print(message)
           CameraVendorFileLogger.log(message)
-          self.state.errorMessage = "导入失败：\(error.localizedDescription)"
+          if self.backgroundExecutionExpired {
+            self.state.errorMessage = "后台时间已结束，请回到 App 继续"
+          } else if taskWasCancelled {
+            self.state.errorMessage = "导入已停止"
+          } else {
+            self.state.errorMessage = "导入失败：\(error.localizedDescription)"
+          }
+          self.stopImportActivity(reason: self.backgroundExecutionExpired ? "usb-background-expired" : "usb-import-failed")
           self.render()
         }
       }
     }
+  }
+
+  private func configureLifecycleObservers() {
+    lifecycleObserverTokens = [
+      NotificationCenter.default.addObserver(
+        forName: UIApplication.didEnterBackgroundNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        guard self?.state.isImporting == true else { return }
+        self?.liveActivityController.updateBackground(reason: "usb-application-background")
+      },
+      NotificationCenter.default.addObserver(
+        forName: UIApplication.didBecomeActiveNotification,
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        guard self?.state.isImporting == true else { return }
+        self?.liveActivityController.updateForeground(reason: "usb-application-active")
+      },
+    ]
+  }
+
+  private func refreshImportProgressChrome(reason: String) {
+    guard state.isImporting else { return }
+    if let progress = activeDownloadProgress, progress.totalBytes > 0 {
+      let percent = Int((Double(progress.completedBytes) / Double(progress.totalBytes) * 100).rounded())
+      statusLabel.text = "正在导入 \(state.importedCount + 1)/\(max(currentImportTotal, 1)) · \(percent)% · 请保持相机连接"
+    } else {
+      statusLabel.text = "正在导入 \(state.importedCount + 1)/\(max(currentImportTotal, 1))，请保持相机连接"
+    }
+    let currentBytes = activeDownloadProgress.map { min(max($0.completedBytes, 0), max($0.totalBytes, 0)) } ?? 0
+    liveActivityController.updateDownloadProgress(
+      completedCount: state.importedCount,
+      totalCount: currentImportTotal,
+      completedBytes: min(completedImportBytes + currentBytes, totalImportBytes),
+      totalBytes: totalImportBytes,
+      reason: reason
+    )
+  }
+
+  private func publishImportActivity(reason: String) {
+    guard state.isImporting,
+          let sessionID = importActivitySessionID else { return }
+    let currentBytes = activeDownloadProgress.map { min(max($0.completedBytes, 0), max($0.totalBytes, 0)) } ?? 0
+    let snapshot = WiredCameraImportActivityPolicy.snapshot(
+      sessionID: sessionID,
+      cameraName: state.selectedDevice?.name ?? "相机",
+      galleryItemCount: state.items.count,
+      completedCount: state.importedCount,
+      totalCount: currentImportTotal,
+      completedBytes: min(completedImportBytes + currentBytes, totalImportBytes),
+      totalBytes: totalImportBytes,
+      isBackground: UIApplication.shared.applicationState == .background
+    )
+    liveActivityController.publish(snapshot, reason: reason)
+  }
+
+  private func stopImportActivity(reason: String) {
+    backgroundExecutionAuthority.release(reason: reason)
+    if let sessionID = importActivitySessionID {
+      liveActivityController.end(sessionID: sessionID, reason: reason)
+    }
+    importActivitySessionID = nil
+    currentImportTotal = 0
+    activeDownloadProgress = nil
+    completedImportBytes = 0
+    totalImportBytes = 0
+    backgroundExecutionExpired = false
   }
 
   private func attemptAutoImportIfNeeded() {
@@ -888,6 +1005,170 @@ final class WiredCameraImportViewController: UIViewController {
     }
   }
 
+  @objc private func handleGridDragSelection(_ gesture: UIPanGestureRecognizer) {
+    let location = gesture.location(in: collectionView)
+    switch gesture.state {
+    case .began:
+      guard canUseDragSelection,
+            let indexPath = collectionView.indexPathForItem(at: location),
+            let item = item(at: indexPath),
+            item.isImportable else {
+        resetDragSelection()
+        return
+      }
+      dragSelectionMode = nil
+      dragSelectionStartItemID = item.id
+      dragSelectionLastEndItemID = nil
+    case .changed:
+      guard canUseDragSelection, let startItemID = dragSelectionStartItemID else { return }
+      if dragSelectionMode == nil {
+        let translation = gesture.translation(in: collectionView)
+        guard NativeGalleryDragSelectionPolicy.shouldStartDragSelection(
+          deltaX: translation.x,
+          deltaY: translation.y,
+          touchSlop: 10,
+          selectionActive: !state.selectedItemIDs.isEmpty
+        ) else { return }
+        let endItem = collectionView.indexPathForItem(at: location).flatMap { item(at: $0) }
+        guard NativeGalleryDragSelectionPolicy.shouldCommitDragSelection(
+          startHandle: startItemID,
+          endHandle: endItem?.id,
+          canSelectEndHandle: endItem?.isImportable == true
+        ) else { return }
+        dragSelectionMode = NativeGalleryDragSelectionPolicy.mode(
+          startHandle: startItemID,
+          selectedHandles: state.selectedItemIDs
+        )
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+      }
+
+      let scrollDelta = NativeGalleryDragSelectionPolicy.autoScrollDelta(
+        pointerY: location.y,
+        viewportStart: collectionView.contentOffset.y,
+        viewportEnd: collectionView.contentOffset.y + collectionView.bounds.height,
+        edgeSize: 72,
+        maxDelta: 34
+      )
+      if scrollDelta != 0 {
+        let minOffsetY = -collectionView.adjustedContentInset.top
+        let maxOffsetY = max(
+          minOffsetY,
+          collectionView.contentSize.height - collectionView.bounds.height + collectionView.adjustedContentInset.bottom
+        )
+        let targetOffsetY = min(max(collectionView.contentOffset.y + scrollDelta, minOffsetY), maxOffsetY)
+        collectionView.setContentOffset(
+          CGPoint(x: collectionView.contentOffset.x, y: targetOffsetY),
+          animated: false
+        )
+      }
+      guard let indexPath = collectionView.indexPathForItem(at: location) else { return }
+      applyDragSelection(at: indexPath)
+    case .ended, .cancelled, .failed:
+      resetDragSelection()
+    default:
+      break
+    }
+  }
+
+  private var canUseDragSelection: Bool {
+    state.isLiveCatalogReady && !state.isImporting && !isDeleting
+  }
+
+  private func applyDragSelection(at indexPath: IndexPath) {
+    guard let mode = dragSelectionMode,
+          let startItemID = dragSelectionStartItemID,
+          let endItem = item(at: indexPath),
+          endItem.isImportable,
+          dragSelectionLastEndItemID != endItem.id else { return }
+    dragSelectionLastEndItemID = endItem.id
+    let orderedItemIDs = gallerySections.flatMap { $0.items.map(\.id) }
+    let selectableItemIDs = Set(
+      gallerySections.flatMap { $0.items }.filter(\.isImportable).map(\.id)
+    )
+    let previousSelection = state.selectedItemIDs
+    let updatedSelection = NativeGalleryDragSelectionPolicy.updatedRangeSelection(
+      selectedHandles: previousSelection,
+      orderedHandles: orderedItemIDs,
+      startHandle: startItemID,
+      endHandle: endItem.id,
+      selectableHandles: selectableItemIDs,
+      mode: mode
+    )
+    guard updatedSelection != previousSelection else { return }
+    state.selectedItemIDs = updatedSelection
+    refreshSelectionChrome(changedItemIDs: previousSelection.symmetricDifference(updatedSelection))
+  }
+
+  private func resetDragSelection() {
+    dragSelectionMode = nil
+    dragSelectionStartItemID = nil
+    dragSelectionLastEndItemID = nil
+  }
+
+  func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+    guard gestureRecognizer === dragSelectionGesture else { return true }
+    guard canUseDragSelection else { return false }
+    let location = dragSelectionGesture.location(in: collectionView)
+    guard let indexPath = collectionView.indexPathForItem(at: location),
+          item(at: indexPath)?.isImportable == true else { return false }
+    let velocity = dragSelectionGesture.velocity(in: collectionView)
+    return NativeGalleryDragSelectionPolicy.shouldStartDragSelection(
+      deltaX: velocity.x,
+      deltaY: velocity.y,
+      touchSlop: 10
+    )
+  }
+
+  private func refreshSelectionChrome(changedItemIDs: Set<String>) {
+    UIView.performWithoutAnimation {
+      for indexPath in collectionView.indexPathsForVisibleItems {
+        guard let item = item(at: indexPath),
+              changedItemIDs.contains(item.id),
+              let cell = collectionView.cellForItem(at: indexPath) as? WiredCameraImportGridCell else { continue }
+        cell.updateSelectionOnly(
+          isSelected: state.selectedItemIDs.contains(item.id),
+          isSelectionEnabled: canUseDragSelection && item.isImportable
+        )
+      }
+      refreshVisibleSectionHeaders()
+    }
+
+    let filteredItems = state.filteredItems()
+    let filteredIDs = Set(filteredItems.filter(\.isImportable).map(\.id))
+    let selectedCount = state.items.filter {
+      state.selectedItemIDs.contains($0.id) && $0.isImportable
+    }.count
+    let selectedImportableCount = state.selectedImportableItems.count
+    let allFilteredSelected = !filteredIDs.isEmpty && filteredIDs.isSubset(of: state.selectedItemIDs)
+    var selectAllConfig = selectAllButton.configuration
+    selectAllConfig?.image = UIImage(systemName: allFilteredSelected ? "checkmark.circle.fill" : "checkmark.circle")
+    selectAllButton.configuration = selectAllConfig
+    selectAllButton.accessibilityLabel = allFilteredSelected ? "取消全选" : "全选当前筛选"
+    importButton.isEnabled = selectedImportableCount > 0 && !state.isImporting && !isDeleting
+    importButton.alpha = importButton.isEnabled ? 1 : 0.55
+    let deletableItems = WiredCameraDeletePolicy.selectedItems(from: state, isDeleting: isDeleting)
+    deleteButton.isHidden = selectedCount == 0
+    deleteButton.isEnabled = !deletableItems.isEmpty
+    deleteButton.alpha = deleteButton.isEnabled ? 1 : 0.55
+    updateImportButtonTitle(selectedCount: selectedImportableCount)
+    bottomImportBar.isHidden = selectedCount == 0
+    bottomImportLabel.text = "已选 \(selectedCount) 个文件"
+  }
+
+  private func refreshVisibleSectionHeaders() {
+    let indexPaths = collectionView.indexPathsForVisibleSupplementaryElements(
+      ofKind: UICollectionView.elementKindSectionHeader
+    )
+    for indexPath in indexPaths {
+      guard gallerySections.indices.contains(indexPath.section),
+            let header = collectionView.supplementaryView(
+              forElementKind: UICollectionView.elementKindSectionHeader,
+              at: indexPath
+            ) as? WiredCameraImportSectionHeaderView else { continue }
+      configureSectionHeader(header, at: indexPath)
+    }
+  }
+
   private func changeGridColumnCount(by delta: Int) {
     let next = NativeGalleryGridLayoutPolicy.clampedColumnCount(currentColumnCount + delta)
     guard next != currentColumnCount else { return }
@@ -919,6 +1200,28 @@ final class WiredCameraImportViewController: UIViewController {
       return nil
     }
     return gallerySections[indexPath.section].items[indexPath.item]
+  }
+
+  private func configureSectionHeader(_ header: WiredCameraImportSectionHeaderView, at indexPath: IndexPath) {
+    guard gallerySections.indices.contains(indexPath.section) else { return }
+    let section = gallerySections[indexPath.section]
+    let selectableIDs = Set(section.items.filter(\.isImportable).map(\.id))
+    let allSelected = !selectableIDs.isEmpty && selectableIDs.isSubset(of: state.selectedItemIDs)
+    header.configure(
+      title: section.title,
+      selectionTitle: allSelected ? "取消" : "全选",
+      isSelectionEnabled: state.isLiveCatalogReady && !selectableIDs.isEmpty && !state.isImporting && !isDeleting
+    )
+    header.onSelectionTapped = { [weak self, weak header] in
+      guard let self, let header,
+            let currentIndexPath = self.collectionView.indexPath(forSupplementaryView: header),
+            self.gallerySections.indices.contains(currentIndexPath.section) else { return }
+      let previousSelection = self.state.selectedItemIDs
+      self.state.toggleSelection(for: self.gallerySections[currentIndexPath.section].items)
+      self.refreshSelectionChrome(
+        changedItemIDs: previousSelection.symmetricDifference(self.state.selectedItemIDs)
+      )
+    }
   }
 
   private func presentPreview(startingAt index: Int) {
@@ -1025,8 +1328,13 @@ extension WiredCameraImportViewController: WiredCameraImportServiceDelegate {
   }
 
   func wiredCameraImportService(_ service: WiredCameraImportService, didFailWith message: String) {
+    let wasImporting = state.isImporting
     state.isLoadingItems = false
     state.isImporting = false
+    if wasImporting {
+      importTask?.cancel()
+      stopImportActivity(reason: "usb-service-failed")
+    }
     state.errorMessage = message
     render()
   }
@@ -1066,11 +1374,16 @@ extension WiredCameraImportViewController: UICollectionViewDataSource, UICollect
       isSelectedForImport: state.selectedItemIDs.contains(item.id),
       isImported: state.importedItemIDs.contains(item.id),
       isProofingFavorite: state.proofingFavoriteItemIDs.contains(item.id),
-      isLiveCatalogReady: state.isLiveCatalogReady
+      isLiveCatalogReady: state.isLiveCatalogReady,
+      isSelectionEnabled: state.isLiveCatalogReady && !state.isImporting && !isDeleting
     )
     cell.onSelectionTapped = { [weak self] in
-      self?.state.toggleSelection(for: item)
-      self?.render()
+      guard let self else { return }
+      let previousSelection = self.state.selectedItemIDs
+      self.state.toggleSelection(for: item)
+      self.refreshSelectionChrome(
+        changedItemIDs: previousSelection.symmetricDifference(self.state.selectedItemIDs)
+      )
     }
     return cell
   }
@@ -1089,19 +1402,7 @@ extension WiredCameraImportViewController: UICollectionViewDataSource, UICollect
           ) as? WiredCameraImportSectionHeaderView else {
       return UICollectionReusableView()
     }
-    let section = gallerySections[indexPath.section]
-    let selectableIDs = Set(section.items.filter(\.isImportable).map(\.id))
-    let allSelected = !selectableIDs.isEmpty && selectableIDs.isSubset(of: state.selectedItemIDs)
-    header.configure(
-      title: section.title,
-      selectionTitle: allSelected ? "取消" : "全选",
-      isSelectionEnabled: state.isLiveCatalogReady && !selectableIDs.isEmpty && !state.isImporting && !isDeleting
-    )
-    header.onSelectionTapped = { [weak self] in
-      guard let self, self.gallerySections.indices.contains(indexPath.section) else { return }
-      self.state.toggleSelection(for: self.gallerySections[indexPath.section].items)
-      self.render()
-    }
+    configureSectionHeader(header, at: indexPath)
     return header
   }
 
@@ -1237,7 +1538,6 @@ private final class WiredCameraImportGridCell: UICollectionViewCell {
   private let formatBadgeLabel = UILabel()
   private let statusBadgeLabel = UILabel()
   private let infoBar = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterialDark))
-  private let titleLabel = UILabel()
   private let detailLabel = UILabel()
 
   override init(frame: CGRect) {
@@ -1259,7 +1559,6 @@ private final class WiredCameraImportGridCell: UICollectionViewCell {
     statusBadgeLabel.isHidden = true
     statusBadgeLabel.text = nil
     formatBadgeLabel.text = nil
-    titleLabel.text = nil
     detailLabel.text = nil
     onSelectionTapped = nil
   }
@@ -1269,7 +1568,8 @@ private final class WiredCameraImportGridCell: UICollectionViewCell {
     isSelectedForImport: Bool,
     isImported: Bool,
     isProofingFavorite: Bool,
-    isLiveCatalogReady: Bool
+    isLiveCatalogReady: Bool,
+    isSelectionEnabled: Bool
   ) {
     if let thumbnail = item.thumbnail {
       imageView.image = thumbnail
@@ -1282,11 +1582,10 @@ private final class WiredCameraImportGridCell: UICollectionViewCell {
       imageView.contentMode = .center
     }
     imageView.alpha = item.isImportable ? 1 : 0.45
-    titleLabel.text = item.name
     detailLabel.text = item.fileSizeText
     formatBadgeLabel.text = " \(item.formatLabel) "
     selectionButton.isHidden = !isLiveCatalogReady || !item.isImportable
-    selectionButton.isEnabled = isLiveCatalogReady && item.isImportable
+    selectionButton.isEnabled = isSelectionEnabled && item.isImportable
     updateSelection(isSelectedForImport)
     if isProofingFavorite {
       statusBadgeLabel.text = " 客户收藏 "
@@ -1310,6 +1609,12 @@ private final class WiredCameraImportGridCell: UICollectionViewCell {
     imageView.contentMode = .scaleAspectFill
   }
 
+  func updateSelectionOnly(isSelected: Bool, isSelectionEnabled: Bool) {
+    selectionButton.isHidden = !isSelectionEnabled
+    selectionButton.isEnabled = isSelectionEnabled
+    updateSelection(isSelected)
+  }
+
   private func setup() {
     contentView.backgroundColor = UIColor(red: 0.93, green: 0.92, blue: 0.90, alpha: 1)
     contentView.layer.cornerRadius = 16
@@ -1319,7 +1624,7 @@ private final class WiredCameraImportGridCell: UICollectionViewCell {
       $0.translatesAutoresizingMaskIntoConstraints = false
       contentView.addSubview($0)
     }
-    [titleLabel, detailLabel].forEach {
+    [detailLabel].forEach {
       $0.translatesAutoresizingMaskIntoConstraints = false
       infoBar.contentView.addSubview($0)
     }
@@ -1348,10 +1653,6 @@ private final class WiredCameraImportGridCell: UICollectionViewCell {
     statusBadgeLabel.backgroundColor = NativeLuxuryTheme.ink.withAlphaComponent(0.78)
     statusBadgeLabel.layer.cornerRadius = 6
     statusBadgeLabel.clipsToBounds = true
-
-    titleLabel.font = .systemFont(ofSize: 10, weight: .semibold)
-    titleLabel.textColor = .white
-    titleLabel.lineBreakMode = .byTruncatingMiddle
 
     detailLabel.font = .systemFont(ofSize: 9, weight: .medium)
     detailLabel.textColor = UIColor.white.withAlphaComponent(0.86)
@@ -1382,13 +1683,9 @@ private final class WiredCameraImportGridCell: UICollectionViewCell {
       infoBar.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
       infoBar.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
 
-      titleLabel.topAnchor.constraint(equalTo: infoBar.contentView.topAnchor, constant: 5),
-      titleLabel.leadingAnchor.constraint(equalTo: infoBar.contentView.leadingAnchor, constant: 7),
-      titleLabel.trailingAnchor.constraint(equalTo: infoBar.contentView.trailingAnchor, constant: -7),
-
-      detailLabel.topAnchor.constraint(equalTo: titleLabel.bottomAnchor, constant: 1),
-      detailLabel.leadingAnchor.constraint(equalTo: titleLabel.leadingAnchor),
-      detailLabel.trailingAnchor.constraint(equalTo: titleLabel.trailingAnchor),
+      detailLabel.topAnchor.constraint(equalTo: infoBar.contentView.topAnchor, constant: 5),
+      detailLabel.leadingAnchor.constraint(equalTo: infoBar.contentView.leadingAnchor, constant: 7),
+      detailLabel.trailingAnchor.constraint(equalTo: infoBar.contentView.trailingAnchor, constant: -7),
       detailLabel.bottomAnchor.constraint(equalTo: infoBar.contentView.bottomAnchor, constant: -5),
     ])
   }

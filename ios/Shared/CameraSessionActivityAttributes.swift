@@ -10,6 +10,8 @@ struct CameraSessionActivityAttributes: ActivityAttributes {
     var galleryItemCount: Int
     var downloadCompletedCount: Int
     var downloadTotalCount: Int
+    var downloadCompletedBytes: Int64? = nil
+    var downloadTotalBytes: Int64? = nil
     var isBackground: Bool
     var isShowingDownloadProgress: Bool
     var updatedAt: Date
@@ -19,6 +21,12 @@ struct CameraSessionActivityAttributes: ActivityAttributes {
     }
 
     var downloadProgressFraction: Double {
+      if let downloadCompletedBytes,
+         let downloadTotalBytes,
+         downloadTotalBytes > 0 {
+        let progress = Double(downloadCompletedBytes) / Double(downloadTotalBytes)
+        return min(max(progress, 0), 1)
+      }
       guard downloadTotalCount > 0 else { return 0 }
       let progress = Double(downloadCompletedCount) / Double(downloadTotalCount)
       return min(max(progress, 0), 1)

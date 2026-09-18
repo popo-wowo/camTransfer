@@ -333,6 +333,31 @@ enum WiredCameraCatalogPublicationPolicy {
   }
 }
 
+enum WiredCameraImportActivityPolicy {
+  static func snapshot(
+    sessionID: UUID,
+    cameraName: String,
+    galleryItemCount: Int,
+    completedCount: Int,
+    totalCount: Int,
+    completedBytes: Int64,
+    totalBytes: Int64,
+    isBackground: Bool
+  ) -> CameraSessionRuntimeActivitySnapshot {
+    CameraSessionRuntimeActivitySnapshot(
+      sessionID: sessionID,
+      cameraName: "\(cameraName) · USB",
+      galleryItemCount: galleryItemCount,
+      downloadCompletedCount: completedCount,
+      downloadTotalCount: totalCount,
+      downloadCompletedBytes: completedBytes,
+      downloadTotalBytes: totalBytes,
+      isBackground: isBackground,
+      isShowingDownloadProgress: totalCount > 0 && completedCount < totalCount
+    )
+  }
+}
+
 enum WiredCameraDeletePolicy {
   static func selectedItems(
     from state: WiredCameraImportState,

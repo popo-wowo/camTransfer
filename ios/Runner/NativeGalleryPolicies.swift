@@ -1658,7 +1658,7 @@ enum NativeGalleryDragSelectionPolicy {
   private static let horizontalIntentRatio: CGFloat = 1.25
   private static let minHorizontalSlopMultiplier: CGFloat = 1.15
 
-  static func mode(startHandle: Int, selectedHandles: Set<Int>) -> NativeGalleryDragSelectionMode {
+  static func mode<ID: Hashable>(startHandle: ID, selectedHandles: Set<ID>) -> NativeGalleryDragSelectionMode {
     selectedHandles.contains(startHandle) ? .deselecting : .selecting
   }
 
@@ -1676,20 +1676,20 @@ enum NativeGalleryDragSelectionPolicy {
     return horizontal >= minHorizontal && horizontal >= vertical * horizontalIntentRatio
   }
 
-  static func shouldCommitDragSelection(
-    startHandle: Int,
-    endHandle: Int?,
+  static func shouldCommitDragSelection<ID: Hashable>(
+    startHandle: ID,
+    endHandle: ID?,
     canSelectEndHandle: Bool
   ) -> Bool {
     guard let endHandle else { return false }
     return endHandle != startHandle && canSelectEndHandle
   }
 
-  static func updatedSelection(
-    selectedHandles: Set<Int>,
-    visiting handles: [Int],
+  static func updatedSelection<ID: Hashable>(
+    selectedHandles: Set<ID>,
+    visiting handles: [ID],
     mode: NativeGalleryDragSelectionMode
-  ) -> Set<Int> {
+  ) -> Set<ID> {
     var updated = selectedHandles
     switch mode {
     case .selecting:
@@ -1700,14 +1700,14 @@ enum NativeGalleryDragSelectionPolicy {
     return updated
   }
 
-  static func updatedRangeSelection(
-    selectedHandles: Set<Int>,
-    orderedHandles: [Int],
-    startHandle: Int,
-    endHandle: Int,
-    selectableHandles: Set<Int>,
+  static func updatedRangeSelection<ID: Hashable>(
+    selectedHandles: Set<ID>,
+    orderedHandles: [ID],
+    startHandle: ID,
+    endHandle: ID,
+    selectableHandles: Set<ID>,
     mode: NativeGalleryDragSelectionMode
-  ) -> Set<Int> {
+  ) -> Set<ID> {
     guard let startIndex = orderedHandles.firstIndex(of: startHandle),
           let endIndex = orderedHandles.firstIndex(of: endHandle) else {
       return selectedHandles

@@ -14,6 +14,8 @@ final class CameraSessionLiveActivityController {
   private var isShowingDownloadProgress = false
   private var downloadCompletedCount = 0
   private var downloadTotalCount = 0
+  private var downloadCompletedBytes: Int64?
+  private var downloadTotalBytes: Int64?
 
   var hasActiveDownloadSession: Bool {
     guard currentSessionID != nil else { return false }
@@ -28,6 +30,8 @@ final class CameraSessionLiveActivityController {
     isShowingDownloadProgress = false
     downloadCompletedCount = 0
     downloadTotalCount = 0
+    downloadCompletedBytes = nil
+    downloadTotalBytes = nil
     CameraVendorFileLogger.log(
       "[LiveActivity] gallery-ready observed without active download reason=\(reason) camera=\(cameraName) items=\(itemCount)"
     )
@@ -43,6 +47,8 @@ final class CameraSessionLiveActivityController {
     galleryItemCount = activitySnapshot.galleryItemCount
     downloadCompletedCount = activitySnapshot.downloadCompletedCount
     downloadTotalCount = activitySnapshot.downloadTotalCount
+    downloadCompletedBytes = activitySnapshot.downloadCompletedBytes
+    downloadTotalBytes = activitySnapshot.downloadTotalBytes
     isBackground = activitySnapshot.isBackground
     isShowingDownloadProgress = activitySnapshot.isShowingDownloadProgress
 
@@ -134,8 +140,26 @@ final class CameraSessionLiveActivityController {
   }
 
   func updateDownloadProgress(completedCount: Int, totalCount: Int, reason: String) {
+    updateDownloadProgress(
+      completedCount: completedCount,
+      totalCount: totalCount,
+      completedBytes: nil,
+      totalBytes: nil,
+      reason: reason
+    )
+  }
+
+  func updateDownloadProgress(
+    completedCount: Int,
+    totalCount: Int,
+    completedBytes: Int64? = nil,
+    totalBytes: Int64? = nil,
+    reason: String
+  ) {
     downloadTotalCount = max(totalCount, 0)
     downloadCompletedCount = min(max(completedCount, 0), downloadTotalCount)
+    downloadCompletedBytes = completedBytes
+    downloadTotalBytes = totalBytes
     isShowingDownloadProgress = downloadTotalCount > 0 && downloadCompletedCount < downloadTotalCount
     update()
     CameraVendorFileLogger.log(
@@ -147,6 +171,8 @@ final class CameraSessionLiveActivityController {
   func updateDownloadFinished(successCount: Int, failedCount: Int, reason: String) {
     downloadCompletedCount = max(successCount + failedCount, 0)
     downloadTotalCount = downloadCompletedCount
+    downloadCompletedBytes = nil
+    downloadTotalBytes = nil
     isShowingDownloadProgress = false
     update()
     CameraVendorFileLogger.log(
@@ -162,6 +188,8 @@ final class CameraSessionLiveActivityController {
       galleryItemCount: galleryItemCount,
       completedCount: downloadCompletedCount,
       totalCount: downloadTotalCount,
+      completedBytes: downloadCompletedBytes,
+      totalBytes: downloadTotalBytes,
       isBackground: false,
       isShowingDownloadProgress: false
     )
@@ -215,6 +243,8 @@ final class CameraSessionLiveActivityController {
       galleryItemCount: galleryItemCount,
       completedCount: downloadCompletedCount,
       totalCount: downloadTotalCount,
+      completedBytes: downloadCompletedBytes,
+      totalBytes: downloadTotalBytes,
       isBackground: isBackground,
       isShowingDownloadProgress: isShowingDownloadProgress
     )
@@ -248,6 +278,8 @@ final class CameraSessionLiveActivityController {
     galleryItemCount: Int,
     completedCount: Int,
     totalCount: Int,
+    completedBytes: Int64?,
+    totalBytes: Int64?,
     isBackground: Bool,
     isShowingDownloadProgress: Bool
   ) -> CameraSessionActivityAttributes.ContentState {
@@ -256,6 +288,8 @@ final class CameraSessionLiveActivityController {
       galleryItemCount: galleryItemCount,
       downloadCompletedCount: completedCount,
       downloadTotalCount: totalCount,
+      downloadCompletedBytes: completedBytes,
+      downloadTotalBytes: totalBytes,
       isBackground: isBackground,
       isShowingDownloadProgress: isShowingDownloadProgress,
       updatedAt: Date()
@@ -269,6 +303,8 @@ final class CameraSessionLiveActivityController {
       galleryItemCount: activitySnapshot.galleryItemCount,
       downloadCompletedCount: activitySnapshot.downloadCompletedCount,
       downloadTotalCount: activitySnapshot.downloadTotalCount,
+      downloadCompletedBytes: activitySnapshot.downloadCompletedBytes,
+      downloadTotalBytes: activitySnapshot.downloadTotalBytes,
       isBackground: activitySnapshot.isBackground,
       isShowingDownloadProgress: activitySnapshot.isShowingDownloadProgress,
       updatedAt: Date()

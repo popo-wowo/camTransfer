@@ -122,8 +122,32 @@ struct CameraSessionRuntimeActivitySnapshot: Equatable {
   let galleryItemCount: Int
   let downloadCompletedCount: Int
   let downloadTotalCount: Int
+  let downloadCompletedBytes: Int64?
+  let downloadTotalBytes: Int64?
   let isBackground: Bool
   let isShowingDownloadProgress: Bool
+
+  init(
+    sessionID: UUID,
+    cameraName: String,
+    galleryItemCount: Int,
+    downloadCompletedCount: Int,
+    downloadTotalCount: Int,
+    downloadCompletedBytes: Int64? = nil,
+    downloadTotalBytes: Int64? = nil,
+    isBackground: Bool,
+    isShowingDownloadProgress: Bool
+  ) {
+    self.sessionID = sessionID
+    self.cameraName = cameraName
+    self.galleryItemCount = galleryItemCount
+    self.downloadCompletedCount = downloadCompletedCount
+    self.downloadTotalCount = downloadTotalCount
+    self.downloadCompletedBytes = downloadCompletedBytes
+    self.downloadTotalBytes = downloadTotalBytes
+    self.isBackground = isBackground
+    self.isShowingDownloadProgress = isShowingDownloadProgress
+  }
 }
 
 @MainActor

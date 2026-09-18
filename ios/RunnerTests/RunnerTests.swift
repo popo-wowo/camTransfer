@@ -795,6 +795,36 @@ final class RunnerTests: XCTestCase {
 #endif
   }
 
+  func testCameraSessionLiveActivityPrefersByteProgressAndFallsBackToItemCount() {
+#if canImport(ActivityKit)
+    if #available(iOS 16.1, *) {
+      let byteState = CameraSessionActivityAttributes.ContentState(
+        sessionID: "usb-session",
+        galleryItemCount: 20,
+        downloadCompletedCount: 1,
+        downloadTotalCount: 4,
+        downloadCompletedBytes: 25,
+        downloadTotalBytes: 100,
+        isBackground: true,
+        isShowingDownloadProgress: true,
+        updatedAt: Date(timeIntervalSince1970: 1234)
+      )
+      let countState = CameraSessionActivityAttributes.ContentState(
+        sessionID: "wireless-session",
+        galleryItemCount: 20,
+        downloadCompletedCount: 2,
+        downloadTotalCount: 4,
+        isBackground: false,
+        isShowingDownloadProgress: true,
+        updatedAt: Date(timeIntervalSince1970: 1234)
+      )
+
+      XCTAssertEqual(byteState.downloadProgressFraction, 0.25, accuracy: 0.001)
+      XCTAssertEqual(countState.downloadProgressFraction, 0.5, accuracy: 0.001)
+    }
+#endif
+  }
+
   func testCameraSessionLiveActivityControllerCleansUpStaleActivitiesOnAdopt() throws {
     let runnerDirectory = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
@@ -2997,6 +3027,52 @@ final class RunnerTests: XCTestCase {
     state.replaceItems([importable], isLiveCatalog: false)
     state.setSelection(true, for: importable)
     XCTAssertTrue(state.selectedItemIDs.isEmpty)
+  }
+
+  func testWiredCameraDragSelectionUsesSharedWirelessRangePolicy() {
+    let selected = NativeGalleryDragSelectionPolicy.updatedRangeSelection(
+      selectedHandles: Set(["outside"]),
+      orderedHandles: ["1", "2", "unsupported", "3"],
+      startHandle: "1",
+      endHandle: "3",
+      selectableHandles: Set(["1", "2", "3"]),
+      mode: .selecting
+    )
+    let deselected = NativeGalleryDragSelectionPolicy.updatedRangeSelection(
+      selectedHandles: Set(["1", "2", "3", "outside"]),
+      orderedHandles: ["1", "2", "unsupported", "3"],
+      startHandle: "3",
+      endHandle: "1",
+      selectableHandles: Set(["1", "2", "3"]),
+      mode: .deselecting
+    )
+
+    XCTAssertEqual(selected, ["outside", "1", "2", "3"])
+    XCTAssertEqual(deselected, ["outside"])
+  }
+
+  func testWiredCameraImportActivityPolicyBuildsAggregateUSBProgressSnapshot() {
+    let sessionID = UUID(uuidString: "D7927318-D225-4D7D-AC51-22E1831A5703")!
+    let snapshot = WiredCameraImportActivityPolicy.snapshot(
+      sessionID: sessionID,
+      cameraName: "X-T5",
+      galleryItemCount: 2_826,
+      completedCount: 3,
+      totalCount: 10,
+      completedBytes: 75,
+      totalBytes: 200,
+      isBackground: true
+    )
+
+    XCTAssertEqual(snapshot.sessionID, sessionID)
+    XCTAssertEqual(snapshot.cameraName, "X-T5 · USB")
+    XCTAssertEqual(snapshot.galleryItemCount, 2_826)
+    XCTAssertEqual(snapshot.downloadCompletedCount, 3)
+    XCTAssertEqual(snapshot.downloadTotalCount, 10)
+    XCTAssertEqual(snapshot.downloadCompletedBytes, 75)
+    XCTAssertEqual(snapshot.downloadTotalBytes, 200)
+    XCTAssertTrue(snapshot.isBackground)
+    XCTAssertTrue(snapshot.isShowingDownloadProgress)
   }
 
   func testLocalProofingWebRendererSerializesPhotosWithFavoriteState() throws {
