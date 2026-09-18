@@ -1,0 +1,268 @@
+ios/RunnerTests/RunnerTests.swift
+  9bb4866a98d950f6 298-299
+  a389fd3febef2732 279-297
+ios/Runner/WiredCameraImportModels.swift
+  a389fd3febef2732 402-413
+ios/Runner/WiredCameraImportViewController.swift
+  a389fd3febef2732 54-65,81-83,355-356,408,416-423,902-908,1783,1892-1896,1898,1900
+ios/Runner/WiredCameraImportService.swift
+  a389fd3febef2732 28,75,115-121,131-137,153-156,427,488-494,503,511
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "66c378a4f7f6f405f9cd24ec31ed1a650fc04df9",
+  "prompts": {
+    "1044195238a48098": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fbda4-375d-7e43-9057-54c6c3c6bd25",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 1192,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/508a69ca73c1a8d8110bc2cef07dbb27f3595a6e7c4aad053c9a1846f77f6713"
+    },
+    "1434c28ea210e74b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fb6a9-80fd-7e43-b6fb-c9a8611e0dd0",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 168,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/0d59c60c15002e84e63239c0de76452bb28562becd1feb41b4f1bc6c20db3340"
+    },
+    "1e8061a2b4569eae": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc151-533b-7102-bde8-0a77e206253a",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 34,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/aa329c2984e785c287b9fa1c6b43ebd5ba18276932bb0540acbd39214c080dcc"
+    },
+    "369620b1d970ed9e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f1124-2b76-7932-9796-9e1961e20363",
+        "model": "gpt-5.5"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 368271,
+      "total_deletions": 363,
+      "accepted_lines": 1,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/52e31dbc4b6cdf918927b351d03dde832cd6d06a8ee02471463e5383cb52335e"
+    },
+    "3d3f37d6031f6842": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f704f-7ef7-7e00-96ca-facf2d0043c3",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 11,
+      "total_deletions": 0,
+      "accepted_lines": 7,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/1be4b36e386bc0701dd41d91bbf48dd4d26b57f9f64df86ac4d12aa202514182"
+    },
+    "3e294bf97024a90d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8653bd30-efe0-4885-9ca4-64f95fdd123a",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 70,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/249374f21de81be5d448524950f03601959f3d4ffb04cab61e8607415ef6a762"
+    },
+    "47ba52ace6d43c37": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc174-c3c3-72e2-9ccc-ab07525d761e",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 354,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/9bf417354a1e97130aa1d660f5c0f975ced7d9f7d3c144d50543b8055b3bc1f9"
+    },
+    "5a3893da983ba365": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ecddea44-f2dc-42d7-9666-856f59f602ee",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 83,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/6a13021aee1daeb0a37d1adfadef36395d456084cb8f175507124c599dc1e735"
+    },
+    "6f08be97e0180404": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7eb69989-a986-4503-975b-d4f18edfa3a1",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 222,
+      "total_deletions": 111,
+      "accepted_lines": 44,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/fae58133f036094c7a9c5e55253c1d4405fad85a44311a97213471bd8bd5df7a"
+    },
+    "7ba42731cc1e7686": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3e2fb603-f5ff-4191-8e4d-66104dfdd939",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 379,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/aabe19133c252dcfe67e3504933747ab99a3c1add2015f99f72424897bed12ce"
+    },
+    "97d6b2589ae9e4b1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "587bdef0-48ca-4cf3-8ba7-284ddf67783d",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 569,
+      "total_deletions": 591,
+      "accepted_lines": 12,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/34cab3a6042c4c19a1c2e3b58475ec491cb4d8935ac8b304343cfcae2f8113d4"
+    },
+    "9bafd00506acbc05": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019eeea1-73e4-7dc1-a86b-52d87193710c",
+        "model": "gpt-5.5"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 654,
+      "total_deletions": 0,
+      "accepted_lines": 1814,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/337fcce4c8083b81ab4173da9783bfdc7c0cf19e6e99e2495ae7baf10e4bc44c"
+    },
+    "9bb4866a98d950f6": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f69d0-9683-7fd3-91e8-14891c19c9b5",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 11567,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/46566c745d7b8714a8ad14f1b134d561d6926c04664102ca249394a66809b7a9"
+    },
+    "a389fd3febef2732": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0aa2e-b03d-7c20-b6e0-24b5f1761100",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": null,
+      "messages": [],
+      "total_additions": 10296,
+      "total_deletions": 37,
+      "accepted_lines": 10588,
+      "overriden_lines": 0
+    },
+    "ba42980eb98d878a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fbba1-7bf9-71d2-8eda-ee95fe611aca",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 640,
+      "total_deletions": 104,
+      "accepted_lines": 422,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/b767893883ba9c0c3779de7f4fb099270627b08bd33394d4ffc3de6f97bb9121"
+    },
+    "c94128bdd3189810": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fbbfb-dbec-7d40-b75c-9f42971d8659",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 202,
+      "total_deletions": 22,
+      "accepted_lines": 192,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/168909f61d96abcb5e75f1dae4230266609ef2a2dd04fe24fbdae5c4c926fd40"
+    },
+    "d4f8dd5a34bf31d3": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fdb0b-14a0-73c0-9566-f62a3f281e78",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 3,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/dc0a685cd320027e5ca157df44811fd4838cf29a4639f22b610d4b65a06ceff5"
+    },
+    "f2c4495fe7216a61": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b4d9db24-ec1f-4ae8-9e24-717aa8e483f8",
+        "model": "claude-opus-4-6"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 394,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/6f741a4e56e3b30d32057b25c8c8f5a824e5b66c5796e54df1eafe2771d737bc"
+    }
+  }
+}
