@@ -242,7 +242,64 @@ final class RunnerTests: XCTestCase {
     state.toggleSelection(for: item)
 
     XCTAssertEqual(state.selectedItemIDs, [item.id])
-    XCTAssertTrue(state.selectedImportableItems.isEmpty)
+    XCTAssertEqual(state.selectedImportableItems, [item])
+  }
+
+  func testWiredCameraImportStateAllowsManualReimportOfImportedItems() {
+    let imported = wiredImportItem(id: "saved", name: "DSCF0001.JPG")
+
+    var state = WiredCameraImportState()
+    state.replaceItems([imported], isLiveCatalog: true)
+    state.importedItemIDs = [imported.id]
+    state.toggleSelection(for: imported)
+
+    XCTAssertEqual(state.importableItems, [imported])
+    XCTAssertEqual(state.selectedImportableItems, [imported])
+    XCTAssertEqual(state.filteredImportableItems(), [imported])
+  }
+
+  func testWiredCameraSortPolicyReusesWirelessSortModes() {
+    let oldest = wiredImportItem(
+      id: "oldest",
+      name: "DSCF0001.JPG",
+      createdAt: Date(timeIntervalSince1970: 100)
+    )
+    let newestImported = wiredImportItem(
+      id: "newest",
+      name: "DSCF0002.JPG",
+      createdAt: Date(timeIntervalSince1970: 300)
+    )
+    let middle = wiredImportItem(
+      id: "middle",
+      name: "DSCF0003.JPG",
+      createdAt: Date(timeIntervalSince1970: 200)
+    )
+    let items = [oldest, newestImported, middle]
+
+    XCTAssertEqual(
+      WiredCameraImportSortPolicy.sorted(items, mode: .newest, importedItemIDs: [newestImported.id]).map(\.id),
+      ["newest", "middle", "oldest"]
+    )
+    XCTAssertEqual(
+      WiredCameraImportSortPolicy.sorted(items, mode: .oldest, importedItemIDs: [newestImported.id]).map(\.id),
+      ["oldest", "middle", "newest"]
+    )
+    XCTAssertEqual(
+      WiredCameraImportSortPolicy.sorted(items, mode: .notDownloaded, importedItemIDs: [newestImported.id]).map(\.id),
+      ["middle", "oldest", "newest"]
+    )
+  }
+
+  func testWiredCameraLoadingOverlayOnlyBlocksBeforeFirstCatalogBatch() {
+    XCTAssertTrue(
+      WiredCameraLoadingPresentationPolicy.showsBlockingOverlay(isLoading: true, itemCount: 0)
+    )
+    XCTAssertFalse(
+      WiredCameraLoadingPresentationPolicy.showsBlockingOverlay(isLoading: true, itemCount: 12)
+    )
+    XCTAssertFalse(
+      WiredCameraLoadingPresentationPolicy.showsBlockingOverlay(isLoading: false, itemCount: 0)
+    )
   }
 
   func testWiredCameraImportStateTogglesAllSelectableItemsInDayIncludingImportedItems() {
@@ -321,6 +378,34 @@ final class RunnerTests: XCTestCase {
         hasActiveThumbnailRequest: false
       )
     )
+  }
+
+  func testWiredCameraThumbnailQueueWaitsForStableCatalog() {
+    XCTAssertFalse(
+      WiredCameraThumbnailQueuePolicy.shouldStartRequest(
+        isDeleteInFlight: false,
+        isForegroundOperationInFlight: false,
+        isCatalogComplete: false,
+        hasActiveThumbnailRequest: false
+      )
+    )
+    XCTAssertTrue(
+      WiredCameraThumbnailQueuePolicy.shouldStartRequest(
+        isDeleteInFlight: false,
+        isForegroundOperationInFlight: false,
+        isCatalogComplete: true,
+        hasActiveThumbnailRequest: false
+      )
+    )
+  }
+
+  func testWiredCameraCatalogMergeKeepsIncrementalItemsMissingFromSnapshot() {
+    let merged = WiredCameraCatalogMergePolicy.merged(
+      existing: ["old": "incremental"],
+      snapshot: ["new": "snapshot"]
+    )
+
+    XCTAssertEqual(merged, ["old": "incremental", "new": "snapshot"])
   }
 
   func testWiredCameraThumbnailQueueDoesNotRequeueFailedItemsInSameSession() {
@@ -1105,32 +1190,6 @@ final class RunnerTests: XCTestCase {
 
     state.setProofingFavorite(false, itemID: imported.id)
     XCTAssertEqual(state.proofingFavoriteItemIDs, ["pending"])
-  }
-
-  func testWiredCameraImportCacheSnapshotRoundTripsWithoutThumbnails() throws {
-    let tempDirectory = FileManager.default.temporaryDirectory
-      .appendingPathComponent(UUID().uuidString, isDirectory: true)
-    let store = WiredCameraImportCacheStore(rootDirectory: tempDirectory)
-    let image = UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4)).image { context in
-      UIColor.red.setFill()
-      context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
-    }
-    var item = wiredImportItem(id: "1", name: "DSCF0001.JPG")
-    item.thumbnail = image
-    let snapshot = WiredCameraImportCacheSnapshot(
-      device: WiredCameraImportDevice(id: "camera/1", name: "X-T5", transportName: "USB"),
-      items: [item],
-      importedItemIDs: ["1"],
-      cachedAt: Date(timeIntervalSince1970: 1_800_000_000)
-    )
-
-    try store.save(snapshot)
-    let restored = try store.load(deviceID: "camera/1")
-
-    XCTAssertEqual(restored?.device.id, "camera/1")
-    XCTAssertEqual(restored?.items.map(\.id), ["1"])
-    XCTAssertNil(restored?.items.first?.thumbnail)
-    XCTAssertEqual(restored?.importedItemIDs, ["1"])
   }
 
   func testWiredCameraImportStateDisablesSelectionBeforeLiveCatalogIsReady() {
@@ -3006,7 +3065,7 @@ final class RunnerTests: XCTestCase {
     )
   }
 
-  func testWiredCameraImportStateSetsSelectionForDragOnlyWhenLiveImportableUnsaved() {
+  func testWiredCameraImportStateSetsSelectionForDragWhenLiveAndImportable() {
     let importable = wiredImportItem(id: "new", name: "DSCF0001.JPG")
     let imported = wiredImportItem(id: "saved", name: "DSCF0002.JPG")
     let unsupported = wiredImportItem(id: "txt", name: "README.TXT", uti: "public.text", isImportable: false)
@@ -3019,9 +3078,10 @@ final class RunnerTests: XCTestCase {
     state.setSelection(true, for: imported)
     state.setSelection(true, for: unsupported)
 
-    XCTAssertEqual(state.selectedItemIDs, ["new"])
+    XCTAssertEqual(state.selectedItemIDs, ["new", "saved"])
 
     state.setSelection(false, for: importable)
+    state.setSelection(false, for: imported)
     XCTAssertTrue(state.selectedItemIDs.isEmpty)
 
     state.replaceItems([importable], isLiveCatalog: false)

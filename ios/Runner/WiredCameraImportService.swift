@@ -33,9 +33,11 @@ final class WiredCameraImportService: NSObject {
   private var thumbnailIdleWaiters: [CheckedContinuation<Void, Never>] = []
   private var activeDownloadProgressObservation: NSKeyValueObservation?
   private var pendingCatalogPublication: DispatchWorkItem?
+  private var pendingCatalogFinalization: DispatchWorkItem?
   private var lastCatalogPublishedAt: Date?
   private var catalogStartedAt: Date?
   private var isCompleteCatalog = false
+  private var receivedCompleteCatalogSignal = false
 
   override init() {
     super.init()
@@ -83,9 +85,12 @@ final class WiredCameraImportService: NSObject {
     failedThumbnailItemIDs.removeAll()
     pendingCatalogPublication?.cancel()
     pendingCatalogPublication = nil
+    pendingCatalogFinalization?.cancel()
+    pendingCatalogFinalization = nil
     lastCatalogPublishedAt = nil
     catalogStartedAt = nil
     isCompleteCatalog = false
+    receivedCompleteCatalogSignal = false
     resumeThumbnailIdleWaiters()
   }
 
@@ -99,14 +104,18 @@ final class WiredCameraImportService: NSObject {
     camera.delegate = self
     pendingCatalogPublication?.cancel()
     pendingCatalogPublication = nil
+    pendingCatalogFinalization?.cancel()
+    pendingCatalogFinalization = nil
     lastCatalogPublishedAt = nil
     catalogStartedAt = Date()
     isCompleteCatalog = false
+    receivedCompleteCatalogSignal = false
     filesByID.removeAll()
     delegate?.wiredCameraImportServiceDidStartLoadingItems(self)
 
     if camera.hasOpenSession {
-      replaceFilesAndPublish(from: camera, source: "already-open")
+      mergeFilesAndPublish(from: camera, source: "already-open")
+      scheduleCatalogFinalizationIfSystemCatalogIsComplete(camera)
       return
     }
 
@@ -117,7 +126,8 @@ final class WiredCameraImportService: NSObject {
           self.delegate?.wiredCameraImportService(self, didFailWith: "打开相机会话失败：\(error.localizedDescription)")
           return
         }
-        self.replaceFilesAndPublish(from: camera, source: "session-open")
+        self.mergeFilesAndPublish(from: camera, source: "session-open")
+        self.scheduleCatalogFinalizationIfSystemCatalogIsComplete(camera)
       }
     }
   }
@@ -445,11 +455,46 @@ final class WiredCameraImportService: NSObject {
     scheduleCatalogPublication(source: source, force: force)
   }
 
+  private func mergeFilesAndPublish(from camera: ICCameraDevice, source: String, force: Bool = false) {
+    let files = camera.mediaFiles?.compactMap { $0 as? ICCameraFile } ?? []
+    let snapshot = Dictionary(uniqueKeysWithValues: files.map { (itemID(for: $0), $0) })
+    filesByID = WiredCameraCatalogMergePolicy.merged(existing: filesByID, snapshot: snapshot)
+    scheduleCatalogPublication(source: source, force: force)
+  }
+
   private func addFilesAndPublish(_ items: [ICCameraItem], source: String) {
     for file in items.compactMap({ $0 as? ICCameraFile }) {
       filesByID[itemID(for: file)] = file
     }
+    if receivedCompleteCatalogSignal || (activeCamera?.contentCatalogPercentCompleted ?? 0) >= 100 {
+      receivedCompleteCatalogSignal = true
+      isCompleteCatalog = false
+      scheduleCatalogFinalization()
+    }
     scheduleCatalogPublication(source: source)
+  }
+
+  private func scheduleCatalogFinalization() {
+    pendingCatalogFinalization?.cancel()
+    let workItem = DispatchWorkItem { [weak self] in
+      guard let self, let camera = self.activeCamera else { return }
+      self.pendingCatalogFinalization = nil
+      self.isCompleteCatalog = true
+      self.mergeFilesAndPublish(from: camera, source: "settled-complete", force: true)
+      self.startNextThumbnailRequestIfNeeded()
+    }
+    pendingCatalogFinalization = workItem
+    DispatchQueue.main.asyncAfter(
+      deadline: .now() + WiredCameraCatalogCompletionPolicy.quietInterval,
+      execute: workItem
+    )
+  }
+
+  private func scheduleCatalogFinalizationIfSystemCatalogIsComplete(_ camera: ICCameraDevice) {
+    guard camera.contentCatalogPercentCompleted >= 100 else { return }
+    receivedCompleteCatalogSignal = true
+    isCompleteCatalog = false
+    scheduleCatalogFinalization()
   }
 
   private func scheduleCatalogPublication(source: String, force: Bool = false) {
@@ -483,7 +528,9 @@ final class WiredCameraImportService: NSObject {
     let items = WiredCameraImportSortPolicy.newestFirst(filesByID.values.map(item(for:)))
     lastCatalogPublishedAt = Date()
     let elapsed = catalogStartedAt.map { Date().timeIntervalSince($0) } ?? 0
-    let message = "CamTransferWired catalog publish source=\(source) count=\(items.count) complete=\(isCompleteCatalog) elapsed=\(String(format: "%.3f", elapsed))s"
+    let newest = items.first?.createdAt.map { String(format: "%.0f", $0.timeIntervalSince1970) } ?? "none"
+    let oldest = items.last?.createdAt.map { String(format: "%.0f", $0.timeIntervalSince1970) } ?? "none"
+    let message = "CamTransferWired catalog publish source=\(source) count=\(items.count) complete=\(isCompleteCatalog) progress=\(activeCamera?.contentCatalogPercentCompleted ?? 0) newest=\(newest) oldest=\(oldest) elapsed=\(String(format: "%.3f", elapsed))s"
     print(message)
     CameraVendorFileLogger.log(message)
     delegate?.wiredCameraImportService(
@@ -541,6 +588,7 @@ final class WiredCameraImportService: NSObject {
     guard WiredCameraThumbnailQueuePolicy.shouldStartRequest(
       isDeleteInFlight: isDeleteRequestInFlight,
       isForegroundOperationInFlight: isForegroundOperationInFlight,
+      isCatalogComplete: isCompleteCatalog,
       hasActiveThumbnailRequest: activeThumbnailRequestItemID != nil
     ) else { return }
 
@@ -650,6 +698,8 @@ extension WiredCameraImportService: ICDeviceBrowserDelegate {
 
   func deviceBrowser(_ browser: ICDeviceBrowser, didRemove device: ICDevice, moreGoing: Bool) {
     if let camera = device as? ICCameraDevice, deviceID(for: camera) == activeCamera.map(deviceID(for:)) {
+      pendingCatalogFinalization?.cancel()
+      pendingCatalogFinalization = nil
       activeCamera = nil
       filesByID.removeAll()
       delegate?.wiredCameraImportService(self, didUpdateItems: [], isCompleteCatalog: false)
@@ -663,11 +713,14 @@ extension WiredCameraImportService: ICCameraDeviceDelegate {
 
   func device(_ device: ICDevice, didOpenSessionWithError error: Error?) {
     guard let camera = device as? ICCameraDevice, error == nil else { return }
-    replaceFilesAndPublish(from: camera, source: "delegate-session-open")
+    mergeFilesAndPublish(from: camera, source: "delegate-session-open")
+    scheduleCatalogFinalizationIfSystemCatalogIsComplete(camera)
   }
 
   func didRemove(_ device: ICDevice) {
     if let camera = device as? ICCameraDevice, deviceID(for: camera) == activeCamera.map(deviceID(for:)) {
+      pendingCatalogFinalization?.cancel()
+      pendingCatalogFinalization = nil
       activeCamera = nil
       filesByID.removeAll()
       delegate?.wiredCameraImportService(self, didUpdateItems: [], isCompleteCatalog: false)
@@ -675,8 +728,10 @@ extension WiredCameraImportService: ICCameraDeviceDelegate {
   }
 
   func deviceDidBecomeReady(withCompleteContentCatalog device: ICCameraDevice) {
-    isCompleteCatalog = true
-    replaceFilesAndPublish(from: device, source: "complete", force: true)
+    receivedCompleteCatalogSignal = true
+    isCompleteCatalog = false
+    mergeFilesAndPublish(from: device, source: "complete-signal", force: true)
+    scheduleCatalogFinalization()
   }
 
   func cameraDevice(_ camera: ICCameraDevice, didAdd items: [ICCameraItem]) {

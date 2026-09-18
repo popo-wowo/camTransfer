@@ -169,12 +169,12 @@ struct WiredCameraImportState {
 
   var importableItems: [WiredCameraImportItem] {
     guard isLiveCatalogReady else { return [] }
-    return items.filter { $0.isImportable && !importedItemIDs.contains($0.id) }
+    return items.filter(\.isImportable)
   }
 
   var selectedImportableItems: [WiredCameraImportItem] {
     guard isLiveCatalogReady else { return [] }
-    return items.filter { selectedItemIDs.contains($0.id) && $0.isImportable && !importedItemIDs.contains($0.id) }
+    return items.filter { selectedItemIDs.contains($0.id) && $0.isImportable }
   }
 
   func filteredItems(
@@ -196,7 +196,7 @@ struct WiredCameraImportState {
     calendar: Calendar = Calendar(identifier: .gregorian)
   ) -> [WiredCameraImportItem] {
     guard isLiveCatalogReady else { return [] }
-    return filteredItems(now: now, calendar: calendar).filter { $0.isImportable && !importedItemIDs.contains($0.id) }
+    return filteredItems(now: now, calendar: calendar).filter(\.isImportable)
   }
 
   func selectedFilteredImportableItems(
@@ -258,7 +258,7 @@ struct WiredCameraImportState {
   }
 
   mutating func setSelection(_ shouldSelect: Bool, for item: WiredCameraImportItem) {
-    guard isLiveCatalogReady, item.isImportable, !importedItemIDs.contains(item.id) else { return }
+    guard isLiveCatalogReady, item.isImportable else { return }
     if shouldSelect {
       selectedItemIDs.insert(item.id)
     } else {
@@ -311,14 +311,6 @@ struct WiredCameraImportState {
     selectedItemIDs.remove(itemID)
   }
 
-  mutating func applyCache(_ snapshot: WiredCameraImportCacheSnapshot) {
-    if selectedDeviceID == nil {
-      selectedDeviceID = snapshot.device.id
-    }
-    replaceItems(snapshot.items, isLiveCatalog: false)
-    importedItemIDs = snapshot.importedItemIDs
-  }
-
   mutating func clearSelection() {
     selectedItemIDs.removeAll()
   }
@@ -330,6 +322,19 @@ enum WiredCameraCatalogPublicationPolicy {
   static func delay(now: Date, lastPublishedAt: Date?) -> TimeInterval {
     guard let lastPublishedAt else { return 0 }
     return max(0, minimumInterval - now.timeIntervalSince(lastPublishedAt))
+  }
+}
+
+enum WiredCameraCatalogCompletionPolicy {
+  static let quietInterval: TimeInterval = 1
+}
+
+enum WiredCameraCatalogMergePolicy {
+  static func merged<Key: Hashable, Value>(
+    existing: [Key: Value],
+    snapshot: [Key: Value]
+  ) -> [Key: Value] {
+    existing.merging(snapshot) { _, snapshotValue in snapshotValue }
   }
 }
 
@@ -440,9 +445,13 @@ enum WiredCameraThumbnailQueuePolicy {
   static func shouldStartRequest(
     isDeleteInFlight: Bool,
     isForegroundOperationInFlight: Bool = false,
+    isCatalogComplete: Bool = true,
     hasActiveThumbnailRequest: Bool
   ) -> Bool {
-    !isDeleteInFlight && !isForegroundOperationInFlight && !hasActiveThumbnailRequest
+    !isDeleteInFlight &&
+      !isForegroundOperationInFlight &&
+      isCatalogComplete &&
+      !hasActiveThumbnailRequest
   }
 
   static func shouldEnqueue(
@@ -469,6 +478,28 @@ enum WiredCameraImportSortPolicy {
     items.sorted(by: shouldPlaceBefore)
   }
 
+  static func sorted(
+    _ items: [WiredCameraImportItem],
+    mode: NativeGallerySortMode,
+    importedItemIDs: Set<String>
+  ) -> [WiredCameraImportItem] {
+    items.sorted { left, right in
+      switch mode {
+      case .newest:
+        return shouldPlaceBefore(left, right)
+      case .oldest:
+        return shouldPlaceBefore(right, left)
+      case .notDownloaded:
+        let leftImported = importedItemIDs.contains(left.id)
+        let rightImported = importedItemIDs.contains(right.id)
+        if leftImported != rightImported {
+          return !leftImported && rightImported
+        }
+        return shouldPlaceBefore(left, right)
+      }
+    }
+  }
+
   private static func shouldPlaceBefore(
     _ left: WiredCameraImportItem,
     _ right: WiredCameraImportItem
@@ -489,6 +520,12 @@ enum WiredCameraImportSortPolicy {
       }
       return left.id > right.id
     }
+  }
+}
+
+enum WiredCameraLoadingPresentationPolicy {
+  static func showsBlockingOverlay(isLoading: Bool, itemCount: Int) -> Bool {
+    isLoading && itemCount == 0
   }
 }
 
@@ -698,13 +735,6 @@ enum WiredCameraImportFilterPolicy {
   }
 }
 
-struct WiredCameraImportCacheSnapshot: Codable, Equatable {
-  let device: WiredCameraImportDevice
-  let items: [WiredCameraImportItem]
-  let importedItemIDs: Set<String>
-  let cachedAt: Date
-}
-
 enum WiredCameraDownloadResolutionPolicy {
   static func resolvedURL(
     savedFilename: String?,
@@ -727,50 +757,6 @@ enum WiredCameraDownloadResolutionPolicy {
   }
 }
 
-struct WiredCameraImportCacheStore {
-  let rootDirectory: URL
-  private let fileManager: FileManager
-
-  init(
-    rootDirectory: URL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-      .appendingPathComponent("CamTransferWiredImportCacheV3", isDirectory: true),
-    fileManager: FileManager = .default
-  ) {
-    self.rootDirectory = rootDirectory
-    self.fileManager = fileManager
-  }
-
-  func save(_ snapshot: WiredCameraImportCacheSnapshot) throws {
-    try fileManager.createDirectory(at: rootDirectory, withIntermediateDirectories: true)
-    let encoder = JSONEncoder()
-    encoder.dateEncodingStrategy = .iso8601
-    let data = try encoder.encode(snapshot)
-    try data.write(to: url(forDeviceID: snapshot.device.id), options: [.atomic])
-  }
-
-  func load(deviceID: String) throws -> WiredCameraImportCacheSnapshot? {
-    let url = url(forDeviceID: deviceID)
-    guard fileManager.fileExists(atPath: url.path) else { return nil }
-    let data = try Data(contentsOf: url)
-    let decoder = JSONDecoder()
-    decoder.dateDecodingStrategy = .iso8601
-    return try decoder.decode(WiredCameraImportCacheSnapshot.self, from: data)
-  }
-
-  private func url(forDeviceID deviceID: String) -> URL {
-    rootDirectory.appendingPathComponent("\(cacheKey(for: deviceID)).json", isDirectory: false)
-  }
-
-  private func cacheKey(for value: String) -> String {
-    let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
-    let scalars = value.unicodeScalars.map { scalar -> Character in
-      allowed.contains(scalar) ? Character(scalar) : "-"
-    }
-    let key = String(scalars).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-    return key.isEmpty ? "camera" : key
-  }
-}
-
 enum WiredCameraImportHistoryStore {
   private static let storageKey = "camtransfer.wiredImportHistory.v3"
 
@@ -785,48 +771,6 @@ enum WiredCameraImportHistoryStore {
     existing.insert(itemID)
     dict[deviceID] = Array(existing).sorted()
     UserDefaults.standard.set(dict, forKey: storageKey)
-  }
-}
-
-struct WiredCameraThumbnailCacheStore {
-  let rootDirectory: URL
-  private let fileManager: FileManager
-
-  init(
-    rootDirectory: URL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-      .appendingPathComponent("CamTransferWiredThumbnailCacheV3", isDirectory: true),
-    fileManager: FileManager = .default
-  ) {
-    self.rootDirectory = rootDirectory
-    self.fileManager = fileManager
-  }
-
-  func loadThumbnail(deviceID: String, itemID: String) -> UIImage? {
-    let url = url(deviceID: deviceID, itemID: itemID)
-    guard let data = try? Data(contentsOf: url) else { return nil }
-    return UIImage(data: data)
-  }
-
-  func saveThumbnail(_ image: UIImage, deviceID: String, itemID: String) {
-    guard let data = image.jpegData(compressionQuality: 0.78) else { return }
-    let url = url(deviceID: deviceID, itemID: itemID)
-    try? fileManager.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-    try? data.write(to: url, options: [.atomic])
-  }
-
-  private func url(deviceID: String, itemID: String) -> URL {
-    rootDirectory
-      .appendingPathComponent(cacheKey(for: deviceID), isDirectory: true)
-      .appendingPathComponent("\(cacheKey(for: itemID)).jpg", isDirectory: false)
-  }
-
-  private func cacheKey(for value: String) -> String {
-    let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_"))
-    let scalars = value.unicodeScalars.map { scalar -> Character in
-      allowed.contains(scalar) ? Character(scalar) : "-"
-    }
-    let key = String(scalars).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-    return key.isEmpty ? "item" : key
   }
 }
 

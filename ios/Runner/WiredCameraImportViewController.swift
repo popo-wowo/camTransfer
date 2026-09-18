@@ -3,10 +3,10 @@ import UIKit
 
 final class WiredCameraImportViewController: UIViewController, UIGestureRecognizerDelegate {
   private let service = WiredCameraImportService()
-  private let cacheStore = WiredCameraImportCacheStore()
-  private let thumbnailCacheStore = WiredCameraThumbnailCacheStore()
   private var state = WiredCameraImportState()
   private var gallerySections: [WiredCameraImportDaySection] = []
+  private var displayedItemIDs: [String] = []
+  private var sortMode: NativeGallerySortMode = .newest
   private var autoImportAttemptedItemIDs: Set<String> = []
   private var currentImportTotal = 0
   private var activeDownloadProgress: (itemID: String, completedBytes: Int64, totalBytes: Int64)?
@@ -45,6 +45,7 @@ final class WiredCameraImportViewController: UIViewController, UIGestureRecogniz
   private let dateChips = NativeChipBarControl()
   private let formatChips = NativeChipBarControl()
   private let statusChips = NativeChipBarControl()
+  private let sortChips = NativeChipBarControl()
   private let collectionView: UICollectionView = {
     let layout = UICollectionViewFlowLayout()
     layout.minimumInteritemSpacing = 8
@@ -60,6 +61,10 @@ final class WiredCameraImportViewController: UIViewController, UIGestureRecogniz
   private let deleteButton = UIButton(type: .system)
   private let importButton = UIButton(type: .system)
   private let activityIndicator = UIActivityIndicatorView(style: .medium)
+  private let loadingOverlay = UIView()
+  private let loadingCard = UIView()
+  private let loadingSpinner = UIActivityIndicatorView(style: .large)
+  private let loadingLabel = UILabel()
   private let refreshControl = UIRefreshControl()
   private lazy var zoomOutButton = UIBarButtonItem(
     image: UIImage(systemName: "minus.magnifyingglass"),
@@ -184,13 +189,19 @@ final class WiredCameraImportViewController: UIViewController, UIGestureRecogniz
       .init(id: "imported", title: "已导入"),
       .init(id: "proofingFavorite", title: "客户收藏"),
     ], selectedID: "all")
-    [dateChips, formatChips, statusChips].forEach {
+    sortChips.configure(items: [
+      .init(id: "newest", title: NativeGalleryChromeCopy.sortOptionTitles[0]),
+      .init(id: "oldest", title: NativeGalleryChromeCopy.sortOptionTitles[1]),
+      .init(id: "notDownloaded", title: NativeGalleryChromeCopy.sortOptionTitles[2]),
+    ], selectedID: "newest")
+    [dateChips, formatChips, statusChips, sortChips].forEach {
       $0.useCompactStyle = true
       $0.onSelected = { [weak self] _ in self?.chipFilterChanged() }
     }
 
     collectionView.dataSource = self
     collectionView.delegate = self
+    collectionView.prefetchDataSource = self
     refreshControl.addTarget(self, action: #selector(refreshTapped), for: .valueChanged)
     collectionView.refreshControl = refreshControl
     collectionView.addGestureRecognizer(UIPinchGestureRecognizer(target: self, action: #selector(handleGridPinch(_:))))
@@ -233,18 +244,38 @@ final class WiredCameraImportViewController: UIViewController, UIGestureRecogniz
     deleteConfig.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12)
     deleteButton.configuration = deleteConfig
     deleteButton.addTarget(self, action: #selector(deleteTapped), for: .touchUpInside)
+
+    loadingOverlay.backgroundColor = UIColor.black.withAlphaComponent(0.16)
+    loadingOverlay.isHidden = true
+    loadingCard.backgroundColor = NativeLuxuryTheme.cardBackground
+    loadingCard.layer.cornerRadius = 8
+    loadingCard.layer.shadowColor = UIColor.black.cgColor
+    loadingCard.layer.shadowOpacity = 0.12
+    loadingCard.layer.shadowRadius = 14
+    loadingCard.layer.shadowOffset = CGSize(width: 0, height: 5)
+    loadingLabel.font = .systemFont(ofSize: 14, weight: .semibold)
+    loadingLabel.textColor = NativeLuxuryTheme.ink
+    loadingLabel.text = "正在读取相机照片…"
+    loadingLabel.textAlignment = .center
   }
 
   private func layoutViews() {
-    [headerView, collectionView, bottomImportBar, activityIndicator].forEach {
+    [headerView, collectionView, bottomImportBar, activityIndicator, loadingOverlay].forEach {
       $0.translatesAutoresizingMaskIntoConstraints = false
       view.addSubview($0)
     }
 
-    [statusLabel, deviceLabel, permissionButton, dateChips, formatChips, statusChips].forEach {
+    [statusLabel, deviceLabel, permissionButton, dateChips, formatChips, statusChips, sortChips].forEach {
       $0.translatesAutoresizingMaskIntoConstraints = false
       headerView.addSubview($0)
     }
+
+    loadingCard.translatesAutoresizingMaskIntoConstraints = false
+    loadingSpinner.translatesAutoresizingMaskIntoConstraints = false
+    loadingLabel.translatesAutoresizingMaskIntoConstraints = false
+    loadingOverlay.addSubview(loadingCard)
+    loadingCard.addSubview(loadingSpinner)
+    loadingCard.addSubview(loadingLabel)
 
     [selectAllButton, bottomImportLabel, deleteButton, importButton].forEach {
       $0.translatesAutoresizingMaskIntoConstraints = false
@@ -286,7 +317,11 @@ final class WiredCameraImportViewController: UIViewController, UIGestureRecogniz
       statusChips.topAnchor.constraint(equalTo: formatChips.bottomAnchor, constant: 8),
       statusChips.leadingAnchor.constraint(equalTo: statusLabel.leadingAnchor),
       statusChips.trailingAnchor.constraint(equalTo: statusLabel.trailingAnchor),
-      statusChips.bottomAnchor.constraint(equalTo: headerView.bottomAnchor, constant: -8),
+
+      sortChips.topAnchor.constraint(equalTo: statusChips.bottomAnchor, constant: 8),
+      sortChips.leadingAnchor.constraint(equalTo: statusLabel.leadingAnchor),
+      sortChips.trailingAnchor.constraint(equalTo: statusLabel.trailingAnchor),
+      sortChips.bottomAnchor.constraint(equalTo: headerView.bottomAnchor, constant: -8),
 
       collectionView.topAnchor.constraint(equalTo: headerView.bottomAnchor, constant: 6),
       collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -317,6 +352,22 @@ final class WiredCameraImportViewController: UIViewController, UIGestureRecogniz
 
       activityIndicator.centerXAnchor.constraint(equalTo: view.centerXAnchor),
       activityIndicator.centerYAnchor.constraint(equalTo: collectionView.centerYAnchor),
+
+      loadingOverlay.topAnchor.constraint(equalTo: collectionView.topAnchor),
+      loadingOverlay.leadingAnchor.constraint(equalTo: collectionView.leadingAnchor),
+      loadingOverlay.trailingAnchor.constraint(equalTo: collectionView.trailingAnchor),
+      loadingOverlay.bottomAnchor.constraint(equalTo: collectionView.bottomAnchor),
+
+      loadingCard.centerXAnchor.constraint(equalTo: loadingOverlay.centerXAnchor),
+      loadingCard.centerYAnchor.constraint(equalTo: loadingOverlay.centerYAnchor, constant: -24),
+      loadingCard.widthAnchor.constraint(equalToConstant: 210),
+      loadingCard.heightAnchor.constraint(equalToConstant: 104),
+
+      loadingSpinner.topAnchor.constraint(equalTo: loadingCard.topAnchor, constant: 16),
+      loadingSpinner.centerXAnchor.constraint(equalTo: loadingCard.centerXAnchor),
+      loadingLabel.topAnchor.constraint(equalTo: loadingSpinner.bottomAnchor, constant: 8),
+      loadingLabel.leadingAnchor.constraint(equalTo: loadingCard.leadingAnchor, constant: 12),
+      loadingLabel.trailingAnchor.constraint(equalTo: loadingCard.trailingAnchor, constant: -12),
     ])
   }
 
@@ -327,10 +378,10 @@ final class WiredCameraImportViewController: UIViewController, UIGestureRecogniz
     let selectedCount = selectedItems.count
     let selectedImportableCount = state.selectedImportableItems.count
     let proofingFavoriteCount = state.proofingFavoriteItemIDs.count
-    let importableCount = state.importableItems.count
-    let filteredItems = state.filteredItems()
+    let filteredItems = visibleItems()
     let filteredImportableCount = filteredItems.filter(\.isImportable).count
     gallerySections = WiredCameraImportSectionPolicy.sections(from: filteredItems)
+    displayedItemIDs = filteredItems.map(\.id)
 
     if state.isImporting {
       if let progress = activeDownloadProgress, progress.totalBytes > 0 {
@@ -339,21 +390,18 @@ final class WiredCameraImportViewController: UIViewController, UIGestureRecogniz
       } else {
         statusLabel.text = "正在导入 \(state.importedCount + 1)/\(max(currentImportTotal, 1))，请保持相机连接"
       }
-    } else if state.isLoadingItems {
-      statusLabel.text = state.items.isEmpty ? "正在读取相机目录" : "正在读取相机目录 · 已显示 \(state.items.count) 个文件"
     } else if let errorMessage = state.errorMessage {
       statusLabel.text = errorMessage
     } else if state.devices.isEmpty {
       statusLabel.text = "请用数据线连接相机，并在相机上选择 USB / PC 连接或照片传输模式"
-    } else if !state.isLiveCatalogReady && !state.items.isEmpty {
-      statusLabel.text = "正在读取相机实时目录 · 当前显示缓存，目录完成后才能导入"
-    } else if state.items.isEmpty {
+    } else if state.items.isEmpty && !state.isLoadingItems {
       statusLabel.text = "已发现相机，等待照片目录返回"
+    } else if state.isLoadingItems {
+      statusLabel.text = "已加载 \(state.items.count) 张照片"
     } else {
-      let filterApplied = state.filterState != WiredCameraImportFilterState()
-      let countText = filterApplied ? "\(filteredItems.count) / \(state.items.count) 个文件" : "\(state.items.count) 个文件"
-      statusLabel.text = "\(countText) · 可导入 \(importableCount) 个 · 已导入 \(state.importedItemIDs.count) · 客户收藏 \(proofingFavoriteCount) · 已选 \(selectedCount)"
+      statusLabel.text = "共 \(state.items.count) 张照片"
     }
+    statusLabel.isHidden = statusLabel.text?.isEmpty != false
 
     if let device = state.selectedDevice {
       deviceLabel.text = "\(device.name) · \(device.transportName)"
@@ -361,8 +409,14 @@ final class WiredCameraImportViewController: UIViewController, UIGestureRecogniz
       deviceLabel.text = "未发现有线相机"
     }
 
-    activityIndicator.isHidden = !state.isLoadingItems && !state.isImporting && !isDeleting
-    state.isLoadingItems || state.isImporting || isDeleting ? activityIndicator.startAnimating() : activityIndicator.stopAnimating()
+    activityIndicator.isHidden = !state.isImporting && !isDeleting
+    state.isImporting || isDeleting ? activityIndicator.startAnimating() : activityIndicator.stopAnimating()
+    let showsLoadingOverlay = WiredCameraLoadingPresentationPolicy.showsBlockingOverlay(
+      isLoading: state.isLoadingItems,
+      itemCount: state.items.count
+    )
+    loadingOverlay.isHidden = !showsLoadingOverlay
+    showsLoadingOverlay ? loadingSpinner.startAnimating() : loadingSpinner.stopAnimating()
     permissionButton.isHidden = !needsContentsAuthorization
     let headerLayout = WiredCameraImportHeaderLayoutPolicy.metrics(
       needsAuthorization: needsContentsAuthorization
@@ -479,6 +533,14 @@ final class WiredCameraImportViewController: UIViewController, UIGestureRecogniz
       format: wiredFormatFilter(for: formatChips.selectedID),
       importedStatus: wiredStatusFilter(for: statusChips.selectedID)
     )
+    switch sortChips.selectedID {
+    case "oldest":
+      sortMode = .oldest
+    case "notDownloaded":
+      sortMode = .notDownloaded
+    default:
+      sortMode = .newest
+    }
     render()
     requestThumbnailsForVisibleItems()
   }
@@ -586,7 +648,6 @@ final class WiredCameraImportViewController: UIViewController, UIGestureRecogniz
             if let deviceID = self.state.selectedDeviceID {
               WiredCameraImportHistoryStore.markImported(itemID: item.id, for: deviceID)
             }
-            self.saveCacheSnapshot()
             self.render()
           }
         }
@@ -697,7 +758,11 @@ final class WiredCameraImportViewController: UIViewController, UIGestureRecogniz
   }
 
   private func visibleItems() -> [WiredCameraImportItem] {
-    state.filteredItems()
+    WiredCameraImportSortPolicy.sorted(
+      state.filteredItems(),
+      mode: sortMode,
+      importedItemIDs: state.importedItemIDs
+    )
   }
 
   private func startLocalProofingSession() {
@@ -957,46 +1022,40 @@ final class WiredCameraImportViewController: UIViewController, UIGestureRecogniz
     importButton.configuration = config
   }
 
-  private func loadCachedContent(for device: WiredCameraImportDevice) {
-    if let snapshot = try? cacheStore.load(deviceID: device.id) {
-      state.applyCache(snapshot)
-    }
-    state.importedItemIDs.formUnion(WiredCameraImportHistoryStore.importedItemIDs(for: device.id))
-  }
-
-  private func saveCacheSnapshot() {
-    guard let device = state.selectedDevice else { return }
-    let snapshot = WiredCameraImportCacheSnapshot(
-      device: device,
-      items: state.items,
-      importedItemIDs: state.importedItemIDs,
-      cachedAt: Date()
-    )
-    DispatchQueue.global(qos: .utility).async { [cacheStore] in
-      try? cacheStore.save(snapshot)
-    }
-  }
-
   private func requestThumbnailsForVisibleItems() {
     guard state.isLiveCatalogReady else { return }
-    let items = visibleItems()
-    let orderedIDs = items.map(\.id)
     let visibleIDs = collectionView.indexPathsForVisibleItems
       .sorted()
       .compactMap { item(at: $0)?.id }
-    let initialWindow = Array(items.prefix(max(currentColumnCount * 3, 1)).map(\.id))
+    let initialWindow = Array(displayedItemIDs.prefix(max(currentColumnCount * 3, 1)))
     let priorityIDs = WiredCameraThumbnailRequestWindowPolicy.itemIDsToRequest(
-      orderedItemIDs: orderedIDs,
+      orderedItemIDs: displayedItemIDs,
       visibleItemIDs: visibleIDs.isEmpty ? initialWindow : visibleIDs,
       columnCount: currentColumnCount
     )
-    let missingThumbnailIDs = Set(items.filter { $0.thumbnail == nil }.map(\.id))
-    service.requestThumbnails(in: priorityIDs.filter { missingThumbnailIDs.contains($0) })
+    service.requestThumbnails(in: priorityIDs)
   }
 
   @objc private func handleGridPinch(_ pinch: UIPinchGestureRecognizer) {
     guard pinch.state == .changed else { return }
     if pinch.scale > 1.45 {
+      if currentColumnCount == NativeGalleryGridLayoutPolicy.minColumnCount,
+         presentedViewController == nil {
+        let location = pinch.location(in: collectionView)
+        let indexPath = collectionView.indexPathForItem(at: location) ?? collectionView.indexPathsForVisibleItems
+          .min(by: {
+            abs(collectionView.layoutAttributesForItem(at: $0)?.center.y ?? 0 - location.y) <
+              abs(collectionView.layoutAttributesForItem(at: $1)?.center.y ?? 0 - location.y)
+          })
+        if let indexPath,
+           let item = item(at: indexPath),
+           let flatIndex = visibleItems().firstIndex(where: { $0.id == item.id }) {
+          pinch.isEnabled = false
+          pinch.isEnabled = true
+          presentPreview(startingAt: flatIndex)
+          return
+        }
+      }
       changeGridColumnCount(by: -1)
       pinch.scale = 1
     } else if pinch.scale < 0.7 {
@@ -1240,7 +1299,7 @@ final class WiredCameraImportViewController: UIViewController, UIGestureRecogniz
       },
       canImport: { [weak self] item in
         guard let self else { return false }
-        return self.state.isLiveCatalogReady && !self.state.isImporting && item.isImportable && !self.state.importedItemIDs.contains(item.id)
+        return self.state.isLiveCatalogReady && !self.state.isImporting && item.isImportable
       },
       previewProvider: { [weak self] item in
         guard let self else {
@@ -1277,8 +1336,8 @@ extension WiredCameraImportViewController: WiredCameraImportServiceDelegate {
   func wiredCameraImportServiceDidUpdateDevices(_ service: WiredCameraImportService, devices: [WiredCameraImportDevice]) {
     let previousDeviceID = state.selectedDeviceID
     state.replaceDevices(devices)
-    if previousDeviceID != state.selectedDeviceID, let device = state.selectedDevice {
-      loadCachedContent(for: device)
+    if previousDeviceID != state.selectedDeviceID, let deviceID = state.selectedDeviceID {
+      state.importedItemIDs.formUnion(WiredCameraImportHistoryStore.importedItemIDs(for: deviceID))
     }
     render()
     if previousDeviceID != state.selectedDeviceID, let selectedDeviceID = state.selectedDeviceID {
@@ -1305,9 +1364,6 @@ extension WiredCameraImportViewController: WiredCameraImportServiceDelegate {
       state.importedItemIDs.formUnion(WiredCameraImportHistoryStore.importedItemIDs(for: deviceID))
     }
     state.replaceItems(items)
-    if isCompleteCatalog {
-      saveCacheSnapshot()
-    }
     render()
     DispatchQueue.main.async { [weak self] in
       self?.requestThumbnailsForVisibleItems()
@@ -1318,9 +1374,6 @@ extension WiredCameraImportViewController: WiredCameraImportServiceDelegate {
   func wiredCameraImportService(_ service: WiredCameraImportService, didUpdateThumbnailFor itemID: String, thumbnail: UIImage) {
     guard let index = state.items.firstIndex(where: { $0.id == itemID }) else { return }
     state.items[index].thumbnail = thumbnail
-    if let deviceID = state.selectedDeviceID {
-      thumbnailCacheStore.saveThumbnail(thumbnail, deviceID: deviceID, itemID: itemID)
-    }
     if let indexPath = indexPathForVisibleItemID(itemID),
        let cell = collectionView.cellForItem(at: indexPath) as? WiredCameraImportGridCell {
       cell.setThumbnail(thumbnail)
@@ -1340,7 +1393,7 @@ extension WiredCameraImportViewController: WiredCameraImportServiceDelegate {
   }
 }
 
-extension WiredCameraImportViewController: UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
+extension WiredCameraImportViewController: UICollectionViewDataSource, UICollectionViewDelegateFlowLayout, UICollectionViewDataSourcePrefetching {
   func numberOfSections(in collectionView: UICollectionView) -> Int {
     gallerySections.count
   }
@@ -1360,15 +1413,7 @@ extension WiredCameraImportViewController: UICollectionViewDataSource, UICollect
     ) as? WiredCameraImportGridCell else {
       return UICollectionViewCell()
     }
-    guard var item = item(at: indexPath) else { return UICollectionViewCell() }
-    if item.thumbnail == nil,
-       let deviceID = state.selectedDeviceID,
-       let cachedThumbnail = thumbnailCacheStore.loadThumbnail(deviceID: deviceID, itemID: item.id) {
-      item.thumbnail = cachedThumbnail
-      if let itemIndex = state.items.firstIndex(where: { $0.id == item.id }) {
-        state.items[itemIndex].thumbnail = cachedThumbnail
-      }
-    }
+    guard let item = item(at: indexPath) else { return UICollectionViewCell() }
     cell.configure(
       item: item,
       isSelectedForImport: state.selectedItemIDs.contains(item.id),
@@ -1427,8 +1472,13 @@ extension WiredCameraImportViewController: UICollectionViewDataSource, UICollect
     requestThumbnailsForVisibleItems()
   }
 
-  func scrollViewDidScroll(_ scrollView: UIScrollView) {
-    requestThumbnailsForVisibleItems()
+  func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
+    guard state.isLiveCatalogReady else { return }
+    let itemIDs = indexPaths.sorted().compactMap { indexPath -> String? in
+      guard let item = item(at: indexPath), item.thumbnail == nil else { return nil }
+      return item.id
+    }
+    service.requestThumbnails(in: itemIDs)
   }
 
   func collectionView(
@@ -1589,9 +1639,6 @@ private final class WiredCameraImportGridCell: UICollectionViewCell {
     updateSelection(isSelectedForImport)
     if isProofingFavorite {
       statusBadgeLabel.text = " 客户收藏 "
-      statusBadgeLabel.isHidden = false
-    } else if !isLiveCatalogReady {
-      statusBadgeLabel.text = " 缓存 "
       statusBadgeLabel.isHidden = false
     } else if isImported {
       statusBadgeLabel.text = " 已导入 "
@@ -1879,7 +1926,11 @@ private final class LocalProofingSessionViewController: UIViewController {
   }
 }
 
-private final class WiredCameraPhotoPreviewViewController: UIViewController, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
+private final class WiredCameraPhotoPreviewViewController: UIViewController,
+  UIPageViewControllerDataSource,
+  UIPageViewControllerDelegate,
+  UICollectionViewDataSource,
+  UICollectionViewDelegateFlowLayout {
   private let items: [WiredCameraImportItem]
   private let isImported: (WiredCameraImportItem) -> Bool
   private let canImport: (WiredCameraImportItem) -> Bool
@@ -1895,6 +1946,17 @@ private final class WiredCameraPhotoPreviewViewController: UIViewController, UIP
   private let rotateButton = UIButton(type: .system)
   private let bottomBar = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterialDark))
   private let importButton = UIButton(type: .system)
+  private let filmstrip: UICollectionView = {
+    let layout = UICollectionViewFlowLayout()
+    layout.scrollDirection = .horizontal
+    layout.minimumLineSpacing = 6
+    layout.minimumInteritemSpacing = 6
+    layout.sectionInset = UIEdgeInsets(top: 4, left: 14, bottom: 4, right: 14)
+    let collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
+    collectionView.backgroundColor = UIColor.black.withAlphaComponent(0.82)
+    collectionView.showsHorizontalScrollIndicator = false
+    return collectionView
+  }()
 
   init(
     items: [WiredCameraImportItem],
@@ -1954,6 +2016,11 @@ private final class WiredCameraPhotoPreviewViewController: UIViewController, UIP
       $0.translatesAutoresizingMaskIntoConstraints = false
       view.addSubview($0)
     }
+    filmstrip.translatesAutoresizingMaskIntoConstraints = false
+    view.addSubview(filmstrip)
+    filmstrip.dataSource = self
+    filmstrip.delegate = self
+    filmstrip.register(WiredCameraPreviewFilmstripCell.self, forCellWithReuseIdentifier: WiredCameraPreviewFilmstripCell.reuseID)
     [closeButton, rotateButton, titleLabel, subtitleLabel].forEach {
       $0.translatesAutoresizingMaskIntoConstraints = false
       topBar.contentView.addSubview($0)
@@ -2026,9 +2093,18 @@ private final class WiredCameraPhotoPreviewViewController: UIViewController, UIP
       bottomBar.bottomAnchor.constraint(equalTo: view.bottomAnchor),
       bottomBar.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -66),
 
+      filmstrip.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+      filmstrip.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+      filmstrip.bottomAnchor.constraint(equalTo: bottomBar.topAnchor),
+      filmstrip.heightAnchor.constraint(equalToConstant: 62),
+
       importButton.centerXAnchor.constraint(equalTo: bottomBar.contentView.centerXAnchor),
       importButton.topAnchor.constraint(equalTo: bottomBar.contentView.topAnchor, constant: 12),
     ])
+
+    DispatchQueue.main.async { [weak self] in
+      self?.centerCurrentFilmstripItem(animated: false)
+    }
   }
 
   private func makePage(for index: Int) -> WiredCameraPhotoPreviewPageController {
@@ -2042,15 +2118,12 @@ private final class WiredCameraPhotoPreviewViewController: UIViewController, UIP
   private func refreshChrome() {
     guard items.indices.contains(currentIndex) else { return }
     let item = items[currentIndex]
-    titleLabel.text = item.name
+    titleLabel.text = "高清预览"
     subtitleLabel.text = "\(currentIndex + 1) / \(items.count) · \(item.formatLabel) · \(item.fileSizeText)"
     let title: String
     let enabled: Bool
-    if isImported(item) {
-      title = "已导入"
-      enabled = false
-    } else if canImport(item) {
-      title = "导入这一张"
+    if canImport(item) {
+      title = isImported(item) ? "再次导入" : "导入这一张"
       enabled = true
     } else {
       title = "暂不能导入"
@@ -2061,6 +2134,17 @@ private final class WiredCameraPhotoPreviewViewController: UIViewController, UIP
     ]))
     importButton.isEnabled = enabled
     importButton.alpha = enabled ? 1 : 0.58
+    filmstrip.reloadData()
+    centerCurrentFilmstripItem(animated: true)
+  }
+
+  private func centerCurrentFilmstripItem(animated: Bool) {
+    guard items.indices.contains(currentIndex), filmstrip.window != nil else { return }
+    filmstrip.scrollToItem(
+      at: IndexPath(item: currentIndex, section: 0),
+      at: .centeredHorizontally,
+      animated: animated
+    )
   }
 
   @objc private func closeTapped() {
@@ -2110,6 +2194,86 @@ private final class WiredCameraPhotoPreviewViewController: UIViewController, UIP
           let page = pageController.viewControllers?.first as? WiredCameraPhotoPreviewPageController else { return }
     currentIndex = page.index
     refreshChrome()
+  }
+
+  func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
+    items.count
+  }
+
+  func collectionView(
+    _ collectionView: UICollectionView,
+    cellForItemAt indexPath: IndexPath
+  ) -> UICollectionViewCell {
+    guard let cell = collectionView.dequeueReusableCell(
+      withReuseIdentifier: WiredCameraPreviewFilmstripCell.reuseID,
+      for: indexPath
+    ) as? WiredCameraPreviewFilmstripCell else {
+      return UICollectionViewCell()
+    }
+    cell.configure(item: items[indexPath.item], isCurrent: indexPath.item == currentIndex)
+    return cell
+  }
+
+  func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+    guard items.indices.contains(indexPath.item), indexPath.item != currentIndex else { return }
+    let direction: UIPageViewController.NavigationDirection = indexPath.item > currentIndex ? .forward : .reverse
+    currentIndex = indexPath.item
+    pageController.setViewControllers([makePage(for: currentIndex)], direction: direction, animated: true)
+    refreshChrome()
+  }
+
+  func collectionView(
+    _ collectionView: UICollectionView,
+    layout collectionViewLayout: UICollectionViewLayout,
+    sizeForItemAt indexPath: IndexPath
+  ) -> CGSize {
+    CGSize(width: 48, height: 54)
+  }
+}
+
+private final class WiredCameraPreviewFilmstripCell: UICollectionViewCell {
+  static let reuseID = "WiredCameraPreviewFilmstripCell"
+
+  private let imageView = UIImageView()
+
+  override init(frame: CGRect) {
+    super.init(frame: frame)
+    imageView.translatesAutoresizingMaskIntoConstraints = false
+    imageView.contentMode = .scaleAspectFill
+    imageView.clipsToBounds = true
+    imageView.layer.cornerRadius = 4
+    contentView.addSubview(imageView)
+    NSLayoutConstraint.activate([
+      imageView.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 3),
+      imageView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+      imageView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+      imageView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -3),
+    ])
+  }
+
+  @available(*, unavailable)
+  required init?(coder: NSCoder) {
+    fatalError("init(coder:) has not been implemented")
+  }
+
+  override func prepareForReuse() {
+    super.prepareForReuse()
+    imageView.image = nil
+    imageView.tintColor = nil
+  }
+
+  func configure(item: WiredCameraImportItem, isCurrent: Bool) {
+    if let thumbnail = item.thumbnail {
+      imageView.image = thumbnail
+      imageView.contentMode = .scaleAspectFill
+    } else {
+      imageView.image = UIImage(systemName: WiredCameraImportPolicy.mediaType(filename: item.name, uti: item.uti) == .video ? "video" : "photo")
+      imageView.tintColor = UIColor.white.withAlphaComponent(0.45)
+      imageView.contentMode = .center
+    }
+    contentView.layer.cornerRadius = 6
+    contentView.layer.borderWidth = isCurrent ? 2 : 0
+    contentView.layer.borderColor = UIColor.white.cgColor
   }
 }
 
