@@ -473,6 +473,36 @@ enum WiredCameraPreviewPolicy {
   static let maximumPixelSize = 1_536
 }
 
+enum WiredCameraImageReadPurpose {
+  case gridThumbnail
+  case highDefinitionPreview
+}
+
+enum WiredCameraImageReadPolicy {
+  static let thumbnailNotAvailableErrorCode = -21_000
+  private static let megabyte: Int64 = 1_048_576
+  private static let gridCheckpoints: [Int64] = [1 * megabyte, 4 * megabyte, 12 * megabyte]
+  private static let maximumWholePhotoBytes: Int64 = 64 * megabyte
+
+  static func cumulativeReadLengths(
+    fileSize: Int64,
+    mediaType: CameraVendorDownloadedMediaType,
+    purpose: WiredCameraImageReadPurpose
+  ) -> [Int64] {
+    guard fileSize > 0, mediaType != .video else { return [] }
+    switch purpose {
+    case .highDefinitionPreview:
+      return [fileSize]
+    case .gridThumbnail:
+      var lengths = gridCheckpoints.filter { $0 < fileSize }
+      if mediaType == .photo, fileSize <= maximumWholePhotoBytes {
+        lengths.append(fileSize)
+      }
+      return lengths.isEmpty ? [fileSize] : lengths
+    }
+  }
+}
+
 enum WiredCameraImportSortPolicy {
   static func newestFirst(_ items: [WiredCameraImportItem]) -> [WiredCameraImportItem] {
     items.sorted(by: shouldPlaceBefore)

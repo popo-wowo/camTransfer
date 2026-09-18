@@ -1,5 +1,6 @@
 import Foundation
 import ImageCaptureCore
+import ImageIO
 import UIKit
 
 protocol WiredCameraImportServiceDelegate: AnyObject {
@@ -280,21 +281,23 @@ final class WiredCameraImportService: NSObject {
     try await beginForegroundOperation(named: "preview")
     defer { finishForegroundOperation(named: "preview") }
 
-    let message = "CamTransferWired preview begin item=\(itemID) maxPixel=\(WiredCameraPreviewPolicy.maximumPixelSize)"
+    let message = "CamTransferWired preview begin item=\(itemID) source=original maxPixel=\(WiredCameraPreviewPolicy.maximumPixelSize)"
     print(message)
     CameraVendorFileLogger.log(message)
     return try await withCheckedThrowingContinuation { continuation in
-      file.requestThumbnailData(options: [
-        .imageSourceThumbnailMaxPixelSize: WiredCameraPreviewPolicy.maximumPixelSize,
-      ]) { data, error in
+      requestImageByReadingFile(
+        file,
+        purpose: .highDefinitionPreview,
+        maximumPixelSize: WiredCameraPreviewPolicy.maximumPixelSize
+      ) { image, byteCount, error in
         DispatchQueue.main.async {
           if let error {
             let message = "CamTransferWired preview failed item=\(itemID) error=\(error)"
             print(message)
             CameraVendorFileLogger.log(message)
             continuation.resume(throwing: error)
-          } else if let data, let image = UIImage(data: data) {
-            let message = "CamTransferWired preview succeeded item=\(itemID) bytes=\(data.count) size=\(Int(image.size.width))x\(Int(image.size.height))"
+          } else if let image {
+            let message = "CamTransferWired preview succeeded item=\(itemID) bytes=\(byteCount) size=\(Int(image.size.width))x\(Int(image.size.height))"
             print(message)
             CameraVendorFileLogger.log(message)
             continuation.resume(returning: image)
@@ -610,26 +613,149 @@ final class WiredCameraImportService: NSObject {
       ]) { [weak self] data, error in
         DispatchQueue.main.async {
           guard let self else { return }
-          self.completeActiveThumbnailRequest()
-          if let error {
-            self.failedThumbnailItemIDs.insert(itemID)
-            let message = "CamTransferWired thumbnail request failed item=\(itemID) error=\(error)"
-            print(message)
-            CameraVendorFileLogger.log(message)
-          } else if let data, let image = UIImage(data: data) {
-            self.resolvedThumbnailItemIDs.insert(itemID)
-            self.delegate?.wiredCameraImportService(self, didUpdateThumbnailFor: itemID, thumbnail: image)
-          } else {
-            self.failedThumbnailItemIDs.insert(itemID)
-            let message = "CamTransferWired thumbnail request returned empty data item=\(itemID)"
-            print(message)
-            CameraVendorFileLogger.log(message)
+          if let data, let image = self.decodeImage(data, maximumPixelSize: WiredCameraPreviewPolicy.gridMaximumPixelSize) {
+            self.finishThumbnailRequest(itemID: itemID, image: image, source: "camera-thumbnail", byteCount: data.count)
+            return
           }
-          self.startNextThumbnailRequestIfNeeded()
+          let nsError = error as NSError?
+          guard nsError?.code == WiredCameraImageReadPolicy.thumbnailNotAvailableErrorCode || error == nil else {
+            self.finishThumbnailRequest(itemID: itemID, error: error)
+            return
+          }
+          let message = "CamTransferWired thumbnail unavailable item=\(itemID) fallback=original-read"
+          print(message)
+          CameraVendorFileLogger.log(message)
+          self.requestImageByReadingFile(
+            file,
+            purpose: .gridThumbnail,
+            maximumPixelSize: WiredCameraPreviewPolicy.gridMaximumPixelSize
+          ) { [weak self] image, byteCount, fallbackError in
+            DispatchQueue.main.async {
+              self?.finishThumbnailRequest(
+                itemID: itemID,
+                image: image,
+                source: "original-read",
+                byteCount: byteCount,
+                error: fallbackError
+              )
+            }
+          }
         }
       }
       return
     }
+  }
+
+  private func finishThumbnailRequest(
+    itemID: String,
+    image: UIImage? = nil,
+    source: String = "camera-thumbnail",
+    byteCount: Int = 0,
+    error: Error? = nil
+  ) {
+    completeActiveThumbnailRequest()
+    if let image {
+      resolvedThumbnailItemIDs.insert(itemID)
+      let message = "CamTransferWired thumbnail succeeded item=\(itemID) source=\(source) bytes=\(byteCount)"
+      print(message)
+      CameraVendorFileLogger.log(message)
+      delegate?.wiredCameraImportService(self, didUpdateThumbnailFor: itemID, thumbnail: image)
+    } else {
+      failedThumbnailItemIDs.insert(itemID)
+      let message = "CamTransferWired thumbnail failed item=\(itemID) source=\(source) error=\(String(describing: error))"
+      print(message)
+      CameraVendorFileLogger.log(message)
+    }
+    startNextThumbnailRequestIfNeeded()
+  }
+
+  private func requestImageByReadingFile(
+    _ file: ICCameraFile,
+    purpose: WiredCameraImageReadPurpose,
+    maximumPixelSize: Int,
+    completion: @escaping (UIImage?, Int, Error?) -> Void
+  ) {
+    let filename = file.originalFilename ?? file.name ?? "camera-file"
+    let mediaType = WiredCameraImportPolicy.mediaType(filename: filename, uti: file.uti)
+    let lengths = WiredCameraImageReadPolicy.cumulativeReadLengths(
+      fileSize: Int64(file.fileSize),
+      mediaType: mediaType,
+      purpose: purpose
+    )
+    guard !lengths.isEmpty else {
+      completion(nil, 0, NSError(
+        domain: "WiredCameraImportService.ImageRead",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "该媒体不支持原文件预览回退"]
+      ))
+      return
+    }
+
+    func readNext(index: Int, accumulated: Data) {
+      guard lengths.indices.contains(index) else {
+        completion(nil, accumulated.count, NSError(
+          domain: "WiredCameraImportService.ImageRead",
+          code: 2,
+          userInfo: [NSLocalizedDescriptionKey: "相机文件数据无法解码为图片"]
+        ))
+        return
+      }
+      let targetLength = lengths[index]
+      let offset = Int64(accumulated.count)
+      let requestedLength = targetLength - offset
+      guard requestedLength > 0 else {
+        readNext(index: index + 1, accumulated: accumulated)
+        return
+      }
+      file.requestReadData(atOffset: off_t(offset), length: off_t(requestedLength)) { [weak self] data, error in
+        guard let self else { return }
+        if let error {
+          completion(nil, accumulated.count, error)
+          return
+        }
+        guard let data, !data.isEmpty else {
+          completion(nil, accumulated.count, NSError(
+            domain: "WiredCameraImportService.ImageRead",
+            code: 3,
+            userInfo: [NSLocalizedDescriptionKey: "相机没有返回文件数据"]
+          ))
+          return
+        }
+        var combined = accumulated
+        combined.append(data)
+        let isComplete = Int64(combined.count) >= Int64(file.fileSize)
+        if let image = self.decodeImage(
+          combined,
+          maximumPixelSize: maximumPixelSize,
+          isFinal: isComplete || index == lengths.count - 1
+        ) {
+          completion(image, combined.count, nil)
+        } else {
+          readNext(index: index + 1, accumulated: combined)
+        }
+      }
+    }
+
+    readNext(index: 0, accumulated: Data())
+  }
+
+  private func decodeImage(
+    _ data: Data,
+    maximumPixelSize: Int,
+    isFinal: Bool = true
+  ) -> UIImage? {
+    let source = CGImageSourceCreateIncremental(nil)
+    CGImageSourceUpdateData(source, data as CFData, isFinal)
+    let options: [CFString: Any] = [
+      kCGImageSourceCreateThumbnailFromImageAlways: true,
+      kCGImageSourceCreateThumbnailWithTransform: true,
+      kCGImageSourceThumbnailMaxPixelSize: maximumPixelSize,
+      kCGImageSourceShouldCacheImmediately: true,
+    ]
+    guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+      return nil
+    }
+    return UIImage(cgImage: image)
   }
 
   private func beginForegroundOperation(named name: String) async throws {

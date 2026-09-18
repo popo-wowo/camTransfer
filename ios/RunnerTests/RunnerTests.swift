@@ -438,6 +438,42 @@ final class RunnerTests: XCTestCase {
     )
   }
 
+  func testWiredCameraImageReadPolicyExpandsPhotoThumbnailReadsToCompleteFile() {
+    let fileSize: Int64 = 20 * 1_048_576
+
+    let lengths = WiredCameraImageReadPolicy.cumulativeReadLengths(
+      fileSize: fileSize,
+      mediaType: .photo,
+      purpose: .gridThumbnail
+    )
+
+    XCTAssertEqual(lengths, [Int64(1_048_576), Int64(4 * 1_048_576), Int64(12 * 1_048_576), fileSize])
+  }
+
+  func testWiredCameraImageReadPolicyDoesNotReadWholeVideoForThumbnailFallback() {
+    XCTAssertEqual(
+      WiredCameraImageReadPolicy.cumulativeReadLengths(
+        fileSize: 500 * 1_048_576,
+        mediaType: .video,
+        purpose: .gridThumbnail
+      ),
+      []
+    )
+  }
+
+  func testWiredCameraImageReadPolicyReadsCompletePhotoForHighDefinitionPreview() {
+    let fileSize: Int64 = 24 * 1_048_576
+
+    XCTAssertEqual(
+      WiredCameraImageReadPolicy.cumulativeReadLengths(
+        fileSize: fileSize,
+        mediaType: .photo,
+        purpose: .highDefinitionPreview
+      ),
+      [fileSize]
+    )
+  }
+
   func testWiredCameraImportSortPolicyUsesHandleAndNameToKeepNewestOrderStable() {
     let capturedAt = Date(timeIntervalSince1970: 1_800_000_000)
     let oldest = wiredImportItem(id: "oldest", name: "DSCF0001.JPG", createdAt: capturedAt.addingTimeInterval(-1))
