@@ -1,0 +1,40 @@
+ios/RunnerTests/RunnerTests.swift
+  1834e0961ff3486f 26354-26378
+ios/Runner/CameraTransportFailureDisposition.swift
+  1834e0961ff3486f 82-87
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.0-codex",
+  "base_commit_sha": "5f50655dcfaf0d8c3fc3ea7eb546a8046e254486",
+  "prompts": {
+    "1834e0961ff3486f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0c2dc-9381-7b02-9f8d-bcf8096ce3b7",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 31,
+      "total_deletions": 0,
+      "accepted_lines": 350,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/bd4eb6834d3749da8be10e445ffcd4dc806a933bc5985494fa86c34f988728ea"
+    },
+    "a389fd3febef2732": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a0aa2e-b03d-7c20-b6e0-24b5f1761100",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "黄颀洪",
+      "messages": [],
+      "total_additions": 0,
+      "total_deletions": 0,
+      "accepted_lines": 10232,
+      "overriden_lines": 0,
+      "messages_url": "https://codeaiapi.xinfei-inc.cn/cas/89141cb756eab6a06d86a22fe9e3890270480e0b964b300c3ca35ff518ed826d"
+    }
+  }
+}
