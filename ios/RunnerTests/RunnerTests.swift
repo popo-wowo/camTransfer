@@ -4394,6 +4394,15 @@ final class RunnerTests: XCTestCase {
     XCTAssertTrue(CameraVendorWifiJoinDiagnostics.shouldContinueAssociationCheck(after: error))
   }
 
+  func testWifiJoinCancellationIsNotAssociationFailure() async {
+    XCTAssertTrue(CameraVendorWifiJoinDiagnostics.isCancellation(CancellationError()))
+    XCTAssertFalse(
+      CameraVendorWifiJoinDiagnostics.isCancellation(
+        NSError(domain: "CameraVendorWifi", code: 1)
+      )
+    )
+  }
+
   func testWifiJoinDiagnosticsTreatsMissingApplyCallbackAsRecoverableForEvidenceCheck() {
     let error = CameraVendorWifiJoinDiagnostics.applyCallbackTimeoutError(
       ssid: "FUJIFILM-X-T5-003B"

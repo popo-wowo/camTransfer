@@ -102,6 +102,10 @@ enum CameraVendorWifiJoinDiagnostics {
     return message
   }
 
+  static func isCancellation(_ error: Error) -> Bool {
+    error is CancellationError
+  }
+
   static func label(for error: NEHotspotConfigurationError) -> String {
     switch error {
     case .invalid:

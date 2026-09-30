@@ -1408,6 +1408,13 @@ final class CameraVendorRealtimeGalleryService: CameraGalleryTransportSession, C
           prefersManualWifiRecovery = false
           break
         } catch {
+          guard !CameraVendorWifiJoinDiagnostics.isCancellation(error) else {
+            // Cancellation is a lifecycle/user-action outcome, not evidence that
+            // the camera Wi-Fi credentials or association failed. Preserve it so
+            // the connection worker can stop quietly without switching to manual
+            // Wi-Fi recovery.
+            throw error
+          }
           lastWifiJoinError = error
           report("Wi-Fi 连接失败 \(configuration.ssid): \(error.localizedDescription)")
           if CameraVendorGalleryPreparationPolicy.shouldStopAutomaticWifiAttemptsAfterFailure(
