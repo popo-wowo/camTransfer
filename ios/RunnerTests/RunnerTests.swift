@@ -4674,6 +4674,32 @@ final class RunnerTests: XCTestCase {
     XCTAssertFalse(CameraVendorPtpConnectionStartupPolicy.shouldRetry(afterFailedAttempt: 5))
   }
 
+  func testPtpRetryGuardStopsAfterOfficialOverallAttemptWindow() {
+    let startedAt = Date(timeIntervalSince1970: 100)
+    XCTAssertFalse(
+      CameraVendorPtpRetryGuard.shouldStopRetry(
+        startedAt: startedAt,
+        now: Date(timeIntervalSince1970: 129.9)
+      )
+    )
+    XCTAssertTrue(
+      CameraVendorPtpRetryGuard.shouldStopRetry(
+        startedAt: startedAt,
+        now: Date(timeIntervalSince1970: 130)
+      )
+    )
+  }
+
+  func testPtpRetryGuardStopsWhenCurrentNetworkLeavesCameraSubnet() {
+    XCTAssertFalse(CameraVendorPtpRetryGuard.shouldRestartWifiHandoff(currentIP: nil))
+    XCTAssertFalse(
+      CameraVendorPtpRetryGuard.shouldRestartWifiHandoff(currentIP: "192.168.0.125")
+    )
+    XCTAssertTrue(
+      CameraVendorPtpRetryGuard.shouldRestartWifiHandoff(currentIP: "192.168.71.3")
+    )
+  }
+
   func testPriorityDownloadReconnectUsesBoundPtpInitDefinitionTiming() throws {
     let source = try runnerSource("CameraVendorPtpSession.swift")
     let methodStart = try XCTUnwrap(source.range(of: "func ensureConnectedForPriorityDownload() throws")?.lowerBound)

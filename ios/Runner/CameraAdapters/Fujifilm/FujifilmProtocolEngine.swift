@@ -1,5 +1,23 @@
 import Foundation
 
+enum CameraVendorPtpRetryGuard {
+  /// Matches the official app's bounded connection-open window. This is an
+  /// attempt budget, not an additional per-packet timeout.
+  static let overallAttemptTimeoutSeconds: TimeInterval = 30
+
+  static func shouldStopRetry(
+    startedAt: Date,
+    now: Date = Date()
+  ) -> Bool {
+    now.timeIntervalSince(startedAt) >= overallAttemptTimeoutSeconds
+  }
+
+  static func shouldRestartWifiHandoff(currentIP: String?) -> Bool {
+    guard let currentIP, !currentIP.isEmpty else { return false }
+    return !CameraVendorPtpConstants.isCameraWifiIPv4Address(currentIP)
+  }
+}
+
 enum FujifilmCameraSessionTerminationState: Equatable {
   case active
   case terminated(reason: String)
@@ -477,6 +495,27 @@ final class FujifilmProtocolEngine {
     )
 
     for attempt in connectionAttemptRange {
+      if attempt > connectionAttemptRange.lowerBound {
+        let currentIP = CameraVendorNetworkUtils.wifiIPv4Address()
+        if CameraVendorPtpRetryGuard.shouldRestartWifiHandoff(currentIP: currentIP) {
+          recorder(
+            "[OBS] PTP_RETRY_STOPPED_NETWORK_CHANGED currentIP=\(currentIP ?? "nil") " +
+              "reason=restart-wifi-handoff"
+          )
+          throw NSError(
+            domain: "CameraVendorPtpSession",
+            code: 0xD223,
+            userInfo: [
+              NSLocalizedDescriptionKey:
+                "PTP 重试期间相机 Wi-Fi 网络已变化，停止向旧地址继续发送 INIT"
+            ]
+          )
+        }
+      }
+      if CameraVendorPtpRetryGuard.shouldStopRetry(startedAt: startedAt) {
+        recorder("[OBS] PTP_RETRY_STOPPED_OVERALL_DEADLINE")
+        break
+      }
       var terminalBarrierEvidence: [IOSCameraConnectionStep: IOSCameraConnectionStepEvidence] = [:]
       do {
         let ptpEvidence = try galleryService.connectGalleryPtp(
@@ -560,6 +599,10 @@ final class FujifilmProtocolEngine {
         }
         lastError = error
         guard attempt < connectionAttemptRange.upperBound else { break }
+        guard !CameraVendorPtpRetryGuard.shouldStopRetry(startedAt: startedAt) else {
+          recorder("[OBS] PTP_RETRY_STOPPED_OVERALL_DEADLINE")
+          break
+        }
         let delay = retryDelaySeconds(
           afterFailedAttempt: attempt,
           backoff: initDefinition.retryTiming.connectionRetryBackoff
