@@ -26351,6 +26351,31 @@ extension RunnerTests {
     )
   }
 
+  func testCameraTransportFailureDispositionMakesTransactionMismatchSessionTerminal() {
+    let mismatch = NSError(
+      domain: "CameraVendorPtpSession",
+      code: 15,
+      userInfo: [
+        NSLocalizedDescriptionKey: "PTP response transaction 153 does not match request transaction 154"
+      ]
+    )
+
+    XCTAssertEqual(
+      CameraTransportFailureDispositionPolicy.disposition(
+        for: mismatch,
+        context: .catalog
+      ),
+      .sessionTerminal
+    )
+    XCTAssertEqual(
+      CameraTransportFailureDispositionPolicy.disposition(
+        for: mismatch,
+        context: .childPipeline
+      ),
+      .sessionTerminal
+    )
+  }
+
   func testCameraTransportFailureDispositionDefaultChildContextKeepsNonTerminalCodesRetryable() {
     let socketCreationFailure = NSError(
       domain: "CameraVendorPtpSocket",

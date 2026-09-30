@@ -79,6 +79,12 @@ enum CameraTransportFailureDispositionPolicy {
     if nsError.domain == NSCocoaErrorDomain, nsError.code == NSUserCancelledError {
       return .cancelled
     }
+    if nsError.domain == "CameraVendorPtpSession", nsError.code == 15 {
+      // A response transaction mismatch means the command stream is no longer
+      // aligned with the physical PTP session. Reusing the lane can send later
+      // commands against stale framing, so recovery must create a new session.
+      return .sessionTerminal
+    }
     switch context {
     case .childPipeline:
       if nsError.domain == "CameraVendorPtpSocket",
