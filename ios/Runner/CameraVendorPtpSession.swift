@@ -866,6 +866,21 @@ final class CameraVendorPtpSession {
     try prepareCameraVendorLegacyGalleryLoad()
   }
 
+  /// A 0x2013 from the first 9053 means the camera's Store/SearchMode view
+  /// is not ready yet. Refresh the vendor search description and current
+  /// object context once, then let the caller retry the authoritative Catalog
+  /// read in the same serialized PTP session. This is response-driven recovery;
+  /// it does not write the obsolete default 9051 before the first 9053.
+  func recoverInitialCameraCatalogAfterStoreNotAvailable() throws {
+    guard operationTransport == .cameraVendorLegacy else { return }
+    report("[OBS] PTP_INITIAL_CAMERA_CATALOG_BOOTSTRAP_RECOVERY response=0x2013")
+    report("[OBS] PTP_INITIAL_CAMERA_CATALOG_RECOVERY_9050")
+    try requestCameraVendorSearchModeDescAll()
+    report("[OBS] PTP_INITIAL_CAMERA_CATALOG_RECOVERY_D22B")
+    try requestCameraVendorCurrentObjectHandleSnapshot(stage: "initial-camera-catalog-recovery")
+  }
+
+
   private func performCameraVendorReservedReceiveDiagnosticHandshake() throws {
     report("[OBS] PTP_RESERVED_RECEIVE_DIAGNOSTIC_HANDSHAKE_BEGIN")
 
